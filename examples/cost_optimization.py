@@ -7,7 +7,7 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.fastmcp import Context, FastMCP
 
 from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.core.providers.base import get_provider
@@ -211,7 +211,7 @@ async def demonstrate_cost_optimization():
     logger.info("Starting cost optimization demonstration", emoji_key="start")
     
     # Create optimization tools instance with MCP server
-    optimization_tools = OptimizationTools(mcp)
+    OptimizationTools(mcp)
     
     # Create a sample prompt
     prompt = """
