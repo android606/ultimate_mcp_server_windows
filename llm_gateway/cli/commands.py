@@ -1,0 +1,537 @@
+"""Command implementations for the LLM Gateway CLI."""
+import asyncio
+import json
+import os
+import sys
+import time
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from rich.console import Console
+from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
+
+from llm_gateway.config import config
+from llm_gateway.constants import Provider
+from llm_gateway.core.providers.base import get_provider
+from llm_gateway.core.server import Gateway
+from llm_gateway.services.cache import get_cache_service
+from llm_gateway.utils import get_logger
+
+logger = get_logger(__name__)
+console = Console()
+
+
+def run_server(
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    workers: Optional[int] = None
+) -> None:
+    """Run the LLM Gateway server.
+    
+    Args:
+        host: Host to bind to (default: from config)
+        port: Port to listen on (default: from config)
+        workers: Number of worker processes (default: from config)
+    """
+    # Override config with provided values
+    if host:
+        config.server.host = host
+    if port:
+        config.server.port = port
+    if workers:
+        config.server.workers = workers
+    
+    # Print server info
+    console.print(f"[bold blue]Starting LLM Gateway server v{config.server.version}[/bold blue]")
+    console.print(f"Server name: [cyan]{config.server.name}[/cyan]")
+    console.print(f"Host: [cyan]{config.server.host}[/cyan]")
+    console.print(f"Port: [cyan]{config.server.port}[/cyan]")
+    console.print(f"Workers: [cyan]{config.server.workers}[/cyan]")
+    console.print()
+    
+    # Create and run server
+    gateway = Gateway()
+    gateway.run()
+
+
+async def list_providers(check_keys: bool = False, list_models: bool = False) -> None:
+    """List available providers.
+    
+    Args:
+        check_keys: Whether to check API keys
+        list_models: Whether to list available models
+    """
+    # Create provider table
+    table = Table(title="Available LLM Providers")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Enabled", style="green")
+    table.add_column("API Key", style="yellow")
+    table.add_column("Default Model", style="blue")
+    
+    # Add spinner during provider initialization
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]Initializing providers...[/bold blue]"),
+        transient=True
+    ) as progress:
+        progress.add_task("init", total=None)
+        
+        # Create Gateway instance (initializes all providers)
+        gateway = Gateway()
+        while not hasattr(gateway, 'provider_status') or not gateway.provider_status:
+            await asyncio.sleep(0.1)
+    
+    # Get provider status
+    provider_status = gateway.provider_status
+    
+    # Add rows to table
+    for provider_name in [p.value for p in Provider]:
+        status = provider_status.get(provider_name, None)
+        
+        if status:
+            enabled = "✅" if status.enabled else "❌"
+            api_key = "✅" if status.api_key_configured else "❌"
+            
+            # Get default model
+            provider_cfg = getattr(config.providers, provider_name, None)
+            default_model = provider_cfg.default_model if provider_cfg else "N/A"
+            
+            table.add_row(provider_name, enabled, api_key, default_model)
+    
+    # Print table
+    console.print(table)
+    
+    # Check API keys if requested
+    if check_keys:
+        console.print("\n[bold]API Key Check:[/bold]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]Checking API keys...[/bold blue]"),
+            transient=True
+        ) as progress:
+            progress.add_task("check", total=None)
+            
+            for provider_name in [p.value for p in Provider]:
+                status = provider_status.get(provider_name, None)
+                
+                if status and status.api_key_configured:
+                    try:
+                        # Get provider instance
+                        provider = get_provider(provider_name)
+                        
+                        # Check API key
+                        valid = await provider.check_api_key()
+                        
+                        if valid:
+                            console.print(f"Provider [cyan]{provider_name}[/cyan]: API key [green]valid[/green]")
+                        else:
+                            console.print(f"Provider [cyan]{provider_name}[/cyan]: API key [red]invalid[/red]")
+                            
+                    except Exception as e:
+                        console.print(f"Provider [cyan]{provider_name}[/cyan]: [red]Error: {str(e)}[/red]")
+                else:
+                    if status:
+                        console.print(f"Provider [cyan]{provider_name}[/cyan]: API key [yellow]not configured[/yellow]")
+    
+    # List models if requested
+    if list_models:
+        console.print("\n[bold]Available Models:[/bold]")
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]Loading models...[/bold blue]"),
+            transient=True
+        ) as progress:
+            progress.add_task("load", total=None)
+            
+            for provider_name in [p.value for p in Provider]:
+                status = provider_status.get(provider_name, None)
+                
+                if status and status.available:
+                    provider_instance = gateway.providers.get(provider_name)
+                    
+                    if provider_instance:
+                        try:
+                            # Get models
+                            models = await provider_instance.list_models()
+                            
+                            # Create model table
+                            model_table = Table(title=f"Models for {provider_name}")
+                            model_table.add_column("Model ID", style="cyan")
+                            model_table.add_column("Description", style="green")
+                            
+                            for model in models:
+                                model_table.add_row(
+                                    model["id"],
+                                    model.get("description", "")
+                                )
+                            
+                            console.print(model_table)
+                            console.print()
+                            
+                        except Exception as e:
+                            console.print(f"[red]Error listing models for {provider_name}: {str(e)}[/red]")
+                else:
+                    if status:
+                        console.print(f"Provider [cyan]{provider_name}[/cyan]: [yellow]Not available[/yellow]")
+
+
+async def test_provider(provider: str, model: Optional[str] = None, prompt: str = "Hello, world!") -> None:
+    """Test a specific provider with a simple completion.
+    
+    Args:
+        provider: Provider to test
+        model: Specific model to test (default: provider's default model)
+        prompt: Test prompt to send
+    """
+    console.print(f"[bold]Testing provider:[/bold] [cyan]{provider}[/cyan]")
+    console.print(f"[bold]Model:[/bold] [cyan]{model or 'default'}[/cyan]")
+    console.print(f"[bold]Prompt:[/bold] [green]\"{prompt}\"[/green]")
+    console.print()
+    
+    try:
+        # Get provider instance
+        provider_instance = get_provider(provider)
+        
+        # Initialize provider
+        await provider_instance.initialize()
+        
+        # Show spinner during generation
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]Generating completion...[/bold blue]"),
+            transient=True
+        ) as progress:
+            progress.add_task("generate", total=None)
+            
+            # Generate completion
+            start_time = time.time()
+            result = await provider_instance.generate_completion(
+                prompt=prompt,
+                model=model,
+                temperature=0.7
+            )
+            elapsed_time = time.time() - start_time
+        
+        # Print result
+        console.print(f"[bold cyan]Generated text:[/bold cyan]")
+        console.print(result.text)
+        console.print()
+        
+        # Print metrics
+        console.print(f"[bold]Model used:[/bold] [cyan]{result.model}[/cyan]")
+        console.print(f"[bold]Tokens:[/bold] [yellow]{result.input_tokens}[/yellow] input, [yellow]{result.output_tokens}[/yellow] output, [yellow]{result.total_tokens}[/yellow] total")
+        console.print(f"[bold]Cost:[/bold] [green]${result.cost:.6f}[/green]")
+        console.print(f"[bold]Time:[/bold] [blue]{elapsed_time:.2f}s[/blue]")
+        
+    except Exception as e:
+        console.print(f"[bold red]Error testing provider:[/bold red] {str(e)}")
+
+
+async def generate_completion(
+    provider: str,
+    model: Optional[str] = None,
+    prompt: str = "",
+    temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
+    system: Optional[str] = None,
+    stream: bool = False
+) -> None:
+    """Generate a completion from a provider.
+    
+    Args:
+        provider: Provider to use
+        model: Model to use (default: provider's default model)
+        prompt: Prompt text
+        temperature: Temperature parameter
+        max_tokens: Maximum tokens to generate
+        system: System prompt (for providers that support it)
+        stream: Whether to stream the response
+    """
+    try:
+        # Get provider instance
+        provider_instance = get_provider(provider)
+        
+        # Initialize provider
+        await provider_instance.initialize()
+        
+        # Set extra parameters based on provider
+        kwargs = {}
+        if system:
+            if provider == Provider.ANTHROPIC.value:
+                kwargs["system"] = system
+            else:
+                # For other providers, prepend system message to prompt
+                prompt = f"System: {system}\n\nUser: {prompt}"
+        
+        # Show progress for non-streaming generation
+        if not stream:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]Generating completion...[/bold blue]"),
+                transient=True
+            ) as progress:
+                progress.add_task("generate", total=None)
+                
+                # Generate completion
+                start_time = time.time()
+                result = await provider_instance.generate_completion(
+                    prompt=prompt,
+                    model=model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    **kwargs
+                )
+                elapsed_time = time.time() - start_time
+            
+            # Print result
+            console.print(f"[cyan]{result.text}[/cyan]")
+            console.print()
+            
+            # Print metrics
+            console.print(f"[bold]Model:[/bold] [blue]{result.model}[/blue]")
+            console.print(f"[bold]Tokens:[/bold] [yellow]{result.input_tokens}[/yellow] input, [yellow]{result.output_tokens}[/yellow] output")
+            console.print(f"[bold]Cost:[/bold] [green]${result.cost:.6f}[/green]")
+            console.print(f"[bold]Time:[/bold] [blue]{elapsed_time:.2f}s[/blue]")
+            
+        else:
+            # Streaming generation
+            console.print("[bold blue]Generating completion (streaming)...[/bold blue]")
+            
+            # Generate streaming completion
+            start_time = time.time()
+            stream = provider_instance.generate_completion_stream(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs
+            )
+            
+            # Process stream
+            full_text = ""
+            async for chunk, metadata in stream:
+                console.print(chunk, end="")
+                sys.stdout.flush()
+                full_text += chunk
+            
+            elapsed_time = time.time() - start_time
+            
+            # Print metrics
+            console.print("\n")
+            console.print(f"[bold]Model:[/bold] [blue]{metadata.get('model', model or 'unknown')}[/blue]")
+            console.print(f"[bold]Time:[/bold] [blue]{elapsed_time:.2f}s[/blue]")
+            
+    except Exception as e:
+        console.print(f"[bold red]Error generating completion:[/bold red] {str(e)}")
+
+
+async def check_cache(show_status: bool = True, clear: bool = False) -> None:
+    """Check cache status and manage cache.
+    
+    Args:
+        show_status: Whether to show cache status
+        clear: Whether to clear the cache
+    """
+    # Get cache service
+    cache_service = get_cache_service()
+    
+    if clear:
+        # Clear cache
+        console.print("[bold]Clearing cache...[/bold]")
+        cache_service.clear()
+        console.print("[green]Cache cleared successfully[/green]")
+    
+    if show_status:
+        # Get cache stats
+        stats = cache_service.get_stats()
+        
+        # Create status table
+        table = Table(title="Cache Status")
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        
+        # Add rows
+        table.add_row("Enabled", "✅" if stats["enabled"] else "❌")
+        table.add_row("Size", f"{stats['size']} / {stats['max_size']} entries")
+        table.add_row("TTL", f"{stats['ttl']} seconds")
+        table.add_row("Persistence", "✅" if stats["persistence"]["enabled"] else "❌")
+        table.add_row("Cache Directory", stats["persistence"]["cache_dir"])
+        table.add_row("Fuzzy Matching", "✅" if stats["fuzzy_matching"] else "❌")
+        
+        # Print table
+        console.print(table)
+        
+        # Create stats table
+        stats_table = Table(title="Cache Statistics")
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", style="green")
+        
+        # Add rows
+        cache_stats = stats["stats"]
+        stats_table.add_row("Hits", str(cache_stats["hits"]))
+        stats_table.add_row("Misses", str(cache_stats["misses"]))
+        stats_table.add_row("Hit Ratio", f"{cache_stats['hit_ratio']:.2%}")
+        stats_table.add_row("Stores", str(cache_stats["stores"]))
+        stats_table.add_row("Evictions", str(cache_stats["evictions"]))
+        stats_table.add_row("Total Saved Tokens", f"{cache_stats['total_saved_tokens']:,}")
+        stats_table.add_row("Estimated Cost Savings", f"${cache_stats['estimated_cost_savings']:.6f}")
+        
+        # Print table
+        console.print(stats_table)
+
+
+async def benchmark_providers(
+    providers: List[str] = None,
+    models: List[str] = None,
+    prompt: Optional[str] = None,
+    runs: int = 3
+) -> None:
+    """Benchmark providers for performance comparison.
+    
+    Args:
+        providers: List of providers to benchmark
+        models: List of specific models to benchmark
+        prompt: Prompt to use for benchmarking
+        runs: Number of runs for each benchmark
+    """
+    # Use default providers if not specified
+    if not providers:
+        providers = [p.value for p in Provider]
+    
+    # Set default prompt if not provided
+    if not prompt:
+        prompt = "Explain the concept of quantum computing in simple terms that a high school student would understand."
+    
+    console.print(f"[bold]Running benchmark with {runs} runs per provider/model[/bold]")
+    console.print(f"[bold]Prompt:[/bold] [green]\"{prompt}\"[/green]")
+    console.print()
+    
+    # Create results table
+    table = Table(title="Benchmark Results")
+    table.add_column("Provider", style="cyan")
+    table.add_column("Model", style="blue")
+    table.add_column("Avg. Time (s)", style="green")
+    table.add_column("Tokens/Sec", style="yellow")
+    table.add_column("Avg. Cost ($)", style="magenta")
+    table.add_column("Input Tokens", style="dim")
+    table.add_column("Output Tokens", style="dim")
+    
+    # Track benchmarks for progress bar
+    total_benchmarks = 0
+    for provider_name in providers:
+        try:
+            provider_instance = get_provider(provider_name)
+            await provider_instance.initialize()
+            
+            # Get available models
+            available_models = await provider_instance.list_models()
+            
+            # Filter models if specified
+            if models:
+                available_models = [m for m in available_models if m["id"] in models]
+            else:
+                # Use default model if no models specified
+                default_model = provider_instance.get_default_model()
+                available_models = [m for m in available_models if m["id"] == default_model]
+            
+            total_benchmarks += len(available_models)
+            
+        except Exception:
+            # Skip providers that can't be initialized
+            pass
+    
+    # Run benchmarks with progress bar
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn()
+    ) as progress:
+        benchmark_task = progress.add_task("[bold blue]Running benchmarks...", total=total_benchmarks * runs)
+        
+        for provider_name in providers:
+            try:
+                # Get provider instance
+                provider_instance = get_provider(provider_name)
+                await provider_instance.initialize()
+                
+                # Get available models
+                available_models = await provider_instance.list_models()
+                
+                # Filter models if specified
+                if models:
+                    available_models = [m for m in available_models if m["id"] in models]
+                else:
+                    # Use default model if no models specified
+                    default_model = provider_instance.get_default_model()
+                    available_models = [m for m in available_models if m["id"] == default_model]
+                
+                for model_info in available_models:
+                    model_id = model_info["id"]
+                    
+                    # Run benchmark for this model
+                    total_time = 0.0
+                    total_cost = 0.0
+                    total_input_tokens = 0
+                    total_output_tokens = 0
+                    total_tokens = 0
+                    
+                    for run in range(runs):
+                        try:
+                            # Update progress description
+                            progress.update(
+                                benchmark_task,
+                                description=f"[bold blue]Benchmarking {provider_name}/{model_id} (Run {run+1}/{runs})"
+                            )
+                            
+                            # Run benchmark
+                            start_time = time.time()
+                            result = await provider_instance.generate_completion(
+                                prompt=prompt,
+                                model=model_id,
+                                temperature=0.7
+                            )
+                            run_time = time.time() - start_time
+                            
+                            # Record metrics
+                            total_time += run_time
+                            total_cost += result.cost
+                            total_input_tokens += result.input_tokens
+                            total_output_tokens += result.output_tokens
+                            total_tokens += result.total_tokens
+                            
+                            # Update progress
+                            progress.advance(benchmark_task)
+                            
+                        except Exception as e:
+                            console.print(f"[red]Error in run {run+1} for {provider_name}/{model_id}: {str(e)}[/red]")
+                            # Still advance progress
+                            progress.advance(benchmark_task)
+                    
+                    # Calculate averages
+                    avg_time = total_time / max(1, runs)
+                    avg_cost = total_cost / max(1, runs)
+                    avg_input_tokens = total_input_tokens // max(1, runs)
+                    avg_output_tokens = total_output_tokens // max(1, runs)
+                    
+                    # Calculate tokens per second
+                    tokens_per_second = total_tokens / total_time if total_time > 0 else 0
+                    
+                    # Add to results table
+                    table.add_row(
+                        provider_name,
+                        model_id,
+                        f"{avg_time:.2f}",
+                        f"{tokens_per_second:.1f}",
+                        f"{avg_cost:.6f}",
+                        str(avg_input_tokens),
+                        str(avg_output_tokens)
+                    )
+                    
+            except Exception as e:
+                console.print(f"[red]Error benchmarking provider {provider_name}: {str(e)}[/red]")
+    
+    # Print results
+    console.print(table)

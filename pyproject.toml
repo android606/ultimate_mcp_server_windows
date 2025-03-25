@@ -1,0 +1,167 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm_gateway_mcp_server"
+version = "0.1.0"
+description = "A Model Context Protocol (MCP) server providing unified access to multiple LLM providers with cost optimization"
+readme = "README.md"
+requires-python = ">=3.13"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Jeffrey Emanuel", email = "jeffrey.emanuel@gmail.com"},
+]
+maintainers = [
+    {name = "Jeffrey Emanuel", email = "jeffrey.emanuel@gmail.com"},
+]
+keywords = ["llm", "mcp", "gateway", "ai", "claude", "gpt", "gemini", "deepseek"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # Core MCP and LLM providers
+    "mcp",
+    "anthropic",
+    "openai",
+    "google-generativeai",
+
+    # Async utilities
+    "httpx",
+    "aiofiles",
+    "asyncio",
+
+    # Data processing
+    "pydantic",
+    "python-dotenv",
+    "tenacity",  # For retry logic
+
+    # Caching and persistence
+    "diskcache", # Persistent disk cache
+    "msgpack",   # Efficient serialization
+
+    # Vector database for semantic caching
+    "numpy",
+    "sentence-transformers",  # For embeddings
+    "chromadb",              # Vector DB
+    "hnswlib",                # Fast similarity search
+    
+    # Analytics and monitoring
+    "prometheus-client",
+    "pandas",
+    "rich",    # Console output formatting
+    
+    # Web and API
+    "fastapi",
+    "uvicorn",
+    "starlette",
+    "sse-starlette",
+    
+    # Templating for prompt management
+    "jinja2",
+    
+    # Multi-modal support
+    "pillow",  # Image processing
+    
+    # Utilities
+    "python-slugify",  # For URL-friendly strings
+    "colorama",        # Terminal colors
+    "tqdm",           # Progress bars
+]
+
+[project.optional-dependencies]
+# Advanced AI model libraries
+advanced = [
+    "transformers",     # For Hugging Face models
+    "torch",             # PyTorch for transformers
+    "torchvision",
+    "torchaudio",
+    "flash-attn",
+    "accelerate",       # For optimized model inference
+]
+
+# Development and testing
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "isort",
+    "mypy",
+    "ruff",
+    "types-aiofiles",
+    "pre-commit",
+]
+
+# Documentation
+docs = [
+    "mkdocs",
+    "mkdocs-material",
+    "mkdocstrings",
+    "mkdocstrings-python",
+]
+
+# All extras
+all = ["llm_gateway_mcp_server[advanced,dev,docs]"]
+
+[project.urls]
+Homepage = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server"
+Documentation = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server/docs"
+Repository = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server.git"
+"Bug Reports" = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server/issues"
+
+[project.scripts]
+llm-gateway = "llm_gateway.cli.main:main"
+
+[tool.hatch.version]
+path = "llm_gateway/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/llm_gateway",
+    "/examples",
+    "/tests",
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["llm_gateway"]
+
+[tool.black]
+line-length = 100
+target-version = ["py313"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+
+[tool.mypy]
+python_version = "3.13"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_optional = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "--cov=llm_gateway --cov-report=term-missing -v"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+select = ["E", "F", "B", "I", "Q"]
+ignore = ["E203"]
