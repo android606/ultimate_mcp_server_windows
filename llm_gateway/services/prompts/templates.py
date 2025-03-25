@@ -1,12 +1,10 @@
 """Prompt template management and rendering for LLM Gateway."""
-import asyncio
 import json
-import os
 import re
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Union, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from jinja2 import Environment, FileSystemLoader, Template, select_autoescape
 
@@ -147,7 +145,7 @@ class PromptTemplate:
                     nested_prefix = f"{prefix}{key}." if prefix else f"{key}."
                     vars_list.extend(self._extract_json_vars(value, nested_prefix))
         elif isinstance(obj, list):
-            for i, item in enumerate(obj):
+            for _i, item in enumerate(obj):
                 if isinstance(item, (dict, list)):
                     vars_list.extend(self._extract_json_vars(item, prefix))
                 elif isinstance(item, str) and item.startswith("${") and item.endswith("}"):
@@ -173,7 +171,7 @@ class PromptTemplate:
                 f"Failed to compile template {self.template_id}: {str(e)}",
                 emoji_key="error"
             )
-            raise ValueError(f"Invalid template format: {str(e)}")
+            raise ValueError(f"Invalid template format: {str(e)}") from e
     
     def render(self, variables: Dict[str, Any]) -> str:
         """Render the template with the provided variables.

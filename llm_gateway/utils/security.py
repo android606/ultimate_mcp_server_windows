@@ -2,12 +2,12 @@
 import base64
 import hashlib
 import hmac
-import os
 import re
 import secrets
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
+from llm_gateway.config import get_env
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -224,7 +224,7 @@ def sanitize_path(path: str) -> str:
 
 
 def create_session_token(user_id: str, expires_in: int = 86400) -> Dict[str, Any]:
-    """Create a session token for authentication.
+    """Create a session token for a user.
     
     Args:
         user_id: User identifier
@@ -241,7 +241,7 @@ def create_session_token(user_id: str, expires_in: int = 86400) -> Dict[str, Any
     
     # Compute signature
     # In a real implementation, use a secure key from config
-    secret_key = os.environ.get('SESSION_SECRET_KEY', 'default_session_key')
+    secret_key = get_env('SESSION_SECRET_KEY', 'default_session_key')
     signature_msg = f"{user_id}:{token}:{expiration}"
     signature = create_hmac_signature(secret_key, signature_msg)
     
@@ -272,7 +272,7 @@ def verify_session_token(token_data: Dict[str, Any]) -> bool:
         return False
         
     # Verify signature
-    secret_key = os.environ.get('SESSION_SECRET_KEY', 'default_session_key')
+    secret_key = get_env('SESSION_SECRET_KEY', 'default_session_key')
     signature_msg = f"{token_data['user_id']}:{token_data['token']}:{token_data['expiration']}"
     
     return verify_hmac_signature(secret_key, signature_msg, token_data['signature'])

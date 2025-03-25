@@ -3,9 +3,8 @@ import asyncio
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
-from llm_gateway.config import config
 from llm_gateway.constants import Provider, TaskType
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.cache import with_cache
@@ -129,7 +128,7 @@ JSON output:"""
                         processing_time = time.time() - start_time
                         
                         logger.success(
-                            f"JSON extraction successful",
+                            "JSON extraction successful",
                             emoji_key=TaskType.EXTRACTION.value,
                             tokens={
                                 "input": result.input_tokens,
@@ -346,7 +345,7 @@ Extracted table ({format.upper()} format):"""
                     return response
                 else:
                     logger.error(
-                        f"Table extraction failed",
+                        "Table extraction failed",
                         emoji_key="error",
                         time=processing_time
                     )
@@ -484,7 +483,7 @@ Key-value pairs (JSON format):"""
                     }
                 else:
                     logger.error(
-                        f"Key-value extraction failed",
+                        "Key-value extraction failed",
                         emoji_key="error",
                         time=processing_time
                     )
@@ -637,11 +636,11 @@ Schema ({target_format}):"""
                         # Try to parse as JSON to validate
                         json_schema = json.loads(schema)
                         schema = json.dumps(json_schema, indent=2)
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
                         # If not valid JSON, extract JSON part using regex
                         schema = self._parse_json_from_llm_response(schema)
                         if not schema:
-                            raise ValueError("Could not extract valid JSON schema")
+                            raise ValueError("Could not extract valid JSON schema") from e
                 
                 # For Python, clean up code blocks
                 if target_format == "python_dataclass":
@@ -735,8 +734,8 @@ Schema ({target_format}):"""
         try:
             # Replace single quotes with double quotes (but not in already quoted strings)
             # This is a simplified fix and might not work for all cases
-            text = re.sub(r"(?<![\"\'])\'(?![\"\'])", "\"", text)
-            text = re.sub(r"(?<![\"\'])\'(?![\"\'])", "\"", text)
+            text = re.sub(r"(?<![\"\'])\'(?![\"\'])", '"', text)
+            text = re.sub(r"(?<![\"\'])\'(?![\"\'])", '"', text)
             
             # Remove trailing commas
             text = re.sub(r',\s*}', '}', text)

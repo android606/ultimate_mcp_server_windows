@@ -74,6 +74,8 @@ dependencies = [
     "tqdm",           # Progress bars
     "tiktoken",       # Token counting
     "python-decouple", # .env management
+    "jsonschema",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]

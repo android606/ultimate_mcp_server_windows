@@ -1,14 +1,19 @@
 """Command implementations for the LLM Gateway CLI."""
 import asyncio
-import json
-import os
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Optional
 
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
 
 from llm_gateway.config import config
 from llm_gateway.constants import Provider
@@ -187,7 +192,7 @@ async def test_provider(provider: str, model: Optional[str] = None, prompt: str 
     """
     console.print(f"[bold]Testing provider:[/bold] [cyan]{provider}[/cyan]")
     console.print(f"[bold]Model:[/bold] [cyan]{model or 'default'}[/cyan]")
-    console.print(f"[bold]Prompt:[/bold] [green]\"{prompt}\"[/green]")
+    console.print(f'[bold]Prompt:[/bold] [green]"{prompt}"[/green]')
     console.print()
     
     try:
@@ -215,7 +220,7 @@ async def test_provider(provider: str, model: Optional[str] = None, prompt: str 
             elapsed_time = time.time() - start_time
         
         # Print result
-        console.print(f"[bold cyan]Generated text:[/bold cyan]")
+        console.print("[bold cyan]Generated text:[/bold cyan]")
         console.print(result.text)
         console.print()
         
@@ -311,7 +316,7 @@ async def generate_completion(
             
             # Process stream
             full_text = ""
-            async for chunk, metadata in stream:
+            async for chunk, metadata in stream:  # noqa: B007
                 console.print(chunk, end="")
                 sys.stdout.flush()
                 full_text += chunk
@@ -405,7 +410,7 @@ async def benchmark_providers(
         prompt = "Explain the concept of quantum computing in simple terms that a high school student would understand."
     
     console.print(f"[bold]Running benchmark with {runs} runs per provider/model[/bold]")
-    console.print(f"[bold]Prompt:[/bold] [green]\"{prompt}\"[/green]")
+    console.print(f'[bold]Prompt:[/bold] [green]"{prompt}"[/green]')
     console.print()
     
     # Create results table

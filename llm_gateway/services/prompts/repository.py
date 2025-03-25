@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import aiofiles
+
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)

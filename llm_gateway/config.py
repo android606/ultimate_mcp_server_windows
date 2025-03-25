@@ -4,22 +4,40 @@ from typing import Any, Dict, Optional, Union
 
 from decouple import Config as DecoupleConfig
 from decouple import RepositoryEnv
+from decouple import config as decouple_config
 from pydantic import BaseModel, Field
 
 # Base directory
 BASE_DIR = Path(__file__).parent.parent
 
+# Check if .env file exists
+env_file = BASE_DIR / '.env'
+
 # Use python-decouple to load and parse environment variables
-config_source = RepositoryEnv('.env')
+config_source = RepositoryEnv(str(env_file))
 env_config = DecoupleConfig(config_source)
 
 
 def get_env(key, default=None, cast=None):
     """Get environment variable with fallback to default."""
+    # First try with python-decouple
     try:
-        return env_config(key, default=default, cast=cast)
+        value = env_config(key, default=None, cast=cast)
+        if value is not None:
+            return value
     except Exception:
-        return default
+        pass
+        
+    # Fall back to direct decouple_config
+    try:
+        value = decouple_config(key, default=None, cast=cast)
+        if value is not None:
+            return value
+    except Exception:
+        pass
+        
+    # Last resort, return default
+    return default
 
 
 class LoggingConfig(BaseModel):
@@ -53,25 +71,25 @@ class ProvidersConfig(BaseModel):
     """Configuration for all providers."""
     openai: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
         enabled=True,
-        api_key=get_env("OPENAI_API_KEY"),
+        api_key=decouple_config("OPENAI_API_KEY", default=None),
         default_model=get_env("OPENAI_DEFAULT_MODEL", "gpt-4o-mini"),
         max_tokens=get_env("OPENAI_MAX_TOKENS", 8192, cast=int),
     ))
     anthropic: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
         enabled=True,
-        api_key=get_env("ANTHROPIC_API_KEY"),
+        api_key=decouple_config("ANTHROPIC_API_KEY", default=None),
         default_model=get_env("ANTHROPIC_DEFAULT_MODEL", "claude-3-5-haiku-latest"),
         max_tokens=get_env("ANTHROPIC_MAX_TOKENS", 200000, cast=int),
     ))
     deepseek: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
         enabled=True,
-        api_key=get_env("DEEPSEEK_API_KEY"),
+        api_key=decouple_config("DEEPSEEK_API_KEY", default=None),
         default_model=get_env("DEEPSEEK_DEFAULT_MODEL", "deepseek-chat"),
         max_tokens=get_env("DEEPSEEK_MAX_TOKENS", 8192, cast=int),
     ))
     gemini: ProviderConfig = Field(default_factory=lambda: ProviderConfig(
         enabled=True,
-        api_key=get_env("GEMINI_API_KEY"),
+        api_key=decouple_config("GEMINI_API_KEY", default=None),
         default_model=get_env("GEMINI_DEFAULT_MODEL", "gemini-2.0-flash-lite"),
         max_tokens=get_env("GEMINI_MAX_TOKENS", 8192, cast=int),
     ))

@@ -1,16 +1,13 @@
 """Vector database service for semantic search."""
-import asyncio
 import json
-import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, Callable
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 
-from llm_gateway.config import config
-from llm_gateway.services.vector.embeddings import get_embedding_service, cosine_similarity
+from llm_gateway.services.vector.embeddings import cosine_similarity, get_embedding_service
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -137,7 +134,7 @@ class VectorCollection:
             metadatas = [{} for _ in range(len(vectors))]
         
         # Add to storage
-        for i, (vector, id, metadata) in enumerate(zip(vectors, ids, metadatas)):
+        for _i, (vector, id, metadata) in enumerate(zip(vectors, ids, metadatas, strict=False)):
             self.vectors.append(vector)
             self.ids.append(id)
             self.metadatas.append(metadata)
@@ -240,7 +237,7 @@ class VectorCollection:
                 
                 # Format results
                 results = []
-                for i, (label, similarity) in enumerate(zip(labels[0], similarities)):
+                for _i, (label, similarity) in enumerate(zip(labels[0], similarities, strict=False)):
                     results.append({
                         "id": self.ids[label],
                         "similarity": float(similarity),
@@ -495,7 +492,7 @@ class VectorCollection:
                 f"Failed to load collection: {str(e)}",
                 emoji_key="error"
             )
-            raise ValueError(f"Failed to load collection: {str(e)}")
+            raise ValueError(f"Failed to load collection: {str(e)}") from e
     
     def get_stats(self) -> Dict[str, Any]:
         """Get collection statistics.
@@ -857,7 +854,7 @@ class VectorDatabaseService:
             return collection.add(
                 vectors=embeddings,
                 ids=ids,
-                metadatas=[{"text": text, **(meta or {})} for text, meta in zip(texts, metadatas or [{} for _ in range(len(texts))])]
+                metadatas=[{"text": text, **(meta or {})} for text, meta in zip(texts, metadatas or [{} for _ in range(len(texts))], strict=False)]
             )
     
     async def search_by_text(

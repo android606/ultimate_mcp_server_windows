@@ -1,15 +1,15 @@
 """Helper functions for the LLM Gateway CLI."""
-import os
 import json
 from typing import Any, Dict, List, Optional, Union
 
 from rich.console import Console
-from rich.table import Table
-from rich.syntax import Syntax
-from rich.panel import Panel
 from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.table import Table
 
-from llm_gateway.constants import Provider, COST_PER_MILLION_TOKENS
+from llm_gateway.config import get_env
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -185,7 +185,7 @@ def print_model_comparison(
     table.add_column("Total Tokens", style="dim")
     
     # Add rows for each model
-    for model, metric in zip(models, metrics):
+    for model, metric in zip(models, metrics, strict=False):
         table.add_row(
             model,
             format_duration(metric.get("time", 0)),
@@ -208,12 +208,12 @@ def print_environment_info() -> None:
     # Add API key info
     for provider in [p.value for p in Provider]:
         env_var = f"{provider.upper()}_API_KEY"
-        has_key = bool(os.environ.get(env_var))
+        has_key = bool(get_env(env_var))
         table.add_row(env_var, "✅ Set" if has_key else "❌ Not set")
     
     # Add other environment variables
     for var in ["LOG_LEVEL", "CACHE_ENABLED", "CACHE_DIR"]:
-        value = os.environ.get(var, "Not set")
+        value = get_env(var, "Not set")
         table.add_row(var, value)
     
     # Print table

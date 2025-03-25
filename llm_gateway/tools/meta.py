@@ -2,13 +2,11 @@
 import asyncio
 import json
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
-from llm_gateway.config import config
-from llm_gateway.constants import Provider, TaskType, COST_PER_MILLION_TOKENS
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.cache import with_cache
-from llm_gateway.tools.base import BaseTool, with_retry, with_tool_metrics
+from llm_gateway.tools.base import BaseTool, with_tool_metrics
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -172,7 +170,6 @@ class MetaTools(BaseTool):
             # Execute the task with selected provider
             try:
                 # Import completion tool
-                from llm_gateway.tools.completion import CompletionTools
                 
                 # Get provider instance
                 provider_instance = get_provider(provider)
@@ -424,12 +421,12 @@ class MetaTools(BaseTool):
                 step_groups = self._group_steps_by_dependencies(workflow_steps)
                 
                 # Execute step groups in sequence
-                for group_idx, step_group in enumerate(step_groups):
+                for _group_idx, step_group in enumerate(step_groups):
                     # Create tasks for each step in group
                     tasks = []
                     semaphore = asyncio.Semaphore(max_concurrency)
                     
-                    async def process_step(step_idx, step):
+                    async def process_step(step_idx, step, semaphore):
                         async with semaphore:
                             step_id = step.get("id", f"step_{step_idx}")
                             step_name = step.get("name", f"Step {step_idx}")
@@ -465,7 +462,7 @@ class MetaTools(BaseTool):
                     
                     # Create tasks for all steps in group
                     for step_idx, step in step_group:
-                        tasks.append(process_step(step_idx, step))
+                        tasks.append(process_step(step_idx, step, semaphore))
                     
                     # Execute group concurrently
                     group_results = await asyncio.gather(*tasks)
@@ -615,7 +612,7 @@ Your response MUST be in valid JSON format with the following structure:
                     if json_match:
                         try:
                             evaluation = json.loads(json_match.group(1))
-                        except:
+                        except Exception:
                             evaluation = {
                                 "error": "Failed to parse evaluation JSON",
                                 "raw_text": result.text
@@ -767,7 +764,7 @@ Format your response as JSON:
                     if json_match:
                         try:
                             optimization = json.loads(json_match.group(1))
-                        except:
+                        except Exception:
                             optimization = {
                                 "error": "Failed to parse optimization JSON",
                                 "raw_text": result.text
@@ -1449,7 +1446,6 @@ Format your response as JSON:
             
         elif step_type == "summarize":
             # Import document tools
-            from llm_gateway.tools.document import DocumentTools
             
             # Use summarize_document tool
             result = await self.mcp.execute("summarize_document", {
@@ -1463,9 +1459,6 @@ Format your response as JSON:
             return result
             
         elif step_type == "extract_entities":
-            # Import extraction tools
-            from llm_gateway.tools.extraction import ExtractionTools
-            
             # Use extract_entities tool
             result = await self.mcp.execute("extract_entities", {
                 "document": input_text,
@@ -1477,9 +1470,6 @@ Format your response as JSON:
             return result
             
         elif step_type == "extract_json":
-            # Import extraction tools
-            from llm_gateway.tools.extraction import ExtractionTools
-            
             # Use extract_json tool
             result = await self.mcp.execute("extract_json", {
                 "text": input_text,
@@ -1492,13 +1482,13 @@ Format your response as JSON:
             
         elif step_type == "quality_check":
             # Use quality_check tool
-            result = await quality_check(
-                text=input_text,
-                original_task=step.get("original_task", ""),
-                quality_criteria=step.get("quality_criteria"),
-                provider=provider,
-                model=model,
-            )
+            result = await self.execute("quality_check", {
+                "text": input_text,
+                "original_task": step.get("original_task", ""),
+                "quality_criteria": step.get("quality_criteria"),
+                "provider": provider,
+                "model": model,
+            })
             
             return result
             

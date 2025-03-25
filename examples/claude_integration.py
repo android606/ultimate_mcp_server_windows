@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.utils import get_logger
+from llm_gateway.config import get_env, config
 
 # Initialize logger
 logger = get_logger("example.claude_integration")
@@ -20,10 +21,17 @@ async def compare_claude_models():
     """Compare different Claude models."""
     logger.info("Starting Claude models comparison", emoji_key="start")
     
-    # Get Claude provider
+    # Get API key directly from decouple
+    from decouple import config as decouple_config
+    api_key = decouple_config('ANTHROPIC_API_KEY', default=None)
+    
+    # Get Claude provider with API key
     provider_name = Provider.ANTHROPIC.value
     try:
-        provider = get_provider(provider_name)
+        provider = get_provider(
+            provider_name,
+            api_key=api_key
+        )
         await provider.initialize()
         
         logger.info(
@@ -127,10 +135,17 @@ async def demonstrate_system_prompt():
     """Demonstrate Claude with system prompts."""
     logger.info("Demonstrating Claude with system prompts", emoji_key="start")
     
-    # Get Claude provider
+    # Get API key directly from decouple
+    from decouple import config as decouple_config
+    api_key = decouple_config('ANTHROPIC_API_KEY', default=None)
+    
+    # Get Claude provider with API key
     provider_name = Provider.ANTHROPIC.value
     try:
-        provider = get_provider(provider_name)
+        provider = get_provider(
+            provider_name,
+            api_key=api_key
+        )
         await provider.initialize()
         
         # Use a fast Claude model
@@ -189,16 +204,18 @@ async def demonstrate_system_prompt():
 async def main():
     """Run Claude integration examples."""
     try:
-        # Check if Claude API key is available
-        import os
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        # Get API key directly from decouple
+        from decouple import config as decouple_config
+        api_key = decouple_config('ANTHROPIC_API_KEY', default=None)
+        
+        if not api_key:
             logger.warning(
-                "No Anthropic API key found in environment variables. " +
-                "Set ANTHROPIC_API_KEY to run this example.",
+                "No Anthropic API key found in .env file. " +
+                "Set ANTHROPIC_API_KEY in your .env file to run this example.",
                 emoji_key="warning"
             )
             return 1
-        
+            
         # Run model comparison
         await compare_claude_models()
         

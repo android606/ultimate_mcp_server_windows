@@ -7,6 +7,7 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from decouple import config as decouple_config
 from mcp.server.fastmcp import Context, FastMCP
 
 from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
@@ -319,8 +320,17 @@ async def demonstrate_cost_optimization():
             if not provider_name:
                 logger.warning(f"No provider found for model {model_name}", emoji_key="warning")
                 continue
+            
+            # Get API key from config
+            api_key = None
+            if provider_name == Provider.OPENAI.value:
+                api_key = decouple_config("OPENAI_API_KEY", default=None)
+            elif provider_name == Provider.ANTHROPIC.value:
+                api_key = decouple_config("ANTHROPIC_API_KEY", default=None)
+            elif provider_name == Provider.GEMINI.value:
+                api_key = decouple_config("GEMINI_API_KEY", default=None)
                 
-            provider = get_provider(provider_name)
+            provider = get_provider(provider_name, api_key=api_key)
             await provider.initialize()
             
             logger.info(f"Testing {model_name} with actual API call", emoji_key="processing")

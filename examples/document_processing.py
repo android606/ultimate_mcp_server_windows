@@ -8,6 +8,7 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from decouple import config as decouple_config
 from mcp.server.fastmcp import FastMCP
 
 from llm_gateway.constants import Provider
@@ -258,7 +259,8 @@ async def demonstrate_document_processing():
                 "provider": Provider.OPENAI.value,
                 "max_length": 150,
                 "format": format,
-                "max_tokens": int(150 * 1.5)  # Ensure max_tokens is an integer
+                "max_tokens": int(150 * 1.5),  # Ensure max_tokens is an integer
+                "api_key": decouple_config("OPENAI_API_KEY", default=None)
             })
             
             if not safe_result["success"]:
@@ -315,7 +317,8 @@ async def demonstrate_document_processing():
         safe_result = await safe_tool_call("extract_entities", {
             "document": sample_document,
             "entity_types": ["technology", "field", "concept"],
-            "provider": Provider.OPENAI.value
+            "provider": Provider.OPENAI.value,
+            "api_key": decouple_config("OPENAI_API_KEY", default=None)
         })
         
         if not safe_result["success"]:
@@ -383,7 +386,8 @@ async def demonstrate_document_processing():
             "document": sample_document,
             "num_questions": 3,
             "question_types": ["factual", "conceptual"],
-            "provider": Provider.OPENAI.value
+            "provider": Provider.OPENAI.value,
+            "api_key": decouple_config("OPENAI_API_KEY", default=None)
         })
         
         if not safe_result["success"]:

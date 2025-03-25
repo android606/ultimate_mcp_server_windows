@@ -1,18 +1,17 @@
 """Command-line interface for LLM Gateway."""
 import argparse
 import asyncio
-import os
 import sys
 from typing import List, Optional
 
 from llm_gateway import __version__
 from llm_gateway.cli.commands import (
-    run_server,
-    list_providers,
-    test_provider,
-    generate_completion,
-    check_cache,
     benchmark_providers,
+    check_cache,
+    generate_completion,
+    list_providers,
+    run_server,
+    test_provider,
 )
 from llm_gateway.config import config
 from llm_gateway.utils import get_logger
@@ -203,7 +202,7 @@ def main(args: Optional[List[str]] = None) -> int:
     
     # Set debug mode if requested
     if parsed_args.debug:
-        os.environ["LOG_LEVEL"] = "DEBUG"
+        config.logging.level = "DEBUG"
     
     # Handle command
     try:

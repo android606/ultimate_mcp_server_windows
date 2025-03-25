@@ -8,6 +8,8 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from decouple import config as decouple_config
+
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.cache import get_cache_service
@@ -34,8 +36,18 @@ async def run_completion_with_cache(
     Returns:
         Completion result
     """
-    # Get provider
-    provider = get_provider(provider_name)
+    # Get provider with API key directly from decouple
+    api_key = None
+    if provider_name == Provider.OPENAI.value:
+        api_key = decouple_config("OPENAI_API_KEY", default=None)
+    elif provider_name == Provider.ANTHROPIC.value:
+        api_key = decouple_config("ANTHROPIC_API_KEY", default=None)
+    elif provider_name == Provider.GEMINI.value:
+        api_key = decouple_config("GEMINI_API_KEY", default=None)
+    elif provider_name == Provider.DEEPSEEK.value:
+        api_key = decouple_config("DEEPSEEK_API_KEY", default=None)
+    
+    provider = get_provider(provider_name, api_key=api_key)
     await provider.initialize()
     
     # Get cache service
@@ -101,15 +113,21 @@ async def demonstrate_cache():
         cost=result1.cost
     )
     
+    # Get stats after first completion
+    stats_after_miss = cache_service.get_stats()
+    
     # Second completion - should be a cache hit
     logger.info("Running second completion (should be a cache hit)...", emoji_key="processing")
     start_time = time.time()
-    result2 = await run_completion_with_cache(prompt)
+    result2 = await run_completion_with_cache(prompt)  # noqa: F841
     time2 = time.time() - start_time
     logger.info(
         f"Second completion took {time2:.2f}s (Cache speed-up: {time1/time2:.1f}x)",
         emoji_key="time"
     )
+    
+    # Get stats after second completion (cache hit)
+    stats_after_hit = cache_service.get_stats()
     
     # Third completion - bypass cache
     logger.info("Running third completion (bypassing cache)...", emoji_key="processing")
@@ -123,15 +141,51 @@ async def demonstrate_cache():
         cost=result3.cost
     )
     
-    # Show cache statistics
+    # Another cache hit (fourth completion)
+    logger.info("Running fourth completion (should be another cache hit)...", emoji_key="processing")
+    start_time = time.time()
+    result4 = await run_completion_with_cache(prompt)  # noqa: F841
+    time4 = time.time() - start_time
+    logger.info(
+        f"Fourth completion took {time4:.2f}s (Cache speed-up: {time3/time4:.1f}x)",
+        emoji_key="time"
+    )
+    
+    # Get final cache statistics
     stats = cache_service.get_stats()
     logger.info("Cache statistics:", emoji_key="info")
     print("\n" + "-" * 80)
-    print(f"  Cache hits: {stats['stats']['hits']}")
-    print(f"  Cache misses: {stats['stats']['misses']}")
-    print(f"  Hit ratio: {stats['stats']['hit_ratio']:.2%}")
-    print(f"  Total saved tokens: {stats['stats']['total_saved_tokens']}")
-    print(f"  Estimated cost savings: ${stats['stats']['estimated_cost_savings']:.6f}")
+    
+    # Print the stats
+    print(f"Stats dictionary contains keys: {list(stats.keys())}")
+    
+    # Display cache stats changes
+    print("\nCache Stats Progression:")
+    hit_counter1 = stats_after_miss['stats'].get('hits', 0)
+    hit_counter2 = stats_after_hit['stats'].get('hits', 0)
+    hit_counter_final = stats['stats'].get('hits', 0)
+    
+    print(f"  After first miss: {hit_counter1} hits")
+    print(f"  After first hit: {hit_counter2} hits")
+    print(f"  Final: {hit_counter_final} hits")
+    
+    # Access stats safely
+    if 'stats' in stats:
+        print("\nFinal Cache Statistics:")
+        print(f"  Cache hits: {stats['stats'].get('hits', 0)}")
+        print(f"  Cache misses: {stats['stats'].get('misses', 0)}")
+        print(f"  Hit ratio: {stats['stats'].get('hit_ratio', 0):.2%}")
+        print(f"  Total saved tokens: {stats['stats'].get('total_saved_tokens', 0)}")
+        print(f"  Estimated cost savings: ${stats['stats'].get('estimated_cost_savings', 0):.6f}")
+        
+        # If stats aren't being tracked, show what should have been saved
+        if stats['stats'].get('total_saved_tokens', 0) == 0:
+            print("\nExpected savings (if cache tracking worked correctly):")
+            expected_tokens_saved = result1.total_tokens * 2  # 2 hits
+            expected_cost_saved = result1.cost * 2
+            print(f"  Expected tokens saved: {expected_tokens_saved}")
+            print(f"  Expected cost savings: ${expected_cost_saved:.6f}")
+    
     print("-" * 80 + "\n")
     
     # Demonstrating cache persistence
@@ -140,8 +194,12 @@ async def demonstrate_cache():
             "Cache is persistent and will be available across restarts",
             emoji_key="cache"
         )
-        logger.info(f"Cache directory: {stats['persistence']['cache_dir']}", emoji_key="info")
-    
+        # Check if cache_dir property exists directly on the cache_service
+        if hasattr(cache_service, 'cache_dir'):
+            logger.info(f"Cache directory: {cache_service.cache_dir}", emoji_key="info")
+        else:
+            logger.info("Cache directory not specified", emoji_key="info")
+
 
 async def main():
     """Run cache demonstration."""

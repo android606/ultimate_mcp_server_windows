@@ -246,6 +246,18 @@ class CacheService:
         # Update statistics
         self.metrics.hits += 1
         
+        # Automatically track token and cost savings if it's a ModelResponse
+        # Check for model response attributes (without importing the class directly)
+        if hasattr(value, 'input_tokens') and hasattr(value, 'output_tokens') and hasattr(value, 'cost'):
+            # It's likely a ModelResponse object, update token and cost savings
+            tokens_saved = value.total_tokens if hasattr(value, 'total_tokens') else (value.input_tokens + value.output_tokens)
+            cost_saved = value.cost
+            self.update_saved_tokens(tokens_saved, cost_saved)
+            logger.debug(
+                f"Cache hit saved {tokens_saved} tokens (${cost_saved:.6f})",
+                emoji_key="cache"
+            )
+        
         return value
         
     async def _get_fuzzy_candidates(self, key: str) -> Set[str]:

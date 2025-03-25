@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 """Basic completion example using LLM Gateway."""
 import asyncio
-import os
 import sys
 from pathlib import Path
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from decouple import config as decouple_config
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
@@ -23,10 +24,16 @@ async def run_basic_completion():
     # Prompt to complete
     prompt = "Explain the concept of federated learning in simple terms."
     
-    # Get OpenAI provider (defaulting to environment variable)
+    # Get API key directly from decouple
+    api_key = decouple_config('OPENAI_API_KEY', default=None)
+    
+    # Get OpenAI provider with API key
     provider_name = Provider.OPENAI.value
     try:
-        provider = get_provider(provider_name)
+        provider = get_provider(
+            provider_name,
+            api_key=api_key
+        )
         await provider.initialize()
         
         logger.info(
@@ -85,10 +92,16 @@ async def run_streaming_completion():
     # Prompt to complete
     prompt = "Write a short poem about artificial intelligence."
     
-    # Get OpenAI provider (defaulting to environment variable)
+    # Get API key directly from decouple
+    api_key = decouple_config('OPENAI_API_KEY', default=None)
+    
+    # Get OpenAI provider with API key
     provider_name = Provider.OPENAI.value
     try:
-        provider = get_provider(provider_name)
+        provider = get_provider(
+            provider_name,
+            api_key=api_key
+        )
         await provider.initialize()
         
         logger.info(
@@ -119,7 +132,7 @@ async def run_streaming_completion():
         full_text = ""
         token_count = 0
         
-        async for chunk, metadata in stream:
+        async for chunk, _metadata in stream:
             print(chunk, end="", flush=True)
             full_text += chunk
             token_count += 1
