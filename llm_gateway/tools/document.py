@@ -7,25 +7,25 @@ from typing import Any, Dict, List, Optional
 from llm_gateway.constants import Provider, TaskType
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.cache import with_cache
+from llm_gateway.tools.base import BaseTool
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
 
 
-class DocumentTools:
+class DocumentTools(BaseTool):
     """Document processing tools for LLM Gateway."""
+    
+    tool_name = "document"
+    description = "Document processing tools for chunking, summarization, and extraction."
     
     def __init__(self, mcp_server):
         """Initialize the document tools.
         
         Args:
-            mcp_server: MCP server instance
+            mcp_server: MCP server instance or Gateway
         """
-        self.mcp = mcp_server
-        self.logger = logger
-        
-        # Register tools
-        self._register_tools()
+        super().__init__(mcp_server)
         
     def _register_tools(self):
         """Register document processing tools with MCP server."""

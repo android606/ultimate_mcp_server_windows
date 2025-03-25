@@ -19,6 +19,9 @@ from llm_gateway.utils import get_logger
 
 logger = get_logger("test.providers")
 
+# Set the loop scope for all tests - function scope is recommended for isolated test execution
+pytestmark = pytest.mark.asyncio(loop_scope="function")
+
 
 class TestBaseProvider:
     """Tests for the base provider class."""
@@ -141,28 +144,39 @@ class TestOpenAIProvider:
     @pytest.fixture
     def mock_openai_responses(self) -> Dict[str, Any]:
         """Mock responses for OpenAI API."""
-        return {
-            "completion": {
-                "id": "mock-completion-id",
-                "choices": [
-                    {
-                        "message": {"content": "Mock OpenAI response"},
-                        "finish_reason": "stop"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "total_tokens": 15
-                }
-            },
-            "models": {
-                "data": [
-                    {"id": "gpt-4o", "owned_by": "openai"},
-                    {"id": "gpt-4o-mini", "owned_by": "openai"},
-                    {"id": "gpt-3.5-turbo", "owned_by": "openai"}
+        # Create proper class-based mocks with attributes instead of dictionaries
+        class MockCompletion:
+            def __init__(self):
+                self.id = "mock-completion-id"
+                self.choices = [MockChoice()]
+                self.usage = MockUsage()
+                
+        class MockChoice:
+            def __init__(self):
+                self.message = MockMessage()
+                self.finish_reason = "stop"
+                
+        class MockMessage:
+            def __init__(self):
+                self.content = "Mock OpenAI response"
+                
+        class MockUsage:
+            def __init__(self):
+                self.prompt_tokens = 10
+                self.completion_tokens = 5
+                self.total_tokens = 15
+                
+        class MockModelsResponse:
+            def __init__(self):
+                self.data = [
+                    type("MockModel", (), {"id": "gpt-4o", "owned_by": "openai"}),
+                    type("MockModel", (), {"id": "gpt-4o-mini", "owned_by": "openai"}),
+                    type("MockModel", (), {"id": "gpt-3.5-turbo", "owned_by": "openai"})
                 ]
-            }
+        
+        return {
+            "completion": MockCompletion(),
+            "models": MockModelsResponse()
         }
         
     @pytest.fixture
@@ -175,10 +189,14 @@ class TestOpenAIProvider:
         class MockAsyncOpenAI:
             def __init__(self, **kwargs):
                 self.kwargs = kwargs
-                self.chat = MockChatCompletions()
+                self.chat = MockChat()
                 self.models = MockModels()
                 
-        class MockChatCompletions:
+        class MockChat:
+            def __init__(self):
+                self.completions = MockCompletions()
+                
+        class MockCompletions:
             async def create(self, **kwargs):
                 return mock_openai_responses["completion"]
                 
@@ -188,6 +206,9 @@ class TestOpenAIProvider:
         
         # Patch the AsyncOpenAI client
         monkeypatch.setattr("openai.AsyncOpenAI", MockAsyncOpenAI)
+        
+        # Initialize the provider with the mock client
+        provider.client = MockAsyncOpenAI(api_key="mock-openai-key")
         
         return provider
     
@@ -258,7 +279,8 @@ class TestAnthropicProvider:
         """Mock responses for Anthropic API."""
         class MockMessage:
             def __init__(self):
-                self.content = [{"text": "Mock Claude response"}]
+                # Content should be an array of objects with text property
+                self.content = [type("ContentBlock", (), {"text": "Mock Claude response"})]
                 self.usage = type("Usage", (), {"input_tokens": 20, "output_tokens": 10})
                 
         return {
@@ -281,8 +303,30 @@ class TestAnthropicProvider:
             async def create(self, **kwargs):
                 return mock_anthropic_responses["message"]
                 
+            async def stream(self, **kwargs):
+                class MockStream:
+                    async def __aenter__(self):
+                        return self
+                        
+                    async def __aexit__(self, exc_type, exc_val, exc_tb):
+                        pass
+                        
+                    async def __aiter__(self):
+                        yield type("MockChunk", (), {
+                            "type": "content_block_delta",
+                            "delta": type("MockDelta", (), {"text": "Mock streaming content"})
+                        })
+                        
+                    async def get_final_message(self):
+                        return mock_anthropic_responses["message"]
+                
+                return MockStream()
+                
         # Patch the AsyncAnthropic client
         monkeypatch.setattr("anthropic.AsyncAnthropic", MockAsyncAnthropic)
+        
+        # Initialize the provider with the mock client
+        provider.client = MockAsyncAnthropic(api_key="mock-anthropic-key")
         
         return provider
     
@@ -384,26 +428,55 @@ class TestOtherProviders:
         """Test Gemini provider."""
         logger.info("Testing Gemini provider", emoji_key="test")
         
-        # Mock the Google Generative AI
-        monkeypatch.setattr("google.generativeai.configure", lambda **kwargs: None)
-        
-        # Mock the model generation
-        class MockGenerativeModel:
-            def __init__(self, model_name):
-                self.model_name = model_name
-                
-            def generate_content(self, contents, **kwargs):
-                return type("MockResponse", (), {
-                    "text": "Mock Gemini response",
-                    "candidates": [type("MockCandidate", (), {"content": {"parts": [{"text": "Mock Gemini response"}]}})]
+        # Create mock response
+        mock_response = type("MockResponse", (), {
+            "text": "Mock Gemini response",
+            "candidates": [
+                type("MockCandidate", (), {
+                    "content": {
+                        "parts": [{"text": "Mock Gemini response"}]
+                    }
                 })
-                
-        monkeypatch.setattr("google.generativeai.GenerativeModel", MockGenerativeModel)
+            ]
+        })
         
+        # Mock the Google Generative AI Client
+        class MockClient:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.models = MockModels()
+                
+        class MockModels:
+            def generate_content(self, **kwargs):
+                return mock_response
+                
+            def list(self):
+                return [
+                    {"name": "gemini-2.0-flash-lite"},
+                    {"name": "gemini-2.0-pro"}
+                ]
+        
+        # Patch the genai Client
+        monkeypatch.setattr("google.genai.Client", MockClient)
+        
+        # Create and test the provider
         provider = GeminiProvider(api_key="mock-gemini-key")
         assert provider.provider_name == Provider.GEMINI.value
+        
+        # Initialize with the mock client
+        await provider.initialize()
         
         # Should return a default model
         model = provider.get_default_model()
         assert model is not None
         assert isinstance(model, str)
+        
+        # Test completion
+        result = await provider.generate_completion(
+            prompt="Test prompt",
+            model="gemini-2.0-pro"
+        )
+        
+        # Check result
+        assert result.text is not None
+        assert "Gemini" in result.text  # Should contain "Mock Gemini response"

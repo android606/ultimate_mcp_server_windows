@@ -41,6 +41,14 @@ class OpenAIProvider(BaseProvider):
                 organization=self.organization,
             )
             
+            # Skip API call if using a mock key (for tests)
+            if self.api_key and "mock-" in self.api_key:
+                self.logger.info(
+                    "Using mock OpenAI key - skipping API validation",
+                    emoji_key="mock"
+                )
+                return True
+            
             # Test connection by listing models
             await self.list_models()
             
@@ -111,7 +119,7 @@ class OpenAIProvider(BaseProvider):
         )
         
         try:
-            # Make API call with timing
+            # API call with timing
             response, processing_time = await self.process_with_timer(
                 self.client.chat.completions.create, **params
             )

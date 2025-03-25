@@ -73,6 +73,7 @@ dependencies = [
     "colorama",        # Terminal colors
     "tqdm",           # Progress bars
     "tiktoken",       # Token counting
+    "python-decouple", # .env management
 ]
 
 [project.optional-dependencies]
@@ -162,6 +163,7 @@ minversion = "7.0"
 addopts = "--cov=llm_gateway --cov-report=term-missing -v"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.ruff]
 line-length = 100

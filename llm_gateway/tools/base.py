@@ -102,7 +102,8 @@ class BaseTool:
         Args:
             mcp_server: MCP server instance
         """
-        self.mcp = mcp_server
+        # If mcp_server is a Gateway instance, get the MCP object
+        self.mcp = mcp_server.mcp if hasattr(mcp_server, 'mcp') else mcp_server
         self.logger = get_logger(f"tool.{self.tool_name}")
         self.metrics = BaseToolMetrics()
         

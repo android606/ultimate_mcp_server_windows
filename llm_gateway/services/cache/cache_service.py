@@ -98,7 +98,7 @@ class CacheService:
         self.fuzzy_lookup: Dict[str, Set[str]] = {}    # fuzzy_key -> set of exact keys
         
         # Initialize statistics
-        self.stats = CacheStats()
+        self.metrics = CacheStats()
         
         # Set up disk cache for large responses
         self.disk_cache = Cache(directory=str(self.cache_dir / "disk_cache"))
@@ -205,11 +205,11 @@ class CacheService:
                         emoji_key="cache"
                     )
                     # Update statistics
-                    self.stats.hits += 1
+                    self.metrics.hits += 1
                     return result
         
         # Cache miss
-        self.stats.misses += 1
+        self.metrics.misses += 1
         return None
         
     def _get_exact(self, key: str) -> Optional[Any]:
@@ -244,7 +244,7 @@ class CacheService:
                 return None
                 
         # Update statistics
-        self.stats.hits += 1
+        self.metrics.hits += 1
         
         return value
         
@@ -351,7 +351,7 @@ class CacheService:
             await self._check_size()
             
             # Update statistics
-            self.stats.stores += 1
+            self.metrics.stores += 1
             
             # Persist cache immediately if enabled
             if self.enable_persistence:
@@ -405,7 +405,7 @@ class CacheService:
             for key in keys_to_remove:
                 del self.cache[key]
                 self._remove_from_fuzzy_lookup(key)
-                self.stats.evictions += 1
+                self.metrics.evictions += 1
                 
             logger.info(
                 f"Evicted {len(keys_to_remove)} entries from cache (max size reached)",
@@ -500,16 +500,15 @@ class CacheService:
             Dictionary of cache statistics
         """
         return {
-            "enabled": self.enabled,
             "size": len(self.cache),
             "max_size": self.max_entries,
             "ttl": self.ttl,
-            "stats": self.stats.to_dict(),
+            "stats": self.metrics.to_dict(),
             "persistence": {
                 "enabled": self.enable_persistence,
-                "cache_dir": str(self.cache_dir),
+                "directory": str(self.cache_dir)
             },
-            "fuzzy_matching": self.enable_fuzzy_matching,
+            "fuzzy_matching": self.enable_fuzzy_matching
         }
         
     def update_saved_tokens(self, tokens: int, cost: float) -> None:
@@ -519,8 +518,8 @@ class CacheService:
             tokens: Number of tokens saved
             cost: Estimated cost saved
         """
-        self.stats.total_saved_tokens += tokens
-        self.stats.estimated_cost_savings += cost
+        self.metrics.total_saved_tokens += tokens
+        self.metrics.estimated_cost_savings += cost
 
 
 def _should_store_on_disk(value: Any) -> bool:
