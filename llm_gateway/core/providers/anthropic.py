@@ -1,9 +1,8 @@
 """Anthropic (Claude) provider implementation."""
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from anthropic import AsyncAnthropic
-from anthropic.types import Message
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
@@ -137,7 +136,7 @@ class AnthropicProvider(BaseProvider):
             
             # Log success
             self.logger.success(
-                f"Anthropic completion successful",
+                "Anthropic completion successful",
                 emoji_key="success",
                 model=model,
                 tokens={
@@ -249,7 +248,7 @@ class AnthropicProvider(BaseProvider):
                 # Log success
                 processing_time = time.time() - start_time
                 self.logger.success(
-                    f"Anthropic streaming completion successful",
+                    "Anthropic streaming completion successful",
                     emoji_key="success",
                     model=model,
                     chunks=total_chunks,
@@ -280,22 +279,7 @@ class AnthropicProvider(BaseProvider):
             
         models = [
             {
-                "id": "claude-3-opus-20240229",
-                "provider": self.provider_name,
-                "description": "Most powerful Claude model",
-            },
-            {
-                "id": "claude-3-sonnet-20240229",
-                "provider": self.provider_name,
-                "description": "Balanced performance Claude model",
-            },
-            {
-                "id": "claude-3-haiku-20240307",
-                "provider": self.provider_name,
-                "description": "Fast, efficient Claude model",
-            },
-            {
-                "id": "claude-3-5-sonnet-20240620",
+                "id": "claude-3-7-sonnet-latest",
                 "provider": self.provider_name,
                 "description": "Updated, improved sonnet model",
             },

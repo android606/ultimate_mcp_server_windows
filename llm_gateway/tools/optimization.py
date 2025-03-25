@@ -457,7 +457,10 @@ class OptimizationTools:
                             
                             # Store result
                             output_as = stage_def.get("output_as", operation)
-                            doc_result[output_as] = result
+                            if isinstance(result, dict):
+                                doc_result[output_as] = result
+                            else:
+                                doc_result[output_as] = {"result": result}
                             
                             return result
                             

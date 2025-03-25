@@ -1,6 +1,6 @@
 """Constants used throughout the LLM Gateway."""
-from enum import Enum, auto
-from typing import Dict, Any
+from enum import Enum
+from typing import Dict
 
 
 class Provider(str, Enum):
@@ -35,25 +35,23 @@ class LogLevel(str, Enum):
 # Cost estimates for model pricing (in dollars per million tokens)
 COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     # OpenAI models
-    "gpt-4o": {"input": 5.0, "output": 15.0},
+    "gpt-4o": {"input": 2.5, "output": 10.0},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
-    "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
+    "o3-mini": {"input": 1.10, "output": 4.40},
     
     # Claude models
-    "claude-3-opus-20240229": {"input": 15.0, "output": 75.0},
-    "claude-3-sonnet-20240229": {"input": 3.0, "output": 15.0},
-    "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
-    "claude-3-5-sonnet-20240620": {"input": 3.0, "output": 15.0},
+    "claude-3-7-sonnet-latest": {"input": 3.0, "output": 15.0},
     "claude-3-5-haiku-latest": {"input": 0.80, "output": 4.0},
     
     # DeepSeek models
     "deepseek-chat": {"input": 0.27, "output": 1.10},
-    "deepseek-reasoner": {"input": 0.14, "output": 2.19},
+    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
     
     # Gemini models
     "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash": {"input": 0.35, "output": 1.05},
-    "gemini-2.0-pro": {"input": 3.5, "output": 10.5}
+    "gemini-2.0-flash-thinking-exp-01-21": {"input": 0.0, "output": 0.0},
+    "gemini-2.5-pro-exp-03-25": {"input": 0.0, "output": 0.5},
 }
 
 
