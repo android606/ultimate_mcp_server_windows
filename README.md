@@ -8,10 +8,10 @@
 
 **A Model Context Protocol (MCP) server enabling intelligent delegation from high-capability AI agents to cost-effective LLMs**
 
-[Getting Started](#getting-started) • 
-[Key Features](#key-features) • 
-[Usage Examples](#usage-examples) • 
-[Architecture](#architecture) • 
+[Getting Started](#getting-started) •
+[Key Features](#key-features) •
+[Usage Examples](#usage-examples) •
+[Architecture](#architecture) •
 
 </div>
 
@@ -30,8 +30,8 @@ The primary design goal of LLM Gateway is to allow sophisticated AI agents like 
 ```plaintext
                           delegates to
 ┌─────────────┐ ────────────────────────► ┌───────────────────┐         ┌──────────────┐
-│ Claude 3.7  │                           │   LLM Gateway     │ ───────► │ Gemini Flash │
-│   (Agent)   │ ◄──────────────────────── │    MCP Server     │ ◄─────── │ DeepSeek     │
+│ Claude 3.7  │                           │   LLM Gateway     │ ───────►│ Gemini Flash │
+│   (Agent)   │ ◄──────────────────────── │    MCP Server     │ ◄───────│ DeepSeek     │
 └─────────────┘      returns results      └───────────────────┘         │ GPT-3.5      │
                                                                         └──────────────┘
 ```
@@ -99,19 +99,6 @@ Process large documents efficiently:
 - **Provider Selection**: Choose provider based on task requirements
 - **Cost-Performance Balancing**: Optimize for cost, quality, or speed
 - **Delegation Tracking**: Monitor delegation patterns and outcomes
-
-### Provider Integration
-
-- **Multi-Provider Support**:
-  - OpenAI (GPT-3.5, GPT-4o, GPT-4o mini)
-  - Anthropic (Claude 3 Opus, Sonnet, Haiku, Claude 3.5 series)
-  - Google (Gemini Pro, Gemini Flash)
-  - DeepSeek (DeepSeek-Chat, DeepSeek-Coder)
-
-- **Model Management**:
-  - Automatic model selection based on task
-  - Fallback mechanisms for provider outages
-  - Model performance tracking
 
 ### Advanced Caching
 
@@ -340,10 +327,10 @@ This ensures seamless integration with Claude and other MCP-compatible agents.
 
 ### Component Diagram
 
-```
+```plaintext
 ┌─────────────┐         ┌───────────────────┐         ┌──────────────┐
-│  Claude 3.7 │ ────────► LLM Gateway MCP   │ ────────► LLM Providers │
-│   (Agent)   │ ◄──────── Server & Tools    │ ◄──────── (Multiple)    │
+│  Claude 3.7 │ ────────► LLM Gateway MCP   │ ────────► LLM Providers│
+│   (Agent)   │ ◄──────── Server & Tools    │ ◄──────── (Multiple)   │
 └─────────────┘         └───────┬───────────┘         └──────────────┘
                                 │
                                 ▼
