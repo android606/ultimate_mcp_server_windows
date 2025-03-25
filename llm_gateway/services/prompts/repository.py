@@ -117,8 +117,8 @@ class PromptRepository:
             # Save to file
             prompt_path = self.base_dir / f"{prompt_id}.json"
             async with asyncio.Lock():
-                with open(prompt_path, "w", encoding="utf-8") as f:
-                    json.dump(prompt_data, f, indent=2)
+                async with aiofiles.open(prompt_path, "w", encoding="utf-8") as f:
+                    await f.write(json.dumps(prompt_data, indent=2))
                     
             logger.info(
                 f"Saved prompt '{prompt_id}'",

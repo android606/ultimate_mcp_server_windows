@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "torch"]
 build-backend = "hatchling.build"
 
 [project]
@@ -29,7 +29,7 @@ dependencies = [
     "mcp",
     "anthropic",
     "openai",
-    "google-generativeai",
+    "google-genai",
 
     # Async utilities
     "httpx",
@@ -72,15 +72,18 @@ dependencies = [
     "python-slugify",  # For URL-friendly strings
     "colorama",        # Terminal colors
     "tqdm",           # Progress bars
+    "tiktoken",       # Token counting
 ]
 
 [project.optional-dependencies]
 # Advanced AI model libraries
 advanced = [
-    "transformers",     # For Hugging Face models
+    # PyTorch and core dependencies must be first
     "torch",             # PyTorch for transformers
     "torchvision",
     "torchaudio",
+    # Other dependencies that require PyTorch
+    "transformers",     # For Hugging Face models
     "flash-attn",
     "accelerate",       # For optimized model inference
 ]
@@ -164,4 +167,4 @@ asyncio_mode = "auto"
 line-length = 100
 target-version = "py313"
 select = ["E", "F", "B", "I", "Q"]
-ignore = ["E203"]
+ignore = ["E203", "E501", "Q000"]

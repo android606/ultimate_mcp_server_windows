@@ -1,18 +1,15 @@
 """Enhanced logging using Rich."""
 import logging
-import sys
-from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Optional, Union
 
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.theme import Theme
 
 from llm_gateway.config import config
-from llm_gateway.constants import EMOJI_MAP, LogLevel
-
+from llm_gateway.constants import EMOJI_MAP
 
 # Create custom Rich theme
 RICH_THEME = Theme({
@@ -73,6 +70,9 @@ class GatewayLogger:
         
         # Configure the logger
         self.logger = logging.getLogger(name)
+        
+        # Disable propagation to prevent duplicate messages
+        self.logger.propagate = False
         
         # Set level
         level = level or config.logging.level

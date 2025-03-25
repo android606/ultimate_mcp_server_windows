@@ -71,6 +71,7 @@ class CacheService:
             enable_fuzzy_matching: Whether to use fuzzy matching (default from config)
         """
         # Use config values as defaults
+        self._lock = asyncio.Lock()
         self.enabled = enabled if enabled is not None else config.cache.enabled
         self.ttl = ttl if ttl is not None else config.cache.ttl
         self.max_entries = max_entries if max_entries is not None else config.cache.max_entries
@@ -317,57 +318,49 @@ class CacheService:
         fuzzy_key: Optional[str] = None,
         request_params: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Set an item in the cache.
-        
-        Args:
-            key: Cache key
-            value: Value to cache
-            ttl: Time-to-live in seconds (overrides default)
-            fuzzy_key: Optional fuzzy key for lookups
-            request_params: Original request parameters
-        """
         if not self.enabled:
             return
+
+        async with self._lock:  # Protect write operations
+            # Use default TTL if not specified
+            ttl = ttl if ttl is not None else self.ttl
+            expiry_time = time.time() + ttl
             
-        # Use default TTL if not specified
-        ttl = ttl if ttl is not None else self.ttl
-        expiry_time = time.time() + ttl
-        
-        # Check if value should be stored on disk (for large objects)
-        if _should_store_on_disk(value):
-            disk_key = f"{key}_disk_{int(time.time())}"
-            self.disk_cache.set(disk_key, value)
-            # Store reference to disk entry
-            disk_ref = f"disk:{disk_key}"
-            self.cache[key] = (disk_ref, expiry_time)
-        else:
-            # Store in memory
-            self.cache[key] = (value, expiry_time)
-            
-        # Add to fuzzy lookup if enabled
-        if self.enable_fuzzy_matching:
-            if fuzzy_key is None and request_params:
-                fuzzy_key = self.generate_fuzzy_key(request_params)
+            # Check if value should be stored on disk (for large objects)
+            if _should_store_on_disk(value):
+                disk_key = f"{key}_disk_{int(time.time())}"
+                self.disk_cache.set(disk_key, value)
+                # Store reference to disk entry
+                disk_ref = f"disk:{disk_key}"
+                self.cache[key] = (disk_ref, expiry_time)
+            else:
+                # Store in memory
+                self.cache[key] = (value, expiry_time)
                 
-            if fuzzy_key:
-                if fuzzy_key not in self.fuzzy_lookup:
-                    self.fuzzy_lookup[fuzzy_key] = set()
-                self.fuzzy_lookup[fuzzy_key].add(key)
-                
-        # Check if we need to evict entries
-        await self._check_size()
-        
-        # Update statistics
-        self.stats.stores += 1
-        
-        # Schedule cache persistence
-        if self.enable_persistence:
-            asyncio.create_task(self._persist_cache_async())
+            # Add to fuzzy lookup if enabled
+            if self.enable_fuzzy_matching:
+                if fuzzy_key is None and request_params:
+                    fuzzy_key = self.generate_fuzzy_key(request_params)
+                    
+                if fuzzy_key:
+                    if fuzzy_key not in self.fuzzy_lookup:
+                        self.fuzzy_lookup[fuzzy_key] = set()
+                    self.fuzzy_lookup[fuzzy_key].add(key)
+                    
+            # Check if we need to evict entries
+            await self._check_size()
             
-        logger.debug(
-            f"Added item to cache: {key[:8]}...",
-            emoji_key="cache"
-        )
+            # Update statistics
+            self.stats.stores += 1
+            
+            # Persist cache immediately if enabled
+            if self.enable_persistence:
+                await self._persist_cache_async()
+                
+            logger.debug(
+                f"Added item to cache: {key[:8]}...",
+                emoji_key="cache"
+            )
             
     def _remove_from_fuzzy_lookup(self, key: str) -> None:
         """Remove a key from all fuzzy lookup sets.

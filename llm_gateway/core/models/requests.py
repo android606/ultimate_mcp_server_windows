@@ -1,18 +1,19 @@
 """Request models for LLM Gateway."""
+import time
 import uuid
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, root_validator, validator
+from pydantic import BaseModel, Field, model_validator, validator
 
-from llm_gateway.constants import Provider as ProviderEnum, TaskType
+from llm_gateway.constants import TaskType
 from llm_gateway.core.models.entities import Provider
 
 
 class BaseRequest(BaseModel):
     """Base request model."""
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique request identifier")
-    timestamp: float = Field(default_factory=lambda: import time; return time.time(), description="Request timestamp")
+    timestamp: float = Field(default_factory=lambda: time.time(), description="Request timestamp")
     
     class Config:
         """Pydantic configuration."""
@@ -42,8 +43,8 @@ class ChatMessage(BaseModel):
         if isinstance(v, str):
             try:
                 return MessageRole(v.lower())
-            except ValueError:
-                raise ValueError(f"Invalid message role: {v}")
+            except ValueError as e:
+                raise ValueError(f"Invalid message role: {v}") from e
         return v
 
 
@@ -96,7 +97,8 @@ class ChatCompletionRequest(BaseRequest):
             raise ValueError("At least one message is required")
         return v
     
-    @root_validator
+    @model_validator(mode="before")
+    @classmethod
     def check_system_prompt(cls, values):
         """Check system prompt and messages for consistency."""
         messages = values.get("messages", [])
@@ -202,11 +204,12 @@ class DocumentRequest(BaseRequest):
         if isinstance(v, str):
             try:
                 return ChunkingMethod(v.lower())
-            except ValueError:
-                raise ValueError(f"Invalid chunking method: {v}")
+            except ValueError as e:
+                raise ValueError(f"Invalid chunking method: {v}") from e
         return v
     
-    @root_validator
+    @model_validator(mode="before")
+    @classmethod
     def set_task_type(cls, values):
         """Set task type based on operation if not provided."""
         task_type = values.get("task_type")
@@ -266,6 +269,6 @@ class ExtractionRequest(BaseRequest):
         if isinstance(v, str):
             try:
                 return ExtractionFormat(v.lower())
-            except ValueError:
-                raise ValueError(f"Invalid format: {v}")
+            except ValueError as e:
+                raise ValueError(f"Invalid format: {v}") from e
         return v

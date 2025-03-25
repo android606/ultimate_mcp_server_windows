@@ -1,4 +1,4 @@
-FROM python:3.11-slim as builder
+FROM python:3.13-slim as builder
 
 # Set working directory
 WORKDIR /app
@@ -24,7 +24,7 @@ RUN pip install --upgrade pip && \
     pip install -e .
 
 # Create a lightweight runtime image
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 # Set working directory
 WORKDIR /app
@@ -44,7 +44,7 @@ RUN apt-get update && \
 RUN mkdir -p logs .cache .embeddings
 
 # Copy the installed packages and application code
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/lib/python3.13/site-packages /usr/local/lib/python3.13/site-packages
 COPY --from=builder /app/llm_gateway.egg-info /app/llm_gateway.egg-info
 COPY . .
 

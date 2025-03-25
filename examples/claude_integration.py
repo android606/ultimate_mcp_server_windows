@@ -155,7 +155,8 @@ async def demonstrate_system_prompt():
             prompt=user_prompt,
             model=model,
             temperature=0.7,
-            system=system_prompt
+            system=system_prompt,
+            max_tokens=1000
         )
         
         # Log success

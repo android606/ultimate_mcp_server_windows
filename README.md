@@ -254,15 +254,19 @@ print(f"Total cost: ${results['total_cost']:.6f}")
 ### Installation
 
 ```bash
+# Install uv if you don't already have it:
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Clone the repository
 git clone https://github.com/yourusername/llm_gateway_mcp_server.git
 cd llm_gateway_mcp_server
 
-# Install with pip
-pip install -e .
-
-# Or install with optional dependencies
-pip install -e .[all]
+# Install in venv using uv:
+uv install --python 3.13
+uv venv --python 3.13
+source .venv/bin/activate
+uv lock --upgrade
+uv pip install hatchling editables torch && uv sync --all-extras --no-build-isolation
 ```
 
 ### Environment Setup

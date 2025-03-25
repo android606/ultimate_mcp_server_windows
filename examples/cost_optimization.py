@@ -7,7 +7,9 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_gateway.constants import Provider, COST_PER_MILLION_TOKENS
+from mcp.server.fastmcp import FastMCP, Context
+
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.tools.optimization import OptimizationTools
 from llm_gateway.utils import get_logger
@@ -15,10 +17,201 @@ from llm_gateway.utils import get_logger
 # Initialize logger
 logger = get_logger("example.cost_optimization")
 
+# Initialize FastMCP server
+mcp = FastMCP("Cost Optimization Demo")
+
+@mcp.tool()
+async def estimate_cost(
+    prompt: str,
+    model: str,
+    max_tokens: int = None,
+    include_output: bool = True,
+    ctx: Context = None
+) -> dict:
+    """Estimate the cost of a request without executing it."""
+    # Estimate input tokens
+    # Simple approximation: 1 token ≈ 4 characters
+    input_tokens = len(prompt) // 4
+    
+    # Estimate output tokens if not provided
+    if max_tokens is None:
+        if include_output:
+            # Default estimate: output is about 50% of input size
+            output_tokens = input_tokens // 2
+        else:
+            output_tokens = 0
+    else:
+        output_tokens = max_tokens if include_output else 0
+    
+    # Get cost rates for model
+    cost_data = COST_PER_MILLION_TOKENS.get(model)
+    if not cost_data:
+        return {
+            "error": f"Unknown model: {model}",
+            "cost": 0.0,
+            "tokens": {
+                "input": input_tokens,
+                "output": output_tokens,
+                "total": input_tokens + output_tokens
+            }
+        }
+    
+    # Calculate cost
+    input_cost = (input_tokens / 1_000_000) * cost_data["input"]
+    output_cost = (output_tokens / 1_000_000) * cost_data["output"]
+    total_cost = input_cost + output_cost
+    
+    return {
+        "cost": total_cost,
+        "tokens": {
+            "input": input_tokens,
+            "output": output_tokens,
+            "total": input_tokens + output_tokens
+        },
+        "rate": {
+            "input": cost_data["input"],
+            "output": cost_data["output"]
+        },
+        "model": model
+    }
+
+@mcp.tool()
+async def recommend_model(
+    task_type: str,
+    expected_input_length: int,
+    expected_output_length: int = None,
+    required_capabilities: list = None,
+    max_cost: float = None,
+    priority: str = "balanced",
+    ctx: Context = None
+) -> dict:
+    """Recommend the most suitable model for a given task."""
+    # Convert input length to tokens
+    input_tokens = expected_input_length // 4
+    
+    # Estimate output tokens if not provided
+    if expected_output_length is None:
+        if task_type == "summarization":
+            output_tokens = input_tokens // 3  # Summaries are typically shorter
+        elif task_type == "extraction":
+            output_tokens = input_tokens // 4  # Extraction is typically concise
+        elif task_type == "generation":
+            output_tokens = input_tokens * 2  # Generation often creates more content
+        else:
+            output_tokens = input_tokens  # Default 1:1 ratio
+    else:
+        output_tokens = expected_output_length // 4
+    
+    # Define capability requirements
+    required_capabilities = required_capabilities or []
+    
+    # Model capability mapping (simplified)
+    model_capabilities = {
+        # OpenAI models
+        "gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
+        "gpt-4o-mini": ["reasoning", "coding", "knowledge", "instruction-following"],
+        "gpt-3.5-turbo": ["coding", "knowledge", "instruction-following"],
+        
+        # Claude models
+        "claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
+        "claude-3-sonnet-20240229": ["reasoning", "coding", "knowledge", "instruction-following"],
+        "claude-3-haiku-20240307": ["knowledge", "instruction-following"],
+        
+        # Other models
+        "gemini-2.0-pro": ["reasoning", "knowledge", "instruction-following", "math"],
+        "gemini-2.0-flash": ["knowledge", "instruction-following"],
+    }
+    
+    # Model latency characteristics (lower is faster)
+    model_speed = {
+        # OpenAI models
+        "gpt-4o": 3,
+        "gpt-4o-mini": 2,
+        "gpt-3.5-turbo": 1,
+        
+        # Claude models
+        "claude-3-opus-20240229": 5,
+        "claude-3-sonnet-20240229": 3,
+        "claude-3-haiku-20240307": 2,
+        
+        # Other models
+        "gemini-2.0-pro": 3,
+        "gemini-2.0-flash": 2,
+    }
+    
+    # Model quality characteristics (higher is better)
+    model_quality = {
+        # OpenAI models
+        "gpt-4o": 9,
+        "gpt-4o-mini": 7,
+        "gpt-3.5-turbo": 5,
+        
+        # Claude models
+        "claude-3-opus-20240229": 9,
+        "claude-3-sonnet-20240229": 8,
+        "claude-3-haiku-20240307": 6,
+        
+        # Other models
+        "gemini-2.0-pro": 7,
+        "gemini-2.0-flash": 5,
+    }
+    
+    # Calculate scores for each model
+    recommendations = []
+    for model, capabilities in model_capabilities.items():
+        # Check if model meets capability requirements
+        if not all(cap in capabilities for cap in required_capabilities):
+            continue
+            
+        # Calculate cost estimate
+        cost_data = COST_PER_MILLION_TOKENS.get(model)
+        if not cost_data:
+            continue
+            
+        input_cost = (input_tokens / 1_000_000) * cost_data["input"]
+        output_cost = (output_tokens / 1_000_000) * cost_data["output"]
+        total_cost = input_cost + output_cost
+        
+        # Skip if cost exceeds maximum
+        if max_cost and total_cost > max_cost:
+            continue
+            
+        # Calculate score based on priority
+        if priority == "cost":
+            score = 1 / (total_cost + 1e-6)  # Avoid division by zero
+        elif priority == "quality":
+            score = model_quality[model]
+        elif priority == "speed":
+            score = 10 - model_speed[model]  # Invert speed (lower is better)
+        else:  # balanced
+            score = (model_quality[model] * 0.5 + 
+                    (10 - model_speed[model]) * 0.3 + 
+                    (1 / (total_cost + 1e-6)) * 0.2)
+        
+        recommendations.append({
+            "model": model,
+            "quality": model_quality[model],
+            "speed": model_speed[model],
+            "cost": total_cost,
+            "score": score,
+            "specialized": task_type in capabilities
+        })
+    
+    # Sort by score
+    recommendations.sort(key=lambda x: x["score"], reverse=True)
+    
+    return {
+        "recommendations": recommendations[:3],  # Top 3 recommendations
+        "priority": priority,
+        "task_type": task_type
+    }
 
 async def demonstrate_cost_optimization():
     """Demonstrate cost optimization features."""
     logger.info("Starting cost optimization demonstration", emoji_key="start")
+    
+    # Create optimization tools instance with MCP server
+    optimization_tools = OptimizationTools(mcp)
     
     # Create a sample prompt
     prompt = """
@@ -29,9 +222,6 @@ async def demonstrate_cost_optimization():
     
     # Estimate costs for different models
     logger.info("Estimating costs for different models", emoji_key="cost")
-    
-    # Create optimization tools instance
-    optimization_tools = OptimizationTools(None)
     
     # Models to compare
     models_to_compare = [
@@ -47,7 +237,7 @@ async def demonstrate_cost_optimization():
     
     # Estimate costs
     print("\n" + "=" * 80)
-    print("COST ESTIMATION FOR DIFFERENT MODELS")
+    print("COST ESTIMATES")
     print("=" * 80)
     
     for model in models_to_compare:
@@ -57,12 +247,12 @@ async def demonstrate_cost_optimization():
             continue
             
         # Estimate cost
-        cost_estimate = await optimization_tools.mcp.execute("estimate_cost", {
-            "prompt": prompt,
-            "model": model,
-            "max_tokens": 1000,  # Assume a lengthy response
-            "include_output": True
-        })
+        cost_estimate = await estimate_cost(
+            prompt=prompt,
+            model=model,
+            max_tokens=1000,  # Assume a lengthy response
+            include_output=True
+        )
         
         # Print estimate
         print(f"\nModel: {model}")
@@ -72,8 +262,8 @@ async def demonstrate_cost_optimization():
         print(f"  Estimated cost: ${cost_estimate['cost']:.6f}")
         
         # Get rates
-        input_rate = COST_PER_MILLION_TOKENS[model]["input"]
-        output_rate = COST_PER_MILLION_TOKENS[model]["output"]
+        input_rate = cost_estimate['rate']['input']
+        output_rate = cost_estimate['rate']['output']
         print(f"  Rates: ${input_rate}/M input, ${output_rate}/M output")
     
     print("=" * 80)
@@ -82,14 +272,14 @@ async def demonstrate_cost_optimization():
     logger.info("Demonstrating model recommendation", emoji_key="model")
     
     # Get model recommendation
-    recommendation = await optimization_tools.mcp.execute("recommend_model", {
-        "task_type": "summarization",
-        "expected_input_length": len(prompt) * 4,  # Rough token count estimation
-        "expected_output_length": 1000 * 4,  # Assume 1000 tokens output
-        "required_capabilities": ["reasoning", "knowledge"],
-        "max_cost": 0.10,  # Maximum cost of $0.10
-        "priority": "balanced"  # Balance cost and quality
-    })
+    recommendation = await recommend_model(
+        task_type="summarization",
+        expected_input_length=len(prompt) * 4,  # Rough token count estimation
+        expected_output_length=1000 * 4,  # Assume 1000 tokens output
+        required_capabilities=["reasoning", "knowledge"],
+        max_cost=0.10,  # Maximum cost of $0.10
+        priority="balanced"  # Balance cost and quality
+    )
     
     # Display recommendations
     print("\n" + "=" * 80)

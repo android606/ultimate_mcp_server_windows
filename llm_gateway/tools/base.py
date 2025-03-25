@@ -5,7 +5,7 @@ import inspect
 import time
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
-from mcp.server.util import Tool
+from mcp import Tool
 
 from llm_gateway.config import config
 from llm_gateway.services.cache import with_cache

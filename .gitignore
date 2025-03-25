@@ -189,3 +189,4 @@ sec_filings.db-shm
 sec_filings.db-wal
 minified_code.js
 regenerate_markdown_progress.json.bak
+.env

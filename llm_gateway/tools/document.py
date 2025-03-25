@@ -2,11 +2,10 @@
 import asyncio
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
-from mcp.server.util import Tool
+import numpy as np
 
-from llm_gateway.config import config
 from llm_gateway.constants import Provider, TaskType
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.cache import with_cache
@@ -190,7 +189,7 @@ Summary:"""
         @with_cache(ttl=14 * 24 * 60 * 60)  # Cache for 14 days
         async def extract_entities(
             document: str,
-            entity_types: List[str] = ["person", "organization", "location", "date", "number"],
+            entity_types: Optional[List[str]] = None,
             provider: str = Provider.OPENAI.value,
             model: Optional[str] = None,
             ctx=None
@@ -200,7 +199,7 @@ Summary:"""
             
             Args:
                 document: Document text to analyze
-                entity_types: Types of entities to extract
+                entity_types: Types of entities to extract (defaults to ["person", "organization", "location", "date", "number"])
                 provider: LLM provider to use
                 model: Model name (default based on provider)
                 
@@ -216,6 +215,10 @@ Summary:"""
                     "processing_time": 0.0,
                 }
                 
+            # Set default entity types if None
+            if entity_types is None:
+                entity_types = ["person", "organization", "location", "date", "number"]
+            
             # Validate entity types
             valid_types = [
                 "person", "organization", "location", "date", "time", 
@@ -264,7 +267,7 @@ Extracted entities (JSON format):"""
                 response_text = result.text.strip()
                 
                 # Extract JSON part if response includes other text
-                json_match = re.search(r'({[\s\S]*})', response_text)
+                json_match = re.search(r"({[\s\S]*})", response_text)
                 if json_match:
                     json_str = json_match.group(1)
                 else:
@@ -401,7 +404,7 @@ QA pairs (JSON format):"""
                 response_text = result.text.strip()
                 
                 # Extract JSON part if response includes other text
-                json_match = re.search(r'(\[[\s\S]*\])', response_text)
+                json_match = re.search(r"(\[[\s\S]*\])", response_text)
                 if json_match:
                     json_str = json_match.group(1)
                 else:
@@ -621,7 +624,13 @@ def _chunk_by_tokens(document: str, chunk_size: int, chunk_overlap: int) -> List
             
             # Decode the chunk back to text
             current_chunk = encoding.decode(tokens[i:chunk_end])
-            chunks.append(current_chunk)
+            
+            # Improve semantic coherence of large chunks
+            if len(current_chunk) > chunk_size // 4:
+                improved_chunks = _improve_chunk_coherence(current_chunk, chunk_size)
+                chunks.extend(improved_chunks)
+            else:
+                chunks.append(current_chunk)
             
             # Move to next chunk with overlap
             i += max(1, chunk_size - chunk_overlap)  # Ensure we make progress
@@ -629,24 +638,8 @@ def _chunk_by_tokens(document: str, chunk_size: int, chunk_overlap: int) -> List
         return chunks
         
     except ImportError:
-        # Fallback to a more sophisticated token estimator if tiktoken not available
-        import re
-        
-        # More accurate tokenization rules based on GPT tokenizer behavior
-        def estimate_tokens(text):
-            # Pre-tokenization: split by whitespace and punctuation
-            tokens = []
-            words = re.findall(r'\b\w+\b|[^\w\s]', text)
-            
-            for word in words:
-                # Estimate tokens based on word characteristics
-                if len(word) <= 1:
-                    # Single chars or punctuation are usually 1 token
-                    tokens.append(word)
-                elif word.isupper() and len(word) <= 4:
-                    # Acronyms like "NASA" are often single tokens
-                    tokens.append(word)
-                elif re.match(r'^\d+
+        # Fallback to our token estimator if tiktoken not available
+        return _chunk_by_token_estimation(document, chunk_size, chunk_overlap)
 
 
 def _chunk_by_characters(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
@@ -746,7 +739,6 @@ def _chunk_by_paragraphs(document: str, chunk_size: int, chunk_overlap: int) -> 
     
     return chunks
 
-
 async def _chunk_by_semantic_boundaries(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
     """Chunk document by semantic boundaries based on content analysis.
     
@@ -781,7 +773,7 @@ async def _chunk_by_semantic_boundaries(document: str, chunk_size: int, chunk_ov
         'paragraph': r'(?:^|\n)(.+?)(?:\n\s*\n|$)',
         'code_block': r'(?:^|\n)```.*?\n(.+?)```(?:\n|$)',
         'table': r'(?:^|\n)(?:\|.+?\|)(?:\n\|[-:]+\|[-:]+\|)+(?:\n\|.+?\|)+',
-        'quote': r'(?:^|\n)>+(.+?)(?:\n\s*\n|$)',
+        "quote": r"(?:^|\n)>+(.+?)(?:\n\s*\n|$)",
     }
     
     # Identify structural elements and their positions
@@ -800,7 +792,6 @@ async def _chunk_by_semantic_boundaries(document: str, chunk_size: int, chunk_ov
     
     # 2. Identify potential semantic boundaries
     # First, split into sentences
-    import re
     sentence_pattern = r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s+(?=[A-Z])'
     sentences = re.split(sentence_pattern, document)
     
@@ -1023,58 +1014,91 @@ def _improve_chunk_coherence(chunk_text: str, target_size: int) -> List[str]:
     if current_combined:
         improved_chunks.append(' '.join(current_combined))
     
-    return improved_chunks, word):
-                    # Numbers are typically 1 token per 2-3 digits
-                    tokens.extend([word[i:i+3] for i in range(0, len(word), 3)])
-                else:
-                    # Regular words are split by subword tokenization
-                    # This is a simplified approximation
-                    if len(word) <= 4:
-                        tokens.append(word)
-                    else:
-                        # Split longer words into subword pieces
-                        remaining = word
-                        while remaining:
-                            # Take chunks of 4-6 chars as common subword sizes
-                            piece_size = min(4 + (len(remaining) % 3), len(remaining))
-                            tokens.append(remaining[:piece_size])
-                            remaining = remaining[piece_size:]
-            
-            return tokens
-        
-        # Tokenize document
-        estimated_tokens = estimate_tokens(document)
-        
-        # Create chunks based on estimated tokens
-        chunks = []
-        i = 0
-        while i < len(estimated_tokens):
-            # Get current chunk end index
-            chunk_end = min(i + chunk_size, len(estimated_tokens))
-            
-            # Try to end at a sentence boundary if within reasonable distance
-            if chunk_end < len(estimated_tokens):
-                # Find a good breakpoint in the last 10% of the chunk
-                search_start = max(i, chunk_end - (chunk_size // 10))
-                for j in range(chunk_end, search_start, -1):
-                    if estimated_tokens[j-1] in [".", "?", "!"]:
-                        chunk_end = j
-                        break
-            
-            # Reconstruct text from tokens
-            # This is only an approximation since we don't have the original token boundaries
-            current_chunk = "".join([
-                " " + token if not token.startswith("'") and token not in [",", ".", ":", ";", "!", "?"] else token
-                for token in estimated_tokens[i:chunk_end]
-            ]).strip()
-            
-            chunks.append(current_chunk)
-            
-            # Move to next chunk with overlap
-            i += max(1, chunk_size - chunk_overlap)  # Ensure we make progress
-        
-        return chunks
+    return improved_chunks
 
+
+def estimate_tokens(document: str) -> List[str]:
+    """Estimate tokenization of text for chunk size calculation.
+    
+    Args:
+        document: Text content to estimate tokens for
+        
+    Returns:
+        List of estimated tokens
+    """
+    # Split text into words
+    words = re.findall(r'\w+|[^\w\s]', document)
+    
+    tokens = []
+    for word in words:
+        # Handle different token types
+        if word.isdigit():
+            # Numbers are typically 1 token per 2-3 digits
+            tokens.extend([word[i:i+3] for i in range(0, len(word), 3)])
+        else:
+            # Regular words are split by subword tokenization
+            # This is a simplified approximation
+            if len(word) <= 4:
+                tokens.append(word)
+            else:
+                # Split longer words into subword pieces
+                remaining = word
+                while remaining:
+                    # Take chunks of 4-6 chars as common subword sizes
+                    piece_size = min(4 + (len(remaining) % 3), len(remaining))
+                    tokens.append(remaining[:piece_size])
+                    remaining = remaining[piece_size:]
+    
+    return tokens
+
+def _chunk_by_token_estimation(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Chunk document by estimated token count when tiktoken is not available.
+    
+    Args:
+        document: Document text
+        chunk_size: Target chunk size in tokens
+        chunk_overlap: Overlap between chunks in tokens
+        
+    Returns:
+        List of document chunks
+    """
+    # Tokenize document
+    estimated_tokens = estimate_tokens(document)
+    
+    # Create chunks based on estimated tokens
+    chunks = []
+    i = 0
+    while i < len(estimated_tokens):
+        # Get current chunk end index
+        chunk_end = min(i + chunk_size, len(estimated_tokens))
+        
+        # Try to end at a sentence boundary if within reasonable distance
+        if chunk_end < len(estimated_tokens):
+            # Find a good breakpoint in the last 10% of the chunk
+            search_start = max(i, chunk_end - (chunk_size // 10))
+            for j in range(chunk_end, search_start, -1):
+                if j-1 < len(estimated_tokens) and estimated_tokens[j-1] in [".", "?", "!"]:
+                    chunk_end = j
+                    break
+        
+        # Reconstruct text from tokens
+        # This is only an approximation since we don't have the original token boundaries
+        current_chunk = "".join([
+            " " + token if not token.startswith("'") and token not in [",", ".", ":", ";", "!", "?"] else token
+            for token in estimated_tokens[i:chunk_end]
+        ]).strip()
+        
+        # Apply semantic coherence improvements
+        if len(current_chunk) > chunk_size // 4:  # Only improve sizeable chunks
+            improved_chunks = _improve_chunk_coherence(current_chunk, chunk_size)
+            chunks.extend(improved_chunks)
+        else:
+            chunks.append(current_chunk)
+        
+        # Move to next chunk with overlap
+        i += max(1, chunk_size - chunk_overlap)  # Ensure we make progress
+    
+    return chunks
 
 def _chunk_by_characters(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
     """Chunk document by character count.

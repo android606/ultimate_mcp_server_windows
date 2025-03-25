@@ -3,8 +3,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from pydantic import BaseModel, Field
 
 # Load environment variables from .env file if present
 load_dotenv()
@@ -25,7 +25,8 @@ class LoggingConfig(BaseModel):
 class CacheConfig(BaseModel):
     """Cache configuration."""
     enabled: bool = Field(default=os.environ.get("CACHE_ENABLED", "true").lower() == "true")
-    ttl: int = Field(default=int(os.environ.get("CACHE_TTL", "86400")))  # 24 hours
+    # Default TTL in seconds (24 hours)
+    ttl: int = Field(default=int(os.environ.get("CACHE_TTL", "86400")))
     directory: Optional[str] = Field(default=os.environ.get("CACHE_DIR", None))
     max_entries: int = Field(default=int(os.environ.get("CACHE_MAX_ENTRIES", "10000")))
     fuzzy_match: bool = Field(default=os.environ.get("CACHE_FUZZY_MATCH", "true").lower() == "true")
@@ -71,6 +72,7 @@ class ProvidersConfig(BaseModel):
 class ServerConfig(BaseModel):
     """Server configuration."""
     name: str = Field(default=os.environ.get("SERVER_NAME", "LLM Gateway"))
+    version: str = Field(default=os.environ.get("SERVER_VERSION", "0.1.0"))
     port: int = Field(default=int(os.environ.get("SERVER_PORT", "8000")))
     host: str = Field(default=os.environ.get("SERVER_HOST", "127.0.0.1"))
     workers: int = Field(default=int(os.environ.get("SERVER_WORKERS", "1")))

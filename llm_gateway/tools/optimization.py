@@ -1,13 +1,9 @@
 """Cost optimization tools for LLM Gateway."""
 import asyncio
 import time
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
-from mcp.server.util import Tool
-
-from llm_gateway.config import config
-from llm_gateway.constants import Provider, COST_PER_MILLION_TOKENS
-from llm_gateway.core.providers.base import get_provider
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -384,8 +380,8 @@ class OptimizationTools:
                 document_tasks = []
                 semaphore = asyncio.Semaphore(max_concurrency)
                 
-                async def process_document_in_stage(doc_index, stage_def):
-                    async with semaphore:
+                async def process_document_in_stage(doc_index, stage_def, sem, costs):
+                    async with sem:
                         doc_result = workflow_context["results"][doc_index]
                         
                         # Get input data for this stage
@@ -410,9 +406,9 @@ class OptimizationTools:
                             # Import tool functions dynamically to avoid circular imports
                             from llm_gateway.tools.document import (
                                 chunk_document,
-                                summarize_document,
                                 extract_entities,
                                 generate_qa_pairs,
+                                summarize_document,
                             )
                             
                             # Execute operation
@@ -430,7 +426,7 @@ class OptimizationTools:
                                 )
                                 # Track cost
                                 if "cost" in result:
-                                    stage_costs.append(result["cost"])
+                                    costs.append(result["cost"])
                             elif operation == "extract_entities":
                                 result = await extract_entities(
                                     document=input_data,
@@ -440,7 +436,7 @@ class OptimizationTools:
                                 )
                                 # Track cost
                                 if "cost" in result:
-                                    stage_costs.append(result["cost"])
+                                    costs.append(result["cost"])
                             elif operation == "generate_qa":
                                 result = await generate_qa_pairs(
                                     document=input_data,
@@ -450,7 +446,7 @@ class OptimizationTools:
                                 )
                                 # Track cost
                                 if "cost" in result:
-                                    stage_costs.append(result["cost"])
+                                    costs.append(result["cost"])
                             else:
                                 result = {
                                     "error": f"Unsupported operation: {operation}"
@@ -476,7 +472,7 @@ class OptimizationTools:
                 
                 # Create tasks for each document
                 for doc_index in range(len(documents)):
-                    task = process_document_in_stage(doc_index, stage)
+                    task = process_document_in_stage(doc_index, stage, semaphore, stage_costs)
                     document_tasks.append(task)
                 
                 # Execute tasks concurrently

@@ -1,9 +1,8 @@
 """OpenAI provider implementation."""
-import asyncio
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+import time
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from openai import AsyncOpenAI, AsyncStream
-from openai.types.chat import ChatCompletion
+from openai import AsyncOpenAI
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
@@ -134,7 +133,7 @@ class OpenAIProvider(BaseProvider):
             
             # Log success
             self.logger.success(
-                f"OpenAI completion successful",
+                "OpenAI completion successful",
                 emoji_key="success",
                 model=model,
                 tokens={
@@ -237,7 +236,7 @@ class OpenAIProvider(BaseProvider):
             # Log success
             processing_time = time.time() - start_time
             self.logger.success(
-                f"OpenAI streaming completion successful",
+                "OpenAI streaming completion successful",
                 emoji_key="success",
                 model=model,
                 chunks=total_chunks,

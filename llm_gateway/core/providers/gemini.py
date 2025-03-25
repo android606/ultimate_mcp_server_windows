@@ -1,8 +1,9 @@
 """Google Gemini provider implementation."""
 import time
+import asyncio
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
-import google.generativeai as genai
+from google import genai  # Changed import statement
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
@@ -33,11 +34,11 @@ class GeminiProvider(BaseProvider):
             bool: True if initialization was successful
         """
         try:
-            # Configure the Gemini client
-            genai.configure(api_key=self.api_key)
-            
-            # We'll use a reference to the genai module as our "client"
-            self.client = genai
+            # Create a client instance instead of configuring globally
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options={"api_version": "v1alpha"}
+            )
             
             self.logger.success(
                 "Gemini provider initialized successfully", 
@@ -81,18 +82,6 @@ class GeminiProvider(BaseProvider):
         # Use default model if not specified
         model = model or self.get_default_model()
         
-        # Create the generative model
-        genai_model = self.client.GenerativeModel(model_name=model)
-        
-        # Prepare generation config
-        generation_config = {
-            "temperature": temperature,
-        }
-        
-        # Add max_tokens if specified (Gemini uses max_output_tokens)
-        if max_tokens is not None:
-            generation_config["max_output_tokens"] = max_tokens
-        
         # Log request
         self.logger.info(
             f"Generating completion with Gemini model {model}",
@@ -103,10 +92,10 @@ class GeminiProvider(BaseProvider):
         start_time = time.time()
         
         try:
-            # Make API call
-            response = genai_model.generate_content(
+            # Use direct models.generate_content approach with correct parameters
+            response = self.client.models.generate_content(
+                model=model,
                 contents=prompt,
-                generation_config=generation_config,
                 **kwargs
             )
             
@@ -185,9 +174,6 @@ class GeminiProvider(BaseProvider):
         # Use default model if not specified
         model = model or self.get_default_model()
         
-        # Create the generative model
-        genai_model = self.client.GenerativeModel(model_name=model)
-        
         # Prepare generation config
         generation_config = {
             "temperature": temperature,
@@ -208,10 +194,10 @@ class GeminiProvider(BaseProvider):
         total_chunks = 0
         
         try:
-            # Make streaming API call
-            response = genai_model.generate_content(
+            # Use the streaming approach with the client's models API
+            response = self.client.models.generate_content(
+                model=model,
                 contents=prompt,
-                generation_config=generation_config,
                 stream=True,
                 **kwargs
             )
@@ -307,7 +293,8 @@ class GeminiProvider(BaseProvider):
         """
         try:
             # Try listing models to validate the API key
-            self.client.list_models()
+            # Use the client's models API to check if API key is valid
+            self.client.models.list()
             return True
         except Exception:
             return False
