@@ -425,6 +425,7 @@ class TaskBasedStrategy(CacheStrategy):
         ttl_map = {
             "summarization": 30 * 24 * 60 * 60,  # 30 days
             "information_extraction": 14 * 24 * 60 * 60,  # 14 days
+            "extraction": 14 * 24 * 60 * 60,  # 14 days - Add explicit mapping for extraction
             "classification": 30 * 24 * 60 * 60,  # 30 days
             "translation": 60 * 24 * 60 * 60,  # 60 days
             "creative_writing": 1 * 24 * 60 * 60,  # 1 day

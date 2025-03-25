@@ -117,6 +117,36 @@ class BaseTool:
         """
         pass
         
+    async def execute(self, tool_name: str, params: Dict[str, Any]) -> Any:
+        """Execute a tool with consistent interface.
+        
+        This method abstracts differences between FastMCP and Gateway interfaces.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            params: Parameters to pass to the tool
+            
+        Returns:
+            Tool execution result
+        """
+        # Handle different interfaces between FastMCP and Gateway
+        if hasattr(self.mcp, "call_tool"):
+            # FastMCP
+            return await self.mcp.call_tool(tool_name, params)
+        elif hasattr(self.mcp, "execute"):
+            # Gateway
+            return await self.mcp.execute(tool_name, params)
+        else:
+            # Fallback - try the direct call first
+            try:
+                return await self.mcp.call_tool(tool_name, params)
+            except AttributeError:
+                self.logger.error(
+                    f"MCP server does not support call_tool or execute methods. Type: {type(self.mcp)}",
+                    emoji_key="error"
+                )
+                raise ValueError(f"Unsupported MCP server type: {type(self.mcp)}")
+        
     async def _wrap_with_metrics(
         self,
         func: Callable,

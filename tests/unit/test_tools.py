@@ -198,7 +198,7 @@ class TestCompletionTools:
         """Test generate_completion tool."""
         logger.info("Testing generate_completion tool", emoji_key="test")
         
-        # Mock the generate_completion method on the gateway
+        # Mock the generate_completion method on the completion tools
         exec_called = False
         exec_args = None
         
@@ -208,13 +208,14 @@ class TestCompletionTools:
             exec_args = params
             return {"text": "Mock completion"}
         
-        monkeypatch.setattr(mock_gateway.mcp, "execute", mock_exec)
+        # Use our new execute method instead of trying to patch mcp directly
+        monkeypatch.setattr(mock_completion_tools, "execute", mock_exec)
         
         # Register tools
         mock_completion_tools._register_tools()
         
-        # Execute the tool via MCP
-        result = await mock_gateway.mcp.execute("generate_completion", {
+        # Execute the tool via our BaseTool.execute method
+        result = await mock_completion_tools.execute("generate_completion", {
             "prompt": "Test prompt",
             "provider": "mock",
             "model": "mock-model",
@@ -265,15 +266,16 @@ class TestDocumentTools:
                 "processing_time": 0.1
             }
         
-        # Monkeypatch the tool execution
-        monkeypatch.setattr(
-            mock_document_tools.mcp, 
-            "execute", 
-            lambda tool, params: mock_chunk_document(**params)
-        )
+        # Create a mock execute function for our BaseTool
+        async def mock_execute(tool_name, params):
+            # Call our mock implementation
+            return await mock_chunk_document(**params)
+        
+        # Monkeypatch the tool execution using our new execute method
+        monkeypatch.setattr(mock_document_tools, "execute", mock_execute)
         
         # Call the tool
-        result = await mock_document_tools.mcp.execute("chunk_document", {
+        result = await mock_document_tools.execute("chunk_document", {
             "document": sample_document,
             "method": "paragraph"
         })
@@ -321,14 +323,16 @@ class TestExtractionTools:
                 "processing_time": 0.2
             }
         
-        monkeypatch.setattr(
-            mock_extraction_tools.mcp, 
-            "execute", 
-            lambda tool, params: mock_extract_json(**params)
-        )
+        # Create a mock execute function for our BaseTool
+        async def mock_execute(tool_name, params):
+            # Call our mock implementation
+            return await mock_extract_json(**params)
+            
+        # Monkeypatch the tool execution using our new execute method
+        monkeypatch.setattr(mock_extraction_tools, "execute", mock_execute)
         
         # Call the tool
-        result = await mock_extraction_tools.mcp.execute("extract_json", {
+        result = await mock_extraction_tools.execute("extract_json", {
             "text": "Extract JSON from this: " + str(sample_json_data),
             "provider": "mock",
             "model": "mock-model"
