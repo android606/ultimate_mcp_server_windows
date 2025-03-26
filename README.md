@@ -8,7 +8,7 @@
 
 **A Model Context Protocol (MCP) server enabling intelligent delegation from high-capability AI agents to cost-effective LLMs**
 
-![Illustration](https://github.com/Dicklesworthstone/llm_gateway_mcp_server/blob/main/F402AFA6-0BE7-4F14-909A-0A3E67E11DF4.png))
+![Illustration](https://github.com/Dicklesworthstone/llm_gateway_mcp_server/blob/main/F402AFA6-0BE7-4F14-909A-0A3E67E11DF4.png)
 
 [Getting Started](#getting-started) •
 [Key Features](#key-features) •
