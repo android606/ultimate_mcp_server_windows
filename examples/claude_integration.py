@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.utils import get_logger
-from llm_gateway.config import get_env, config
 
 # Initialize logger
 logger = get_logger("example.claude_integration")
@@ -46,9 +45,9 @@ async def compare_claude_models():
         # Select models to compare
         # In real usage, you might want to check if these models are available
         claude_models = [
-            "claude-3-haiku-20240307",
-            "claude-3-sonnet-20240229", 
-            "claude-3-opus-20240229"
+            "claude-3-5-haiku-latest",
+            "claude-3-7-sonnet-latest", 
+            "claude-3-5-sonnet-latest"
         ]
         
         # Define a consistent prompt for comparison

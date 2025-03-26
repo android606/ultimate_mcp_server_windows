@@ -184,6 +184,7 @@ class EmbeddingService:
         self.total_embeddings = 0
         self.cache_hits = 0
         self.api_calls = 0
+        self.last_request_cost = 0.0
         
         self._initialized = True
         
@@ -219,6 +220,7 @@ class EmbeddingService:
             cached_embedding = self.cache.get(text, model)
             if cached_embedding is not None:
                 self.cache_hits += 1
+                self.last_request_cost = 0.0  # Cache hit, no cost
                 return cached_embedding
         
         # Generate embedding via API
@@ -234,6 +236,24 @@ class EmbeddingService:
             
             # Extract embedding
             embedding = np.array(response.data[0].embedding)
+            
+            # Calculate and update cost
+            # Cost calculation based on model and token count
+            token_count = len(text) / 4  # Rough estimate of token count
+            
+            # Set cost based on model
+            if model == "text-embedding-3-small":
+                # $0.02 per 1M tokens
+                self.last_request_cost = (token_count / 1_000_000) * 0.02
+            elif model == "text-embedding-3-large":
+                # $0.13 per 1M tokens
+                self.last_request_cost = (token_count / 1_000_000) * 0.13
+            elif model == "text-embedding-ada-002":
+                # $0.10 per 1M tokens
+                self.last_request_cost = (token_count / 1_000_000) * 0.10
+            else:
+                # Default cost estimate
+                self.last_request_cost = (token_count / 1_000_000) * 0.05
             
             # Log success
             processing_time = time.time() - start_time
@@ -311,6 +331,7 @@ class EmbeddingService:
             # If all embeddings were cached, return them
             if not texts_to_embed:
                 # Sort embeddings by original index
+                self.last_request_cost = 0.0  # All cache hits, no cost
                 return [emb for _, emb in sorted(embeddings, key=lambda x: x[0])]
                 
             # Generate embeddings for remaining texts
@@ -323,6 +344,24 @@ class EmbeddingService:
                     input=texts_to_embed,
                     encoding_format="float"
                 )
+                
+                # Calculate and update cost
+                # Estimate total tokens in batch
+                total_tokens = sum(len(text) / 4 for text in texts_to_embed)
+                
+                # Set cost based on model
+                if model == "text-embedding-3-small":
+                    # $0.02 per 1M tokens
+                    self.last_request_cost = (total_tokens / 1_000_000) * 0.02
+                elif model == "text-embedding-3-large":
+                    # $0.13 per 1M tokens
+                    self.last_request_cost = (total_tokens / 1_000_000) * 0.13
+                elif model == "text-embedding-ada-002":
+                    # $0.10 per 1M tokens
+                    self.last_request_cost = (total_tokens / 1_000_000) * 0.10
+                else:
+                    # Default cost estimate
+                    self.last_request_cost = (total_tokens / 1_000_000) * 0.05
                 
                 # Process API response
                 for i, embedding_data in enumerate(response.data):
@@ -393,6 +432,7 @@ class EmbeddingService:
             "api_calls": self.api_calls,
             "cache_hit_ratio": self.cache_hits / max(1, self.total_embeddings),
             "default_model": self.default_model,
+            "last_request_cost": self.last_request_cost,
         }
         
     async def find_similar(

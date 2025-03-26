@@ -12,7 +12,7 @@ from decouple import config as decouple_config
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.vector import get_vector_db_service, get_embedding_service
+from llm_gateway.services.vector import get_embedding_service, get_vector_db_service
 from llm_gateway.utils import get_logger
 
 # Initialize logger
@@ -44,7 +44,7 @@ async def demonstrate_vector_operations():
     
     # Create or get collection
     logger.info(f"Creating collection: {collection_name}", emoji_key="vector")
-    collection = vector_db.create_collection(
+    collection = vector_db.create_collection(  # noqa: F841
         name=collection_name,
         dimension=1536,  # OpenAI embedding dimension
         overwrite=True,   # Start fresh for demo

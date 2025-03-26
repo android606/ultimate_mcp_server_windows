@@ -5,10 +5,8 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Optional, Union
 
-from llm_gateway.config import config
-from llm_gateway.constants import Provider
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -20,7 +18,7 @@ except ImportError:
     AIOFILES_AVAILABLE = False
 
 try:
-    from prometheus_client import Counter, Gauge, Histogram, Summary
+    from prometheus_client import Counter, Histogram
     PROMETHEUS_AVAILABLE = True
 except ImportError:
     PROMETHEUS_AVAILABLE = False
@@ -116,6 +114,10 @@ class MetricsTracker:
         self.hourly_tokens = defaultdict(int)
         self.daily_tokens = defaultdict(int)
         
+        # Request counts by time period
+        self.hourly_requests = defaultdict(int)
+        self.daily_requests = defaultdict(int)
+        
         # Cost by time period
         self.hourly_costs = defaultdict(float)
         self.daily_costs = defaultdict(float)
@@ -170,6 +172,8 @@ class MetricsTracker:
                 self.daily_tokens = defaultdict(int, data.get("daily_tokens", {}))
                 self.hourly_costs = defaultdict(float, data.get("hourly_costs", {}))
                 self.daily_costs = defaultdict(float, data.get("daily_costs", {}))
+                self.hourly_requests = defaultdict(int, data.get("hourly_requests", {}))
+                self.daily_requests = defaultdict(int, data.get("daily_requests", {}))
                 
                 # Load cache stats
                 self.cache_hits = data.get("cache_hits", 0)
@@ -276,6 +280,8 @@ class MetricsTracker:
                 "daily_tokens": dict(self.daily_tokens),
                 "hourly_costs": dict(self.hourly_costs),
                 "daily_costs": dict(self.daily_costs),
+                "hourly_requests": dict(self.hourly_requests),
+                "daily_requests": dict(self.daily_requests),
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,
                 "cache_saved_cost": self.cache_saved_cost,
@@ -323,6 +329,8 @@ class MetricsTracker:
                 "daily_tokens": dict(self.daily_tokens),
                 "hourly_costs": dict(self.hourly_costs),
                 "daily_costs": dict(self.daily_costs),
+                "hourly_requests": dict(self.hourly_requests),
+                "daily_requests": dict(self.daily_requests),
                 "cache_hits": self.cache_hits,
                 "cache_misses": self.cache_misses,
                 "cache_saved_cost": self.cache_saved_cost,
@@ -407,6 +415,8 @@ class MetricsTracker:
         self.daily_tokens[day_key] += total_tokens
         self.hourly_costs[hour_key] += cost
         self.daily_costs[day_key] += cost
+        self.hourly_requests[hour_key] += 1
+        self.daily_requests[day_key] += 1
         
         # Update Prometheus metrics if enabled
         if self.enable_prometheus:
@@ -487,7 +497,12 @@ class MetricsTracker:
         daily_usage = []
         for i in range(7):
             day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
-            daily_usage.append((day, self.daily_tokens.get(day, 0), self.daily_costs.get(day, 0.0)))
+            daily_usage.append((
+                day, 
+                self.daily_tokens.get(day, 0), 
+                self.daily_costs.get(day, 0.0),
+                self.daily_requests.get(day, 0)
+            ))
         
         # Compile stats
         return {
@@ -549,12 +564,14 @@ class MetricsTracker:
                     "date": date,
                     "tokens": tokens,
                     "cost": cost,
+                    "requests": requests
                 }
-                for date, tokens, cost in daily_usage
+                for date, tokens, cost, requests in daily_usage
             ],
             "today": {
                 "tokens": self.daily_tokens.get(today, 0),
                 "cost": self.daily_costs.get(today, 0.0),
+                "requests": self.daily_requests.get(today, 0)
             }
         }
     
