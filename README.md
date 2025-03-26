@@ -34,7 +34,7 @@ The primary design goal of LLM Gateway is to allow sophisticated AI agents like 
 ┌─────────────┐ ────────────────────────► ┌───────────────────┐         ┌──────────────┐
 │ Claude 3.7  │                           │   LLM Gateway     │ ───────►│ Gemini Flash │
 │   (Agent)   │ ◄──────────────────────── │    MCP Server     │ ◄───────│ DeepSeek     │
-└─────────────┘      returns results      └───────────────────┘         │ GPT-3.5      │
+└─────────────┘      returns results      └───────────────────┘         │ GPT-4o-mini  │
                                                                         └──────────────┘
 ```
 
