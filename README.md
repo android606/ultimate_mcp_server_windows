@@ -54,8 +54,8 @@ This delegation pattern can save 70-90% on API costs while maintaining output qu
 
 The most powerful use case is enabling advanced AI agents to delegate routine tasks to cheaper models:
 
-- Have Claude 3.7 use GPT-3.5 for initial document summarization
-- Let Claude use Gemini Flash for data extraction and transformation
+- Have Claude 3.7 use GPT-4o-mini for initial document summarization
+- Let Claude use Gemini 2.0 Flash light for data extraction and transformation
 - Allow Claude to orchestrate a multi-stage workflow across different providers
 - Enable Claude to choose the right model for each specific sub-task
 
