@@ -49,7 +49,6 @@ dependencies = [
     "numpy",
     "sentence-transformers",  # For embeddings
     "chromadb",              # Vector DB
-    "hnswlib",                # Fast similarity search
     
     # Analytics and monitoring
     "prometheus-client",

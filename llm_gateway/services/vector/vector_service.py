@@ -12,20 +12,24 @@ from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
 
-# Try to import chromadb, but don't fail if not available
+# Try to import chromadb
 try:
     import chromadb
     from chromadb.config import Settings as ChromaSettings
     CHROMADB_AVAILABLE = True
-except ImportError:
+    logger.info("ChromaDB imported successfully", emoji_key="success")
+except ImportError as e:
+    logger.warning(f"ChromaDB not available: {str(e)}", emoji_key="warning")
     CHROMADB_AVAILABLE = False
 
 # Try to import hnswlib, but don't fail if not available
 try:
     import hnswlib
     HNSWLIB_AVAILABLE = True
+    HNSW_INDEX = hnswlib.Index
 except ImportError:
     HNSWLIB_AVAILABLE = False
+    HNSW_INDEX = None
 
 
 class VectorCollection:
@@ -75,7 +79,7 @@ class VectorCollection:
         # Try to use HNSW for fast search if available
         if HNSWLIB_AVAILABLE:
             try:
-                self.index = hnswlib.Index(space=self._get_hnswlib_space(), dim=self.dimension)
+                self.index = HNSW_INDEX(space=self._get_hnswlib_space(), dim=self.dimension)
                 self.index.init_index(max_elements=1000, ef_construction=200, M=16)
                 self.index.set_ef(50)  # Search accuracy parameter
                 self.index_type = "hnswlib"
@@ -173,7 +177,7 @@ class VectorCollection:
             
         try:
             # Re-initialize index
-            self.index = hnswlib.Index(space=self._get_hnswlib_space(), dim=self.dimension)
+            self.index = HNSW_INDEX(space=self._get_hnswlib_space(), dim=self.dimension)
             self.index.init_index(max_elements=max(1000, len(self.vectors) * 2), ef_construction=200, M=16)
             self.index.set_ef(50)
             
@@ -632,13 +636,19 @@ class VectorDatabaseService:
             # ChromaDB collection
             try:
                 # Delete if exists and overwrite is True
-                if overwrite and name in [c.name for c in self.chroma_client.list_collections()]:
+                # In ChromaDB v0.6.0+, list_collections() returns names not objects
+                existing_collections = self.chroma_client.list_collections()
+                if overwrite and name in existing_collections:
                     self.chroma_client.delete_collection(name)
+                
+                # Ensure metadata is non-empty
+                if not metadata:
+                    metadata = {"description": "Vector collection", "created_at": time.strftime("%Y-%m-%d")}
                 
                 # Create collection
                 collection = self.chroma_client.create_collection(
                     name=name,
-                    metadata=metadata or {}
+                    metadata=metadata
                 )
                 
                 logger.info(
@@ -683,8 +693,9 @@ class VectorDatabaseService:
         if self.use_chromadb and self.chroma_client is not None:
             # Check if ChromaDB collection exists
             try:
-                collections = self.chroma_client.list_collections()
-                if name in [c.name for c in collections]:
+                # In ChromaDB v0.6.0+, list_collections() returns names not objects
+                existing_collections = self.chroma_client.list_collections()
+                if name in existing_collections:
                     collection = self.chroma_client.get_collection(name)
                     self.collections[name] = collection
                     return collection
@@ -900,12 +911,17 @@ class VectorDatabaseService:
                 # Convert filter to ChromaDB format if provided
                 chroma_filter = self._convert_to_chroma_filter(filter) if filter else None
                 
+                # Prepare include parameters for ChromaDB
+                include_params = ["documents", "metadatas", "distances"]
+                if include_vectors:
+                    include_params.append("embeddings")
+                
                 # Search ChromaDB collection
                 results = collection.query(
                     query_embeddings=[query_embedding],
                     n_results=top_k,
                     where=chroma_filter,
-                    include=["documents", "metadatas", "distances", "embeddings" if include_vectors else None]
+                    include=include_params
                 )
                 
                 # Format results
