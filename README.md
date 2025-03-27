@@ -175,7 +175,7 @@ async def main():
         document=document,
         entity_types=["person", "organization", "location", "date"],
         provider="openai",
-        model="gpt-3.5-turbo"
+        model="gpt-4o-mini"
     )
     total_cost += entities["cost"]
     
@@ -225,7 +225,7 @@ workflow = [
         "name": "Entity Extraction",
         "operation": "extract_entities",
         "provider": "openai",
-        "model": "gpt-3.5-turbo",
+        "model": "gpt-4o-mini",
         "input_from": "original", 
         "output_as": "entities"
     },
@@ -308,7 +308,7 @@ Using LLM Gateway for delegation can yield significant cost savings:
 | Task | Claude 3.7 Direct | Delegated to Cheaper LLM | Savings |
 |------|-------------------|--------------------------|---------|
 | Summarizing 100-page document | $4.50 | $0.45 (Gemini Flash) | 90% |
-| Extracting data from 50 records | $2.25 | $0.35 (GPT-3.5) | 84% |
+| Extracting data from 50 records | $2.25 | $0.35 (GPT-4o-mini) | 84% |
 | Generating 20 content ideas | $0.90 | $0.12 (DeepSeek) | 87% |
 | Processing 1,000 customer queries | $45.00 | $7.50 (Mixed delegation) | 83% |
 
@@ -374,10 +374,10 @@ When Claude delegates a task to LLM Gateway:
 ### Provider Integration
 
 - **Multi-Provider Support**: First-class support for:
-  - OpenAI (GPT-3.5, GPT-4o, GPT-4o mini)
-  - Anthropic (Claude 3 Opus, Sonnet, Haiku, Claude 3.5 series)
-  - Google (Gemini Pro, Gemini Flash)
-  - DeepSeek (DeepSeek-Chat, DeepSeek-Coder)
+  - OpenAI (GPT-4o-mini, GPT-4o, GPT-4o mini)
+  - Anthropic (Claude 3.7 series)
+  - Google (Gemini Pro, Gemini Flash, Gemini Flash Light)
+  - DeepSeek (DeepSeek-Chat, DeepSeek-Reasoner)
   - Extensible architecture for adding new providers
 
 - **Model Management**:
