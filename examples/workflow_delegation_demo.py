@@ -109,7 +109,7 @@ async def delegate_task(
         model = "gpt-4o"
     else:  # balanced
         provider = Provider.OPENAI.value
-        model = "gpt-3.5-turbo"
+        model = "gpt-4o-mini"
     
     # Get provider instance
     provider_instance = get_provider(provider)
@@ -359,7 +359,7 @@ async def run_delegate_task_demo():
                 except json.JSONDecodeError:
                     result = {"text": first_item.text, 
                              "provider": Provider.OPENAI.value,
-                             "model": "gpt-3.5-turbo",
+                             "model": "gpt-4o-mini",
                              "processing_time": 0.0,
                              "cost": 0.0}
         elif isinstance(delegate_result, dict):
@@ -411,7 +411,7 @@ async def run_workflow_demo():
             "id": "summarize",
             "name": "Summarize Document",
             "provider": Provider.OPENAI.value,
-            "model": "gpt-3.5-turbo",
+            "model": "gpt-4o-mini",
             "operation": "summarize",
             "parameters": {
                 "max_length": 100,
@@ -423,7 +423,7 @@ async def run_workflow_demo():
             "id": "entities",
             "name": "Extract Entities",
             "provider": Provider.OPENAI.value,
-            "model": "gpt-3.5-turbo",
+            "model": "gpt-4o-mini",
             "operation": "extract_entities",
             "parameters": {
                 "entity_types": ["organization", "technology", "concept"]
@@ -434,7 +434,7 @@ async def run_workflow_demo():
             "id": "questions",
             "name": "Generate Questions",
             "provider": Provider.OPENAI.value,
-            "model": "gpt-3.5-turbo",
+            "model": "gpt-4o-mini",
             "operation": "generate_questions",
             "input_from": "summary",
             "parameters": {
@@ -552,7 +552,7 @@ async def run_prompt_optimization_demo():
     
     # Target models for optimization
     target_models = [
-        "gpt-3.5-turbo",
+        "gpt-4o-mini",
         "gemini-2.0-flash-lite",
         "claude-3-5-haiku-latest"
     ]

@@ -202,7 +202,7 @@ class OptimizationTools:
                 # OpenAI models
                 "gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
                 "gpt-4o-mini": ["reasoning", "coding", "knowledge", "instruction-following"],
-                "gpt-3.5-turbo": ["coding", "knowledge", "instruction-following"],
+                "gpt-4o-mini": ["coding", "knowledge", "instruction-following"],
                 
                 # Claude models
                 "claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
@@ -224,7 +224,7 @@ class OptimizationTools:
                 # OpenAI models
                 "gpt-4o": 3,
                 "gpt-4o-mini": 2,
-                "gpt-3.5-turbo": 1,
+                "gpt-4o-mini": 1,
                 
                 # Claude models
                 "claude-3-opus-20240229": 5,
@@ -246,7 +246,7 @@ class OptimizationTools:
                 # OpenAI models
                 "gpt-4o": 9,
                 "gpt-4o-mini": 7,
-                "gpt-3.5-turbo": 5,
+                "gpt-4o-mini": 5,
                 
                 # Claude models
                 "claude-3-opus-20240229": 9,

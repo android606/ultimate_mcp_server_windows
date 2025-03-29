@@ -311,7 +311,7 @@ class OpenAIProvider(BaseProvider):
                     "description": "Smaller, efficient GPT-4 model",
                 },
                 {
-                    "id": "gpt-3.5-turbo",
+                    "id": "gpt-4o-mini",
                     "provider": self.provider_name,
                     "description": "Fast and cost-effective GPT model",
                 },

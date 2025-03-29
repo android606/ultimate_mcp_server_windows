@@ -341,7 +341,7 @@ async def demonstrate_real_time_monitoring():
         # Record request metrics manually
         metrics.record_request(
             provider=Provider.OPENAI.value,
-            model="gpt-3.5-turbo",  # Default model - may need adjustment
+            model="gpt-4o-mini",  # Default model - may need adjustment
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             cost=0.0005,  # Small arbitrary cost

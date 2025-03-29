@@ -111,7 +111,7 @@ async def recommend_model(
         # OpenAI models
         "gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
         "gpt-4o-mini": ["reasoning", "coding", "knowledge", "instruction-following"],
-        "gpt-3.5-turbo": ["coding", "knowledge", "instruction-following"],
+        "gpt-4o-mini": ["coding", "knowledge", "instruction-following"],
         
         # Claude models
         "claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
@@ -128,7 +128,7 @@ async def recommend_model(
         # OpenAI models
         "gpt-4o": 3,
         "gpt-4o-mini": 2,
-        "gpt-3.5-turbo": 1,
+        "gpt-4o-mini": 1,
         
         # Claude models
         "claude-3-opus-20240229": 5,
@@ -145,7 +145,7 @@ async def recommend_model(
         # OpenAI models
         "gpt-4o": 9,
         "gpt-4o-mini": 7,
-        "gpt-3.5-turbo": 5,
+        "gpt-4o-mini": 5,
         
         # Claude models
         "claude-3-opus-20240229": 9,
@@ -228,7 +228,7 @@ async def demonstrate_cost_optimization():
     models_to_compare = [
         "gpt-4o",
         "gpt-4o-mini",
-        "gpt-3.5-turbo",
+        "gpt-4o-mini",
         "claude-3-opus-20240229",
         "claude-3-sonnet-20240229",
         "claude-3-haiku-20240307",
@@ -305,7 +305,7 @@ async def demonstrate_cost_optimization():
     logger.info("Comparing actual costs with real API calls", emoji_key="cost")
     
     # Select 2 models for actual comparison
-    compare_models = ["gpt-3.5-turbo", "gemini-2.0-flash"]
+    compare_models = ["gpt-4o-mini", "gemini-2.0-flash"]
     
     print("\n" + "=" * 80)
     print("ACTUAL COST COMPARISON")

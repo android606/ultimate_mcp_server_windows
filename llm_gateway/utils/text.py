@@ -1,7 +1,7 @@
 """Text processing utilities for LLM Gateway."""
 import re
 import string
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 from llm_gateway.utils import get_logger
 
@@ -61,10 +61,10 @@ def count_tokens(text: str, model: Optional[str] = None) -> int:
         import tiktoken
         
         # Select encoding based on model
-        if model and model.startswith("gpt-4"):
-            encoding = tiktoken.encoding_for_model("gpt-4")
-        elif model and model.startswith("gpt-3.5"):
-            encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        if model and model.startswith("gpt-4o-mini"):
+            encoding = tiktoken.encoding_for_model("gpt-4o-mini")
+        elif model and model.startswith("gpt-4o"):
+            encoding = tiktoken.encoding_for_model("gpt-4o")
         elif model and "claude" in model.lower():
             # For Claude, use cl100k_base as approximation
             encoding = tiktoken.get_encoding("cl100k_base")
@@ -291,7 +291,7 @@ def sanitize_text(text: str, allowed_tags: Optional[List[str]] = None) -> str:
     # Handle HTML tags based on allowed_tags
     if allowed_tags:
         # Allow specified tags but remove all others
-        allowed_pattern = '|'.join(allowed_tags)
+        allowed_pattern = '|'.join(allowed_tags)  # noqa: F841
         
         # Function to process tag matches
         def tag_replacer(match):

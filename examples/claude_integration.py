@@ -47,7 +47,7 @@ async def compare_claude_models():
         claude_models = [
             "claude-3-5-haiku-latest",
             "claude-3-7-sonnet-latest", 
-            "claude-3-5-sonnet-latest"
+            "claude-3-7-sonnet-latest"
         ]
         
         # Define a consistent prompt for comparison

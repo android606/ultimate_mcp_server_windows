@@ -2,7 +2,7 @@
 import asyncio
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.core.providers.base import get_provider
@@ -26,88 +26,36 @@ class MetaTools(BaseTool):
         """
         super().__init__(mcp_server)
         
+    @with_tool_metrics    
+    async def multi_completion(
+        self,
+        prompt: str,
+        configs: List[Dict[str, Any]],
+        timeout: Optional[float] = 60.0,
+        ctx = None
+    ) -> Dict[str, Any]:
+        """
+        Generate completions from multiple models/providers in parallel.
+        
+        Args:
+            prompt: The prompt to send to all models
+            configs: List of configurations for each model/provider
+                    Each config should have: {"provider": "...", "model": "...", "parameters": {...}}
+            timeout: Timeout for completion operations in seconds
+            
+        Returns:
+            Dictionary containing completions from each model
+        """
+        return await self._multi_completion_impl(prompt, configs, timeout)
+        
     def _register_tools(self):
         """Register meta-tools with MCP server."""
         
-        @self.mcp.tool()
-        @with_tool_metrics
-        async def analyze_task(
-            task_description: str,
-            available_providers: Optional[List[str]] = None,
-            analyze_features: bool = True,
-            analyze_cost: bool = True,
-            ctx=None
-        ) -> Dict[str, Any]:
-            """
-            Analyze a task and recommend the best provider and model based on requirements.
-            
-            Args:
-                task_description: Description of the task to analyze
-                available_providers: Optional list of available providers to consider
-                analyze_features: Whether to analyze required features
-                analyze_cost: Whether to analyze estimated cost
-                
-            Returns:
-                Dictionary containing task analysis and recommendations
-            """
-            start_time = time.time()
-            
-            # Get available providers if not specified
-            if available_providers is None:
-                available_providers = [p.value for p in Provider]
-            
-            # Analyze task type
-            task_type = self._analyze_task_type(task_description)
-            
-            # Analyze required features
-            required_features = []
-            features_explanation = ""
-            
-            if analyze_features:
-                required_features, features_explanation = self._analyze_required_features(task_description)
-            
-            # Get provider options
-            provider_options = await self._get_provider_options(
-                task_type=task_type,
-                required_features=required_features,
-                available_providers=available_providers
-            )
-            
-            # Analyze cost if requested
-            cost_analysis = {}
-            if analyze_cost:
-                cost_analysis = self._analyze_cost(
-                    task_description=task_description,
-                    provider_options=provider_options,
-                    task_type=task_type
-                )
-            
-            # Generate recommendations
-            recommendations = self._generate_recommendations(
-                provider_options=provider_options,
-                cost_analysis=cost_analysis,
-                task_type=task_type
-            )
-            
-            # Calculate processing time
-            processing_time = time.time() - start_time
-            
-            # Log completion
-            logger.success(
-                f"Task analysis completed: {task_type}",
-                emoji_key="meta",
-                time=processing_time
-            )
-            
-            return {
-                "task_type": task_type,
-                "required_features": required_features,
-                "features_explanation": features_explanation,
-                "providers": provider_options,
-                "cost_analysis": cost_analysis,
-                "recommendations": recommendations,
-                "processing_time": processing_time,
-            }
+        # Register our multi_completion method as a tool
+        self.mcp.tool()(self.multi_completion)
+        
+        # Register our analyze_task method the same way
+        self.mcp.tool()(self.analyze_task)
         
         @self.mcp.tool()
         @with_tool_metrics
@@ -144,7 +92,7 @@ class MetaTools(BaseTool):
             model_preferences = model_preferences or {}
             
             # Analyze the task
-            analysis = await analyze_task(
+            analysis = await self.analyze_task(
                 task_description=task_description,
                 available_providers=available_providers,
                 analyze_features=True,
@@ -426,8 +374,8 @@ class MetaTools(BaseTool):
                     tasks = []
                     semaphore = asyncio.Semaphore(max_concurrency)
                     
-                    async def process_step(step_idx, step, semaphore):
-                        async with semaphore:
+                    async def process_step(step_idx, step, sem=semaphore):
+                        async with sem:
                             step_id = step.get("id", f"step_{step_idx}")
                             step_name = step.get("name", f"Step {step_idx}")
                             
@@ -462,7 +410,7 @@ class MetaTools(BaseTool):
                     
                     # Create tasks for all steps in group
                     for step_idx, step in step_group:
-                        tasks.append(process_step(step_idx, step, semaphore))
+                        tasks.append(process_step(step_idx, step))
                     
                     # Execute group concurrently
                     group_results = await asyncio.gather(*tasks)
@@ -825,6 +773,781 @@ Format your response as JSON:
                     "target_model": target_model,
                     "processing_time": processing_time,
                 }
+                
+        @with_tool_metrics
+        @self.mcp.tool()
+        async def compare_and_synthesize(
+            prompt: str,
+            configs: List[Dict[str, Any]],
+            criteria: Optional[List[str]] = None,
+            criteria_weights: Optional[Dict[str, float]] = None,
+            synthesis_model: Optional[Dict[str, Any]] = None,
+            response_format: str = "best",
+            synthesis_strategy: str = "comprehensive",
+            include_reasoning: bool = True,
+            max_retries: int = 2,
+            timeout: Optional[float] = 120.0,
+            ctx=None
+        ) -> Dict[str, Any]:
+            """
+            Generate responses from multiple models/providers and synthesize or select the best one.
+            
+            Args:
+                prompt: The prompt to send to all models
+                configs: List of configurations for each model/provider
+                        Each config should have: {"provider": "...", "model": "...", "parameters": {...}}
+                criteria: Criteria for evaluation (accuracy, completeness, etc.)
+                criteria_weights: Optional weights for each criterion (e.g., {"accuracy": 0.6, "creativity": 0.4})
+                synthesis_model: Config for the model to use for synthesis
+                                If None, will select a high-capability model automatically
+                response_format: Format of the response ("best", "synthesis", "ranked", or "analysis")
+                synthesis_strategy: Strategy for synthesis ("comprehensive", "conservative", "creative")
+                include_reasoning: Whether to include detailed reasoning in the output
+                max_retries: Maximum number of retries for failed operations
+                timeout: Timeout for the entire operation in seconds
+                
+            Returns:
+                Dictionary containing the synthesized results
+            """
+            instance = self # Capture self from the outer scope
+            
+            start_time = time.time()
+            log_extra = {"emoji_key": "meta", "configs_count": len(configs)}
+            
+            logger.info(
+                f"Starting response comparison and synthesis with {len(configs)} configurations",
+                **log_extra
+            )
+            
+            # Input validation
+            if not configs:
+                return {
+                    "error": "No model configurations provided",
+                    "processing_time": time.time() - start_time,
+                }
+            
+            if len(configs) < 2:
+                logger.warning(
+                    "Only one model configuration provided. Comparison requires at least two models.",
+                    **log_extra
+                )
+            
+            # Set default criteria if not provided
+            if not criteria:
+                criteria = [
+                    "factual_accuracy",
+                    "completeness",
+                    "relevance",
+                    "coherence",
+                    "depth_of_reasoning",
+                    "clarity",
+                    "safety",
+                ]
+            
+            # Set default criteria weights if not provided
+            if not criteria_weights:
+                criteria_weights = {criterion: 1.0 / len(criteria) for criterion in criteria}
+            else:
+                # Validate criteria weights
+                for criterion in criteria:
+                    if criterion not in criteria_weights:
+                        criteria_weights[criterion] = 1.0 / len(criteria)
+                
+                # Normalize weights to sum to 1.0
+                weight_sum = sum(criteria_weights.values())
+                if weight_sum > 0:
+                    criteria_weights = {k: v / weight_sum for k, v in criteria_weights.items()}
+            
+            # Call the actual implementation METHOD using the captured instance
+            try:
+                completion_task = asyncio.create_task(instance._execute_comparison_synthesis(
+                    prompt=prompt,
+                    configs=configs,
+                    criteria=criteria,
+                    criteria_weights=criteria_weights,
+                    synthesis_model=synthesis_model,
+                    response_format=response_format,
+                    synthesis_strategy=synthesis_strategy,
+                    include_reasoning=include_reasoning,
+                ))
+                
+                # Execute with timeout
+                if timeout:
+                    result = await asyncio.wait_for(completion_task, timeout=timeout)
+                else:
+                    result = await completion_task
+                    
+                # Calculate processing time
+                processing_time = time.time() - start_time
+                result["processing_time"] = processing_time
+                
+                # Log success
+                logger.success(
+                    f"Response comparison and synthesis completed ({len(configs)} models, {response_format} format)",
+                    time=processing_time,
+                    **log_extra
+                )
+                
+                # Ensure we return a dict, not a list
+                if isinstance(result, list):
+                    if len(result) > 0:
+                        # Try to get a dictionary from the list
+                        if hasattr(result[0], 'text'):
+                            try:
+                                dict_result = json.loads(result[0].text)
+                                dict_result["processing_time"] = processing_time
+                                return dict_result
+                            except Exception:
+                                # If parsing fails, create a basic result dict
+                                return {
+                                    "synthesis": result[0].text if hasattr(result[0], 'text') else str(result[0]),
+                                    "processing_time": processing_time,
+                                }
+                    else:
+                        # Empty list, return a basic result
+                        return {
+                            "error": "No results generated",
+                            "processing_time": processing_time,
+                        }
+                
+                return result
+                
+            except asyncio.TimeoutError:
+                # Handle timeout
+                completion_task.cancel()
+                
+                logger.error(
+                    f"Response comparison and synthesis timed out after {timeout}s",
+                    **log_extra
+                )
+                
+                return {
+                    "error": f"Operation timed out after {timeout} seconds",
+                    "processing_time": time.time() - start_time,
+                    "partial_results": None,
+                }
+                
+            except Exception as e:
+                # Handle other errors
+                processing_time = time.time() - start_time
+                
+                logger.error(
+                    f"Response comparison failed: {str(e)}",
+                    time=processing_time
+                    # Removed emoji_key and log_extra to avoid duplicate emoji_key
+                )
+                
+                return {
+                    "error": f"Response comparison failed: {str(e)}",
+                    "processing_time": processing_time,
+                }
+        
+        # Remove any potential leftover manual registration code for compare_and_synthesize
+        # The @self.mcp.tool() decorator handles it now.
+
+    async def _multi_completion_impl(
+        self,
+        prompt: str,
+        configs: List[Dict[str, Any]],
+        timeout: Optional[float] = 60.0
+    ) -> Dict[str, Any]:
+        """
+        Implementation of multi_completion tool logic.
+        """
+        start_time = time.time()
+        
+        # Validate input
+        if not configs:
+            return {
+                "error": "No model configurations provided",
+                "completions": [],
+                "processing_time": 0.0,
+            }
+        
+        logger.info(
+            f"Generating completions with {len(configs)} configurations",
+            emoji_key="meta",
+            configs_count=len(configs)
+        )
+        
+        # Define function to execute a single completion
+        async def execute_completion(config: Dict[str, Any]) -> Dict[str, Any]:
+            try:
+                provider_name = config.get("provider", Provider.OPENAI.value)
+                model_name = config.get("model")
+                parameters = config.get("parameters", {}).copy()  # Create a copy to avoid modifying the original
+                
+                # Get provider instance
+                provider_instance = get_provider(provider_name)
+                
+                # Ensure the provider is initialized
+                if not hasattr(provider_instance, 'client') or provider_instance.client is None:
+                    await provider_instance.initialize()
+                
+                # For Anthropic, just use the minimal set of parameters that work in other examples
+                if provider_name == Provider.ANTHROPIC.value:
+                    result = await provider_instance.generate_completion(
+                        prompt=prompt,
+                        model=model_name,
+                        temperature=parameters.get("temperature", 0.7),
+                        max_tokens=parameters.get("max_tokens", 150)
+                    )
+                else:
+                    # For other providers, use the standard approach
+                    result = await provider_instance.generate_completion(
+                        prompt=prompt,
+                        model=model_name,
+                        **parameters
+                    )
+                
+                return {
+                    "provider": provider_name,
+                    "model": result.model,
+                    "text": result.text,
+                    "tokens": {
+                        "input": result.input_tokens,
+                        "output": result.output_tokens,
+                        "total": result.total_tokens,
+                    },
+                    "cost": result.cost,
+                    "error": None,
+                }
+                
+            except Exception as e:
+                logger.error(
+                    f"Error generating completion with {config.get('provider', 'unknown')}/{config.get('model', 'unknown')}: {str(e)}",
+                    emoji_key="error"
+                )
+                
+                return {
+                    "provider": config.get("provider", "unknown"),
+                    "model": config.get("model", "unknown"),
+                    "text": f"Error: {str(e)}",
+                    "tokens": {"input": 0, "output": 0, "total": 0},
+                    "cost": 0.0,
+                    "error": str(e),
+                }
+        
+        # Create tasks for parallel execution
+        tasks = [execute_completion(config) for config in configs]
+        
+        try:
+            # Execute all completions with timeout
+            if timeout:
+                completions = await asyncio.wait_for(asyncio.gather(*tasks), timeout=timeout)
+            else:
+                completions = await asyncio.gather(*tasks)
+            
+            # Calculate total cost and tokens
+            total_cost = sum(c.get("cost", 0.0) for c in completions if c.get("error") is None)
+            total_tokens = sum(c.get("tokens", {}).get("total", 0) for c in completions if c.get("error") is None)
+            
+            # Calculate processing time
+            processing_time = time.time() - start_time
+            
+            # Log success
+            success_count = sum(1 for c in completions if c.get("error") is None)
+            logger.success(
+                f"Generated {success_count}/{len(configs)} completions successfully",
+                time=processing_time,
+                cost=total_cost
+            )
+            
+            return {
+                "completions": completions,
+                "total_cost": total_cost,
+                "total_tokens": total_tokens,
+                "success_count": success_count,
+                "processing_time": processing_time,
+            }
+            
+        except asyncio.TimeoutError:
+            # Handle timeout
+            processing_time = time.time() - start_time
+            
+            logger.error(
+                f"Multi-completion timed out after {timeout}s",
+                emoji_key="error",
+                time=processing_time
+            )
+            
+            return {
+                "error": f"Operation timed out after {timeout} seconds",
+                "completions": [],
+                "processing_time": processing_time,
+            }
+            
+        except Exception as e:
+            # Handle other errors
+            processing_time = time.time() - start_time
+            
+            logger.error(
+                f"Multi-completion failed: {str(e)}",
+                emoji_key="error",
+                time=processing_time
+            )
+            
+            return {
+                "error": f"Multi-completion failed: {str(e)}",
+                "completions": [],
+                "processing_time": processing_time,
+            }
+
+    async def _execute_comparison_synthesis(
+        self,
+        prompt: str,
+        configs: List[Dict[str, Any]],
+        criteria: List[str],
+        criteria_weights: Dict[str, float],
+        synthesis_model: Optional[Dict[str, Any]],
+        response_format: str,
+        synthesis_strategy: str,
+        include_reasoning: bool,
+        # No analyze_task_func needed
+    ) -> Dict[str, Any]:
+        """
+        Internal method to execute the comparison and synthesis.
+        """
+        try:
+            # Generate completions from multiple models
+            # Use call_tool instead of execute, assuming multi_completion is a registered tool/capability
+            multi_result = await self.mcp.call_tool("multi_completion", {
+                "prompt": prompt,
+                "configs": configs
+            })
+            
+            # Check if multi_result is a list (old format) or a dictionary (new format)
+            if isinstance(multi_result, list) and len(multi_result) > 0:
+                # Old format: convert the first item to our expected format
+                if hasattr(multi_result[0], 'text'):
+                    try:
+                        completions_data = json.loads(multi_result[0].text)
+                        completions = completions_data.get("completions", [])
+                    except Exception:
+                        # If we can't parse, create empty completions
+                        completions = []
+                else:
+                    completions = []
+            else:
+                # New format: directly get the completions
+                completions = multi_result.get("completions", [])
+            
+            if not completions:
+                return {
+                    "error": "No completions generated",
+                }
+                
+            # Select synthesis model if not specified
+            if not synthesis_model:
+                # Analyze task to determine best synthesis model
+                # Call the nested analyze_task tool via MCP
+                try:
+                    analysis_result = await self.mcp.call_tool("analyze_task", {
+                        "task_description": f"Compare and synthesize multiple responses based on criteria: {', '.join(criteria)} with strategy: {synthesis_strategy}",
+                        "analyze_features": True,
+                        "analyze_cost": False
+                    })
+                    
+                    # Handle analysis result that may be a list
+                    if isinstance(analysis_result, list) and len(analysis_result) > 0:
+                        if hasattr(analysis_result[0], 'text'):
+                            try:
+                                analysis = json.loads(analysis_result[0].text)
+                            except Exception:
+                                analysis = {"recommendations": {}}
+                        else:
+                            analysis = analysis_result[0]
+                    else:
+                        analysis = analysis_result
+                    
+                except Exception as e:
+                    logger.error(f"Failed to call analyze_task via MCP: {e}")
+                    analysis = {"recommendations": {}} # Default on error
+                
+                # Get recommended model for complex reasoning
+                recommendations = analysis.get("recommendations", {})
+                if recommendations and recommendations.get("best_quality"):
+                    synth_provider = recommendations["best_quality"]["provider"]
+                    synth_model = recommendations["best_quality"]["model"]
+                else:
+                    # Default to a high-capability model
+                    synth_provider = Provider.ANTHROPIC.value
+                    synth_model = "claude-3-5-sonnet-20240620"
+            else:
+                synth_provider = synthesis_model.get("provider", Provider.ANTHROPIC.value)
+                synth_model = synthesis_model.get("model", "claude-3-5-sonnet-20240620")
+                
+            # Generate criteria definitions and guidance
+            criteria_definitions = self._get_criteria_definitions(criteria)
+            criteria_weights_text = "\n".join([f"- {criterion}: {weight:.2f}" for criterion, weight in criteria_weights.items()])
+            
+            # Create the meta-prompt for comparison and synthesis
+            responses_text = ""
+            
+            for i, completion in enumerate(completions):
+                provider = completion.get("provider", "unknown")
+                model = completion.get("model", "unknown")
+                text = completion.get("text", "")
+                
+                responses_text += f"\n\n=== RESPONSE {i+1} (From {provider}/{model}) ===\n{text}\n=== END OF RESPONSE {i+1} ==="
+            
+            # Create base meta-prompt
+            meta_prompt = f"""# TASK: EVALUATE AND {"SYNTHESIZE" if response_format == "synthesis" else "COMPARE"} MULTIPLE AI RESPONSES
+
+    ## ORIGINAL PROMPT
+    {prompt}
+
+    ## EVALUATION CRITERIA
+    {criteria_definitions}
+
+    ## CRITERIA WEIGHTS
+    {criteria_weights_text}
+
+    ## RESPONSES TO EVALUATE
+    {responses_text}
+
+    ## SYNTHESIS STRATEGY: {synthesis_strategy.upper()}
+    {self._get_synthesis_strategy_description(synthesis_strategy)}
+
+    ## INSTRUCTIONS
+    """
+
+            # Add specific instructions based on response format
+            meta_prompt += self._get_format_specific_instructions(
+                response_format=response_format,
+                synthesis_strategy=synthesis_strategy,
+                include_reasoning=include_reasoning,
+                criteria=criteria
+            )
+            
+            # Get provider instance for synthesis
+            provider_instance = get_provider(synth_provider)
+            
+            # Generate synthesis/evaluation
+            try:
+                # For Anthropic, we need special handling
+                if synth_provider == Provider.ANTHROPIC.value:
+                    # Get a fresh initialized Anthropic provider
+                    provider_instance = get_provider(synth_provider)
+                    await provider_instance.initialize()
+                    
+                    # For Anthropic, don't use the messages format directly
+                    # Instead, let the provider handle message formatting
+                    result = await provider_instance.generate_completion(
+                        prompt=meta_prompt,
+                        model=synth_model,
+                        temperature=0.2,
+                        max_tokens=4000
+                    )
+                else:
+                    # For other providers
+                    result = await provider_instance.generate_completion(
+                        prompt=meta_prompt,
+                        model=synth_model,
+                        temperature=0.2,
+                        max_tokens=4000
+                    )
+            except Exception as e:
+                logger.error(f"Primary synthesis model failed: {str(e)}", emoji_key="error")
+                
+                # Try fallback model if primary fails
+                fallback_provider = Provider.OPENAI.value
+                fallback_model = "gpt-4o"
+                
+                logger.info(f"Attempting fallback to {fallback_provider}/{fallback_model}", emoji_key="warning")
+                
+                fallback_instance = get_provider(fallback_provider)
+                await fallback_instance.initialize()  # Make sure fallback is initialized
+                result = await fallback_instance.generate_completion(
+                    prompt=meta_prompt,
+                    model=fallback_model,
+                    temperature=0.2,
+                    max_tokens=4000
+                )
+            
+            # Parse JSON response
+            synthesis = self._parse_synthesis_response(result.text)
+            
+            # Calculate total costs (synthesis + all completions)
+            total_cost = result.cost
+            total_tokens = result.total_tokens
+            
+            for completion in completions:
+                if "cost" in completion:
+                    total_cost += completion["cost"]
+                if "total_tokens" in completion:
+                    total_tokens += completion["total_tokens"]
+            
+            # Prepare final result
+            final_result = {
+                "synthesis": synthesis,
+                "completions": completions,
+                "synthesis_provider": synth_provider,
+                "synthesis_model": result.model,
+                "criteria": criteria,
+                "criteria_weights": criteria_weights,
+                "response_format": response_format,
+                "synthesis_strategy": synthesis_strategy,
+                "tokens": {
+                    "synthesis_input": result.input_tokens,
+                    "synthesis_output": result.output_tokens,
+                    "synthesis_total": result.total_tokens,
+                    "total": total_tokens,
+                },
+                "cost": {
+                    "synthesis_cost": result.cost,
+                    "total_cost": total_cost,
+                },
+            }
+            
+            # Add any metadata from the synthesis
+            if isinstance(synthesis, dict) and "metadata" in synthesis:
+                final_result["metadata"] = synthesis["metadata"]
+            
+            # Make sure we return a dict, not a list
+            return final_result
+            
+        except Exception as e:
+            # Re-raise the exception to be caught by the parent method
+            raise e
+
+    def _get_criteria_definitions(self, criteria: List[str]) -> str:
+        """
+        Generate detailed definitions for each evaluation criterion.
+        """
+        criteria_descriptions = {
+            "factual_accuracy": "Assess whether the information provided is correct, verifiable, and free from errors or misleading statements. Check if claims align with established knowledge and whether appropriate qualifiers are used for uncertain information.",
+            
+            "completeness": "Evaluate if the response addresses all aspects of the prompt and provides sufficient depth. A complete response leaves no important questions unanswered and provides context where needed.",
+            
+            "relevance": "Determine how well the response addresses the specific query or task in the prompt. A relevant response stays focused on the user's needs without unnecessary tangents.",
+            
+            "coherence": "Assess the logical flow and structure of the response. Look for clear organization, smooth transitions between ideas, and a consistent narrative that's easy to follow.",
+            
+            "depth_of_reasoning": "Evaluate the sophistication of analysis and logical reasoning. Higher scores indicate nuanced thinking, consideration of multiple perspectives, and well-supported conclusions.",
+            
+            "clarity": "Assess how easy the response is to understand. Clear responses use precise language, explain complex concepts appropriately, and avoid jargon unless necessary.",
+            
+            "creativity": "Evaluate originality, innovative thinking, and novel approaches in the response. Consider whether the response introduces fresh perspectives or solutions.",
+            
+            "practical_utility": "Assess how useful and actionable the information is for the user's likely purpose. Consider whether the response provides practical guidance that can be implemented.",
+            
+            "conciseness": "Evaluate whether the response is appropriately brief while still being complete. Lower scores indicate unnecessary verbosity or repetition.",
+            
+            "tone_appropriateness": "Assess whether the style, formality level, and emotional tone match what would be appropriate for the context of the request.",
+            
+            "safety": "Evaluate whether the response adheres to ethical guidelines, avoids harmful content, and maintains appropriate boundaries.",
+        }
+        
+        definitions = []
+        for criterion in criteria:
+            if criterion in criteria_descriptions:
+                definitions.append(f"- **{criterion}**: {criteria_descriptions[criterion]}")
+            else:
+                # Generic definition for custom criteria
+                definitions.append(f"- **{criterion}**: Evaluate the response based on {criterion}.")
+        
+        return "\n".join(definitions)
+
+    def _get_synthesis_strategy_description(self, strategy: str) -> str:
+        """
+        Generate description for the requested synthesis strategy.
+        """
+        if strategy == "comprehensive":
+            return "Create a thorough synthesis that combines the strongest elements from all responses, integrating different perspectives and insights to produce a more complete and nuanced answer than any individual response."
+        
+        elif strategy == "conservative":
+            return "Prioritize accuracy and reliability. Only include information that appears consistently across multiple responses or is provided by the most reliable source. Explicitly acknowledge uncertainties and avoid speculative content."
+        
+        elif strategy == "creative":
+            return "Build upon the insights from all responses to generate novel connections and ideas that weren't present in any individual response. The synthesis should extend beyond the original responses while maintaining accuracy."
+        
+        else:
+            return "Create a balanced synthesis that accurately represents the information from all responses."
+
+    def _get_format_specific_instructions(
+        self,
+        response_format: str,
+        synthesis_strategy: str,
+        include_reasoning: bool,
+        criteria: List[str]
+    ) -> str:
+        """
+        Generate detailed instructions based on the requested response format.
+        """
+        # Base scores structure that's common across formats
+        scores_json = ", ".join([f'"{criterion}": <score 1-10>' for criterion in criteria])
+        
+        if response_format == "best":
+            instructions = f"""Carefully evaluate each response based on the provided criteria. Then select the BEST overall response.
+
+    Your analysis should follow these steps:
+    1. Evaluate each response individually against all criteria, assigning scores from 1-10
+    2. Consider the weights of different criteria when calculating overall scores
+    3. Identify key strengths and weaknesses of each response
+    4. Determine which response performs best overall, considering both average scores and crucial criteria
+    5. Provide clear reasoning for your selection
+
+    Your response MUST be in valid JSON format with the following structure:
+    {{
+    "evaluations": [
+        {{
+        "response_index": 1,
+        "provider": "provider_name",
+        "model": "model_name",
+        "scores": {{ {scores_json} }},
+        "weighted_average": <calculated_weighted_average>,
+        "strengths": ["specific strength 1", "specific strength 2"...],
+        "weaknesses": ["specific weakness 1", "specific weakness 2"...]
+        }},
+        ...
+    ],
+    "best_response": {{
+        "response_index": <best_index>,
+        "provider": "provider_name",
+        "model": "model_name",
+        "reasoning": "<detailed explanation of why this response was selected as best>"
+    }},
+    "best_response_text": "<the full text of the best response>"
+    }}"""
+
+            if not include_reasoning:
+                instructions = instructions.replace('"reasoning": "<detailed explanation of why this response was selected as best>"', '"reasoning": null')
+                
+        elif response_format == "synthesis":
+            instructions = f"""Carefully evaluate each response against the provided criteria. Then create a new synthesized response that combines the best elements of all responses using the {synthesis_strategy} strategy.
+
+    Your analysis should follow these steps:
+    1. Evaluate each response individually against all criteria, assigning scores from 1-10
+    2. Identify the unique strengths, insights, and valuable content from each response
+    3. Create a cohesive new response that integrates the best elements according to the {synthesis_strategy} strategy
+    4. Ensure your synthesized response is coherent, well-structured, and addresses the original prompt effectively
+
+    Your response MUST be in valid JSON format with the following structure:
+    {{
+    "evaluations": [
+        {{
+        "response_index": 1,
+        "provider": "provider_name",
+        "model": "model_name",
+        "scores": {{ {scores_json} }},
+        "weighted_average": <calculated_weighted_average>,
+        "key_contributions": ["specific insight or strength that was incorporated into synthesis", ...]
+        }},
+        ...
+    ],
+    "synthesis_strategy": "<explanation of how you combined the responses>",
+    "synthesized_response": "<the full synthesized response that combines the best elements according to the strategy>",
+    "metadata": {{
+        "agreement_level": "<high/medium/low> - how consistent the responses were",
+        "key_disagreements": ["specific point of disagreement 1", ...],
+        "confidence": <1-10> - confidence in the quality of the synthesis
+    }}
+    }}"""
+
+            if not include_reasoning:
+                instructions = instructions.replace('"synthesis_strategy": "<explanation of how you combined the responses>"', '"synthesis_strategy": null')
+                
+        elif response_format == "ranked":
+            instructions = f"""Carefully evaluate each response against the provided criteria. Then rank all responses from best to worst.
+
+    Your analysis should follow these steps:
+    1. Evaluate each response individually against all criteria, assigning scores from 1-10
+    2. Calculate weighted average scores based on the criteria weights
+    3. Rank the responses from highest to lowest overall quality
+    4. For each response, identify key strengths and weaknesses
+    5. Provide brief reasoning for each ranking position
+
+    Your response MUST be in valid JSON format with the following structure:
+    {{
+    "evaluations": [
+        {{
+        "response_index": 1,
+        "provider": "provider_name",
+        "model": "model_name",
+        "scores": {{ {scores_json} }},
+        "weighted_average": <calculated_weighted_average>,
+        "strengths": ["specific strength 1", "specific strength 2"...],
+        "weaknesses": ["specific weakness 1", "specific weakness 2"...]
+        }},
+        ...
+    ],
+    "ranking": [
+        {{
+        "rank": 1,
+        "response_index": <best_index>,
+        "provider": "provider_name",
+        "model": "model_name",
+        "reasoning": "<explanation of why this response received this rank>"
+        }},
+        ...
+    ]
+    }}"""
+
+            if not include_reasoning:
+                instructions = instructions.replace('"reasoning": "<explanation of why this response received this rank>"', '"reasoning": null')
+                
+        else:  # analysis
+            instructions = f"""Carefully evaluate each response against the provided criteria, but do NOT select a winner or create a synthesis. Instead, provide a detailed comparative analysis.
+
+    Your analysis should follow these steps:
+    1. Evaluate each response individually against all criteria, assigning scores from 1-10
+    2. Identify patterns, similarities, and differences across the responses
+    3. Analyze the unique approaches, strengths, and limitations of each response
+    4. Assess what this comparison reveals about different approaches to the prompt
+
+    Your response MUST be in valid JSON format with the following structure:
+    {{
+    "evaluations": [
+        {{
+        "response_index": 1,
+        "provider": "provider_name",
+        "model": "model_name",
+        "scores": {{ {scores_json} }},
+        "weighted_average": <calculated_weighted_average>,
+        "key_characteristics": ["notable characteristic 1", "notable characteristic 2"...]
+        }},
+        ...
+    ],
+    "comparative_analysis": {{
+        "patterns": ["observed pattern 1", "observed pattern 2"...],
+        "differences": ["key difference 1", "key difference 2"...],
+        "strengths_distribution": {{ "<criterion>": "description of how models performed on this criterion" }},
+        "insights": ["analytical insight 1", "analytical insight 2"...]
+    }},
+    "metadata": {{
+        "agreement_level": "<high/medium/low> - how consistent the responses were",
+        "key_disagreements": ["specific point of disagreement 1", ...],
+        "most_challenging_criteria": ["criterion that showed greatest variance", ...]
+    }}
+    }}"""
+        
+        return instructions
+
+    def _parse_synthesis_response(self, text: str) -> Union[Dict[str, Any], str]:
+        """
+        Parse the synthesis response, handling various edge cases.
+        """
+        # Try direct JSON parsing
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        
+        # Try to extract JSON with regex
+        import re
+        json_match = re.search(r'(\{[\s\S]*\})', text)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        
+        # If we can't parse JSON, return the raw text with error indication
+        return {
+            "error": "Failed to parse synthesis JSON",
+            "raw_text": text
+        }            
     
     def _analyze_task_type(self, task_description: str) -> str:
         """Analyze task description to determine task type.
@@ -940,7 +1663,6 @@ Format your response as JSON:
             # OpenAI models
             "gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math", "creativity", "complex-reasoning"],
             "gpt-4o-mini": ["reasoning", "coding", "knowledge", "instruction-following", "creativity"],
-            "gpt-3.5-turbo": ["coding", "knowledge", "instruction-following"],
             
             # Claude models
             "claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math", "creativity", "complex-reasoning"],
@@ -1106,7 +1828,6 @@ Format your response as JSON:
             "openai": {
                 "gpt-4o": 9.5,
                 "gpt-4o-mini": 8.5,
-                "gpt-3.5-turbo": 7.5,
             },
             "anthropic": {
                 "claude-3-opus-20240229": 9.5,
@@ -1130,8 +1851,7 @@ Format your response as JSON:
         provider_speed = {
             "openai": {
                 "gpt-4o": 8.0,
-                "gpt-4o-mini": 9.0,
-                "gpt-3.5-turbo": 9.5,
+                "gpt-4o-mini": 9.5,
             },
             "anthropic": {
                 "claude-3-opus-20240229": 6.0,
@@ -1163,12 +1883,12 @@ Format your response as JSON:
                 "anthropic": ["claude-3-opus-20240229", "claude-3-5-sonnet-20240620"],
             },
             "classification": {
-                "openai": ["gpt-4o", "gpt-3.5-turbo"],
+                "openai": ["gpt-4o", "gpt-4o-mini"],
                 "anthropic": ["claude-3-haiku-20240307", "claude-3-5-haiku-latest"],
                 "gemini": ["gemini-2.0-flash"],
             },
             "translation": {
-                "openai": ["gpt-4o", "gpt-3.5-turbo"],
+                "openai": ["gpt-4o", "gpt-4o-mini"],
                 "deepseek": ["deepseek-chat"],
             },
             "creative_writing": {
@@ -1360,7 +2080,7 @@ Format your response as JSON:
                 return first_provider, provider_options[first_provider][0]["id"]
         
         # Last resort fallback
-        return Provider.OPENAI.value, "gpt-3.5-turbo"
+        return Provider.OPENAI.value, "gpt-4o-mini"
     
     def _get_fallback_provider(self, primary_provider: str, available_providers: List[str]) -> Optional[str]:
         """Get a fallback provider if primary provider fails.
@@ -1459,6 +2179,8 @@ Format your response as JSON:
             return result
             
         elif step_type == "extract_entities":
+            # Import extraction tools
+            
             # Use extract_entities tool
             result = await self.mcp.execute("extract_entities", {
                 "document": input_text,
@@ -1470,6 +2192,8 @@ Format your response as JSON:
             return result
             
         elif step_type == "extract_json":
+            # Import extraction tools
+            
             # Use extract_json tool
             result = await self.mcp.execute("extract_json", {
                 "text": input_text,
@@ -1482,7 +2206,7 @@ Format your response as JSON:
             
         elif step_type == "quality_check":
             # Use quality_check tool
-            result = await self.execute("quality_check", {
+            result = await self.mcp.execute("quality_check", {
                 "text": input_text,
                 "original_task": step.get("original_task", ""),
                 "quality_criteria": step.get("quality_criteria"),
@@ -1547,3 +2271,83 @@ Format your response as JSON:
             completed.update(i for i, _ in current_group)
         
         return groups
+
+    @with_tool_metrics
+    async def analyze_task(
+        self,
+        task_description: str,
+        available_providers: Optional[List[str]] = None,
+        analyze_features: bool = True,
+        analyze_cost: bool = True,
+        ctx=None
+    ) -> Dict[str, Any]:
+        """
+        Analyze a task and recommend the best provider and model based on requirements.
+        
+        Args:
+            task_description: Description of the task to analyze
+            available_providers: Optional list of available providers to consider
+            analyze_features: Whether to analyze required features
+            analyze_cost: Whether to analyze estimated cost
+            
+        Returns:
+            Dictionary containing task analysis and recommendations
+        """
+        start_time = time.time()
+        
+        # Get available providers if not specified
+        if available_providers is None:
+            available_providers = [p.value for p in Provider]
+        
+        # Analyze task type
+        task_type = self._analyze_task_type(task_description)
+        
+        # Analyze required features
+        required_features = []
+        features_explanation = ""
+        
+        if analyze_features:
+            required_features, features_explanation = self._analyze_required_features(task_description)
+        
+        # Get provider options
+        provider_options = await self._get_provider_options(
+            task_type=task_type,
+            required_features=required_features,
+            available_providers=available_providers
+        )
+        
+        # Analyze cost if requested
+        cost_analysis = {}
+        if analyze_cost:
+            cost_analysis = self._analyze_cost(
+                task_description=task_description,
+                provider_options=provider_options,
+                task_type=task_type
+            )
+        
+        # Generate recommendations
+        recommendations = self._generate_recommendations(
+            provider_options=provider_options,
+            cost_analysis=cost_analysis,
+            task_type=task_type
+        )
+        
+        # Calculate processing time
+        processing_time = time.time() - start_time
+        
+        # Log completion
+        logger.success(
+            f"Task analysis completed: {task_type}",
+            emoji_key="meta",
+            time=processing_time
+        )
+        
+        return {
+            "task_type": task_type,
+            "required_features": required_features,
+            "features_explanation": features_explanation,
+            "providers": provider_options,
+            "cost_analysis": cost_analysis,
+            "recommendations": recommendations,
+            "processing_time": processing_time,
+        }

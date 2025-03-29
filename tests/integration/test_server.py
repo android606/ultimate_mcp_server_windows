@@ -177,7 +177,7 @@ class TestServerIntegration:
                             "openai": [
                                 {"id": "gpt-4o", "provider": "openai"},
                                 {"id": "gpt-4o-mini", "provider": "openai"},
-                                {"id": "gpt-3.5-turbo", "provider": "openai"}
+                                {"id": "gpt-4o-mini", "provider": "openai"}
                             ]
                         }
                     }

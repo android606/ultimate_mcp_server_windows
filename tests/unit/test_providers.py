@@ -171,7 +171,7 @@ class TestOpenAIProvider:
                 self.data = [
                     type("MockModel", (), {"id": "gpt-4o", "owned_by": "openai"}),
                     type("MockModel", (), {"id": "gpt-4o-mini", "owned_by": "openai"}),
-                    type("MockModel", (), {"id": "gpt-3.5-turbo", "owned_by": "openai"})
+                    type("MockModel", (), {"id": "gpt-4o-mini", "owned_by": "openai"})
                 ]
         
         return {
