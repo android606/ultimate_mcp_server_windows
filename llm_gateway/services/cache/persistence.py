@@ -1,5 +1,4 @@
 """Cache persistence mechanisms."""
-import asyncio
 import json
 import os
 import pickle

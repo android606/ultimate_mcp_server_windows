@@ -1,6 +1,6 @@
 """DeepSeek provider implementation."""
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI
 
@@ -129,7 +129,7 @@ class DeepSeekProvider(BaseProvider):
             
             # Log success
             self.logger.success(
-                f"DeepSeek completion successful",
+                "DeepSeek completion successful",
                 emoji_key="success",
                 model=model,
                 tokens={
@@ -232,7 +232,7 @@ class DeepSeekProvider(BaseProvider):
             # Log success
             processing_time = time.time() - start_time
             self.logger.success(
-                f"DeepSeek streaming completion successful",
+                "DeepSeek streaming completion successful",
                 emoji_key="success",
                 model=model,
                 chunks=total_chunks,

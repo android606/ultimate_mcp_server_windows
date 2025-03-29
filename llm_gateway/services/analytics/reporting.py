@@ -1,9 +1,9 @@
 """Reporting and visualization for LLM Gateway analytics."""
-import os
 import json
-from datetime import datetime, timedelta
+import os
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 from llm_gateway.services.analytics.metrics import get_metrics_tracker
 from llm_gateway.utils import get_logger
@@ -11,10 +11,9 @@ from llm_gateway.utils import get_logger
 logger = get_logger(__name__)
 
 try:
-    import pandas as pd
-    import matplotlib.pyplot as plt
     import matplotlib.dates as mdates
-    from matplotlib.ticker import MaxNLocator
+    import matplotlib.pyplot as plt
+    import pandas as pd
     PLOTTING_AVAILABLE = True
 except ImportError:
     PLOTTING_AVAILABLE = False

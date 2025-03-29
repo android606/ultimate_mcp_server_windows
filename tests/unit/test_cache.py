@@ -1,15 +1,11 @@
 """Tests for the cache service."""
 import asyncio
-import time
 from pathlib import Path
-from typing import Any, Dict
 
 import pytest
 
 from llm_gateway.services.cache import (
     CacheService,
-    CacheStats,
-    get_cache_service,
     with_cache,
 )
 from llm_gateway.services.cache.strategies import (
@@ -151,7 +147,7 @@ class TestCacheService:
         }
         
         similar_key = cache_service.generate_cache_key(similar_request)
-        similar_fuzzy = cache_service.generate_fuzzy_key(similar_request)
+        similar_fuzzy = cache_service.generate_fuzzy_key(similar_request)  # noqa: F841
         
         # Should still find the original value
         result = await cache_service.get(similar_key, fuzzy=True)

@@ -1,9 +1,8 @@
 """Text completion tools for LLM Gateway."""
 import asyncio
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from llm_gateway.config import config
 from llm_gateway.constants import Provider, TaskType
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.cache import with_cache

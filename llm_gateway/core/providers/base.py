@@ -1,10 +1,10 @@
 """Base LLM provider interface."""
 import abc
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from llm_gateway.config import config
-from llm_gateway.constants import Provider, COST_PER_MILLION_TOKENS
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)

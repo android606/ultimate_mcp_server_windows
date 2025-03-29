@@ -1,9 +1,9 @@
 """Tools for LLM Gateway."""
 from llm_gateway.tools.base import (
     BaseTool,
-    with_tool_metrics,
-    with_retry,
     register_tool,
+    with_retry,
+    with_tool_metrics,
 )
 from llm_gateway.tools.completion import CompletionTools
 from llm_gateway.tools.document import DocumentTools
