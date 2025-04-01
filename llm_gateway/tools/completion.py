@@ -9,7 +9,7 @@ from llm_gateway.services.cache import with_cache
 from llm_gateway.tools.base import BaseTool, with_retry, with_tool_metrics
 from llm_gateway.utils import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("llm_gateway.tools.completion")
 
 
 class CompletionTools(BaseTool):

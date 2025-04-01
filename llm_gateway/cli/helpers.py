@@ -224,7 +224,7 @@ def print_examples() -> None:
     """Print examples of using the CLI."""
     examples = """
 # Run the server
-llm-gateway run --host 0.0.0.0 --port 8000
+llm-gateway run --host 0.0.0.0 --port 8013
 
 # List available providers
 llm-gateway providers --check

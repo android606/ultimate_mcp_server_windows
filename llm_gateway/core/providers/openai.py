@@ -8,7 +8,8 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
 from llm_gateway.utils import get_logger
 
-logger = get_logger(__name__)
+# Use the same naming scheme everywhere: logger at module level
+logger = get_logger("llm_gateway.providers.openai")
 
 
 class OpenAIProvider(BaseProvider):
@@ -83,7 +84,7 @@ class OpenAIProvider(BaseProvider):
             **kwargs: Additional model-specific parameters
             
         Returns:
-            ModelResponse: Standardized response
+            ModelResponse with completion result
             
         Raises:
             Exception: If API call fails
@@ -93,6 +94,12 @@ class OpenAIProvider(BaseProvider):
             
         # Use default model if not specified
         model = model or self.get_default_model()
+        
+        # Strip provider prefix if present (e.g., "openai:gpt-4o" -> "gpt-4o")
+        if ":" in model:
+            original_model = model
+            model = model.split(":", 1)[1]
+            self.logger.debug(f"Stripped provider prefix from model name: {original_model} -> {model}")
         
         # Create messages
         messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
@@ -190,6 +197,12 @@ class OpenAIProvider(BaseProvider):
             
         # Use default model if not specified
         model = model or self.get_default_model()
+        
+        # Strip provider prefix if present (e.g., "openai:gpt-4o" -> "gpt-4o")
+        if ":" in model:
+            original_model = model
+            model = model.split(":", 1)[1]
+            self.logger.debug(f"Stripped provider prefix from model name (stream): {original_model} -> {model}")
         
         # Create messages
         messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
@@ -325,10 +338,14 @@ class OpenAIProvider(BaseProvider):
         """
         from llm_gateway.config import config
         
-        # Get from config if available
-        provider_config = getattr(config.providers, self.provider_name, None)
-        if provider_config and provider_config.default_model:
-            return provider_config.default_model
+        # Safely get from config if available
+        try:
+            provider_config = getattr(config, 'providers', {}).get(self.provider_name, None)
+            if provider_config and provider_config.default_model:
+                return provider_config.default_model
+        except (AttributeError, TypeError):
+            # Handle case when providers attribute doesn't exist or isn't a dict
+            pass
             
         # Otherwise return hard-coded default
         return "gpt-4o-mini"

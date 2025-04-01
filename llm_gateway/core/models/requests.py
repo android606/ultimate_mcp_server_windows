@@ -241,7 +241,7 @@ class ExtractionRequest(BaseRequest):
     extraction_type: str = Field(..., description="Type of extraction (json, table, key_value_pairs, schema)")
     model: Optional[str] = Field(None, description="Model to use")
     provider: str = Field(default=Provider.OPENAI.value, description="Provider to use")
-    schema: Optional[Dict[str, Any]] = Field(None, description="JSON schema for structured extraction")
+    json_schema: Optional[Dict[str, Any]] = Field(None, description="JSON schema for structured extraction")
     format: ExtractionFormat = Field(default=ExtractionFormat.JSON, description="Output format")
     task_type: str = Field(default=TaskType.EXTRACTION.value, description="Type of task")
     cache: bool = Field(default=True, description="Whether to use cache")

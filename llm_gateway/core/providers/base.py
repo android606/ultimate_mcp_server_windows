@@ -3,7 +3,7 @@ import abc
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from llm_gateway.config import config
+from llm_gateway.config import get_config
 from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.utils import get_logger
 
@@ -101,10 +101,38 @@ class BaseProvider(abc.ABC):
             api_key: API key for the provider
             **kwargs: Additional provider-specific options
         """
+        # Get API key from environment if not provided
+        if api_key is None:
+            api_key = self.get_api_key_from_env()
+            
         self.api_key = api_key
         self.options = kwargs
         self.client = None
         self.logger = get_logger(f"provider.{self.provider_name}")
+        
+    def get_api_key_from_env(self) -> Optional[str]:
+        """Get API key from environment variables.
+        
+        Returns:
+            API key string or None if not found
+        """
+        import os
+        
+        # Map provider names to environment variable names
+        env_vars = {
+            Provider.OPENAI.value: "OPENAI_API_KEY",
+            Provider.ANTHROPIC.value: "ANTHROPIC_API_KEY",
+            Provider.DEEPSEEK.value: "DEEPSEEK_API_KEY",
+            Provider.GEMINI.value: "GEMINI_API_KEY",
+        }
+        
+        # Get the appropriate environment variable name
+        env_var = env_vars.get(self.provider_name)
+        if not env_var:
+            return None
+            
+        # Try to get from environment
+        return os.environ.get(env_var)
         
     @abc.abstractmethod
     async def initialize(self) -> bool:
@@ -229,6 +257,9 @@ def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     Raises:
         ValueError: If provider name is invalid
     """
+    # Get the current config
+    cfg = get_config()
+    
     # Normalize provider name
     provider_name = provider_name.lower().strip()
     
@@ -249,13 +280,15 @@ def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     if provider_name not in providers:
         raise ValueError(f"Invalid provider name: {provider_name}")
         
-    # Get provider configuration
-    provider_config = getattr(config.providers, provider_name, None)
+    # Get provider-specific config
+    provider_cfg = getattr(cfg, 'providers', {}).get(provider_name, None)
     
-    # Create provider instance
-    provider_cls = providers[provider_name]
-    api_key = kwargs.pop("api_key", None) or (
-        provider_config.api_key if provider_config else None
-    )
+    # Only use config API key if not provided in kwargs
+    if 'api_key' not in kwargs and provider_cfg and provider_cfg.api_key:
+        kwargs['api_key'] = provider_cfg.api_key
     
-    return provider_cls(api_key=api_key, **kwargs)
+    # Instantiate the provider class with config API key and any extra kwargs
+    provider_class = providers[provider_name]
+    instance = provider_class(**kwargs)
+    
+    return instance

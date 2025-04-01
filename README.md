@@ -142,7 +142,7 @@ from mcp.client import Client
 
 async def main():
     # Claude would use this client to connect to the LLM Gateway
-    client = Client("http://localhost:8000")
+    client = Client("http://localhost:8013")
     
     # Claude can identify a document that needs processing
     document = "... large document content ..."
@@ -281,7 +281,7 @@ GEMINI_API_KEY=your_gemini_key
 DEEPSEEK_API_KEY=your_deepseek_key
 
 # Server Configuration
-SERVER_PORT=8000
+SERVER_PORT=8013
 SERVER_HOST=127.0.0.1
 
 # Logging Configuration
@@ -303,7 +303,7 @@ python -m llm_gateway.cli.main run
 docker compose up
 ```
 
-Once running, the server will be available at `http://localhost:8000`.
+Once running, the server will be available at `http://localhost:8013`.
 
 ## Cost Savings With Delegation
 

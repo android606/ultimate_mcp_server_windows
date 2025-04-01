@@ -8,7 +8,8 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
 from llm_gateway.utils import get_logger
 
-logger = get_logger(__name__)
+# Use the same naming scheme everywhere: logger at module level
+logger = get_logger("llm_gateway.providers.anthropic")
 
 
 class AnthropicProvider(BaseProvider):
@@ -68,19 +69,25 @@ class AnthropicProvider(BaseProvider):
         temperature: float = 0.7,
         **kwargs
     ) -> ModelResponse:
-        """Generate a completion with Anthropic.
+        """Generate a completion using Anthropic Claude.
         
         Args:
-            prompt: Input prompt
-            model: Model name
+            prompt: Text prompt to send to the model
+            model: Model name to use (e.g., "claude-3-opus-20240229")
             max_tokens: Maximum tokens to generate
-            temperature: Temperature parameter
-            **kwargs: Additional parameters
+            temperature: Temperature parameter (0.0-1.0)
+            **kwargs: Additional model-specific parameters
             
         Returns:
             ModelResponse object
         """
         model = model or self.get_default_model()
+        
+        # Strip provider prefix if present (e.g., "anthropic:claude-3-haiku" -> "claude-3-haiku")
+        if ":" in model:
+            original_model = model
+            model = model.split(":", 1)[1]
+            self.logger.debug(f"Stripped provider prefix from model name: {original_model} -> {model}")
         
         # Default max_tokens if not provided
         if max_tokens is None:
@@ -158,6 +165,12 @@ class AnthropicProvider(BaseProvider):
             
         # Use default model if not specified
         model = model or self.get_default_model()
+        
+        # Strip provider prefix if present (e.g., "anthropic:claude-3-haiku" -> "claude-3-haiku")
+        if ":" in model:
+            original_model = model
+            model = model.split(":", 1)[1]
+            self.logger.debug(f"Stripped provider prefix from model name (stream): {original_model} -> {model}")
         
         # Prepare system prompt if provided
         system = kwargs.pop("system", None)
@@ -269,20 +282,24 @@ class AnthropicProvider(BaseProvider):
         return models
             
     def get_default_model(self) -> str:
-        """Get the default Anthropic Claude model.
+        """Get the default Anthropic model.
         
         Returns:
             Default model name
         """
         from llm_gateway.config import config
         
-        # Get from config if available
-        provider_config = getattr(config.providers, self.provider_name, None)
-        if provider_config and provider_config.default_model:
-            return provider_config.default_model
+        # Safely get from config if available
+        try:
+            provider_config = getattr(config, 'providers', {}).get(self.provider_name, None)
+            if provider_config and provider_config.default_model:
+                return provider_config.default_model
+        except (AttributeError, TypeError):
+            # Handle case when providers attribute doesn't exist or isn't a dict
+            pass
             
         # Otherwise return hard-coded default
-        return "claude-3-5-haiku-latest"
+        return "claude-3-opus-20240229"
         
     async def check_api_key(self) -> bool:
         """Check if the Anthropic API key is valid.

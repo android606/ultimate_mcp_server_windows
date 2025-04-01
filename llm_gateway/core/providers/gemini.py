@@ -9,7 +9,8 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
 from llm_gateway.utils import get_logger
 
-logger = get_logger(__name__)
+# Use the same naming scheme everywhere: logger at module level
+logger = get_logger("llm_gateway.providers.gemini")
 
 
 class GeminiProvider(BaseProvider):
@@ -90,6 +91,12 @@ class GeminiProvider(BaseProvider):
             
         # Use default model if not specified
         model = model or self.get_default_model()
+        
+        # Strip provider prefix if present (e.g., "gemini:gemini-2.0-pro" -> "gemini-2.0-pro")
+        if ":" in model:
+            original_model = model
+            model = model.split(":", 1)[1]
+            self.logger.debug(f"Stripped provider prefix from model name: {original_model} -> {model}")
         
         # Log request
         self.logger.info(
@@ -188,6 +195,12 @@ class GeminiProvider(BaseProvider):
             
         # Use default model if not specified
         model = model or self.get_default_model()
+        
+        # Strip provider prefix if present (e.g., "gemini:gemini-2.0-pro" -> "gemini-2.0-pro")
+        if ":" in model:
+            original_model = model
+            model = model.split(":", 1)[1]
+            self.logger.debug(f"Stripped provider prefix from model name (stream): {original_model} -> {model}")
         
         # Prepare generation config
         generation_config = {
@@ -292,10 +305,14 @@ class GeminiProvider(BaseProvider):
         """
         from llm_gateway.config import config
         
-        # Get from config if available
-        provider_config = getattr(config.providers, self.provider_name, None)
-        if provider_config and provider_config.default_model:
-            return provider_config.default_model
+        # Safely get from config if available
+        try:
+            provider_config = getattr(config, 'providers', {}).get(self.provider_name, None)
+            if provider_config and provider_config.default_model:
+                return provider_config.default_model
+        except (AttributeError, TypeError):
+            # Handle case when providers attribute doesn't exist or isn't a dict
+            pass
             
         # Otherwise return hard-coded default
         return "gemini-2.0-flash-lite"

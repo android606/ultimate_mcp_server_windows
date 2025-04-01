@@ -15,10 +15,10 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from llm_gateway.config import config
+from llm_gateway.config import get_config
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
-from llm_gateway.core.server import Gateway
+from llm_gateway.core.server import Gateway, start_server
 from llm_gateway.services.cache import get_cache_service
 from llm_gateway.utils import get_logger
 
@@ -29,7 +29,8 @@ console = Console()
 def run_server(
     host: Optional[str] = None,
     port: Optional[int] = None,
-    workers: Optional[int] = None
+    workers: Optional[int] = None,
+    log_level: Optional[str] = None,
 ) -> None:
     """Run the LLM Gateway server.
     
@@ -37,26 +38,37 @@ def run_server(
         host: Host to bind to (default: from config)
         port: Port to listen on (default: from config)
         workers: Number of worker processes (default: from config)
+        log_level: Log level (default: from config)
     """
+    # Get the current config
+    cfg = get_config()
+    
     # Override config with provided values
     if host:
-        config.server.host = host
+        cfg.server.host = host
     if port:
-        config.server.port = port
+        cfg.server.port = port
     if workers:
-        config.server.workers = workers
+        cfg.server.workers = workers
+    
+    # Determine effective log level
+    effective_log_level = log_level or getattr(cfg, 'log_level', 'info')
     
     # Print server info
-    console.print(f"[bold blue]Starting LLM Gateway server v{config.server.version}[/bold blue]")
-    console.print(f"Server name: [cyan]{config.server.name}[/cyan]")
-    console.print(f"Host: [cyan]{config.server.host}[/cyan]")
-    console.print(f"Port: [cyan]{config.server.port}[/cyan]")
-    console.print(f"Workers: [cyan]{config.server.workers}[/cyan]")
+    console.print(f"[bold blue]Starting LLM Gateway server[/bold blue]")
+    console.print(f"Host: [cyan]{cfg.server.host}[/cyan]")
+    console.print(f"Port: [cyan]{cfg.server.port}[/cyan]")
+    console.print(f"Workers: [cyan]{cfg.server.workers}[/cyan]")
+    console.print(f"Log level: [cyan]{effective_log_level.upper()}[/cyan]")
     console.print()
     
-    # Create and run server
-    gateway = Gateway()
-    gateway.run()
+    # Start server using the factory pattern 
+    start_server(
+        host=cfg.server.host,
+        port=cfg.server.port,
+        workers=cfg.server.workers,
+        log_level=effective_log_level,
+    )
 
 
 async def list_providers(check_keys: bool = False, list_models: bool = False) -> None:
@@ -66,6 +78,9 @@ async def list_providers(check_keys: bool = False, list_models: bool = False) ->
         check_keys: Whether to check API keys
         list_models: Whether to list available models
     """
+    # Get the current config
+    cfg = get_config()
+    
     # Create provider table
     table = Table(title="Available LLM Providers")
     table.add_column("Provider", style="cyan")
@@ -98,7 +113,7 @@ async def list_providers(check_keys: bool = False, list_models: bool = False) ->
             api_key = "✅" if status.api_key_configured else "❌"
             
             # Get default model
-            provider_cfg = getattr(config.providers, provider_name, None)
+            provider_cfg = getattr(cfg, 'providers', {}).get(provider_name, None)
             default_model = provider_cfg.default_model if provider_cfg else "N/A"
             
             table.add_row(provider_name, enabled, api_key, default_model)

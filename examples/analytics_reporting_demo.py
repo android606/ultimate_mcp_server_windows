@@ -15,6 +15,16 @@ from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.analytics.metrics import get_metrics_tracker
 from llm_gateway.services.analytics.reporting import AnalyticsReporting
 from llm_gateway.utils import get_logger
+# --- Add Rich Imports ---
+from llm_gateway.utils.logging.console import console
+from llm_gateway.utils.display import display_analytics_metrics
+from rich.panel import Panel
+from rich.table import Table
+from rich.rule import Rule
+from rich.live import Live
+from rich.markup import escape
+from rich import box
+# ----------------------
 
 # Initialize logger
 logger = get_logger("example.analytics_reporting")
@@ -22,38 +32,38 @@ logger = get_logger("example.analytics_reporting")
 
 async def simulate_llm_usage():
     """Simulate various LLM API calls to generate analytics data."""
+    console.print(Rule("[bold blue]Simulating LLM Usage[/bold blue]"))
     logger.info("Simulating LLM usage to generate analytics data", emoji_key="start")
     
-    # Get metrics tracker (don't reset it)
     metrics = get_metrics_tracker()
+    providers_info = []
     
-    # Get providers for various API calls
-    providers = []
-    
-    # Try to get OpenAI provider
-    openai_key = decouple_config("OPENAI_API_KEY", default=None)
-    if openai_key:
-        openai = get_provider(Provider.OPENAI.value, api_key=openai_key)
-        await openai.initialize()
-        providers.append((Provider.OPENAI.value, openai))
-    
-    # Try to get Anthropic provider
-    anthropic_key = decouple_config("ANTHROPIC_API_KEY", default=None)
-    if anthropic_key:
-        anthropic = get_provider(Provider.ANTHROPIC.value, api_key=anthropic_key)
-        await anthropic.initialize()
-        providers.append((Provider.ANTHROPIC.value, anthropic))
-    
-    # Try to get Gemini provider
-    gemini_key = decouple_config("GEMINI_API_KEY", default=None)
-    if gemini_key:
-        gemini = get_provider(Provider.GEMINI.value, api_key=gemini_key)
-        await gemini.initialize()
-        providers.append((Provider.GEMINI.value, gemini))
-    
-    logger.info(f"Using {len(providers)} providers for simulation", emoji_key="provider")
-    
-    # Sample prompts of different lengths for varied token usage
+    # Setup providers
+    provider_configs = {
+        Provider.OPENAI: decouple_config("OPENAI_API_KEY", default=None),
+        Provider.ANTHROPIC: decouple_config("ANTHROPIC_API_KEY", default=None),
+        Provider.GEMINI: decouple_config("GEMINI_API_KEY", default=None),
+    }
+
+    for provider_enum, api_key in provider_configs.items():
+        if api_key:
+            try:
+                provider = get_provider(provider_enum.value, api_key=api_key)
+                await provider.initialize()
+                providers_info.append((provider_enum.value, provider))
+                logger.info(f"Initialized provider: {provider_enum.value}", emoji_key="provider")
+            except Exception as e:
+                logger.warning(f"Failed to initialize {provider_enum.value}: {e}", emoji_key="warning")
+        else:
+             logger.info(f"API key not found for {provider_enum.value}, skipping.", emoji_key="skip")
+
+    if not providers_info:
+        logger.error("No providers could be initialized. Cannot simulate usage.", emoji_key="error")
+        console.print("[bold red]Error:[/bold red] No LLM providers could be initialized. Please check your API keys.")
+        return metrics # Return empty metrics
+
+    console.print(f"Simulating usage with [cyan]{len(providers_info)}[/cyan] providers.")
+
     prompts = [
         "What is machine learning?",
         "Explain the concept of neural networks in simple terms.",
@@ -62,34 +72,37 @@ async def simulate_llm_usage():
         "What are the ethical considerations in developing advanced AI systems?"
     ]
     
-    # Simulate different completion calls
-    total_calls = len(providers) * len(prompts)
+    total_calls = len(providers_info) * len(prompts)
     call_count = 0
     
-    for provider_name, provider in providers:
+    for provider_name, provider in providers_info:
+        # Use default model unless specific logic requires otherwise
+        model_to_use = provider.get_default_model()
+        if not model_to_use:
+            logger.warning(f"No default model found for {provider_name}, skipping provider.", emoji_key="warning")
+            continue # Skip this provider if no default model
+
         for prompt in prompts:
             call_count += 1
             logger.info(
-                f"Generating completion ({call_count}/{total_calls})",
-                emoji_key="processing",
-                provider=provider_name,
-                prompt_length=len(prompt)
+                f"Simulating call ({call_count}/{total_calls}) for {provider_name}",
+                emoji_key="processing"
             )
             
             try:
-                # Generate completion
                 start_time = time.time()
                 result = await provider.generate_completion(
                     prompt=prompt,
+                    model=model_to_use, # Use determined model
                     temperature=0.7,
                     max_tokens=150
                 )
                 completion_time = time.time() - start_time
                 
-                # Manually record the metrics
+                # Record metrics using the actual model returned in the result
                 metrics.record_request(
                     provider=provider_name,
-                    model=result.model,
+                    model=result.model, # Use model from result
                     input_tokens=result.input_tokens,
                     output_tokens=result.output_tokens,
                     cost=result.cost,
@@ -97,305 +110,221 @@ async def simulate_llm_usage():
                     success=True
                 )
                 
-                # Log success
-                logger.success(
-                    "Completion generated successfully",
-                    emoji_key="success",
-                    provider=provider_name,
-                    model=result.model,
-                    tokens={
-                        "input": result.input_tokens,
-                        "output": result.output_tokens,
-                        "total": result.total_tokens
-                    },
-                    cost=result.cost,
-                    time=completion_time
-                )
+                # Log less verbosely during simulation
+                # logger.success("Completion generated", emoji_key="success", provider=provider_name, model=result.model)
                 
-                # Add brief delay between calls
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.2) # Shorter delay
             
             except Exception as e:
-                logger.error(
-                    f"Error generating completion: {str(e)}",
-                    emoji_key="error",
-                    provider=provider_name
+                logger.error(f"Error simulating completion for {provider_name}: {str(e)}", emoji_key="error")
+                metrics.record_request(
+                    provider=provider_name,
+                    model=model_to_use, # Log error against intended model
+                    input_tokens=0, # Assume 0 tokens on error for simplicity
+                    output_tokens=0,
+                    cost=0.0,
+                    duration=time.time() - start_time, # Log duration even on error
+                    success=False # Mark as failed
                 )
     
-    logger.info("Finished simulating LLM usage", emoji_key="success")
-    
-    # Return metrics for further analysis
+    logger.info("Finished simulating LLM usage", emoji_key="complete")
     return metrics
 
 
 async def demonstrate_metrics_tracking():
-    """Demonstrate metrics tracking functionality."""
+    """Demonstrate metrics tracking functionality using Rich."""
+    console.print(Rule("[bold blue]Metrics Tracking Demonstration[/bold blue]"))
     logger.info("Starting metrics tracking demonstration", emoji_key="start")
     
-    # Create a new instance of the metrics tracker with reset_on_start=True
     metrics = get_metrics_tracker(reset_on_start=True)
-    
-    # Simulate usage to generate metrics
     await simulate_llm_usage()
-    
-    # Get current stats
     stats = metrics.get_stats()
     
-    # Display general metrics
-    logger.info("General LLM usage metrics:", emoji_key="metrics")
-    print("\n" + "-" * 80)
-    print("GENERAL METRICS")
-    print("-" * 80)
+    # Use the standardized display utility instead of custom code
+    display_analytics_metrics(stats)
     
-    general = stats["general"]
-    print(f"Total requests: {general['requests_total']}")
-    print(f"Total tokens: {general['tokens_total']}")
-    print(f"Total cost: ${general['cost_total']:.6f}")
-    
-    # Calculate these metrics on the fly
-    avg_tokens_per_request = general['tokens_total'] / general['requests_total'] if general['requests_total'] > 0 else 0
-    avg_cost_per_request = general['cost_total'] / general['requests_total'] if general['requests_total'] > 0 else 0
-    avg_cost_per_1k_tokens = (general['cost_total'] / general['tokens_total']) * 1000 if general['tokens_total'] > 0 else 0
-    
-    print(f"Average tokens per request: {avg_tokens_per_request:.1f}")
-    print(f"Average cost per request: ${avg_cost_per_request:.6f}")
-    print(f"Average cost per 1K tokens: ${avg_cost_per_1k_tokens:.6f}")
-    print(f"Total errors: {general['errors_total']}")
-    
-    # Display provider-specific metrics
-    print("\n" + "-" * 80)
-    print("PROVIDER METRICS")
-    print("-" * 80)
-    
-    for provider, provider_stats in stats["providers"].items():
-        print(f"\nProvider: {provider}")
-        print(f"  Requests: {provider_stats['requests']}")
-        print(f"  Tokens: {provider_stats['tokens']}")
-        print(f"  Cost: ${provider_stats['cost']:.6f}")
-        if provider_stats['requests'] > 0:
-            print(f"  Avg tokens per request: {provider_stats['tokens'] / provider_stats['requests']:.1f}")
-            print(f"  Avg cost per request: ${provider_stats['cost'] / provider_stats['requests']:.6f}")
-    
-    # Display model-specific metrics
-    print("\n" + "-" * 80)
-    print("MODEL METRICS")
-    print("-" * 80)
-    
-    for model, model_stats in stats["models"].items():
-        print(f"\nModel: {model}")
-        print(f"  Requests: {model_stats['requests']}")
-        print(f"  Tokens: {model_stats['tokens']}")
-        print(f"  Cost: ${model_stats['cost']:.6f}")
-        if model_stats['requests'] > 0:
-            print(f"  Avg tokens per request: {model_stats['tokens'] / model_stats['requests']:.1f}")
-            print(f"  Avg cost per request: ${model_stats['cost'] / model_stats['requests']:.6f}")
-    
-    # Display daily usage data
-    print("\n" + "-" * 80)
-    print("DAILY USAGE")
-    print("-" * 80)
-    
-    for day in stats["daily_usage"]:
-        print(f"Date: {day['date']}")
-        print(f"  Tokens: {day['tokens']}")
-        print(f"  Cost: ${day['cost']:.6f}")
-        print(f"  Requests: {day.get('requests', 0)}")  # Get requests with default of 0
-    
-    print("-" * 80 + "\n")
-    
-    # Return stats for further analysis
     return stats
 
 
 async def demonstrate_analytics_reporting():
     """Demonstrate analytics reporting functionality."""
+    console.print(Rule("[bold blue]Analytics Reporting Demonstration[/bold blue]"))
     logger.info("Starting analytics reporting demonstration", emoji_key="start")
     
-    # Get metrics tracker (should already have data from previous functions)
     metrics = get_metrics_tracker()
-    
-    # Check if we have any metrics data
     stats = metrics.get_stats()
     if stats["general"]["requests_total"] == 0:
-        logger.warning(
-            "No metrics data available. Running simulation first.",
-            emoji_key="warning"
-        )
+        logger.warning("No metrics data found. Running simulation first.", emoji_key="warning")
         await simulate_llm_usage()
+        stats = metrics.get_stats()
     
     # Initialize reporting service
-    reports_dir = Path.home() / ".llm_gateway" / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    reporting = AnalyticsReporting()
     
-    analytics = AnalyticsReporting(reports_dir=reports_dir)
+    # Generate reports
+    cost_by_provider = reporting.cost_by_provider(stats)
+    cost_by_model = reporting.cost_by_model(stats)
+    tokens_by_provider = reporting.tokens_by_provider(stats)
+    tokens_by_model = reporting.tokens_by_model(stats)
+    daily_cost_trend = reporting.daily_cost_trend(stats)
     
-    logger.info(f"Analytics reporting initialized (dir: {reports_dir})", emoji_key="info")
-    
-    # Generate a usage report
-    logger.info("Generating usage report (JSON format)", emoji_key="report")
-    json_report = analytics.generate_usage_report(days=7, output_format="json")
-    
-    if isinstance(json_report, Path):
-        logger.success(f"Generated JSON report: {json_report}", emoji_key="success")
-    
-    # Generate a cost report
-    logger.info("Generating cost report (JSON format)", emoji_key="report")
-    cost_report = analytics.generate_cost_report(days=30, output_format="json")
-    
-    if isinstance(cost_report, Path):
-        logger.success(f"Generated cost report: {cost_report}", emoji_key="success")
-    
-    # Try to generate provider report for first available provider
-    available_providers = list(stats["providers"].keys())
-    if available_providers:
-        provider = available_providers[0]
-        logger.info(f"Generating provider report for {provider}", emoji_key="report")
+    # Display reports using tables
+    # Provider cost report
+    if cost_by_provider:
+        provider_cost_table = Table(title="[bold green]Cost by Provider[/bold green]", box=box.ROUNDED)
+        provider_cost_table.add_column("Provider", style="magenta")
+        provider_cost_table.add_column("Cost", style="green", justify="right")
+        provider_cost_table.add_column("Percentage", style="cyan", justify="right")
         
-        provider_report = analytics.generate_provider_report(
-            provider=provider,
-            days=7,
-            output_format="json"
-        )
-        
-        if isinstance(provider_report, Path):
-            logger.success(f"Generated provider report: {provider_report}", emoji_key="success")
+        for item in cost_by_provider:
+            provider_cost_table.add_row(
+                escape(item["name"]),
+                f"${item['value']:.6f}",
+                f"{item['percentage']:.1f}%"
+            )
+        console.print(provider_cost_table)
+        console.print()
     
-    # Display report locations
-    logger.info("All reports saved to:", emoji_key="info")
-    print(f"Report directory: {reports_dir}")
+    # Model cost report
+    if cost_by_model:
+        model_cost_table = Table(title="[bold green]Cost by Model[/bold green]", box=box.ROUNDED)
+        model_cost_table.add_column("Model", style="blue")
+        model_cost_table.add_column("Cost", style="green", justify="right")
+        model_cost_table.add_column("Percentage", style="cyan", justify="right")
+        
+        for item in cost_by_model:
+            model_cost_table.add_row(
+                escape(item["name"]),
+                f"${item['value']:.6f}",
+                f"{item['percentage']:.1f}%"
+            )
+        console.print(model_cost_table)
+        console.print()
+    
+    # Tokens by provider report
+    if tokens_by_provider:
+        tokens_provider_table = Table(title="[bold green]Tokens by Provider[/bold green]", box=box.ROUNDED)
+        tokens_provider_table.add_column("Provider", style="magenta")
+        tokens_provider_table.add_column("Tokens", style="white", justify="right")
+        tokens_provider_table.add_column("Percentage", style="cyan", justify="right")
+        
+        for item in tokens_by_provider:
+            tokens_provider_table.add_row(
+                escape(item["name"]),
+                f"{item['value']:,}",
+                f"{item['percentage']:.1f}%"
+            )
+        console.print(tokens_provider_table)
+        console.print()
+    
+    # Tokens by model report
+    if tokens_by_model:
+        tokens_model_table = Table(title="[bold green]Tokens by Model[/bold green]", box=box.ROUNDED)
+        tokens_model_table.add_column("Model", style="blue")
+        tokens_model_table.add_column("Tokens", style="white", justify="right")
+        tokens_model_table.add_column("Percentage", style="cyan", justify="right")
+        
+        for item in tokens_by_model:
+            tokens_model_table.add_row(
+                escape(item["name"]),
+                f"{item['value']:,}",
+                f"{item['percentage']:.1f}%"
+            )
+        console.print(tokens_model_table)
+        console.print()
+        
+    # Daily cost trend report
+    if daily_cost_trend:
+        daily_trend_table = Table(title="[bold green]Daily Cost Trend[/bold green]", box=box.ROUNDED)
+        daily_trend_table.add_column("Date", style="yellow")
+        daily_trend_table.add_column("Cost", style="green", justify="right")
+        daily_trend_table.add_column("Change", style="cyan", justify="right")
+        
+        for item in daily_cost_trend:
+            change_str = f"{item.get('change', 0):.1f}%" if 'change' in item else "N/A"
+            change_style = ""
+            if 'change' in item:
+                if item['change'] > 0:
+                    change_style = "[red]+"
+                elif item['change'] < 0:
+                    change_style = "[green]"
+                    
+            daily_trend_table.add_row(
+                item["date"],
+                f"${item['cost']:.6f}",
+                f"{change_style}{change_str}[/]" if change_style else change_str
+            )
+        console.print(daily_trend_table)
+        console.print()
+    
+    return {
+        "cost_by_provider": cost_by_provider,
+        "cost_by_model": cost_by_model,
+        "tokens_by_provider": tokens_by_provider,
+        "tokens_by_model": tokens_by_model,
+        "daily_cost_trend": daily_cost_trend
+    }
 
 
 async def demonstrate_real_time_monitoring():
-    """Demonstrate real-time analytics monitoring with streaming."""
-    logger.info("Starting real-time monitoring demonstration", emoji_key="start")
+    """Demonstrate real-time metrics monitoring using Rich Live."""
+    console.print(Rule("[bold blue]Real-Time Monitoring Demonstration[/bold blue]"))
+    logger.info("Starting real-time monitoring (updates every 2s for 10s)", emoji_key="start")
     
-    # Get metrics tracker and reset for this demo
-    metrics = get_metrics_tracker()
-    metrics.reset()
-    logger.info("Metrics reset for streaming demo", emoji_key="info")
+    metrics = get_metrics_tracker() # Use existing tracker
     
-    # Get provider for streaming demo
-    api_key = decouple_config("OPENAI_API_KEY", default=None)
-    if not api_key:
-        logger.error("OpenAI API key not available for streaming demo", emoji_key="error")
-        return
-    
-    provider = get_provider(Provider.OPENAI.value, api_key=api_key)
-    await provider.initialize()
-    
-    # Prompt for streaming demo
-    prompt = "Write a short poem about artificial intelligence and the future of humanity."
-    
-    logger.info("Starting streaming completion for monitoring", emoji_key="processing")
-    
-    # Get initial metrics
-    before_stats = metrics.get_stats()
-    
-    # Start streaming completion
-    stream = provider.generate_completion_stream(
-        prompt=prompt,
-        temperature=0.7,
-        max_tokens=200
-    )
-    
-    # Process the stream and monitor in real-time
-    token_count = 0
-    full_text = ""
-    print("\n" + "-" * 80)
-    print("STREAMING OUTPUT:")
-    print("-" * 80)
-    
+    def generate_stats_table() -> Table:
+        """Generates a Rich Table with current stats."""
+        stats = metrics.get_stats()["general"]
+        table = Table(title="Live LLM Usage Stats", box=box.ROUNDED)
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="white", justify="right")
+        table.add_row("Total Requests", f"{stats['requests_total']:,}")
+        table.add_row("Total Tokens", f"{stats['tokens_total']:,}")
+        table.add_row("Total Cost", f"${stats['cost_total']:.6f}")
+        table.add_row("Total Errors", f"{stats['errors_total']:,}")
+        return table
+
     try:
-        async for chunk, _metadata in stream:
-            # Print chunk
-            print(chunk, end="", flush=True)
-            full_text += chunk
-            token_count += 1
+        with Live(generate_stats_table(), refresh_per_second=0.5, console=console) as live:
+            # Simulate some activity in the background while monitoring
+            # We could run simulate_llm_usage again, but let's just wait for demo purposes
+            end_time = time.time() + 10 # Monitor for 10 seconds
+            while time.time() < end_time:
+                # In a real app, other tasks would be modifying metrics here
+                live.update(generate_stats_table())
+                await asyncio.sleep(2) # Update display every 2 seconds
+                
+            # Final update
+            live.update(generate_stats_table())
             
-            # For demo purposes, check metrics every 5 tokens
-            if token_count % 5 == 0:
-                current_stats = metrics.get_stats()  # noqa: F841
-                # Real applications would log/visualize these metrics
-            
-            # Small delay to simulate processing
-            await asyncio.sleep(0.05)
-    
     except Exception as e:
-        logger.error(f"Error in streaming: {str(e)}", emoji_key="error")
-    
-    print("\n" + "-" * 80 + "\n")
-    
-    # Get final metrics after streaming
-    after_stats = metrics.get_stats()
-    
-    # Display metrics changes
-    tokens_used = after_stats["general"]["tokens_total"] - before_stats["general"]["tokens_total"]
-    cost_incurred = after_stats["general"]["cost_total"] - before_stats["general"]["cost_total"]
-    
-    # If no metrics were recorded, try to manually record them based on response
-    if tokens_used == 0:
-        # Estimate tokens used (rough approximation)
-        input_tokens = len(prompt.split()) // 2  # Rough estimation
-        output_tokens = len(full_text.split()) // 2  # Rough estimation
-        
-        # Record request metrics manually
-        metrics.record_request(
-            provider=Provider.OPENAI.value,
-            model="gpt-4o-mini",  # Default model - may need adjustment
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost=0.0005,  # Small arbitrary cost
-            duration=time.time() - before_stats["general"]["uptime"],
-            success=True
-        )
-        
-        # Update after stats
-        after_stats = metrics.get_stats()
-        tokens_used = after_stats["general"]["tokens_total"] - before_stats["general"]["tokens_total"]
-        cost_incurred = after_stats["general"]["cost_total"] - before_stats["general"]["cost_total"]
-    
-    logger.info(
-        "Streaming completion finished",
-        emoji_key="success",
-        tokens_generated=tokens_used,
-        cost=f"${cost_incurred:.6f}"
-    )
-    
-    # Show metrics changes
-    print("\n" + "-" * 80)
-    print("METRICS CHANGES FROM STREAMING")
-    print("-" * 80)
-    print(f"Tokens used: {tokens_used}")
-    print(f"Cost incurred: ${cost_incurred:.6f}")
-    print("-" * 80 + "\n")
+         logger.error(f"Error during live monitoring: {e}", emoji_key="error", exc_info=True)
+
+    logger.info("Finished real-time monitoring demonstration", emoji_key="complete")
+    console.print()
 
 
 async def main():
-    """Run analytics and reporting demonstration."""
+    """Run all analytics and reporting demonstrations."""
     try:
-        # First demonstrate metrics tracking
+        # Demonstrate metrics tracking (includes simulation)
         await demonstrate_metrics_tracking()
         
-        print("\n" + "=" * 80 + "\n")
-        
-        # Then demonstrate reporting functionality
+        # Demonstrate report generation
         await demonstrate_analytics_reporting()
         
-        print("\n" + "=" * 80 + "\n")
-        
-        # Finally demonstrate real-time monitoring
+        # Demonstrate real-time monitoring
         await demonstrate_real_time_monitoring()
         
     except Exception as e:
-        logger.critical(f"Analytics demonstration failed: {str(e)}", emoji_key="critical")
-        import traceback
-        traceback.print_exc()
+        logger.critical(f"Analytics demo failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1
     
+    logger.success("Analytics & Reporting Demo Finished Successfully!", emoji_key="complete")
     return 0
 
 
 if __name__ == "__main__":
-    # Run the demonstration
     exit_code = asyncio.run(main())
     sys.exit(exit_code) 

@@ -1,6 +1,8 @@
-"""Command-line interface for LLM Gateway."""
+#!/usr/bin/env python3
+"""Standalone script for running LLM Gateway tasks."""
 import argparse
 import asyncio
+import os
 import sys
 from typing import List, Optional
 
@@ -13,11 +15,10 @@ from llm_gateway.cli.commands import (
     run_server,
     test_provider,
 )
-from llm_gateway.config import config
 from llm_gateway.utils import get_logger
 
-# Use the consistent namespace approach
-logger = get_logger("llm_gateway.cli")
+# Use consistent namespace
+logger = get_logger("llm_gateway.main")
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -201,20 +202,18 @@ def main(args: Optional[List[str]] = None) -> int:
     parser = create_parser()
     parsed_args = parser.parse_args(args)
     
-    # Set debug mode if requested - but don't try to set config.logging.level
-    debug_mode = parsed_args.debug
+    # Set debug mode if requested
+    if parsed_args.debug:
+        os.environ["LOG_LEVEL"] = "DEBUG"
     
     # Handle command
     try:
         if parsed_args.command == "run":
-            # Run server with log level from debug flag
-            log_level = "DEBUG" if debug_mode else "INFO"
-            
+            # Run server
             run_server(
                 host=parsed_args.host,
                 port=parsed_args.port,
-                workers=parsed_args.workers,
-                log_level=log_level
+                workers=parsed_args.workers
             )
             return 0
             

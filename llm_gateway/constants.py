@@ -86,6 +86,9 @@ EMOJI_MAP = {
     "token": "🔢",
     "cost": "💰",
     "time": "⏱️",
+    "tool": "🛠️",
+    "tournament": "🏆",
+    "cancel": "🛑",
     
     # Task-specific emojis
     "completion": "✍️",

@@ -17,9 +17,9 @@ try:
     import chromadb
     from chromadb.config import Settings as ChromaSettings
     CHROMADB_AVAILABLE = True
-    logger.info("ChromaDB imported successfully", emoji_key="success")
+    logger.info("ChromaDB imported successfully", extra={"emoji_key": "success"})
 except ImportError as e:
-    logger.warning(f"ChromaDB not available: {str(e)}", emoji_key="warning")
+    logger.warning(f"ChromaDB not available: {str(e)}", extra={"emoji_key": "warning"})
     CHROMADB_AVAILABLE = False
 
 # Try to import hnswlib, but don't fail if not available
@@ -68,7 +68,7 @@ class VectorCollection:
         
         logger.info(
             f"Vector collection '{name}' created ({dimension} dimensions)",
-            emoji_key="vector"
+            extra={"emoji_key": "vector"}
         )
         
     def _init_search_index(self):

@@ -11,7 +11,7 @@ from llm_gateway.services.cache import with_cache
 from llm_gateway.tools.base import BaseTool, with_retry, with_tool_metrics
 from llm_gateway.utils import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("llm_gateway.tools.extraction")
 
 
 class ExtractionTools(BaseTool):
@@ -36,7 +36,7 @@ class ExtractionTools(BaseTool):
         @with_tool_metrics
         async def extract_json(
             text: str,
-            schema: Optional[Dict[str, Any]] = None,
+            json_schema: Optional[Dict[str, Any]] = None,
             provider: str = Provider.OPENAI.value,
             model: Optional[str] = None,
             max_attempts: int = 3,
@@ -47,7 +47,7 @@ class ExtractionTools(BaseTool):
             
             Args:
                 text: Text to extract data from
-                schema: Optional JSON schema to specify the expected output structure
+                json_schema: Optional JSON schema to specify the expected output structure
                 provider: LLM provider to use
                 model: Model name (default based on provider)
                 max_attempts: Maximum attempts to get valid JSON
@@ -66,22 +66,22 @@ class ExtractionTools(BaseTool):
                 
             # Prepare schema description
             schema_description = ""
-            if schema:
+            if json_schema:
                 # Convert schema to a human-readable format
                 schema_description = "The output should follow this structure:\n"
                 
                 # Format schema as JSON string with indentation
-                schema_json = json.dumps(schema, indent=2)
+                schema_json = json.dumps(json_schema, indent=2)
                 schema_description += f"```json\n{schema_json}\n```\n\n"
                 
                 # Add description of required fields
-                if "properties" in schema:
-                    required_fields = schema.get("required", [])
+                if "properties" in json_schema:
+                    required_fields = json_schema.get("required", [])
                     if required_fields:
                         schema_description += "Required fields: " + ", ".join(required_fields) + "\n\n"
                         
                     # Add descriptions of each property if available
-                    for prop_name, prop_info in schema["properties"].items():
+                    for prop_name, prop_info in json_schema["properties"].items():
                         if "description" in prop_info:
                             schema_description += f"- {prop_name}: {prop_info['description']}\n"
             
@@ -115,7 +115,7 @@ JSON output:"""
                     
                     if extracted_data:
                         # Validate against schema if provided
-                        if schema and not self._validate_json_against_schema(extracted_data, schema):
+                        if json_schema and not self._validate_json_against_schema(extracted_data, json_schema):
                             # If invalid, try again if attempts remain
                             if attempt < max_attempts - 1:
                                 logger.warning(
@@ -909,32 +909,32 @@ Schema ({target_format}):"""
                     
         return extracted_pairs
     
-    def _validate_json_against_schema(self, data: Any, schema: Dict[str, Any]) -> bool:
+    def _validate_json_against_schema(self, data: Any, json_schema: Dict[str, Any]) -> bool:
         """Validate JSON data against a schema.
         
         Args:
             data: JSON data to validate
-            schema: JSON schema
+            json_schema: JSON schema
             
         Returns:
             True if validation succeeds, False otherwise
         """
         try:
             import jsonschema
-            jsonschema.validate(instance=data, schema=schema)
+            jsonschema.validate(instance=data, schema=json_schema)
             return True
         except ImportError:
             # jsonschema not available, try basic validation
-            if "type" in schema:
+            if "type" in json_schema:
                 # Check basic type
-                if schema["type"] == "object" and not isinstance(data, dict):
+                if json_schema["type"] == "object" and not isinstance(data, dict):
                     return False
-                if schema["type"] == "array" and not isinstance(data, list):
+                if json_schema["type"] == "array" and not isinstance(data, list):
                     return False
                     
             # Check required fields
-            if "required" in schema and isinstance(data, dict):
-                for field in schema["required"]:
+            if "required" in json_schema and isinstance(data, dict):
+                for field in json_schema["required"]:
                     if field not in data:
                         return False
                         

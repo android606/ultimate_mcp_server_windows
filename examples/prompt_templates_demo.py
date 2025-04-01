@@ -12,13 +12,19 @@ from decouple import config as decouple_config
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.prompts import (
-    get_prompt_repository,
-    PromptTemplate,
-    render_prompt,
-    render_prompt_template
-)
+from llm_gateway.core.server import Gateway
+from llm_gateway.services.prompts import PromptTemplate, get_prompt_repository
 from llm_gateway.utils import get_logger
+# --- Add Rich Imports ---
+from llm_gateway.utils.logging.console import console
+from llm_gateway.utils.display import display_text_content_result, parse_and_display_result
+from rich.panel import Panel
+from rich.table import Table
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.markup import escape
+from rich import box
+# ----------------------
 
 # Initialize logger
 logger = get_logger("example.prompt_templates")
@@ -26,6 +32,8 @@ logger = get_logger("example.prompt_templates")
 
 async def demonstrate_prompt_templates():
     """Demonstrate prompt template creation and rendering."""
+    # Use Rich Rule for title
+    console.print(Rule("[bold blue]Prompt Template Demonstration[/bold blue]"))
     logger.info("Starting prompt template demonstration", emoji_key="start")
     
     # Simple prompt template
@@ -41,11 +49,9 @@ Please explain {{concept}} in simple terms that a {{audience}} could understand.
         description="A template for generating simple explanations of concepts"
     )
     
-    # Display template details
     logger.info(
         f"Created prompt template: {template.template_id}",
-        emoji_key="template",
-        format=template.format
+        emoji_key="template"
     )
     
     # Render the template with variables
@@ -55,7 +61,6 @@ Please explain {{concept}} in simple terms that a {{audience}} could understand.
         "audience": "high school student"
     }
     
-    # Render using helper function
     rendered_prompt = template.render(variables)
     
     logger.info(
@@ -64,19 +69,31 @@ Please explain {{concept}} in simple terms that a {{audience}} could understand.
         variables=list(variables.keys())
     )
     
-    # Display rendered template
-    print("\n" + "-" * 80)
-    print("TEMPLATE:")
-    print(template_text)
-    print("\nVARIABLES:")
+    # Display rendered template using Rich
+    console.print(Rule("[cyan]Simple Template Rendering[/cyan]"))
+    console.print(Panel(
+        Syntax(template.template, "jinja2", theme="default", line_numbers=False),
+        title="[bold]Template Source[/bold]",
+        border_style="dim blue",
+        expand=False
+    ))
+    vars_table = Table(title="[bold]Variables[/bold]", box=box.MINIMAL, show_header=False)
+    vars_table.add_column("Key", style="magenta")
+    vars_table.add_column("Value", style="white")
     for key, value in variables.items():
-        print(f"  {key}: {value}")
-    print("\nRENDERED PROMPT:")
-    print(rendered_prompt)
-    print("-" * 80 + "\n")
+        vars_table.add_row(escape(key), escape(value))
+    console.print(vars_table)
+    console.print(Panel(
+        escape(rendered_prompt.strip()), 
+        title="[bold green]Rendered Prompt[/bold green]", 
+        border_style="green",
+        expand=False
+    ))
+    console.print()
+
     
     # Create a more complex template with conditional blocks
-    complex_template = """
+    complex_template_text = """
 {% if system_message %}
 {{system_message}}
 {% else %}
@@ -96,12 +113,11 @@ Please respond with:
 {% endfor %}
 """
     
-    # Create complex template object with properly defined required_vars
     complex_template_obj = PromptTemplate(
-        template=complex_template,
+        template=complex_template_text, # Use the text variable
         template_id="complex_assistant",
         description="A complex assistant template with conditionals and loops",
-        required_vars=["system_message", "query", "response_items", "context"]  # Explicitly define required vars, excluding 'item' which is a loop variable
+        required_vars=["system_message", "query", "response_items", "context"] 
     )
     
     # Complex variables
@@ -123,7 +139,6 @@ the industrial revolution, reaching levels not seen in at least 800,000 years.
         ]
     }
     
-    # Render complex template
     complex_rendered = complex_template_obj.render(complex_variables)
     
     logger.info(
@@ -132,16 +147,36 @@ the industrial revolution, reaching levels not seen in at least 800,000 years.
         template_id=complex_template_obj.template_id
     )
     
-    # Display complex template rendering
-    print("\n" + "-" * 80)
-    print("COMPLEX TEMPLATE RENDERING")
-    print("-" * 80)
-    print("RENDERED RESULT:")
-    print(complex_rendered)
-    print("-" * 80 + "\n")
+    # Display complex template rendering using Rich
+    console.print(Rule("[cyan]Complex Template Rendering[/cyan]"))
+    console.print(Panel(
+        Syntax(complex_template_obj.template, "jinja2", theme="default", line_numbers=False),
+        title="[bold]Template Source[/bold]",
+        border_style="dim blue",
+        expand=False
+    ))
+    complex_vars_table = Table(title="[bold]Variables[/bold]", box=box.MINIMAL, show_header=False)
+    complex_vars_table.add_column("Key", style="magenta")
+    complex_vars_table.add_column("Value", style="white")
+    for key, value in complex_variables.items():
+         # Truncate long context for display
+        display_value = escape(str(value))
+        if key == 'context' and len(display_value) > 150:
+            display_value = display_value[:150] + '...'
+        elif isinstance(value, list):
+             display_value = escape(str(value)[:100] + '...' if len(str(value)) > 100 else str(value)) # Truncate lists too
+        complex_vars_table.add_row(escape(key), display_value)
+    console.print(complex_vars_table)
+    console.print(Panel(
+        escape(complex_rendered.strip()), 
+        title="[bold green]Rendered Prompt[/bold green]", 
+        border_style="green",
+        expand=False
+    ))
+    console.print()
     
-    # Demonstrate rendering with missing/partial variables 
-    # (template should use defaults for missing values)
+    # Demonstrate rendering with missing variables (handled by Jinja's default behavior or errors)
+    console.print(Rule("[cyan]Template with Missing Variables[/cyan]"))
     missing_variables = {
         "query": "How can individuals reduce their carbon footprint?",
         "response_items": [
@@ -149,34 +184,39 @@ the industrial revolution, reaching levels not seen in at least 800,000 years.
             "Transportation choices and alternatives",
             "Home energy consumption reduction strategies"
         ]
-        # system_message and context are intentionally missing to demonstrate fallback behavior
+        # system_message and context are intentionally missing
     }
     
     try:
-        # This might fail due to missing required variables
         missing_rendered = complex_template_obj.render(missing_variables)
-        
         logger.info(
-            "Template rendered with missing variables",
+            "Template rendered with missing optional variables (using defaults)",
             emoji_key="info",
             missing=["system_message", "context"]
         )
-        
-        # Display rendering with missing variables
-        print("\n" + "-" * 80)
-        print("TEMPLATE WITH MISSING VARIABLES")
-        print("-" * 80)
-        print("RENDERED RESULT:")
-        print(missing_rendered)
-        print("-" * 80 + "\n")
-    except ValueError as e:
+        console.print(Panel(
+            escape(missing_rendered.strip()), 
+            title="[bold yellow]Rendered with Defaults[/bold yellow]", 
+            border_style="yellow",
+            expand=False
+        ))
+    except Exception as e: # Catch Jinja exceptions or others
         logger.warning(f"Could not render with missing variables: {str(e)}", emoji_key="warning")
-    
+        console.print(Panel(
+            f"[red]Error rendering template:[/red]\n{escape(str(e))}", 
+            title="[bold red]Rendering Error[/bold red]", 
+            border_style="red",
+            expand=False
+        ))
+    console.print()
+
     return template, complex_template_obj
 
 
 async def demonstrate_prompt_repository():
     """Demonstrate saving and retrieving templates from repository."""
+    # Use Rich Rule
+    console.print(Rule("[bold blue]Prompt Repository Demonstration[/bold blue]"))
     logger.info("Starting prompt repository demonstration", emoji_key="start")
     
     # Get repository
@@ -255,25 +295,20 @@ TRANSLATION:
             metadata=retrieved_template.metadata
         )
         
-        # Render the retrieved template
-        variables = {
-            "source_language": "English",
-            "target_language": "Spanish",
-            "text": "Machine learning is transforming how we interact with technology."
-        }
-        
-        rendered = retrieved_template.render(variables)
-        
-        # Display rendered template
-        print("\n" + "-" * 80)
-        print("RETRIEVED AND RENDERED TEMPLATE")
-        print("-" * 80)
-        print("TEMPLATE ID: " + retrieved_template.template_id)
-        print("DESCRIPTION: " + retrieved_template.description)
-        print("METADATA: " + str(retrieved_template.metadata))
-        print("\nRENDERED RESULT:")
-        print(rendered)
-        print("-" * 80 + "\n")
+        # Display retrieved template details using Rich
+        retrieved_table = Table(title=f"[bold]Retrieved Template: {escape(retrieved_template.template_id)}[/bold]", box=box.ROUNDED, show_header=False)
+        retrieved_table.add_column("Attribute", style="cyan")
+        retrieved_table.add_column("Value", style="white")
+        retrieved_table.add_row("Description", escape(retrieved_template.description))
+        retrieved_table.add_row("Metadata", escape(str(retrieved_template.metadata)))
+        console.print(retrieved_table)
+        console.print(Panel(
+            Syntax(retrieved_template.template, "jinja2", theme="default", line_numbers=False),
+            title="[bold]Template Source[/bold]",
+            border_style="dim blue",
+            expand=False
+        ))
+        console.print()
         
     else:
         logger.error(
@@ -288,178 +323,187 @@ TRANSLATION:
         emoji_key="info"
     )
     
-    # Optionally: Delete the prompt at the end of demo
-    # Uncomment to keep prompt in repository for future use
+    # Comment out the deletion to keep the template for the LLM demo
+    # Uncommenting the below would delete the template
+    """
     delete_result = await repo.delete_prompt(template.template_id)
     if delete_result:
         logger.info(
             f"Deleted template '{template.template_id}' from repository",
             emoji_key="cleaning"
         )
+    """
+
+    return retrieved_template
 
 
 async def demonstrate_llm_with_templates():
-    """Demonstrate using templates with LLM for completions."""
-    logger.info("Starting LLM with templates demonstration", emoji_key="start")
-    
-    # Get OpenAI provider
-    api_key = decouple_config("OPENAI_API_KEY", default=None)
-    provider = get_provider(Provider.OPENAI.value, api_key=api_key)
-    await provider.initialize()
-    
-    # Create a template for question answering
-    qa_template = """
-You are a concise and helpful assistant.
+    """Demonstrate using a template from the repository with an LLM."""
+    # Use Rich Rule
+    console.print(Rule("[bold blue]LLM with Template Demonstration[/bold blue]"))
+    logger.info("Starting LLM with template demonstration", emoji_key="start")
 
-QUESTION: {{question}}
-
-Please provide an accurate answer that is helpful and direct.
-If you need to make any assumptions, state them clearly.
-
-ANSWER:
-"""
+    # Retrieve the translation template saved earlier
+    repo = get_prompt_repository()
+    template_id = "translation_prompt"
+    template_dict = await repo.get_prompt(template_id)
     
-    # Create template object
-    qa_template_obj = PromptTemplate(
-        template=qa_template,
-        template_id="qa_template"
-    )
+    if not template_dict:
+        console.print(f"Prompt '{template_id}' not found")
+        logger.error(f"Template '{template_id}' not found. Skipping LLM demo.", emoji_key="error")
+        return
+        
+    template = PromptTemplate.from_dict(template_dict)
+    logger.info(f"Retrieved template '{template_id}' for LLM use", emoji_key="template")
+
+    # Variables for translation
+    translation_vars = {
+        "source_language": "English",
+        "target_language": "French",
+        "text": "The quick brown fox jumps over the lazy dog."
+    }
     
-    # Questions to ask
-    questions = [
-        "What is the capital of France?",
-        "How does a transformer neural network work?"
+    # Render the prompt
+    try:
+        rendered_prompt = template.render(translation_vars)
+        logger.info("Translation prompt rendered", emoji_key="success")
+        
+        # Display the rendered prompt for clarity
+        console.print(Panel(
+            escape(rendered_prompt.strip()),
+            title="[bold]Rendered Translation Prompt[/bold]",
+            border_style="blue",
+            expand=False
+        ))
+        
+    except Exception as e:
+        logger.error(f"Error rendering translation prompt: {str(e)}", emoji_key="error", exc_info=True)
+        return
+    
+    # Initialize gateway with providers
+    gateway = Gateway("prompt-templates-demo")
+    logger.info("Initializing providers...", emoji_key="provider")
+    await gateway._initialize_providers()
+    
+    # Providers to try in order of preference
+    providers_to_try = [
+        Provider.OPENAI.value,
+        Provider.ANTHROPIC.value,
+        Provider.GEMINI.value,
+        Provider.DEEPSEEK.value
     ]
     
-    for question in questions:
-        # Prepare variables
-        variables = {"question": question}
+    # Find an available provider
+    provider = None
+    provider_name = None
+    
+    for p_name in providers_to_try:
+        if p_name in gateway.providers:
+            provider = gateway.providers[p_name]
+            provider_name = p_name
+            logger.info(f"Using provider {p_name}", emoji_key="provider")
+            break
+    
+    if not provider:
+        logger.warning("No providers available. Using mock response for demo.", emoji_key="warning")
+        # Create a mock response for demonstration purposes
+        mock_response = """Le renard brun rapide saute par-dessus le chien paresseux."""
         
-        # Render template
-        rendered_prompt = qa_template_obj.render(variables)
+        # Display mock response
+        console.print(Panel(
+            escape(mock_response),
+            title="[bold yellow]Mock Translation (No Providers Available)[/bold yellow]",
+            subtitle=f"Original: \"{translation_vars['text']}\"",
+            border_style="yellow",
+            expand=False
+        ))
         
-        logger.info(
-            f"Generating completion for question: '{question}'",
-            emoji_key="question"
-        )
+        # Show mock stats
+        mock_stats = Table(title="[yellow]Mock Translation Stats[/yellow]", show_header=False, box=box.ROUNDED)
+        mock_stats.add_column("Metric", style="cyan")
+        mock_stats.add_column("Value", style="white")
+        mock_stats.add_row("Provider", "[yellow]Mock (Demo Only)[/yellow]")
+        mock_stats.add_row("Input Tokens", "~15")
+        mock_stats.add_row("Output Tokens", "~8")
+        mock_stats.add_row("Mock Cost", "$0.00 (demo)")
+        console.print(mock_stats)
+        return
         
-        # Generate completion
+    try:
+        model = provider.get_default_model()
+        logger.info(f"Using provider {provider_name} with model {model}", emoji_key="provider")
+        
+        # Generate completion using the rendered prompt
+        logger.info("Generating translation...", emoji_key="processing")
         start_time = time.time()
         result = await provider.generate_completion(
             prompt=rendered_prompt,
-            temperature=0.3,
-            max_tokens=150
+            model=model,
+            temperature=0.5,
+            max_tokens=100
         )
-        completion_time = time.time() - start_time
+        processing_time = time.time() - start_time
         
-        # Display results
-        logger.success(
-            f"Completion generated in {completion_time:.2f}s",
-            emoji_key="success",
-            tokens=f"{result.input_tokens} input, {result.output_tokens} output",
-            cost=result.cost
-        )
+        logger.success("Translation generated successfully!", emoji_key="success")
+
+        # Use display.py function for better visualization
+        display_text_content_result("Translation Result", result)
         
-        print("\n" + "-" * 80)
-        print(f"QUESTION: {question}")
-        print("\nANSWER:")
-        print(result.text.strip())
-        print("-" * 80 + "\n")
-    
-    # Create a chain of templates for a more complex workflow
-    system_template = "You are an {{role}} who {{expertise}}."
-    
-    user_template = """
-I need information about {{topic}}.
-Specifically, I want to know about {{aspect}}.
-"""
-    
-    # Create a combined template
-    combined_template = f"""
-{system_template}
-
-{user_template}
-
-Please provide a {{response_type}} response, focusing on the most important points.
-"""
-    
-    combined_obj = PromptTemplate(
-        template=combined_template,
-        template_id="combined_template"
-    )
-    
-    # Variables for the combined template
-    combined_variables = {
-        "role": "expert historian",
-        "expertise": "specializes in ancient civilizations",
-        "topic": "the Roman Empire",
-        "aspect": "its fall and the key factors that led to it",
-        "response_type": "concise"
-    }
-    
-    # Render combined template
-    combined_rendered = combined_obj.render(combined_variables)
-    
-    logger.info(
-        "Using combined template for complex workflow",
-        emoji_key="template",
-        variables=list(combined_variables.keys())
-    )
-    
-    # Generate completion with the combined template
-    start_time = time.time()
-    result = await provider.generate_completion(
-        prompt=combined_rendered,
-        temperature=0.3,
-        max_tokens=250
-    )
-    completion_time = time.time() - start_time
-    
-    # Display results
-    logger.success(
-        "Complex template completion generated",
-        emoji_key="success",
-        tokens=f"{result.input_tokens} input, {result.output_tokens} output",
-        cost=result.cost,
-        time=f"{completion_time:.2f}s"
-    )
-    
-    print("\n" + "-" * 80)
-    print("COMPLEX TEMPLATE CHAIN")
-    print("-" * 80)
-    print("RENDERED TEMPLATE:")
-    print(combined_rendered)
-    print("\nGENERATED RESPONSE:")
-    print(result.text.strip())
-    print("-" * 80 + "\n")
+        # Display additional stats with standard rich components
+        stats_table = Table(title="Translation Stats", show_header=False, box=box.ROUNDED)
+        stats_table.add_column("Metric", style="cyan")
+        stats_table.add_column("Value", style="white")
+        stats_table.add_row("Provider", provider_name)
+        stats_table.add_row("Model", model)
+        stats_table.add_row("Input Tokens", str(result.input_tokens))
+        stats_table.add_row("Output Tokens", str(result.output_tokens))
+        stats_table.add_row("Cost", f"${result.cost:.6f}")
+        stats_table.add_row("Processing Time", f"{processing_time:.3f}s")
+        console.print(stats_table)
+        
+    except Exception as e:
+        logger.error(f"Error during LLM completion: {str(e)}", emoji_key="error", exc_info=True)
+        # Fall back to mock response
+        console.print(Panel(
+            "[yellow]Failed to generate real translation. Here's a mock response:[/yellow]\n" +
+            "Le renard brun rapide saute par-dessus le chien paresseux.",
+            title="[bold yellow]Mock Translation (After Error)[/bold yellow]",
+            border_style="yellow"
+        ))
 
 
 async def main():
-    """Run prompt templates and repository demonstration."""
+    """Run all demonstrations."""
     try:
-        # First demonstrate basic template operations
-        templates = await demonstrate_prompt_templates()
+        # Demonstrate template creation and rendering
+        template1, template2 = await demonstrate_prompt_templates()
+        console.print() # Add space
         
-        print("\n" + "=" * 80 + "\n")
+        # Demonstrate repository usage
+        retrieved_template = await demonstrate_prompt_repository()
+        console.print()
         
-        # Then demonstrate prompt repository
-        await demonstrate_prompt_repository()
-        
-        print("\n" + "=" * 80 + "\n")
-        
-        # Finally demonstrate using templates with LLMs
+        # Demonstrate using a template with LLM - no longer check for retrieved_template
+        # as it should always be available since we commented out the deletion
         await demonstrate_llm_with_templates()
-        
+            
     except Exception as e:
-        logger.critical(f"Prompt templates demonstration failed: {str(e)}", emoji_key="critical")
-        import traceback
-        traceback.print_exc()
+        logger.critical(f"Demo failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1
     
+    # Clean up after demo is complete - optionally delete the template
+    try:
+        # After demo is complete, we can clean up by deleting the template
+        repo = get_prompt_repository()
+        await repo.delete_prompt("translation_prompt")
+        logger.info("Deleted demonstration template", emoji_key="cleaning")
+    except Exception as e:
+        logger.warning(f"Cleanup error: {str(e)}", emoji_key="warning")
+    
+    logger.success("Prompt Template Demo Finished Successfully!", emoji_key="complete")
     return 0
 
 
 if __name__ == "__main__":
-    # Run the demonstration
     exit_code = asyncio.run(main())
     sys.exit(exit_code) 

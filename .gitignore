@@ -190,3 +190,6 @@ sec_filings.db-wal
 minified_code.js
 regenerate_markdown_progress.json.bak
 .env
+storage/tournaments/
+cache/cache.pkl
+cache/disk_cache/cache.db

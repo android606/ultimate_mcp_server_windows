@@ -8,7 +8,7 @@ services:
     container_name: llm-gateway
     restart: unless-stopped
     ports:
-      - "${SERVER_PORT:-8000}:8000"
+      - "${SERVER_PORT:-8013}:8013"
     volumes:
       - ./logs:/app/logs
       - ./.cache:/app/.cache
@@ -19,7 +19,7 @@ services:
       - SERVER_HOST=0.0.0.0
       - PYTHONUNBUFFERED=1
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      test: ["CMD", "curl", "-f", "http://localhost:8013/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3

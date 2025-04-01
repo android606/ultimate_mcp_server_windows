@@ -57,12 +57,12 @@ RUN groupadd -r llmgateway && \
 USER llmgateway
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8013
 
 # Set default command
 ENTRYPOINT ["python", "-m", "llm_gateway.cli.main"]
-CMD ["serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8013"]
 
 # Add health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/healthz || exit 1
+    CMD curl -f http://localhost:8013/healthz || exit 1

@@ -9,7 +9,7 @@ from llm_gateway.core.providers.base import get_provider
 from llm_gateway.tools.base import BaseTool, with_tool_metrics
 from llm_gateway.utils import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("llm_gateway.tools.meta")
 
 
 class MetaTools(BaseTool):

@@ -5,8 +5,9 @@ from typing import Any, Dict, List, Optional
 
 from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.text import count_tokens  # Import proper token counting
 
-logger = get_logger(__name__)
+logger = get_logger("llm_gateway.tools.optimization")
 
 
 class OptimizationTools:
@@ -47,9 +48,8 @@ class OptimizationTools:
             Returns:
                 Dictionary containing cost estimate and token breakdown
             """
-            # Estimate input tokens
-            # Simple approximation: 1 token ≈ 4 characters
-            input_tokens = len(prompt) // 4
+            # Estimate input tokens using proper tokenization
+            input_tokens = count_tokens(prompt, model)
             
             # Estimate output tokens if not provided
             if max_tokens is None:
@@ -178,21 +178,8 @@ class OptimizationTools:
             Returns:
                 Dictionary containing recommended models
             """
-            # Convert input length to tokens
-            input_tokens = expected_input_length // 4
-            
-            # Estimate output tokens if not provided
-            if expected_output_length is None:
-                if task_type == "summarization":
-                    output_tokens = input_tokens // 3  # Summaries are typically shorter
-                elif task_type == "extraction":
-                    output_tokens = input_tokens // 4  # Extraction is typically concise
-                elif task_type == "generation":
-                    output_tokens = input_tokens * 2  # Generation often creates more content
-                else:
-                    output_tokens = input_tokens  # Default 1:1 ratio
-            else:
-                output_tokens = expected_output_length // 4
+            # Create a sample text of the expected input length for token estimation
+            sample_text = "A" * expected_input_length
             
             # Define capability requirements
             required_capabilities = required_capabilities or []
@@ -202,7 +189,6 @@ class OptimizationTools:
                 # OpenAI models
                 "gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
                 "gpt-4o-mini": ["reasoning", "coding", "knowledge", "instruction-following"],
-                "gpt-4o-mini": ["coding", "knowledge", "instruction-following"],
                 
                 # Claude models
                 "claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
@@ -224,7 +210,6 @@ class OptimizationTools:
                 # OpenAI models
                 "gpt-4o": 3,
                 "gpt-4o-mini": 2,
-                "gpt-4o-mini": 1,
                 
                 # Claude models
                 "claude-3-opus-20240229": 5,
@@ -246,7 +231,6 @@ class OptimizationTools:
                 # OpenAI models
                 "gpt-4o": 9,
                 "gpt-4o-mini": 7,
-                "gpt-4o-mini": 5,
                 
                 # Claude models
                 "claude-3-opus-20240229": 9,
@@ -267,6 +251,24 @@ class OptimizationTools:
             qualified_models = []
             for model, capabilities in model_capabilities.items():
                 if all(cap in capabilities for cap in required_capabilities):
+                    # Get token count for this model using proper tokenization
+                    input_tokens = count_tokens(sample_text, model)
+                    
+                    # Estimate output tokens
+                    if expected_output_length is None:
+                        if task_type == "summarization":
+                            output_tokens = input_tokens // 3
+                        elif task_type == "extraction":
+                            output_tokens = input_tokens // 4
+                        elif task_type == "generation":
+                            output_tokens = input_tokens * 2
+                        else:
+                            output_tokens = input_tokens
+                    else:
+                        # Create a sample output text for token estimation
+                        output_sample = "A" * expected_output_length
+                        output_tokens = count_tokens(output_sample, model)
+                    
                     # Calculate estimated cost
                     cost_data = COST_PER_MILLION_TOKENS.get(model)
                     if cost_data:
@@ -306,8 +308,8 @@ class OptimizationTools:
                 "recommendations": sorted_models[:3],  # Top 3 models
                 "all_qualified_models": sorted_models,
                 "task_type": task_type,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
+                "input_tokens": input_tokens if qualified_models else 0,
+                "output_tokens": output_tokens if qualified_models else 0,
                 "priority": priority,
                 "required_capabilities": required_capabilities,
             }

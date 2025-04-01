@@ -11,7 +11,7 @@ from llm_gateway.config import config
 from llm_gateway.services.cache import with_cache
 from llm_gateway.utils import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger("llm_gateway.tools.base")
 
 
 class BaseToolMetrics:

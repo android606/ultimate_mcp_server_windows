@@ -12,6 +12,15 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway  # Use Gateway to get MCP
 from llm_gateway.tools.meta import MetaTools  # Import MetaTools
 from llm_gateway.utils import get_logger
+# --- Add Rich Imports ---
+from llm_gateway.utils.logging.console import console
+from rich.panel import Panel
+from rich.table import Table
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.markup import escape
+from rich import box
+# ----------------------
 
 # Initialize logger
 logger = get_logger("example.compare_synthesize_v2")
@@ -29,7 +38,7 @@ async def setup_gateway_and_tools():
     try:
         await gateway._initialize_providers()
     except Exception as e:
-        logger.critical(f"Failed to initialize providers: {e}. Check API keys.", emoji_key="critical")
+        logger.critical(f"Failed to initialize providers: {e}. Check API keys.", emoji_key="critical", exc_info=True)
         sys.exit(1) # Exit if providers can't be initialized
 
     # Create MetaTools instance, registering tools on the gateway's MCP
@@ -39,7 +48,8 @@ async def setup_gateway_and_tools():
     # Verify tool registration
     tool_list = await mcp.list_tools()
     tool_names = [t.name for t in tool_list] # Access name attribute directly
-    print(f"Registered tools: {tool_names}") # Print the list of discovered tool names
+    # Use console.print for tool list
+    console.print(f"Registered tools: [cyan]{escape(str(tool_names))}[/cyan]")
     if "compare_and_synthesize" in tool_names:
         logger.success("compare_and_synthesize tool registered successfully.", emoji_key="success")
     else:
@@ -48,65 +58,122 @@ async def setup_gateway_and_tools():
 
     logger.success("Setup complete.", emoji_key="success")
 
+# Refactored print_result function using Rich
 def print_result(title: str, result: dict):
-    """Helper function to print results clearly."""
-    print(f"\n--- {title} ---")
+    """Helper function to print results clearly using Rich components."""
+    console.print(Rule(f"[bold blue]{escape(title)}[/bold blue]"))
     
-    # Handle list result format - convert to dict
+    # Handle potential list result format (from older tool versions?)
     if isinstance(result, list) and len(result) > 0:
         if hasattr(result[0], 'text'):
             try:
-                result_dict = json.loads(result[0].text)
-                result = result_dict
+                result = json.loads(result[0].text)
             except Exception:
-                # If parsing fails, create a basic result dict
-                result = {
-                    "synthesis": {"error": "Could not parse result"},
-                    "error": "Failed to parse result from list format"
-                }
+                result = {"error": "Failed to parse result from list format"}
         else:
-            # If no text attribute, use the first item directly
-            result = result[0]
+            result = result[0] # Assume first item is the dict
+    elif not isinstance(result, dict):
+        result = {"error": f"Unexpected result format: {type(result)}"}
     
     if result.get("error"):
-        print(f"Error: {result['error']}")
+        error_content = f"[red]Error:[/red] {escape(result['error'])}"
         if "partial_results" in result and result["partial_results"]:
-             print(f"Partial Results:\n{json.dumps(result['partial_results'], indent=2)}")
+            try:
+                partial_json = json.dumps(result["partial_results"], indent=2)
+                error_content += "\n\n[yellow]Partial Results:[/yellow]"
+                error_panel_content = Syntax(partial_json, "json", theme="default", line_numbers=False, word_wrap=True)
+            except Exception as json_err:
+                 error_panel_content = f"[red]Could not display partial results: {escape(str(json_err))}[/red]"
+        else:
+            error_panel_content = error_content
+            
+        console.print(Panel(
+            error_panel_content,
+            title="[bold red]Tool Error[/bold red]",
+            border_style="red",
+            expand=False
+        ))
+        
     else:
-        # Print relevant sections based on response format
+        # Display synthesis/analysis sections
         if "synthesis" in result:
             synthesis_data = result["synthesis"]
             if isinstance(synthesis_data, dict):
+                
                 if "best_response_text" in synthesis_data:
-                    print("\n*Best Response Text*:")
-                    print(synthesis_data["best_response_text"])
+                    console.print(Panel(
+                        escape(synthesis_data["best_response_text"].strip()),
+                        title="[bold green]Best Response Text[/bold green]",
+                        border_style="green",
+                        expand=False
+                    ))
+                
                 if "synthesized_response" in synthesis_data:
-                    print("\n*Synthesized Response*:")
-                    print(synthesis_data["synthesized_response"])
-                if "ranking" in synthesis_data:
-                    print("\n*Ranking*:")
-                    print(json.dumps(synthesis_data["ranking"], indent=2))
-                if "comparative_analysis" in synthesis_data:
-                    print("\n*Comparative Analysis*:")
-                    print(json.dumps(synthesis_data["comparative_analysis"], indent=2))
+                     console.print(Panel(
+                        escape(synthesis_data["synthesized_response"].strip()),
+                        title="[bold magenta]Synthesized Response[/bold magenta]",
+                        border_style="magenta",
+                        expand=False
+                    ))
+                    
                 if synthesis_data.get("best_response", {}).get("reasoning"):
-                    print("\n*Best Response Reasoning*:")
-                    print(synthesis_data["best_response"]["reasoning"])
+                    console.print(Panel(
+                        escape(synthesis_data["best_response"]["reasoning"].strip()),
+                        title="[bold cyan]Best Response Reasoning[/bold cyan]",
+                        border_style="dim cyan",
+                        expand=False
+                    ))
+                    
                 if synthesis_data.get("synthesis_strategy"):
-                    print("\n*Synthesis Strategy Explanation*:")
-                    print(synthesis_data["synthesis_strategy"])
+                    console.print(Panel(
+                        escape(synthesis_data["synthesis_strategy"].strip()),
+                        title="[bold yellow]Synthesis Strategy Explanation[/bold yellow]",
+                        border_style="dim yellow",
+                        expand=False
+                    ))
 
-                # Optionally print evaluations for context
-                # print("\n*Evaluations*:")
-                # print(json.dumps(synthesis_data.get("evaluations", []), indent=2))
+                if "ranking" in synthesis_data:
+                    try:
+                        ranking_json = json.dumps(synthesis_data["ranking"], indent=2)
+                        console.print(Panel(
+                            Syntax(ranking_json, "json", theme="default", line_numbers=False, word_wrap=True),
+                            title="[bold]Ranking[/bold]",
+                            border_style="dim blue",
+                            expand=False
+                        ))
+                    except Exception as json_err:
+                        console.print(f"[red]Could not display ranking: {escape(str(json_err))}[/red]")
+                        
+                if "comparative_analysis" in synthesis_data:
+                    try:
+                        analysis_json = json.dumps(synthesis_data["comparative_analysis"], indent=2)
+                        console.print(Panel(
+                            Syntax(analysis_json, "json", theme="default", line_numbers=False, word_wrap=True),
+                            title="[bold]Comparative Analysis[/bold]",
+                            border_style="dim blue",
+                            expand=False
+                        ))
+                    except Exception as json_err:
+                        console.print(f"[red]Could not display comparative analysis: {escape(str(json_err))}[/red]")
 
-            else: # If synthesis failed parsing, show raw text
-                print(f"Synthesis Output (raw):\n{synthesis_data}")
+            else: # Handle case where synthesis data isn't a dict (e.g., raw text error)
+                console.print(Panel(
+                    f"[yellow]Synthesis Output (raw/unexpected format):[/yellow]\n{escape(str(synthesis_data))}",
+                    title="[bold yellow]Synthesis Data[/bold yellow]",
+                    border_style="yellow",
+                    expand=False
+                ))
 
-        print(f"\n*Synthesis/Evaluation Model*: {result.get('synthesis_provider')}/{result.get('synthesis_model')}")
-        print(f"*Total Cost*: ${result.get('cost', {}).get('total_cost', 0.0):.6f}")
-        print(f"*Processing Time*: {result.get('processing_time', 0.0):.2f}s")
-    print("-" * (len(title) + 4) + "\n")
+        # Display Stats Table
+        stats_table = Table(title="[bold]Execution Stats[/bold]", box=box.ROUNDED, show_header=False, expand=False)
+        stats_table.add_column("Metric", style="cyan", no_wrap=True)
+        stats_table.add_column("Value", style="white")
+        stats_table.add_row("Eval/Synth Model", f"{escape(result.get('synthesis_provider','N/A'))}/{escape(result.get('synthesis_model','N/A'))}")
+        stats_table.add_row("Total Cost", f"${result.get('cost', {}).get('total_cost', 0.0):.6f}")
+        stats_table.add_row("Processing Time", f"{result.get('processing_time', 0.0):.2f}s")
+        console.print(stats_table)
+        
+    console.print() # Add spacing after each result block
 
 
 async def run_comparison_demo():
@@ -118,17 +185,17 @@ async def run_comparison_demo():
     prompt = "Explain the main benefits of using asynchronous programming in Python for a moderately technical audience. Provide 2-3 key advantages."
 
     # --- Configuration for initial responses ---
-    # Define which models to query initially. Use a mix for better comparison.
+    console.print(Rule("[bold green]Configurations[/bold green]"))
+    console.print(f"[cyan]Prompt:[/cyan] {escape(prompt)}")
     initial_configs = [
         {"provider": Provider.OPENAI.value, "model": "gpt-4o-mini", "parameters": {"temperature": 0.6, "max_tokens": 150}},
         {"provider": Provider.ANTHROPIC.value, "model": "claude-3-5-haiku-latest", "parameters": {"temperature": 0.5, "max_tokens": 150}},
-        {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash", "parameters": {"temperature": 0.7, "max_tokens": 150}},
-        # Example of adding a higher-capability model
-        {"provider": Provider.ANTHROPIC.value, "model": "claude-3-7-sonnet-latest", "parameters": {"temperature": 0.6, "max_tokens": 150}},
+        {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash-lite", "parameters": {"temperature": 0.7, "max_tokens": 150}},
+        {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat", "parameters": {"temperature": 0.6, "max_tokens": 150}},
     ]
+    console.print(f"[cyan]Initial Models:[/cyan] {[f'{c['provider']}:{c['model']}' for c in initial_configs]}")
 
     # --- Evaluation Criteria ---
-    # More specific criteria can lead to better evaluations
     criteria = [
         "Clarity: Is the explanation clear and easy to understand for the target audience?",
         "Accuracy: Are the stated benefits of async programming technically correct?",
@@ -136,9 +203,10 @@ async def run_comparison_demo():
         "Conciseness: Is the explanation brief and to the point?",
         "Completeness: Does it mention 2-3 distinct and significant benefits?",
     ]
+    console.print("[cyan]Evaluation Criteria:[/cyan]")
+    for i, criterion in enumerate(criteria): console.print(f"  {i+1}. {escape(criterion)}")
 
     # --- Criteria Weights (Optional) ---
-    # Emphasize clarity and accuracy more
     criteria_weights = {
         "Clarity: Is the explanation clear and easy to understand for the target audience?": 0.3,
         "Accuracy: Are the stated benefits of async programming technically correct?": 0.3,
@@ -146,10 +214,19 @@ async def run_comparison_demo():
         "Conciseness: Is the explanation brief and to the point?": 0.1,
         "Completeness: Does it mention 2-3 distinct and significant benefits?": 0.15,
     }
+    console.print("[cyan]Criteria Weights (Optional):[/cyan]")
+    # Create a small table for weights
+    weights_table = Table(box=box.MINIMAL, show_header=False)
+    weights_table.add_column("Criterion Snippet", style="dim")
+    weights_table.add_column("Weight", style="green")
+    for crit, weight in criteria_weights.items():
+        weights_table.add_row(escape(crit.split(':')[0]), f"{weight:.2f}")
+    console.print(weights_table)
 
-    # --- Synthesis/Evaluation Model (Optional) ---
-    # Let the tool pick automatically first, then specify one
-    synthesis_model_config = {"provider": Provider.OPENAI.value, "model": "gpt-4o"} # Changed from Claude to gpt-4o
+    # --- Synthesis/Evaluation Model ---
+    synthesis_model_config = {"provider": Provider.OPENAI.value, "model": "gpt-4o"} 
+    console.print(f"[cyan]Synthesis/Evaluation Model:[/cyan] {escape(synthesis_model_config['provider'])}:{escape(synthesis_model_config['model'])}")
+    console.print() # Spacing before demos start
 
     common_args = {
         "prompt": prompt,

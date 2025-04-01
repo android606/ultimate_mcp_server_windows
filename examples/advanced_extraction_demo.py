@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import time
+import os
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -15,6 +16,16 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.utils import get_logger
+# --- Add Rich and Display Imports ---
+from llm_gateway.utils.logging.console import console
+from llm_gateway.utils.display import parse_and_display_result
+from rich.panel import Panel
+from rich.table import Table
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.markup import escape
+from rich import box
+# ----------------------
 
 # Initialize logger
 logger = get_logger("example.advanced_extraction")
@@ -22,46 +33,11 @@ logger = get_logger("example.advanced_extraction")
 # Initialize global gateway
 gateway = None
 
-
-def parse_result(result):
-    """Parse the result from a tool call into a usable dictionary.
-    
-    Handles various return types from MCP tools.
-    """
-    try:
-        # Handle TextContent object (which has a .text attribute)
-        if hasattr(result, 'text'):
-            try:
-                # Try to parse the text as JSON
-                return json.loads(result.text)
-            except json.JSONDecodeError:
-                # Just use the text directly if it's not JSON
-                return {"text": result.text}
-                
-        # Handle list result
-        if isinstance(result, list):
-            if result:
-                first_item = result[0]
-                if hasattr(first_item, 'text'):
-                    try:
-                        return json.loads(first_item.text)
-                    except json.JSONDecodeError:
-                        return {"text": first_item.text}
-                else:
-                    return first_item
-            return {}
-            
-        # Handle dictionary result
-        if isinstance(result, dict):
-            return result
-            
-        # Default for unknown types
-        return {"data": str(result)}
-        
-    except Exception as e:
-        logger.warning(f"Error parsing result: {str(e)}", emoji_key="warning")
-        return {"error": str(e)}
-
+# Use the shared display utility instead of this function
+# Function kept for backwards compatibility during transition
+def parse_and_display_result_legacy(title: str, input_data: Dict, result: Any):
+    """Legacy version that calls the new shared utility function."""
+    parse_and_display_result(title, input_data, result)
 
 async def setup_gateway():
     """Set up the gateway for demonstration."""
@@ -83,10 +59,10 @@ async def setup_gateway():
     @gateway.mcp.tool()
     async def extract_json(
         text: str,
-        schema: Dict = None,
+        json_schema: Dict = None,
         provider: str = Provider.OPENAI.value,
         model: str = None,
-        validate: bool = True,
+        validate_output: bool = True,
         ctx=None
     ) -> Dict[str, Any]:
         """Extract structured JSON data from text."""
@@ -104,8 +80,8 @@ async def setup_gateway():
         
         # Prepare schema description
         schema_description = ""
-        if schema:
-            schema_description = f"Use this JSON schema to structure your response:\n{json.dumps(schema, indent=2)}\n"
+        if json_schema:
+            schema_description = f"Use this JSON schema to structure your response:\n{json.dumps(json_schema, indent=2)}\n"
         
         # Create prompt for extraction
         prompt = f"""Extract structured JSON data from the following text.
@@ -550,42 +526,16 @@ async def json_extraction_demo():
         # Call the extract_json tool directly
         result = await gateway.mcp.call_tool("extract_json", {
             "text": text,
-            "schema": schema,
+            "json_schema": schema,
             "provider": Provider.OPENAI.value,
             "model": "gpt-4o-mini",
-            "validate": True
+            "validate_output": True
         })
         
-        # Parse the result into a usable format
-        parsed_result = parse_result(result)
+        # Parse the result using the shared utility
+        parse_and_display_result("JSON Extraction Demo", {"text": text, "json_schema": schema}, result)
         
-        # Get the extracted data
-        extracted_data = parsed_result.get("data", {})
-        if not extracted_data and isinstance(parsed_result, dict):
-            # If we got JSON directly, use that
-            extracted_data = parsed_result
-        
-        # Print the extracted JSON
-        logger.success("JSON extraction completed successfully", emoji_key="success")
-        print("\n" + "-" * 80)
-        print("Extracted JSON Data:")
-        print(json.dumps(extracted_data, indent=2))
-        print("-" * 80 + "\n")
-        
-        # Display validation results if available
-        validation_result = parsed_result.get("validation_result", {})
-        if validation_result:
-            print("Schema Validation Result:")
-            print(f"✅ Valid: {validation_result.get('valid', True)}")
-            if not validation_result.get('valid', True):
-                print(f"❌ Errors: {validation_result.get('errors', [])}")
-        
-        # Print extraction stats
-        print("\nExtraction Statistics:")
-        print(f"Provider: {Provider.OPENAI.value}")
-        print("Model: gpt-4o-mini")
-        
-        return extracted_data
+        return result
             
     except Exception as e:
         logger.error(f"Error in JSON extraction: {str(e)}", emoji_key="error")
@@ -626,61 +576,10 @@ async def table_extraction_demo():
             "extract_metadata": True
         })
         
-        # Parse the result into a usable format
-        parsed_result = parse_result(result)
+        # Parse the result using the shared utility
+        parse_and_display_result("Table Extraction Demo", {"text": text}, result)
         
-        # Extract table data
-        table_data = parsed_result
-        tables = parsed_result.get("tables", [])
-        if tables:
-            table_data = tables[0]
-        
-        # Print the extracted table
-        logger.success("Table extraction completed successfully", emoji_key="success")
-        print("\n" + "-" * 80)
-        print("Extracted Table Data:")
-        
-        if "title" in table_data:
-            print(f"Title: {table_data['title']}")
-        
-        # Print the table in markdown format
-        if "markdown" in table_data:
-            print("\nMarkdown Format:")
-            print(table_data["markdown"])
-        
-        # Print the table as JSON
-        json_data = None
-        if "json" in table_data:
-            json_data = table_data["json"]
-        elif "rows" in table_data:
-            json_data = table_data["rows"]
-        
-        if json_data:
-            print("\nJSON Format:")
-            # Print in a structured way
-            if isinstance(json_data, list) and len(json_data) > 0:
-                # Print first few rows
-                print(json.dumps(json_data[:2], indent=2))
-                print(f"...({len(json_data)} rows total)")
-            else:
-                print(json_data)
-        
-        # Print metadata
-        if "metadata" in table_data:
-            print("\nTable Metadata:")
-            metadata = table_data["metadata"]
-            if "notes" in metadata:
-                print("Notes:")
-                for note in metadata["notes"]:
-                    print(f"- {note}")
-        
-        # Print extraction statistics
-        print("\nExtraction Statistics:")
-        print(f"Provider: {Provider.OPENAI.value}")
-        print("Model: gpt-4o-mini")
-        print("-" * 80 + "\n")
-        
-        return table_data
+        return result
             
     except Exception as e:
         logger.error(f"Error in table extraction: {str(e)}", emoji_key="error")
@@ -736,71 +635,10 @@ async def semantic_schema_inference_demo():
             "add_descriptions": True
         })
         
-        # Parse the result into a usable format
-        parsed_result = parse_result(result)
+        # Parse the result using the shared utility
+        parse_and_display_result("Semantic Schema Inference Demo", {"text": text}, result)
         
-        # Get the inferred schema
-        inferred_schema = parsed_result.get("schema", {})
-        if not inferred_schema and isinstance(parsed_result, dict):
-            # If we got JSON directly, use that
-            inferred_schema = parsed_result
-        
-        # Print the inferred schema
-        logger.success("Schema inference completed successfully", emoji_key="success")
-        print("\n" + "-" * 80)
-        print("Inferred Schema:")
-        print(json.dumps(inferred_schema, indent=2))
-        print("-" * 80 + "\n")
-        
-        # Now demonstrate extraction using the inferred schema
-        logger.info("Using inferred schema for extraction", emoji_key="processing")
-        
-        # Call extract_json with the inferred schema
-        extraction_result = await gateway.mcp.call_tool("extract_json", {
-            "text": text,
-            "schema": inferred_schema,
-            "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
-            "validate": True
-        })
-        
-        # Parse the extraction result
-        parsed_extraction_result = parse_result(extraction_result)
-        
-        # Get the extracted data
-        extracted_data = parsed_extraction_result.get("data", {})
-        if not extracted_data and isinstance(parsed_extraction_result, dict):
-            # If we got JSON directly, use that
-            extracted_data = parsed_extraction_result
-        
-        # Print the extracted data
-        print("Extracted Data Using Inferred Schema:")
-        print(json.dumps(extracted_data, indent=2))
-        
-        # Print extraction stats
-        print("\nExtraction Statistics:")
-        print(f"Provider: {Provider.OPENAI.value}")
-        print("Model: gpt-4o-mini")
-        
-        # Demonstrate benefits of schema inference
-        benefits = [
-            "✅ Structured extraction with consistent field names",
-            "✅ Data type validation (strings, numbers, dates)",
-            "✅ Field requirement enforcement",
-            "✅ Format standardization (dates, units)",
-            "✅ Schema reuse across similar documents"
-        ]
-        
-        print("\nBenefits of Schema Inference:")
-        for benefit in benefits:
-            print(benefit)
-        
-        print("\n")
-        
-        return {
-            "schema": inferred_schema,
-            "extracted_data": extracted_data
-        }
+        return result
             
     except Exception as e:
         logger.error(f"Error in schema inference: {str(e)}", emoji_key="error")
@@ -841,38 +679,10 @@ async def entity_extraction_demo():
             "categorize": True
         })
         
-        # Parse the result into a usable format
-        parsed_result = parse_result(result)
+        # Parse the result using the shared utility
+        parse_and_display_result("Entity Extraction Demo", {"text": text}, result)
         
-        # Get extracted entities
-        entities = parsed_result.get("pairs", {})
-        if not entities and isinstance(parsed_result, dict):
-            # If we got JSON directly, use that
-            entities = parsed_result
-        
-        # Print the extracted entities
-        logger.success("Entity extraction completed successfully", emoji_key="success")
-        print("\n" + "-" * 80)
-        print("Extracted Key-Value Pairs:")
-        
-        # Print by category
-        for category, items in entities.items():
-            print(f"\n{category.capitalize()}:")
-            for item in items:
-                if isinstance(item, dict):
-                    key = item.get("key", "")
-                    value = item.get("value", "")
-                    print(f"  - {key}: {value}")
-                else:
-                    print(f"  - {item}")
-        
-        # Print extraction statistics
-        print("\nExtraction Statistics:")
-        print(f"Provider: {Provider.OPENAI.value}")
-        print("Model: gpt-4o-mini")
-        print("-" * 80 + "\n")
-        
-        return entities
+        return result
             
     except Exception as e:
         logger.error(f"Error in entity extraction: {str(e)}", emoji_key="error")
@@ -920,34 +730,10 @@ async def entity_extraction_demo():
                 "validate": True
             })
             
-            # Parse the result into a usable format
-            parsed_result = parse_result(result)
+            # Parse the result using the shared utility
+            parse_and_display_result("Entity Extraction Demo (Alternative)", {"text": text}, result)
             
-            # Get extracted entities
-            entities = parsed_result.get("data", {})
-            if not entities and isinstance(parsed_result, dict):
-                # If we got JSON directly, use that
-                entities = parsed_result
-            
-            # Print the extracted entities
-            logger.success("Alternative entity extraction completed", emoji_key="success")
-            print("\n" + "-" * 80)
-            print("Extracted Entities (Alternative Method):")
-            
-            # Print by entity type
-            for entity_type, entity_list in entities.items():
-                if entity_list and len(entity_list) > 0:
-                    print(f"\n{entity_type.capitalize()}:")
-                    for entity in entity_list:
-                        print(f"  - {entity}")
-            
-            # Print extraction statistics
-            print("\nExtraction Statistics:")
-            print(f"Provider: {Provider.OPENAI.value}")
-            print("Model: gpt-4o-mini")
-            print("-" * 80 + "\n")
-            
-            return entities
+            return result
             
         except Exception as nested_e:
             logger.error(f"Error in alternative entity extraction: {str(nested_e)}", emoji_key="error")
@@ -960,31 +746,27 @@ async def main():
         # Set up gateway
         await setup_gateway()
         
-        print("\n")
+        console.print(Rule("[bold magenta]Advanced Extraction Demos Starting[/bold magenta]"))
         
         # Run JSON extraction demo
         await json_extraction_demo()
         
-        print("\n")
-        
         # Run table extraction demo
         await table_extraction_demo()
         
-        print("\n")
-        
         # Run schema inference demo
         await semantic_schema_inference_demo()
-        
-        print("\n")
         
         # Run entity extraction demo
         await entity_extraction_demo()
         
         # Final success message
         logger.success("All extraction demos completed successfully", emoji_key="success")
+        console.print(Rule("[bold magenta]Advanced Extraction Demos Complete[/bold magenta]"))
         
     except Exception as e:
         logger.critical(f"Extraction demo failed: {str(e)}", emoji_key="critical")
+        console.print(f"[bold red]Critical Demo Error:[/bold red] {escape(str(e))}")
         return 1
     finally:
         # Clean up

@@ -7,33 +7,30 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from decouple import config as decouple_config
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.logging.console import console  # Keep themed console import
 
 # Initialize logger
 logger = get_logger("example.basic_completion")
 
-
 async def run_basic_completion():
     """Run a basic completion example."""
     logger.info("Starting basic completion example", emoji_key="start")
+    console.print(Rule("[bold blue]Basic Completion[/bold blue]"))
 
     # Prompt to complete
     prompt = "Explain the concept of federated learning in simple terms."
     
-    # Get API key directly from decouple
-    api_key = decouple_config('OPENAI_API_KEY', default=None)
-    
-    # Get OpenAI provider with API key
+    # Get OpenAI provider - API key loaded automatically by config system
     provider_name = Provider.OPENAI.value
     try:
-        provider = get_provider(
-            provider_name,
-            api_key=api_key
-        )
+        provider = get_provider(provider_name)
         await provider.initialize()
         
         logger.info(
@@ -54,54 +51,45 @@ async def run_basic_completion():
             max_tokens=200
         )
         
-        # Log success with stats
-        logger.success(
-            "Completion generated successfully!",
-            emoji_key="success",
-            tokens={
-                "input": result.input_tokens,
-                "output": result.output_tokens
-            },
-            cost=result.cost,
-            time=result.processing_time
-        )
+        # Log simple success message
+        logger.success("Completion generated successfully!", emoji_key="success")
+
+        # Display results using Rich Panel
+        console.print(Panel(
+            result.text.strip(),
+            title="Federated Learning Explanation",
+            border_style="green",
+            expand=False
+        ))
         
-        # Print the completion
-        logger.info("Generated text:", emoji_key="info")
-        print("\n" + "-" * 80)
-        print(result.text.strip())
-        print("-" * 80 + "\n")
-        
-        # Print stats
-        logger.info(
-            f"Stats: {result.input_tokens} input tokens, " +
-            f"{result.output_tokens} output tokens, " +
-            f"${result.cost:.6f} cost",
-            emoji_key="token"
-        )
+        # Display stats using Rich Table
+        stats_table = Table(title="Completion Stats", show_header=False, box=None)
+        stats_table.add_column("Metric", style="green")
+        stats_table.add_column("Value", style="white")
+        stats_table.add_row("Input Tokens", str(result.input_tokens))
+        stats_table.add_row("Output Tokens", str(result.output_tokens))
+        stats_table.add_row("Cost", f"${result.cost:.6f}")
+        stats_table.add_row("Processing Time", f"{result.processing_time:.3f}s")
+        console.print(stats_table)
         
     except Exception as e:
-        logger.error(f"Error generating completion: {str(e)}", emoji_key="error")
+        # Use logger for errors, as DetailedLogFormatter handles error panels well
+        logger.error(f"Error generating completion: {str(e)}", emoji_key="error", exc_info=True)
         raise
 
 
 async def run_streaming_completion():
     """Run a streaming completion example."""
     logger.info("Starting streaming completion example", emoji_key="start")
+    console.print(Rule("[bold blue]Streaming Completion[/bold blue]"))
 
     # Prompt to complete
     prompt = "Write a short poem about artificial intelligence."
     
-    # Get API key directly from decouple
-    api_key = decouple_config('OPENAI_API_KEY', default=None)
-    
-    # Get OpenAI provider with API key
+    # Get OpenAI provider - API key loaded automatically by config system
     provider_name = Provider.OPENAI.value
     try:
-        provider = get_provider(
-            provider_name,
-            api_key=api_key
-        )
+        provider = get_provider(provider_name)
         await provider.initialize()
         
         logger.info(
@@ -115,43 +103,49 @@ async def run_streaming_completion():
         # Generate streaming completion
         logger.info("Generating streaming completion...", emoji_key="processing")
         
-        print("\n" + "-" * 80)
+        # Use Panel for streaming output presentation
+        output_panel = Panel("", title="AI Poem (Streaming)", border_style="cyan", expand=False)
         
         # Start timer
         import time
         start_time = time.time()
         
-        # Process the stream
-        stream = provider.generate_completion_stream(
-            prompt=prompt,
-            model=model,
-            temperature=0.7,
-            max_tokens=200
-        )
-        
         full_text = ""
         token_count = 0
         
-        async for chunk, _metadata in stream:
-            print(chunk, end="", flush=True)
-            full_text += chunk
-            token_count += 1
+        # Use Live display for the streaming output panel
+        from rich.live import Live
+        with Live(output_panel, console=console, refresh_per_second=4) as live:  # noqa: F841
+            stream = provider.generate_completion_stream(
+                prompt=prompt,
+                model=model,
+                temperature=0.7,
+                max_tokens=200
+            )
+            async for chunk, _metadata in stream:
+                full_text += chunk
+                token_count += 1
+                # Update the panel content within the Live context
+                output_panel.renderable = full_text 
+                # live.update(output_panel) # This might be needed depending on Panel updates
         
         # Calculate processing time
         processing_time = time.time() - start_time
         
-        print("\n" + "-" * 80 + "\n")
-        
-        # Log success with stats
-        logger.success(
-            "Streaming completion generated successfully!",
-            emoji_key="success",
-            chunks=token_count,
-            time=processing_time
-        )
+        # Log simple success message
+        logger.success("Streaming completion generated successfully!", emoji_key="success")
+
+        # Display stats using Rich Table
+        stats_table = Table(title="Streaming Stats", show_header=False, box=None)
+        stats_table.add_column("Metric", style="green")
+        stats_table.add_column("Value", style="white")
+        stats_table.add_row("Chunks Received", str(token_count))
+        stats_table.add_row("Processing Time", f"{processing_time:.3f}s")
+        console.print(stats_table)
         
     except Exception as e:
-        logger.error(f"Error generating streaming completion: {str(e)}", emoji_key="error")
+        # Use logger for errors
+        logger.error(f"Error generating streaming completion: {str(e)}", emoji_key="error", exc_info=True)
         raise
 
 
@@ -161,19 +155,23 @@ async def main():
         # Run basic completion
         await run_basic_completion()
         
-        print("\n")
+        console.print() # Add space
         
         # Run streaming completion
         await run_streaming_completion()
         
     except Exception as e:
-        logger.critical(f"Example failed: {str(e)}", emoji_key="critical")
+        # Use logger for critical errors
+        logger.critical(f"Example failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1
     
     return 0
 
 
 if __name__ == "__main__":
+    # Add logging handler setup here, perhaps, if needed for non-direct prints?
+    # For now, relying on root config or direct console prints
+    
     # Run the examples
     exit_code = asyncio.run(main())
     sys.exit(exit_code)

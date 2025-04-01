@@ -38,7 +38,6 @@ dependencies = [
 
     # Data processing
     "pydantic",
-    "python-dotenv",
     "tenacity",  # For retry logic
 
     # Caching and persistence
@@ -55,12 +54,6 @@ dependencies = [
     "pandas",
     "rich",    # Console output formatting
     
-    # Web and API
-    "fastapi",
-    "uvicorn",
-    "starlette",
-    "sse-starlette",
-    
     # Templating for prompt management
     "jinja2",
     
@@ -73,6 +66,7 @@ dependencies = [
     "tqdm",           # Progress bars
     "tiktoken",       # Token counting
     "python-decouple", # .env management
+    "pydantic-settings",
     "jsonschema",
     "matplotlib",
 ]

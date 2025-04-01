@@ -15,12 +15,46 @@ from mcp.server.fastmcp import Context, FastMCP
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.utils import get_logger
+# --- Add Rich Imports ---
+from llm_gateway.utils.logging.console import console
+from rich.panel import Panel
+from rich.table import Table
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.markup import escape
+from rich import box
+# --- Add Display Utils Import ---
+from llm_gateway.utils.display import (
+    display_text_content_result,
+    parse_and_display_result,
+    extract_and_parse_content,
+    _display_stats,
+    _display_json_data
+)
+# ----------------------
 
 # Initialize logger
 logger = get_logger("example.workflow_delegation")
 
 # Initialize FastMCP server
 mcp = FastMCP("Workflow Delegation Demo")
+
+# Mock provider initialization function (replace with actual if needed)
+async def initialize_providers():
+    logger.info("Initializing required providers...", emoji_key="provider")
+    required_keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
+    from decouple import config as decouple_config
+    all_keys_present = True
+    for key in required_keys:
+        if not decouple_config(key, default=None):
+            logger.warning(f"API key {key} not found. Some demos might fail.", emoji_key="warning")
+            console.print(f"[yellow]Warning:[/yellow] API key {key} not found.")
+            all_keys_present = False
+    # Actual initialization would happen inside the tools or a setup function
+    if all_keys_present:
+        logger.info("All required API keys seem to be present.", emoji_key="success")
+    else:
+         logger.warning("Some API keys missing, functionality may be limited.", emoji_key="warning")
 
 # Register meta tools directly
 @mcp.tool()
@@ -249,417 +283,309 @@ async def optimize_prompt(
         "cost": result.cost
     }
 
+# Helper function to process results from MCP tool calls
+def process_mcp_result(result):
+    """Process result from MCP tool call, handling both list and dictionary formats."""
+    # If result is a list, use the first item
+    if isinstance(result, list) and result:
+        result = result[0]
+    
+    # Handle TextContent objects (access their text attribute)
+    if hasattr(result, 'text'):
+        try:
+            # Try to parse the text as JSON
+            parsed = json.loads(result.text)
+            return parsed
+        except json.JSONDecodeError:
+            # If it's not valid JSON, return a dictionary with the text
+            return {"text": result.text}
+            
+    # Return as is if already a dictionary or other type
+    return result
+
+# Enhanced display function for workflow demos
+def display_workflow_result(title: str, result: Any):
+    """Display workflow result with consistent formatting."""
+    console.print(Rule(f"[bold blue]{escape(title)}[/bold blue]"))
+    
+    # Process result to handle list or dict format
+    result = process_mcp_result(result)
+    
+    # Display outputs if present
+    if "outputs" in result and result["outputs"]:
+        for output_name, output_text in result["outputs"].items():
+            console.print(Panel(
+                escape(str(output_text).strip()),
+                title=f"[bold magenta]Output: {escape(output_name)}[/bold magenta]",
+                border_style="magenta",
+                expand=False
+            ))
+    elif "text" in result:
+        # Display single text output if there's no outputs dictionary
+        console.print(Panel(
+            escape(result["text"].strip()),
+            title="[bold magenta]Result[/bold magenta]",
+            border_style="magenta",
+            expand=False
+        ))
+    
+    # Display execution stats
+    _display_stats(result, console)
+
+# Enhanced display function for task analysis
+def display_task_analysis(title: str, result: Any):
+    """Display task analysis result with consistent formatting."""
+    console.print(Rule(f"[bold blue]{escape(title)}[/bold blue]"))
+    
+    # Process result to handle list or dict format
+    result = process_mcp_result(result)
+    
+    # Display task type and features
+    analysis_table = Table(box=box.SIMPLE, show_header=False)
+    analysis_table.add_column("Metric", style="cyan")
+    analysis_table.add_column("Value", style="white")
+    analysis_table.add_row("Task Type", escape(result.get("task_type", "N/A")))
+    analysis_table.add_row("Required Features", escape(str(result.get("required_features", []))))
+    console.print(analysis_table)
+    
+    # Display features explanation
+    if "features_explanation" in result:
+        console.print(Panel(
+            escape(result["features_explanation"]),
+            title="[bold]Features Explanation[/bold]",
+            border_style="dim blue",
+            expand=False
+        ))
+    
+    # Display recommendations
+    if "recommendations" in result and result["recommendations"]:
+        rec_table = Table(title="[bold]Model Recommendations[/bold]", box=box.ROUNDED, show_header=True)
+        rec_table.add_column("Provider", style="magenta")
+        rec_table.add_column("Model", style="blue")
+        rec_table.add_column("Explanation", style="white")
+        for rec in result["recommendations"]:
+            rec_table.add_row(
+                escape(rec.get("provider", "N/A")),
+                escape(rec.get("model", "N/A")),
+                escape(rec.get("explanation", "N/A"))
+            )
+        console.print(rec_table)
+    
+    # Display execution stats
+    _display_stats(result, console)
+
+# --- Demo Functions ---
+
 async def run_analyze_task_demo():
-    """Demonstrate the analyze_task capability."""
-    logger.info("Starting task analysis demo using real MCP tools", emoji_key="start")
+    """Demonstrate the analyze_task tool."""
+    console.print(Rule("[bold blue]Analyze Task Demo[/bold blue]"))
+    logger.info("Running analyze_task demo...", emoji_key="start")
     
-    # Define a sample task
-    task_description = "Extract key entities and relationships from a technical whitepaper about quantum computing"
-    
-    # Call the analyze_task tool via MCP
-    logger.info(f"Analyzing task: {task_description}", emoji_key="processing")
+    task_description = "Summarize the provided technical document about AI advancements and extract key entities."
+    console.print(f"[cyan]Task Description:[/cyan] {escape(task_description)}")
     
     try:
-        # Call the tool
-        analysis_result = await mcp.call_tool("analyze_task", {
+        result = await mcp.call_tool("analyze_task", {
             "task_description": task_description,
-            "available_providers": [Provider.OPENAI.value, Provider.GEMINI.value, Provider.ANTHROPIC.value],
-            "analyze_features": True,
-            "analyze_cost": True
+            "analyze_features": True
         })
         
-        # Parse the JSON if it's in a list
-        analysis = {}
-        if isinstance(analysis_result, list) and len(analysis_result) > 0:
-            # Extract the first result
-            first_item = analysis_result[0]
-            # Check if it has text attribute (typical response format)
-            if hasattr(first_item, 'text'):
-                try:
-                    analysis = json.loads(first_item.text)
-                except json.JSONDecodeError:
-                    # If can't parse as JSON, use text directly
-                    analysis = {"task_type": "extraction", 
-                               "required_features": ["entity_recognition"], 
-                               "features_explanation": first_item.text,
-                               "recommendations": [],
-                               "processing_time": 0.0}
-        elif isinstance(analysis_result, dict):
-            analysis = analysis_result
-        
-        # Print the analysis
-        logger.success("Task analysis completed", emoji_key="success")
-        print("\n" + "-" * 80)
-        print(f"Task Type: {analysis.get('task_type', 'Unknown')}")
-        print(f"Required Features: {', '.join(analysis.get('required_features', []))}")
-        print(f"Features Explanation: {analysis.get('features_explanation', 'No explanation available')}")
-        print("\nRecommendations:")
-        
-        # Handle recommendations safely
-        recommendations = analysis.get('recommendations', [])
-        if isinstance(recommendations, list):
-            for i, rec in enumerate(recommendations, 1):
-                if isinstance(rec, dict):
-                    provider = rec.get('provider', 'Unknown')
-                    model = rec.get('model', 'Unknown')
-                    explanation = rec.get('explanation', 'No explanation')
-                    print(f"{i}. {provider} - {model}: {explanation}")
-                else:
-                    print(f"{i}. {rec}")
-        
-        print("-" * 80 + "\n")
-        
-        return analysis
+        # Use enhanced display function
+        display_task_analysis("Analysis Results", result)
         
     except Exception as e:
-        logger.error(f"Error analyzing task: {str(e)}", emoji_key="error")
-        return None
+        logger.error(f"Error in analyze_task demo: {e}", emoji_key="error", exc_info=True)
+        console.print(f"[bold red]Error:[/bold red] {escape(str(e))}")
+    console.print()
 
 
 async def run_delegate_task_demo():
-    """Demonstrate the delegate_task capability."""
-    logger.info("Starting task delegation demo", emoji_key="start")
+    """Demonstrate the delegate_task tool."""
+    console.print(Rule("[bold blue]Delegate Task Demo[/bold blue]"))
+    logger.info("Running delegate_task demo...", emoji_key="start")
     
-    # Define a task for delegation
-    task_description = "Summarize the key advantages of quantum computing"
-    prompt = """
-    Quantum computing is an emerging technology that leverages quantum mechanics to process information in ways that classical computers cannot. Unlike classical computers that use bits (0s and 1s), quantum computers use quantum bits or qubits that can exist in multiple states simultaneously due to a quantum property called superposition. This allows quantum computers to perform certain calculations exponentially faster than classical computers.
+    task_description = "Generate a short marketing blurb for a new AI-powered writing assistant."
+    prompt = "Write a catchy, 2-sentence marketing blurb for \'AI Writer Pro\', a tool that helps users write faster and better."
+    console.print(f"[cyan]Task Description:[/cyan] {escape(task_description)}")
+    console.print(f"[cyan]Prompt:[/cyan] {escape(prompt)}")
+
+    priorities = ["balanced", "cost", "quality"]
     
-    Another key quantum property is entanglement, where qubits become correlated such that the state of one qubit instantly influences another, regardless of distance. This enables quantum computers to process complex problems more efficiently.
-    
-    Current applications being explored include cryptography (both breaking existing encryption and creating quantum-resistant algorithms), drug discovery (simulating molecular interactions), optimization problems (finding optimal solutions in complex systems), and machine learning (faster processing of certain algorithms).
-    
-    Despite these promising applications, quantum computers face significant challenges including maintaining quantum coherence (qubits are very sensitive to environmental disturbances), error correction (quantum states are fragile), and scaling (building systems with more qubits while maintaining their quantum properties).
-    
-    Companies like IBM, Google, Microsoft, and several startups are actively developing quantum computing hardware and software. The field continues to advance rapidly, with researchers working to overcome current limitations and build practical quantum computing systems.
-    """
-    
-    # Call the delegate_task tool via MCP
-    logger.info("Delegating summarization task to appropriate provider", emoji_key="processing")
-    
-    try:
-        # Call the tool
-        delegate_result = await mcp.call_tool("delegate_task", {
-            "task_description": task_description,
-            "prompt": prompt,
-            "optimization_criteria": "balanced",
-            "available_providers": [Provider.OPENAI.value, Provider.GEMINI.value],
-            "max_cost": 0.05
-        })
-        
-        # Parse the JSON if it's in a list
-        result = {}
-        if isinstance(delegate_result, list) and len(delegate_result) > 0:
-            # Extract the first result
-            first_item = delegate_result[0]
-            # Check if it has text attribute
-            if hasattr(first_item, 'text'):
-                try:
-                    result = json.loads(first_item.text)
-                except json.JSONDecodeError:
-                    result = {"text": first_item.text, 
-                             "provider": Provider.OPENAI.value,
-                             "model": "gpt-4o-mini",
-                             "processing_time": 0.0,
-                             "cost": 0.0}
-        elif isinstance(delegate_result, dict):
-            result = delegate_result
-        
-        # Print the delegation results safely
-        logger.success("Task delegation completed", emoji_key="success")
-        print("\n" + "-" * 80)
-        print("Delegation Results:")
-        print(f"Provider: {result.get('provider', 'Unknown')}")
-        print(f"Model: {result.get('model', 'Unknown')}")
-        print(f"Processing Time: {result.get('processing_time', 0.0):.2f}s")
-        print(f"Cost: ${result.get('cost', 0.0):.6f}")
-        print("\nSummary Result:")
-        print(result.get('text', 'No text available'))
-        print("-" * 80 + "\n")
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error delegating task: {str(e)}", emoji_key="error")
-        return None
+    for priority in priorities:
+        console.print(Rule(f"[yellow]Delegating with Priority: {priority}[/yellow]"))
+        logger.info(f"Delegating task with priority: {priority}", emoji_key="processing")
+        try:
+            result = await mcp.call_tool("delegate_task", {
+                "task_description": task_description,
+                "prompt": prompt,
+                "optimization_criteria": priority,
+                # "available_providers": [Provider.OPENAI.value] # Example constraint
+            })
+            
+            # Use display_text_content_result for consistent formatting
+            result_obj = process_mcp_result(result)
+            
+            # Display the text result
+            text_content = result_obj.get("text", "")
+            if not text_content and hasattr(result, 'text'):
+                text_content = result.text
+                
+            console.print(Panel(
+                escape(text_content.strip() if text_content else "[red]No text returned[/red]"),
+                title=f"[bold green]Delegated Result ({escape(priority)})[/bold green]",
+                border_style="green",
+                expand=False
+            ))
+            
+            # Display execution stats
+            _display_stats(result_obj, console)
+
+        except Exception as e:
+            logger.error(f"Error delegating task with priority {priority}: {e}", emoji_key="error", exc_info=True)
+            console.print(f"[bold red]Error ({escape(priority)}):[/bold red] {escape(str(e))}")
+        console.print()
 
 
 async def run_workflow_demo():
-    """Demonstrate the workflow execution capability with real tools."""
-    logger.info("Starting workflow execution demo", emoji_key="start")
-    
-    # Sample document for processing
-    document = """
-    Quantum computing is an emerging technology that uses quantum mechanics to solve problems 
-    that are too complex for classical computers. Unlike classical computing which uses bits
-    (0s and 1s), quantum computing uses quantum bits or qubits that can exist in multiple states
-    simultaneously due to a property called superposition. The field is advancing rapidly with
-    companies like IBM, Google, and D-Wave leading development efforts. Recent breakthroughs
-    include Google's quantum supremacy experiment and IBM's 127-qubit processor.
-    
-    One key application is in cryptography, where quantum computers could potentially break current
-    encryption methods but also enable new quantum-resistant cryptographic techniques. Other promising
-    applications include drug discovery, materials science, optimization problems, and machine learning.
-    
-    Challenges remain in scaling quantum systems, error correction, and maintaining quantum coherence.
-    Despite these challenges, investment in the field continues to grow substantially.
+    """Demonstrate the execute_workflow tool."""
+    console.print(Rule("[bold blue]Execute Workflow Demo[/bold blue]"))
+    logger.info("Running execute_workflow demo...", emoji_key="start")
+
+    initial_text = """
+    Artificial intelligence (AI) is rapidly transforming various sectors. 
+    In healthcare, AI algorithms analyze medical images with remarkable accuracy, 
+    aiding radiologists like Dr. Evelyn Reed. Pharmaceutical companies, such as InnovatePharma, 
+    use AI to accelerate drug discovery. Meanwhile, financial institutions leverage AI 
+    for fraud detection and algorithmic trading. The field continues to evolve, 
+    driven by researchers like Kenji Tanaka and advancements in machine learning.
     """
     
-    # Define a real workflow
-    workflow_steps = [
+    workflow = [
         {
-            "id": "summarize",
-            "name": "Summarize Document",
-            "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
+            "id": "step1_summarize",
             "operation": "summarize",
-            "parameters": {
-                "max_length": 100,
-                "format": "paragraph"
-            },
+            "provider": Provider.ANTHROPIC.value,
+            "model": "claude-3-5-haiku-latest",
+            "parameters": {"format": "Provide a 2-sentence summary"},
             "output_as": "summary"
         },
         {
-            "id": "entities",
-            "name": "Extract Entities",
+            "id": "step2_extract",
+            "operation": "extract_entities",
             "provider": Provider.OPENAI.value,
             "model": "gpt-4o-mini",
-            "operation": "extract_entities",
-            "parameters": {
-                "entity_types": ["organization", "technology", "concept"]
-            },
+            "parameters": {"entity_types": ["person", "organization", "field"]},
+            "input_from": None, # Use initial_input
             "output_as": "entities"
         },
         {
-            "id": "questions",
-            "name": "Generate Questions",
-            "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
+            "id": "step3_questions",
             "operation": "generate_questions",
-            "input_from": "summary",
-            "parameters": {
-                "question_count": 3,
-                "question_type": "analytical"
-            },
+            "provider": Provider.GEMINI.value,
+            "model": "gemini-2.0-flash-lite",
+            "parameters": {"question_count": 2, "question_type": "insightful"},
+            "input_from": "summary", # Use output from step 1
             "output_as": "questions"
         }
     ]
     
-    # Execute the workflow
-    logger.info("Executing workflow with 3 steps using MCP tools", emoji_key="processing")
-    
+    console.print("[cyan]Initial Input Text:[/cyan]")
+    console.print(Panel(escape(initial_text.strip()), border_style="dim blue", expand=False))
+    console.print("[cyan]Workflow Definition:[/cyan]")
     try:
-        # Call the workflow execution tool
-        workflow_result = await mcp.call_tool("execute_workflow", {
-            "workflow_steps": workflow_steps,
-            "initial_input": document,
-            "max_concurrency": 1  # Sequential for demonstration
+        workflow_json = json.dumps(workflow, indent=2, default=lambda o: o.value if isinstance(o, Provider) else str(o)) # Handle enum serialization
+        console.print(Panel(
+            Syntax(workflow_json, "json", theme="default", line_numbers=True, word_wrap=True),
+            title="[bold]Workflow Steps[/bold]",
+            border_style="blue",
+            expand=False
+        ))
+    except Exception as json_err:
+         console.print(f"[red]Could not display workflow definition: {escape(str(json_err))}[/red]")
+    
+    logger.info(f"Executing workflow with {len(workflow)} steps...", emoji_key="processing")
+    try:
+        result = await mcp.call_tool("execute_workflow", {
+            "workflow_steps": workflow, 
+            "initial_input": initial_text
         })
         
-        # Parse the JSON if it's in a list
-        results = {}
-        if isinstance(workflow_result, list) and len(workflow_result) > 0:
-            # Extract the first result
-            first_item = workflow_result[0]
-            # Check if it has text attribute
-            if hasattr(first_item, 'text'):
-                try:
-                    results = json.loads(first_item.text)
-                except json.JSONDecodeError:
-                    # If we can't parse JSON, create a basic structure
-                    results = {
-                        "outputs": {
-                            "summary": first_item.text,
-                            "entities": "JSON parsing error",
-                            "questions": "Could not parse result"
-                        },
-                        "processing_time": 0.0,
-                        "total_cost": 0.0
-                    }
-        elif isinstance(workflow_result, dict):
-            results = workflow_result
-        
-        # Print the workflow results
-        logger.success("Workflow execution completed", emoji_key="success")
-        print("\n" + "-" * 80)
-        print("Workflow Results:")
-        
-        # Print outputs from each step
-        if "outputs" in results:
-            # Print summary
-            if "summary" in results["outputs"]:
-                print("\n1. Document Summary:")
-                print(results["outputs"]["summary"])
-            
-            # Print entities if available
-            if "entities" in results["outputs"]:
-                print("\n2. Extracted Entities:")
-                entities = results["outputs"]["entities"]
-                if isinstance(entities, str):
-                    # Try to parse JSON if it's a string
-                    try:
-                        entities = json.loads(entities)
-                    except Exception:
-                        pass
-                
-                if isinstance(entities, dict):
-                    for entity_type, entity_list in entities.items():
-                        print(f"  {entity_type.capitalize()}: {', '.join(entity_list)}")
-                else:
-                    print(entities)
-            
-            # Print questions if available
-            if "questions" in results["outputs"]:
-                print("\n3. Generated Questions:")
-                questions = results["outputs"]["questions"]
-                
-                if isinstance(questions, str):
-                    # Try to parse JSON if it's a string
-                    try:
-                        questions = json.loads(questions)
-                    except Exception:
-                        # If can't parse, check if it's a formatted string with line breaks
-                        if "\n" in questions:
-                            questions = [q.strip() for q in questions.split("\n") if q.strip()]
-                        else:
-                            questions = [questions]
-                
-                if isinstance(questions, list):
-                    for i, question in enumerate(questions, 1):
-                        print(f"  Q{i}: {question}")
-                else:
-                    print(questions)
-        
-        # Print overall stats safely
-        print("\nWorkflow Statistics:")
-        print(f"  Total processing time: {results.get('processing_time', 0.0):.2f}s")
-        print(f"  Total cost: ${results.get('total_cost', 0.0):.6f}")
-        print("-" * 80 + "\n")
-        
-        return results
-        
+        # Use enhanced display function
+        display_workflow_result("Workflow Results", result)
+
     except Exception as e:
-        logger.error(f"Error executing workflow: {str(e)}", emoji_key="error")
-        return None
+        logger.error(f"Error executing workflow: {e}", emoji_key="error", exc_info=True)
+        console.print(f"[bold red]Workflow Execution Error:[/bold red] {escape(str(e))}")
+    console.print()
 
 
 async def run_prompt_optimization_demo():
-    """Demonstrate the prompt optimization capabilities."""
-    logger.info("Starting prompt optimization demo with real tools", emoji_key="start")
+    """Demonstrate the optimize_prompt tool."""
+    console.print(Rule("[bold blue]Prompt Optimization Demo[/bold blue]"))
+    logger.info("Running optimize_prompt demo...", emoji_key="start")
+
+    original_prompt = "Tell me about Large Language Models."
+    target_model = "claude-3-opus-20240229"
+    optimization_type = "detailed_response" # e.g., conciseness, detailed_response, specific_format
     
-    # Original prompt
-    original_prompt = "Tell me about quantum computing and its applications."
+    console.print(f"[cyan]Original Prompt:[/cyan] {escape(original_prompt)}")
+    console.print(f"[cyan]Target Model:[/cyan] {escape(target_model)}")
+    console.print(f"[cyan]Optimization Type:[/cyan] {escape(optimization_type)}")
     
-    # Target models for optimization
-    target_models = [
-        "gpt-4o-mini",
-        "gemini-2.0-flash-lite",
-        "claude-3-5-haiku-latest"
-    ]
-    
-    # Print the original prompt
-    logger.info("Original prompt:", emoji_key="info")
-    print("\n" + "-" * 80)
-    print(f"Original: {original_prompt}")
-    print("-" * 80 + "\n")
-    
-    # Optimize the prompt for each target model
-    optimized_prompts = {}
-    
-    for model in target_models:
-        try:
-            logger.info(f"Optimizing prompt for {model}...", emoji_key="processing")
-            
-            # Determine the provider based on model name
-            if "gpt" in model:
-                provider = Provider.OPENAI.value
-            elif "gemini" in model:
-                provider = Provider.GEMINI.value
-            elif "claude" in model:
-                provider = Provider.ANTHROPIC.value
-            else:
-                provider = Provider.OPENAI.value
-            
-            # Call the optimize_prompt tool
-            optimize_result = await mcp.call_tool("optimize_prompt", {
-                "prompt": original_prompt,
-                "target_model": model,
-                "optimization_type": "general",
-                "provider": provider
-            })
-            
-            # Parse the JSON if needed
-            result = {}
-            if isinstance(optimize_result, list) and len(optimize_result) > 0:
-                first_item = optimize_result[0]
-                if hasattr(first_item, 'text'):
-                    try:
-                        result = json.loads(first_item.text)
-                    except json.JSONDecodeError:
-                        result = {"optimized_prompt": first_item.text}
-            elif isinstance(optimize_result, dict):
-                result = optimize_result
-            
-            # Store the optimized prompt
-            if isinstance(result, dict):
-                optimized_prompts[model] = result.get("optimized_prompt", "[Optimization failed] " + original_prompt)
-            
-        except Exception as e:
-            logger.warning(f"Error optimizing for {model}: {str(e)}", emoji_key="warning")
-            # Fallback to original prompt
-            optimized_prompts[model] = f"[Optimization failed] {original_prompt}"
-    
-    # Show optimized prompts
-    logger.info("Optimized prompts by target model:", emoji_key="processing")
-    
-    for i, model in enumerate(target_models, 1):
-        print(f"\n{i}. Optimized for {model}:")
-        print(optimized_prompts.get(model, f"[Optimization failed] {original_prompt}"))
-    
-    logger.success("Prompt optimization demo completed", emoji_key="success")
-    return optimized_prompts
+    logger.info(f"Optimizing prompt for {target_model}...", emoji_key="processing")
+    try:
+        result = await mcp.call_tool("optimize_prompt", {
+            "prompt": original_prompt,
+            "target_model": target_model,
+            "optimization_type": optimization_type,
+            "provider": Provider.OPENAI.value # Using OpenAI to optimize for Claude
+        })
+        
+        # Process result to handle list or dict format
+        result = process_mcp_result(result)
+        
+        # Get optimized prompt text
+        optimized_prompt = result.get("optimized_prompt", "")
+        if not optimized_prompt and hasattr(result, 'text'):
+            optimized_prompt = result.text
+        
+        console.print(Panel(
+            escape(optimized_prompt.strip() if optimized_prompt else "[red]Optimization failed[/red]"),
+            title="[bold green]Optimized Prompt[/bold green]",
+            border_style="green",
+            expand=False
+        ))
+        
+        # Display execution stats
+        _display_stats(result, console)
+        
+    except Exception as e:
+        logger.error(f"Error optimizing prompt: {e}", emoji_key="error", exc_info=True)
+        console.print(f"[bold red]Prompt Optimization Error:[/bold red] {escape(str(e))}")
+    console.print()
 
 
 async def main():
-    """Run workflow and delegation examples."""
+    """Run all workflow delegation demonstrations."""
+    await initialize_providers() # Ensure keys are checked/providers ready
+    console.print(Rule("[bold magenta]Workflow & Delegation Demos Starting[/bold magenta]"))
+    
     try:
-        # Wait a moment for initialization
-        await asyncio.sleep(0.1)
-        
-        print("\n")
-        
-        # Run analyze task demo
-        analysis_result = await run_analyze_task_demo()
-        
-        print("\n")
-        
-        # Run delegate task demo
-        delegation_result = await run_delegate_task_demo()
-        
-        print("\n")
-        
-        # Run workflow execution demo
-        workflow_result = await run_workflow_demo()
-        
-        print("\n")
-        
-        # Run prompt optimization demo
-        optimization_result = await run_prompt_optimization_demo()
-        
-        # Summarize results
-        if any([analysis_result, delegation_result, workflow_result, optimization_result]):
-            logger.success("Workflow delegation examples completed successfully", emoji_key="success")
-        else:
-            logger.warning("Some examples did not complete successfully", emoji_key="warning")
+        await run_analyze_task_demo()
+        await run_delegate_task_demo()
+        await run_workflow_demo()
+        await run_prompt_optimization_demo()
         
     except Exception as e:
-        logger.critical(f"Example failed: {str(e)}", emoji_key="critical")
+        logger.critical(f"Workflow demo failed: {str(e)}", emoji_key="critical", exc_info=True)
+        console.print(f"[bold red]Critical Demo Error:[/bold red] {escape(str(e))}")
         return 1
     
+    logger.success("Workflow & Delegation Demos Finished Successfully!", emoji_key="complete")
+    console.print(Rule("[bold magenta]Workflow & Delegation Demos Complete[/bold magenta]"))
     return 0
 
 
 if __name__ == "__main__":
-    # Run the examples
     exit_code = asyncio.run(main())
     sys.exit(exit_code) 
