@@ -13,6 +13,7 @@ from llm_gateway.services.cache.strategies import (
     TaskBasedStrategy,
     get_strategy,
 )
+from llm_gateway.services.cache.utils import run_completion_with_cache
 
 __all__ = [
     "CacheService",
@@ -25,4 +26,5 @@ __all__ = [
     "SemanticMatchStrategy",
     "TaskBasedStrategy",
     "get_strategy",
+    "run_completion_with_cache",
 ]

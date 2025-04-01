@@ -12,7 +12,7 @@ from decouple import config as decouple_config
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.cache import get_cache_service
+from llm_gateway.services.cache import get_cache_service, run_completion_with_cache
 from llm_gateway.utils import get_logger
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console

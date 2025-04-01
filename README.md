@@ -21,6 +21,16 @@
 
 LLM Gateway is an MCP-native server that enables intelligent task delegation from advanced AI agents like Claude 3.7 Sonnet to more cost-effective models like Gemini Flash 2.0 Lite. It provides a unified interface to multiple Large Language Model (LLM) providers while optimizing for cost, performance, and quality.
 
+### The Vision: AI-Driven Resource Optimization
+
+At its core, LLM Gateway represents a fundamental shift in how we interact with AI systems. Rather than using a single expensive model for all tasks, it enables an intelligent hierarchy where:
+
+- Advanced models like Claude 3.7 focus on high-level reasoning, orchestration, and complex tasks
+- Cost-effective models handle routine processing, extraction, and mechanical tasks
+- The overall system achieves near-top-tier performance at a fraction of the cost
+
+This approach mirrors how human organizations work — specialists handle complex decisions while delegating routine tasks to others with the right skills for those specific tasks.
+
 ### MCP-Native Architecture
 
 The server is built on the [Model Context Protocol (MCP)](https://github.com/mpctechdebt/mcp), making it specifically designed to work with AI agents like Claude. All functionality is exposed through MCP tools that can be directly called by these agents, creating a seamless workflow for AI-to-AI delegation.
@@ -129,6 +139,20 @@ Process large documents efficiently:
 - **Table Extraction**: Extract tables in multiple formats
 - **Key-Value Extraction**: Extract key-value pairs from text
 - **Semantic Schema Inference**: Generate schemas from text
+
+### Tournament Mode
+
+- **Code and Text Competitions**: Support for running tournament-style competitions
+- **Multiple Models**: Compare outputs from different models simultaneously
+- **Performance Metrics**: Evaluate and track model performance
+- **Results Storage**: Persist tournament results for further analysis
+
+### Advanced Vector Operations
+
+- **Semantic Search**: Find semantically similar content across documents
+- **Vector Storage**: Efficient storage and retrieval of vector embeddings
+- **Hybrid Search**: Combine keyword and semantic search capabilities
+- **Batched Processing**: Efficiently process large datasets
 
 ## Usage Examples
 
@@ -262,11 +286,9 @@ git clone https://github.com/yourusername/llm_gateway_mcp_server.git
 cd llm_gateway_mcp_server
 
 # Install in venv using uv:
-uv install --python 3.13
 uv venv --python 3.13
 source .venv/bin/activate
-uv lock --upgrade
-uv pip install hatchling editables torch && uv sync --all-extras --no-build-isolation
+uv pip install -e ".[all]"
 ```
 
 ### Environment Setup
@@ -318,6 +340,51 @@ Using LLM Gateway for delegation can yield significant cost savings:
 
 These savings are achieved while maintaining high-quality outputs by letting Claude focus on high-level reasoning and orchestration while delegating mechanical tasks to cost-effective models.
 
+## Why AI-to-AI Delegation Matters
+
+The strategic importance of AI-to-AI delegation extends beyond simple cost savings:
+
+### Democratizing Advanced AI Capabilities
+
+By enabling powerful models like Claude 3.7, GPT-4o, and others to delegate effectively, we:
+- Make advanced AI capabilities accessible at a fraction of the cost
+- Allow organizations with budget constraints to leverage top-tier AI capabilities
+- Enable more efficient use of AI resources across the industry
+
+### Economic Resource Optimization
+
+AI-to-AI delegation represents a fundamental economic optimization:
+- Complex reasoning, creativity, and understanding are reserved for top-tier models
+- Routine data processing, extraction, and simpler tasks go to cost-effective models
+- The overall system achieves near-top-tier performance at a fraction of the cost
+- API costs become a controlled expenditure rather than an unpredictable liability
+
+### Sustainable AI Architecture
+
+This approach promotes more sustainable AI usage:
+- Reduces unnecessary consumption of high-end computational resources
+- Creates a tiered approach to AI that matches capabilities to requirements
+- Allows experimental work that would be cost-prohibitive with top-tier models only
+- Creates a scalable approach to AI integration that can grow with business needs
+
+### Technical Evolution Path
+
+LLM Gateway represents an important evolution in AI application architecture:
+- Moving from monolithic AI calls to distributed, multi-model workflows
+- Enabling AI-driven orchestration of complex processing pipelines
+- Creating a foundation for AI systems that can reason about their own resource usage
+- Building toward self-optimizing AI systems that make intelligent delegation decisions
+
+### The Future of AI Efficiency
+
+LLM Gateway points toward a future where:
+- AI systems actively manage and optimize their own resource usage
+- Higher-capability models serve as intelligent orchestrators for entire AI ecosystems
+- AI workflows become increasingly sophisticated and self-organizing
+- Organizations can leverage the full spectrum of AI capabilities in cost-effective ways
+
+This vision of efficient, self-organizing AI systems represents the next frontier in practical AI deployment, moving beyond the current pattern of using single models for every task.
+
 ## Architecture
 
 ### How MCP Integration Works
@@ -355,6 +422,11 @@ This ensures seamless integration with Claude and other MCP-compatible agents.
 │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐        │
 │  │    Cache      │  │    Vector     │  │    Prompt     │        │
 │  │   Service     │  │   Service     │  │   Service     │        │
+│  └───────────────┘  └───────────────┘  └───────────────┘        │
+│                                                                 │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐        │
+│  │  Tournament   │  │    Code       │  │   Multi-Agent │        │
+│  │     Tools     │  │  Extraction   │  │  Coordination │        │
 │  └───────────────┘  └───────────────┘  └───────────────┘        │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
@@ -424,6 +496,19 @@ When Claude delegates a task to LLM Gateway:
   - Key-value pair extraction
   - Semantic schema inference
 
+### Tournament and Benchmarking
+
+- **Model Competitions**:
+  - Run competitions between different models and configurations
+  - Compare code generation capabilities across providers
+  - Generate statistical performance reports
+  - Store competition results for historical analysis
+
+- **Code Extraction**:
+  - Extract clean code from model responses
+  - Analyze and validate extracted code
+  - Support for multiple programming languages
+
 ### Vector Operations
 
 - **Embedding Service**:
@@ -448,6 +533,18 @@ When Claude delegates a task to LLM Gateway:
   - Consistent streaming interface across all providers
   - Token-by-token delivery
   - Cost tracking during stream
+
+- **Health Monitoring**:
+  - Endpoint health checks (/healthz)
+  - Resource usage monitoring
+  - Provider availability tracking
+  - Error rate statistics
+
+- **Command-Line Interface**:
+  - Rich interactive CLI for server management
+  - Direct tool invocation from command line
+  - Configuration management
+  - Cache and server status inspection
 
 ## Real-World Use Cases
 
@@ -478,6 +575,15 @@ Research teams can use LLM Gateway to:
 - Extract structured information from studies
 - Track token usage and optimize research budgets
 
+### Model Benchmarking and Selection
+
+Organizations can use the tournament features to:
+
+- Run controlled competitions between different models
+- Generate quantitative performance metrics
+- Make data-driven decisions on model selection
+- Build custom model evaluation frameworks
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
@@ -487,4 +593,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [Model Context Protocol](https://github.com/mpctechdebt/mcp) for the foundation of the API
 - [Rich](https://github.com/Textualize/rich) for beautiful terminal output
 - [Pydantic](https://docs.pydantic.dev/) for data validation
+- [uv](https://github.com/astral-sh/uv) for fast and reliable Python package management
 - All the LLM providers making their models available via API

@@ -14,7 +14,8 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
-from llm_gateway.utils import get_logger
+from llm_gateway.core.server import Gateway
+from llm_gateway.utils import get_logger, process_mcp_result
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
 from rich.panel import Panel
@@ -282,26 +283,6 @@ async def optimize_prompt(
         "optimization_type": optimization_type,
         "cost": result.cost
     }
-
-# Helper function to process results from MCP tool calls
-def process_mcp_result(result):
-    """Process result from MCP tool call, handling both list and dictionary formats."""
-    # If result is a list, use the first item
-    if isinstance(result, list) and result:
-        result = result[0]
-    
-    # Handle TextContent objects (access their text attribute)
-    if hasattr(result, 'text'):
-        try:
-            # Try to parse the text as JSON
-            parsed = json.loads(result.text)
-            return parsed
-        except json.JSONDecodeError:
-            # If it's not valid JSON, return a dictionary with the text
-            return {"text": result.text}
-            
-    # Return as is if already a dictionary or other type
-    return result
 
 # Enhanced display function for workflow demos
 def display_workflow_result(title: str, result: Any):

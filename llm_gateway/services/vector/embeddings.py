@@ -1,14 +1,16 @@
 """Embedding generation service for vector operations."""
 import asyncio
 import hashlib
+import json
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 from openai import AsyncOpenAI
+from tqdm.asyncio import tqdm
 
-from llm_gateway.config import get_env
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -164,7 +166,7 @@ class EmbeddingService:
             return
             
         # Get API key
-        self.api_key = api_key or get_env("OPENAI_API_KEY")
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             logger.warning(
                 "No OpenAI API key provided for embedding service",

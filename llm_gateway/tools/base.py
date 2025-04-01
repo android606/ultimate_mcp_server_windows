@@ -14,6 +14,30 @@ from llm_gateway.utils import get_logger
 logger = get_logger("llm_gateway.tools.base")
 
 
+def tool(name=None, description=None):
+    """Decorator to mark a method as an MCP tool.
+    
+    Args:
+        name: Tool name (defaults to method name)
+        description: Tool description (defaults to method docstring)
+        
+    Returns:
+        Decorated method
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            return await func(self, *args, **kwargs)
+        
+        wrapper._tool = True
+        wrapper._tool_name = name
+        wrapper._tool_description = description
+        
+        return wrapper
+    
+    return decorator
+
+
 class BaseToolMetrics:
     """Metrics tracking for tool execution."""
     

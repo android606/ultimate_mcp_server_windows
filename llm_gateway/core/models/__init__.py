@@ -1,4 +1,4 @@
-"""Data models for LLM Gateway."""
+"""Core models module."""
 from llm_gateway.core.models.entities import (
     LLMModel,
     ModelConfig,
@@ -8,46 +8,91 @@ from llm_gateway.core.models.entities import (
     TokenUsage,
 )
 from llm_gateway.core.models.requests import (
-    ChatCompletionRequest,
+    BaseRequest,
+    MessageRole,
+    ChatMessage,
     CompletionRequest,
-    DocumentRequest,
+    ChatCompletionRequest,
     EmbeddingRequest,
-    ExtractionRequest,
     SummarizationRequest,
+    ChunkingMethod,
+    DocumentRequest,
+    ExtractionFormat,
+    ExtractionRequest
 )
 from llm_gateway.core.models.responses import (
-    ChatCompletionResponse,
-    CompletionResponse,
-    DocumentResponse,
-    EmbeddingResponse,
+    BaseResponse,
     ErrorResponse,
-    ExtractionResponse,
+    CompletionResponse,
+    ChatCompletionResponse,
+    StreamChunk,
+    EmbeddingResponse,
     SummarizationResponse,
+    DocumentChunk,
+    DocumentResponse,
+    ExtractionResponse
+)
+from llm_gateway.core.models.tournament import (
+    TournamentBase,
+    TournamentMatch,
+    TournamentPlayerBase
+)
+# Knowledge base models
+from llm_gateway.core.models.knowledge_base import (
+    KnowledgeBaseMetadata,
+    DocumentSource,
+    RetrievalMethod,
+    FeedbackType,
+    RAGRequest,
+    RAGResponse,
+    RAGFeedbackRequest
 )
 
 __all__ = [
     # Entities
     "LLMModel",
-    "Provider",
-    "TokenUsage",
-    "ModelMetadata",
-    "ProviderConfig",
     "ModelConfig",
+    "ModelMetadata",
+    "Provider",
+    "ProviderConfig",
+    "TokenUsage",
     
     # Requests
+    "BaseRequest",
+    "MessageRole",
+    "ChatMessage",
     "CompletionRequest",
     "ChatCompletionRequest",
     "EmbeddingRequest",
     "SummarizationRequest",
+    "ChunkingMethod",
     "DocumentRequest",
+    "ExtractionFormat",
     "ExtractionRequest",
     
     # Responses
+    "BaseResponse",
+    "ErrorResponse",
     "CompletionResponse",
     "ChatCompletionResponse",
+    "StreamChunk",
     "EmbeddingResponse",
     "SummarizationResponse",
+    "DocumentChunk",
     "DocumentResponse",
     "ExtractionResponse",
-    "ErrorResponse",
+    
+    # Tournament
+    "TournamentBase",
+    "TournamentMatch",
+    "TournamentPlayerBase",
+    
+    # Knowledge base
+    "KnowledgeBaseMetadata",
+    "DocumentSource",
+    "RetrievalMethod",
+    "FeedbackType",
+    "RAGRequest",
+    "RAGResponse",
+    "RAGFeedbackRequest"
 ]

@@ -9,24 +9,22 @@ the new code extraction function against the raw response texts.
 import asyncio
 import json
 import sys
-import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.core.models.requests import CompletionRequest
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.logging.console import console
+from rich import box
 from rich.panel import Panel
 from rich.table import Table
-from rich import box
 
-# Import the extraction function from our tournament code demo
-from examples.tournament_code_demo import extract_code_from_response
+from llm_gateway.core.server import Gateway
+
+# Import the extraction function from the library
+from llm_gateway.tools import extract_code_from_response
+from llm_gateway.utils import get_logger
+from llm_gateway.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.test_extraction")

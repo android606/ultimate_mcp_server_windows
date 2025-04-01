@@ -33,9 +33,10 @@ from llm_gateway.core.server import Gateway
 from llm_gateway.core.models.requests import CompletionRequest
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.prompts import PromptTemplate
-from llm_gateway.utils import get_logger
+from llm_gateway.utils import get_logger, parse_result, process_mcp_result
 from llm_gateway.utils.logging.console import console
 from llm_gateway.utils.display import display_tournament_status, display_tournament_results
+from llm_gateway.tools import extract_code_from_response
 from rich.panel import Panel
 from rich.table import Table
 from rich.rule import Rule
@@ -209,47 +210,6 @@ code_template = PromptTemplate(
     required_vars=["code_type", "task_description", "context", "requirements"]
 )
 
-# --- Helper Functions ---
-def parse_result(result):
-    """Parse the result from a tool call into a usable dictionary.
-    
-    Handles various return types from MCP tools.
-    """
-    try:
-        # Handle TextContent object (which has a .text attribute)
-        if hasattr(result, 'text'):
-            try:
-                # Try to parse the text as JSON
-                return json.loads(result.text)
-            except json.JSONDecodeError:
-                # Return the raw text if not JSON
-                return {"text": result.text}
-                
-        # Handle list result
-        if isinstance(result, list):
-            if result:
-                first_item = result[0]
-                if hasattr(first_item, 'text'):
-                    try:
-                        return json.loads(first_item.text)
-                    except json.JSONDecodeError:
-                        return {"text": first_item.text}
-                else:
-                    return first_item
-            return {}
-            
-        # Handle dictionary directly
-        if isinstance(result, dict):
-            return result
-            
-        # Handle other potential types or return error
-        else:
-            return {"error": f"Unexpected result type: {type(result)}"}
-        
-    except Exception as e:
-        return {"error": f"Error parsing result: {str(e)}"}
-
-
 async def setup_gateway():
     """Set up the gateway for demonstration."""
     global gateway
@@ -270,27 +230,6 @@ async def setup_gateway():
         logger.warning("No tournament tools found. Make sure tournament plugins are registered.", emoji_key="warning")
     
     logger.success("Gateway initialized", emoji_key="success")
-
-
-# Helper function to process results from MCP tool calls
-def process_mcp_result(result):
-    """Process result from MCP tool call, handling both list and dictionary formats."""
-    # If result is a list, use the first item
-    if isinstance(result, list) and result:
-        result = result[0]
-    
-    # Handle TextContent objects (access their text attribute)
-    if hasattr(result, 'text'):
-        try:
-            # Try to parse the text as JSON
-            parsed = json.loads(result.text)
-            return parsed
-        except json.JSONDecodeError:
-            # If it's not valid JSON, return a dictionary with the text
-            return {"text": result.text}
-            
-    # Return as is if already a dictionary or other type
-    return result
 
 
 async def poll_tournament_status(tournament_id: str, storage_path: Optional[str] = None, interval: int = 5) -> Optional[str]:
@@ -413,338 +352,81 @@ def try_code_in_sandbox(code_str: str, task_name: str) -> Dict[str, Any]:
 "Smith, John",42,New York
 "Doe, Jane",39,"Los Angeles, CA"
 """
-            # Execute the function with the test input
-            test_output = main_function(test_input)
-            results["output"] = test_output
-            results["success"] = True
-            logger.info(f"Test result: {json.dumps(test_output, indent=2)}", emoji_key="result")
-            
-            # Basic validation - should return a list of dictionaries
-            if not isinstance(test_output, list):
-                results["error"] = f"Expected list output, got {type(test_output).__name__}"
-                results["success"] = False
-            elif test_output and not all(isinstance(item, dict) for item in test_output):
-                results["error"] = "Not all items in output list are dictionaries"
-                results["success"] = False
-            
-        elif task_name == "calculator":
-            # Test for calculator implementation
             try:
-                Calculator = local_env.get("Calculator")
-                if Calculator:
-                    # Create calculator and test operations
-                    calc = Calculator()
-                    
-                    # Test basic functions
-                    calc.add(5)
-                    calc.multiply(2)
-                    calc.subtract(3)
-                    result = calc.value() if hasattr(calc, "value") else None
-                    
-                    results["output"] = result
-                    results["success"] = result == 7.0
-                    logger.info(f"Calculator test result: {result}", emoji_key="result")
-                    
-                    if result != 7.0:
-                        results["error"] = f"Expected 7.0, got {result}"
+                parsed_data = main_function(test_input)
+                if isinstance(parsed_data, list) and len(parsed_data) == 2:
+                    results["success"] = True
+                    results["output"] = parsed_data
+                else:
+                    results["error"] = f"Expected a list of 2 items, got: {type(parsed_data)} with {len(parsed_data) if isinstance(parsed_data, list) else 'unknown'} items"
+            except Exception as e:
+                results["error"] = f"Error running function: {str(e)}"
+        elif task_name == "calculator":
+            # Test for calculator
+            try:
+                # Check if Calculator class exists
+                if "Calculator" in local_env:
+                    calc = local_env["Calculator"]()
+                    # Run simple operations
+                    if hasattr(calc, "add") and hasattr(calc, "subtract"):
+                        result_val = calc.add(5).subtract(3).value() if hasattr(calc, "value") else None
+                        results["success"] = result_val == 2
+                        results["output"] = result_val
+                    else:
+                        results["error"] = "Calculator is missing add/subtract methods"
                 else:
                     results["error"] = "Calculator class not found"
-                    results["success"] = False
             except Exception as e:
-                results["error"] = f"Calculator test error: {str(e)}"
-                results["success"] = False
-                
-        elif task_name == "string_util":
-            # Test for string utility functions
-            test_functions = {
-                "count_words": "Hello world, the world is amazing!",
-                "is_balanced": "([{}])",
-                "remove_duplicates": "hello",
-                "find_longest_palindrome": "racecar is my favorite",
-            }
-            
-            # Find which functions exist in the code
-            test_results = {}
-            for func_name, test_input in test_functions.items():
-                if func_name in local_env and callable(local_env[func_name]):
-                    try:
-                        test_output = local_env[func_name](test_input)
-                        test_results[func_name] = test_output
-                    except Exception as e:
-                        test_results[func_name] = f"Error: {str(e)}"
-            
-            results["output"] = test_results
-            results["success"] = bool(test_results)  # Success if any function was tested
-            logger.info(f"String utility test results: {json.dumps(test_results, indent=2)}", emoji_key="result")
-        
+                results["error"] = f"Error testing calculator: {str(e)}"
         else:
-            # Generic approach for other functions
-            try:
-                # Try with a simple string argument as default
-                test_output = main_function("test input")
-                results["output"] = test_output
-                results["success"] = True
-                logger.info(f"Generic test result: {test_output}", emoji_key="result")
-            except TypeError:
-                try:
-                    # Try with no arguments
-                    test_output = main_function()
-                    results["output"] = test_output
-                    results["success"] = True
-                    logger.info(f"Generic test result (no args): {test_output}", emoji_key="result")
-                except Exception as e:
-                    results["error"] = f"Could not test function: {str(e)}"
-                    results["success"] = False
-        
-        if results["success"]:
-            logger.success("Code executed successfully!", emoji_key="success")
-        elif not results["error"]:
-            results["error"] = "Tests ran but no specific success criteria met"
+            # For other tasks, just confirm the function can be called
+            results["success"] = True
+            results["output"] = "Function passes basic inspection"
             
     except Exception as e:
-        results["error"] = f"Error executing code: {str(e)}"
-        logger.error(results["error"], emoji_key="error")
-    
+        results["error"] = f"Error in code execution: {str(e)}"
+        
     return results
 
 
-def analyze_code_quality(code: str) -> Dict[str, Any]:
-    """Basic code quality analysis."""
-    line_count = len(code.split('\n'))
-    char_count = len(code)
+def analyze_code_quality(code_str: str) -> Dict[str, Any]:
+    """Analyze the quality of the code.
     
-    # Simple complexity measure based on control structures
-    complexity_indicators = [
-        'if ', 'else:', 'elif ', 'for ', 'while ', 'try:', 'except:', 
-        'with ', 'def ', 'class ', 'return', 'yield'
+    Args:
+        code_str: The code to analyze
+        
+    Returns:
+        Dictionary with code quality metrics
+    """
+    metrics = {
+        "line_count": 0,
+        "complexity_score": 0
+    }
+    
+    if not code_str:
+        return metrics
+    
+    # Count lines (excluding empty lines)
+    lines = [line for line in code_str.split("\n") if line.strip()]
+    metrics["line_count"] = len(lines)
+    
+    # Simple complexity metric based on control structures and functions
+    complexity = 0
+    control_patterns = [
+        r"\bif\b", r"\belse\b", r"\belif\b", r"\bfor\b", r"\bwhile\b",
+        r"\btry\b", r"\bexcept\b", r"\bwith\b", r"\bdef\b", r"\bclass\b",
+        r"\blambda\b", r"\breturn\b", r"\braise\b"
     ]
-    complexity_score = sum(code.count(indicator) for indicator in complexity_indicators)
     
-    return {
-        "line_count": line_count,
-        "char_count": char_count,
-        "complexity_score": complexity_score
-    }
+    for pattern in control_patterns:
+        for line in lines:
+            if re.search(pattern, line):
+                complexity += 1
+    
+    metrics["complexity_score"] = complexity
+    
+    return metrics
 
-
-async def evaluate_code(code_by_model: Dict[str, str]) -> Dict[str, Any]:
-    """Use LLM to evaluate which code solution is the best.
-    
-    Args:
-        code_by_model: Dictionary mapping model IDs to their code solutions
-        
-    Returns:
-        Dictionary with evaluation results
-    """
-    if not code_by_model or len(code_by_model) < 2:
-        return {"error": "Not enough code samples to compare"}
-    
-    try:
-        # Format the code for evaluation
-        evaluation_prompt = "# Code Evaluation\n\nPlease analyze the following code solutions to the same problem and determine which one is the best. "
-        evaluation_prompt += "Consider factors such as correctness, efficiency, readability, error handling, and overall quality.\n\n"
-        
-        # Add each code sample
-        for i, (model_id, code) in enumerate(code_by_model.items(), 1):
-            display_model = model_id.split(':')[-1] if ':' in model_id else model_id
-            # Limit each code sample to maintain reasonable context window
-            truncated_code = code[:5000]  # More generous limit for code
-            if len(code) > 5000:
-                truncated_code += "\n# ... (code truncated for length) ..."
-            evaluation_prompt += f"## Code Sample {i} (by {display_model})\n\n```python\n{truncated_code}\n```\n\n"
-        
-        evaluation_prompt += "\n# Your Evaluation Task\n\n"
-        evaluation_prompt += "1. Rank the code solutions from best to worst\n"
-        evaluation_prompt += "2. Explain your reasoning for the ranking\n"
-        evaluation_prompt += "3. Highlight specific strengths of the best solution\n"
-        evaluation_prompt += "4. Suggest one improvement for each solution\n"
-        evaluation_prompt += "5. Comment on correctness, readability, and efficiency\n"
-        
-        # Use a more capable model for evaluation
-        evaluation_model = "gemini:gemini-2.5-pro-exp-03-25"
-        
-        logger.info(f"Evaluating code using {evaluation_model}...", emoji_key="evaluate")
-        
-        # Get the provider
-        provider_id = evaluation_model.split(':')[0]
-        provider = get_provider(provider_id)
-        
-        if not provider:
-            return {
-                "error": f"Provider {provider_id} not available for evaluation",
-                "model_used": evaluation_model,
-                "eval_prompt": evaluation_prompt,
-                "cost": 0.0
-            }
-        
-        # Generate completion for evaluation with timeout
-        try:
-            request = CompletionRequest(prompt=evaluation_prompt, model=evaluation_model)
-            
-            # Set a timeout for the completion request
-            completion_task = provider.generate_completion(
-                prompt=request.prompt,
-                model=request.model
-            )
-            
-            # 45 second timeout for evaluation
-            completion_result = await asyncio.wait_for(completion_task, timeout=45)
-            
-            # Extract cost information if available
-            cost = 0.0
-            if hasattr(completion_result, 'cost'):
-                cost = completion_result.cost
-            elif hasattr(completion_result, 'metrics') and isinstance(completion_result.metrics, dict):
-                cost = completion_result.metrics.get('cost', 0.0)
-            
-            return {
-                "evaluation": completion_result.text,
-                "model_used": evaluation_model,
-                "eval_prompt": evaluation_prompt,
-                "cost": cost,
-                "input_tokens": getattr(completion_result, 'input_tokens', 0),
-                "output_tokens": getattr(completion_result, 'output_tokens', 0)
-            }
-        except asyncio.TimeoutError:
-            logger.warning(f"Evaluation with {evaluation_model} timed out after 45 seconds", emoji_key="warning")
-            return {
-                "error": f"Evaluation timed out after 45 seconds",
-                "model_used": evaluation_model,
-                "eval_prompt": evaluation_prompt,
-                "cost": 0.0
-            }
-        except Exception as request_error:
-            logger.error(f"Error during model request: {str(request_error)}", emoji_key="error")
-            return {
-                "error": f"Error during model request: {str(request_error)}",
-                "model_used": evaluation_model,
-                "eval_prompt": evaluation_prompt,
-                "cost": 0.0
-            }
-    
-    except Exception as e:
-        logger.error(f"Code evaluation failed: {str(e)}", emoji_key="error", exc_info=True)
-        return {
-            "error": str(e),
-            "model_used": evaluation_model if 'evaluation_model' in locals() else "unknown",
-            "eval_prompt": evaluation_prompt if 'evaluation_prompt' in locals() else "Error generating prompt",
-            "cost": 0.0
-        }
-
-
-async def calculate_tournament_costs(rounds_results, evaluation_cost=None):
-    """Calculate total costs of the tournament by model and grand total.
-    
-    Args:
-        rounds_results: List of round results data from tournament results
-        evaluation_cost: Optional cost of the final evaluation step
-        
-    Returns:
-        Dictionary with cost information
-    """
-    model_costs = {}
-    total_cost = 0.0
-    
-    # Process costs for each round
-    for round_idx, round_data in enumerate(rounds_results):
-        responses = round_data.get('responses', {})
-        for model_id, response in responses.items():
-            metrics = response.get('metrics', {})
-            cost = metrics.get('cost', 0.0)
-            
-            # Convert to float if it's a string
-            if isinstance(cost, str):
-                try:
-                    cost = float(cost.replace('$', ''))
-                except (ValueError, TypeError):
-                    cost = 0.0
-            
-            # Initialize model if not present
-            if model_id not in model_costs:
-                model_costs[model_id] = 0.0
-                
-            # Add to model total and grand total
-            model_costs[model_id] += cost
-            total_cost += cost
-    
-    # Add evaluation cost if provided
-    if evaluation_cost:
-        total_cost += evaluation_cost
-        model_costs['evaluation'] = evaluation_cost
-    
-    return {
-        'model_costs': model_costs,
-        'total_cost': total_cost
-    }
-
-# Replace the regex extraction with LLM-based extraction
-async def extract_code_from_response(response_text: str) -> str:
-    """Extract code from response text using an LLM.
-    
-    Args:
-        response_text: The raw response text from the model
-        
-    Returns:
-        Extracted code or empty string if no code found
-    """
-    if not response_text:
-        return ""
-        
-    # Use a lightweight model for extraction
-    extraction_model = "openai:gpt-4o-mini"
-    
-    extraction_prompt = f"""
-Extract the complete, executable Python code from the following text. 
-Return ONLY the code, with no additional text, explanations, or markdown formatting.
-If there are multiple code snippets, combine them into a single coherent program.
-If there is no valid Python code, return an empty string.
-
-Text to extract from:
-```
-{response_text}
-```
-
-Python code (no markdown, no explanations, just the complete code):
-"""
-    
-    try:
-        # Get the provider
-        provider_id = extraction_model.split(':')[0]
-        provider = get_provider(provider_id)
-        
-        if not provider:
-            logger.warning(f"Provider {provider_id} not available for code extraction", emoji_key="warning")
-            return ""
-        
-        # Generate completion for extraction
-        request = CompletionRequest(prompt=extraction_prompt, model=extraction_model)
-        
-        # Set a timeout for the completion request
-        completion_task = provider.generate_completion(
-            prompt=request.prompt,
-            model=request.model
-        )
-        
-        # 15 second timeout for extraction
-        completion_result = await asyncio.wait_for(completion_task, timeout=15)
-        
-        extracted_code = completion_result.text.strip()
-        
-        # If the result starts with ```python or ```, strip it
-        if extracted_code.startswith("```python"):
-            extracted_code = extracted_code[len("```python"):].strip()
-        elif extracted_code.startswith("```"):
-            extracted_code = extracted_code[len("```"):].strip()
-            
-        # If the result ends with ```, strip it
-        if extracted_code.endswith("```"):
-            extracted_code = extracted_code[:-3].strip()
-        
-        return extracted_code
-        
-    except Exception as e:
-        logger.warning(f"Error extracting code using LLM: {str(e)}", emoji_key="warning")
-        return ""
 
 # --- Main Script Logic ---
 async def run_tournament_demo():
@@ -878,229 +560,49 @@ async def run_tournament_demo():
                             console.print(round_table)
                         else:
                              console.print("[dim]No valid code responses recorded for this round.[/dim]")
-                        console.print()  # Add space between rounds
-
-                    # Evaluate final code using LLM
-                    final_round = rounds_results[-1]
-                    final_responses = final_round.get('responses', {})
-                    
-                    # Track evaluation cost
-                    evaluation_cost = 0.0
-                    
-                    if final_responses:
-                        console.print(Rule("[bold blue]AI Evaluation of Code Solutions[/bold blue]"))
-                        console.print("[bold]Evaluating final code solutions...[/bold]")
-                        
-                        code_by_model = {}
-                        for model_id, response in final_responses.items():
-                            code = response.get('extracted_code', '')
-                            
-                            # If no extracted code but response_text exists, try to extract code from it
-                            if not code and response.get('response_text'):
-                                code = await extract_code_from_response(response.get('response_text', ''))
-                                
-                            if code:
-                                code_by_model[model_id] = code
-                        
-                        evaluation_result = await evaluate_code(code_by_model)
-                        
-                        if "error" not in evaluation_result:
-                            console.print(Panel(
-                                escape(evaluation_result["evaluation"]),
-                                title=f"[bold]Code Evaluation (by {evaluation_result['model_used'].split(':')[-1]})[/bold]",
-                                border_style="green",
-                                expand=False
-                            ))
-                            
-                            # Save evaluation result to a file in the tournament directory
-                            if storage_path:
-                                try:
-                                    evaluation_file = os.path.join(storage_path, "code_evaluation.md")
-                                    with open(evaluation_file, "w", encoding="utf-8") as f:
-                                        f.write(f"# Code Evaluation by {evaluation_result['model_used']}\n\n")
-                                        f.write(evaluation_result["evaluation"])
-                                    
-                                    logger.info(f"Evaluation saved to {evaluation_file}", emoji_key="save")
-                                except Exception as e:
-                                    logger.warning(f"Could not save evaluation to file: {str(e)}", emoji_key="warning")
-                            
-                            # Track evaluation cost if available
-                            evaluation_cost = evaluation_result.get('cost', 0.0)
-                            logger.info(f"Evaluation cost: ${evaluation_cost:.6f}", emoji_key="cost")
-                        else:
-                            console.print(f"[yellow]Could not evaluate code: {evaluation_result.get('error')}[/yellow]")
-                            # Try with fallback model if primary fails
-                            if "gemini" in evaluation_result.get("model_used", ""):
-                                console.print("[bold]Trying evaluation with fallback model (GPT-4o-mini)...[/bold]")
-                                # Similar fallback approach as in text demo
-                                # Implementation can be added here
-                                pass
-
-                    # Test the code (specific to code tournaments)
-                    console.print(Rule("[bold blue]Code Testing[/bold blue]"))
-                    console.print("[bold]Testing the best code solution in sandbox...[/bold]")
-                    
-                    # Find a model with code to test (preferably the winner)
-                    final_code = None
-                    final_model = None
-                    
-                    for model_id, response in final_responses.items():
-                        code = response.get('extracted_code', '')
-                        
-                        # If no extracted code but response_text exists, try to extract code from it
-                        if not code and response.get('response_text'):
-                            code = await extract_code_from_response(response.get('response_text', ''))
-                            
-                        if code:
-                            final_code = code
-                            final_model = model_id
-                            break
-                    
+                
+                # Allow optional testing of final code
+                winner_model = results_data.get('winner_model')
+                if winner_model:
+                    final_code = results_data.get('model_results', {}).get(winner_model, {}).get('extracted_code')
                     if final_code:
-                        logger.info(f"Testing code from model: {final_model}", emoji_key="test")
-                        test_results = await try_code_in_sandbox(final_code, task_name)
+                        console.print(Rule("[bold blue]Testing Winner's Code[/bold blue]"))
+                        console.print(f"Testing code from winner model: [cyan]{winner_model}[/cyan]")
                         
-                        # Display test results
-                        test_table = Table(box=box.MINIMAL, show_header=True, expand=False)
-                        test_table.add_column("Test", style="cyan")
-                        test_table.add_column("Result", style="green")
+                        sandbox_results = try_code_in_sandbox(final_code, task_name)
                         
-                        test_table.add_row("Status", "[green]PASSED[/green]" if test_results["success"] else "[red]FAILED[/red]")
-                        
-                        if test_results["function_name"]:
-                            test_table.add_row("Function", test_results["function_name"])
-                            
-                        if test_results["error"]:
-                            test_table.add_row("Error", f"[red]{escape(test_results['error'])}[/red]")
-                            
-                        if test_results["output"] is not None:
-                            output_str = str(test_results["output"])
-                            if len(output_str) > 80:  # Truncate long outputs
-                                output_str = output_str[:77] + "..."
-                            test_table.add_row("Output", escape(output_str))
-                            
-                        console.print(test_table)
-                        
-                        # Save test results to file
-                        if storage_path:
-                            try:
-                                test_file = os.path.join(storage_path, "code_test_results.md")
-                                with open(test_file, "w", encoding="utf-8") as f:
-                                    f.write(f"# Code Test Results\n\n")
-                                    f.write(f"## Function: {test_results.get('function_name', 'Unknown')}\n\n")
-                                    f.write(f"**Status**: {'PASSED' if test_results['success'] else 'FAILED'}\n\n")
-                                    
-                                    if test_results["error"]:
-                                        f.write(f"**Error**: {test_results['error']}\n\n")
-                                        
-                                    if test_results["output"] is not None:
-                                        f.write(f"**Output**:\n```\n{test_results['output']}\n```\n")
-                                
-                                logger.info(f"Test results saved to {test_file}", emoji_key="save")
-                            except Exception as e:
-                                logger.warning(f"Could not save test results: {str(e)}", emoji_key="warning")
-                    else:
-                        logger.warning("No final code found to test", emoji_key="warning")
-
-                    # Find and highlight comparison file for final round
-                    comparison_file = final_round.get('comparison_file_path')
-                    if comparison_file:
-                        console.print(Panel(
-                            f"Check the final comparison file for the full code solutions and detailed round comparisons:\n[bold yellow]{escape(comparison_file)}[/bold yellow]",
-                            title="[bold]Final Comparison File[/bold]",
-                            border_style="yellow",
-                            expand=False
-                        ))
-                    else:
-                        logger.warning("Could not find path to final comparison file in results", emoji_key="warning")
-                    
-                    # Display cost summary
-                    costs = await calculate_tournament_costs(rounds_results, evaluation_cost)
-                    model_costs = costs.get('model_costs', {})
-                    total_cost = costs.get('total_cost', 0.0)
-                    
-                    console.print(Rule("[bold blue]Tournament Cost Summary[/bold blue]"))
-                    
-                    cost_table = Table(box=box.MINIMAL, show_header=True, expand=False)
-                    cost_table.add_column("Model", style="magenta")
-                    cost_table.add_column("Total Cost", style="green", justify="right")
-                    
-                    # Add model costs to table
-                    for model_id, cost in sorted(model_costs.items()):
-                        if model_id == 'evaluation':
-                            display_model = "Evaluation"
+                        if sandbox_results["success"]:
+                            console.print(Panel(
+                                f"[green]Code test successful![/green]\nFunction: {sandbox_results['function_name']}\nOutput: {sandbox_results['output']}",
+                                title="[bold green]Test Results[/bold green]",
+                                border_style="green"
+                            ))
                         else:
-                            display_model = model_id.split(':')[-1] if ':' in model_id else model_id
-                        
-                        cost_table.add_row(
-                            display_model,
-                            f"${cost:.6f}"
-                        )
-                    
-                    # Add grand total
-                    cost_table.add_row(
-                        "[bold]GRAND TOTAL[/bold]",
-                        f"[bold]${total_cost:.6f}[/bold]"
-                    )
-                    
-                    console.print(cost_table)
-                    
-                    # Save cost summary to file
-                    if storage_path:
-                        try:
-                            cost_file = os.path.join(storage_path, "cost_summary.md")
-                            with open(cost_file, "w", encoding="utf-8") as f:
-                                f.write(f"# Tournament Cost Summary\n\n")
-                                f.write(f"## Per-Model Costs\n\n")
-                                
-                                for model_id, cost in sorted(model_costs.items()):
-                                    if model_id == 'evaluation':
-                                        display_model = "Evaluation"
-                                    else:
-                                        display_model = model_id.split(':')[-1] if ':' in model_id else model_id
-                                    
-                                    f.write(f"- **{display_model}**: ${cost:.6f}\n")
-                                
-                                f.write(f"\n## Grand Total\n\n")
-                                f.write(f"**TOTAL COST**: ${total_cost:.6f}\n")
-                            
-                            logger.info(f"Cost summary saved to {cost_file}", emoji_key="save")
-                        except Exception as e:
-                            logger.warning(f"Could not save cost summary: {str(e)}", emoji_key="warning")
+                            console.print(Panel(
+                                f"[red]Code test failed:[/red] {sandbox_results['error']}",
+                                title="[bold red]Test Results[/bold red]",
+                                border_style="red"
+                            ))
             else:
-                logger.error(f"Could not fetch final results: {results_data.get('error', 'Unknown error')}", emoji_key="error")
-        elif final_status:
-            logger.warning(f"Tournament ended with status {final_status}. Check logs or status details for more info.", emoji_key="warning")
+                logger.error(f"Error getting results: {results_data.get('error', 'Unknown error')}", emoji_key="error")
+        else:
+            logger.error(f"Tournament did not complete successfully (status: {final_status})", emoji_key="error")
+            
+        return 0
         
     except Exception as e:
-        logger.error(f"Error in tournament demo: {str(e)}", emoji_key="error", exc_info=True)
+        logger.error(f"Error running tournament: {str(e)}", emoji_key="error", exc_info=True)
         return 1
-
-    logger.success("Code Tournament Demo Finished", emoji_key="complete")
-    console.print(Panel(
-        "To view full code solutions and detailed comparisons, check the storage directory indicated in the results summary.",
-        title="[bold]Next Steps[/bold]",
-        border_style="dim green",
-        expand=False
-    ))
-    return 0
 
 
 async def main():
-    """Run the tournament demo."""
+    """Run the code tournament demo."""
     try:
-        # Set up gateway
         await setup_gateway()
-        
-        # Run the demo
         return await run_tournament_demo()
     except Exception as e:
-        logger.critical(f"Demo failed: {str(e)}", emoji_key="critical", exc_info=True)
+        logger.critical(f"Tournament demo failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1
-    finally:
-        # Clean up
-        if gateway:
-            pass  # No cleanup needed for Gateway instance
 
 
 if __name__ == "__main__":

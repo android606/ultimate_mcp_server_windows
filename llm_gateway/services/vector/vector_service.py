@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
+import asyncio
 
 from llm_gateway.services.vector.embeddings import cosine_similarity, get_embedding_service
 from llm_gateway.utils import get_logger
@@ -201,7 +202,8 @@ class VectorCollection:
         self,
         query_vector: Union[List[float], np.ndarray],
         top_k: int = 5,
-        filter: Optional[Dict[str, Any]] = None
+        filter: Optional[Dict[str, Any]] = None,
+        similarity_threshold: float = 0.0
     ) -> List[Dict[str, Any]]:
         """Search for similar vectors.
         
@@ -209,6 +211,7 @@ class VectorCollection:
             query_vector: Query vector
             top_k: Number of results to return
             filter: Optional metadata filter
+            similarity_threshold: Minimum similarity score (0.0 to 1.0)
             
         Returns:
             List of results with scores and metadata
@@ -217,13 +220,25 @@ class VectorCollection:
         if not isinstance(query_vector, np.ndarray):
             query_vector = np.array(query_vector, dtype=np.float32)
         
+        # Log some diagnostic information
+        logger.debug(f"Collection '{self.name}' contains {len(self.vectors)} vectors")
+        logger.debug(f"Searching for top {top_k} matches with filter: {filter} and threshold: {similarity_threshold}")
+        
         # Filter vectors based on metadata if needed
         if filter:
             filtered_indices = self._apply_filter(filter)
             if not filtered_indices:
+                logger.debug(f"No vectors match the filter criteria: {filter}")
                 return []
+            logger.debug(f"Filter reduced search space to {len(filtered_indices)} vectors")
         else:
             filtered_indices = list(range(len(self.vectors)))
+            logger.debug(f"No filter applied, searching all {len(filtered_indices)} vectors")
+        
+        # If no vectors to search, return empty results
+        if not filtered_indices:
+            logger.debug("No vectors to search, returning empty results")
+            return []
         
         # Perform search based on index type
         if self.index_type == "hnswlib" and self.index is not None and not filter:
@@ -242,6 +257,10 @@ class VectorCollection:
                 # Format results
                 results = []
                 for _i, (label, similarity) in enumerate(zip(labels[0], similarities, strict=False)):
+                    # Apply similarity threshold
+                    if similarity < similarity_threshold:
+                        continue
+                        
                     results.append({
                         "id": self.ids[label],
                         "similarity": float(similarity),
@@ -250,10 +269,11 @@ class VectorCollection:
                     })
                 
                 logger.debug(
-                    f"HNSW search completed in {search_time:.6f}s",
-                    emoji_key="vector",
-                    time=search_time
+                    f"HNSW search completed in {search_time:.6f}s, found {len(results)} results"
                 )
+                
+                for i, result in enumerate(results):
+                    logger.debug(f"Result {i+1}: id={result['id']}, similarity={result['similarity']:.4f}, metadata={result['metadata']}")
                 
                 return results
             except Exception as e:
@@ -281,6 +301,10 @@ class VectorCollection:
             else:
                 similarity = cosine_similarity(query_vector, vector)
             
+            # Apply similarity threshold
+            if similarity < similarity_threshold:
+                continue
+                
             results.append({
                 "id": self.ids[idx],
                 "similarity": float(similarity),
@@ -296,10 +320,11 @@ class VectorCollection:
         
         search_time = time.time() - start_time
         logger.debug(
-            f"Numpy search completed in {search_time:.6f}s",
-            emoji_key="vector",
-            time=search_time
+            f"Numpy search completed in {search_time:.6f}s, found {len(results)} results"
         )
+        
+        for i, result in enumerate(results):
+            logger.debug(f"Result {i+1}: id={result['id']}, similarity={result['similarity']:.4f}, metadata={result['metadata']}")
         
         return results
     
@@ -329,7 +354,8 @@ class VectorCollection:
         query_text: str,
         top_k: int = 5,
         filter: Optional[Dict[str, Any]] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        similarity_threshold: float = 0.0
     ) -> List[Dict[str, Any]]:
         """Search by text query.
         
@@ -338,6 +364,7 @@ class VectorCollection:
             top_k: Number of results to return
             filter: Optional metadata filter
             model: Embedding model name
+            similarity_threshold: Minimum similarity score (0.0 to 1.0)
             
         Returns:
             List of results with scores and metadata
@@ -346,7 +373,7 @@ class VectorCollection:
         query_embedding = await self.embedding_service.get_embedding(query_text, model)
         
         # Search with the embedding
-        return self.search(query_embedding, top_k, filter)
+        return self.search(query_embedding, top_k, filter, similarity_threshold)
     
     def delete(
         self,
@@ -527,6 +554,124 @@ class VectorCollection:
             emoji_key="vector"
         )
 
+    async def query(
+        self,
+        query_texts: List[str],
+        n_results: int = 10,
+        where: Optional[Dict[str, Any]] = None,
+        where_document: Optional[Dict[str, Any]] = None,
+        include: Optional[List[str]] = None,
+        embedding_model: Optional[str] = None
+    ) -> Dict[str, List[Any]]:
+        """Query the collection with text queries (compatibility with ChromaDB).
+        
+        Args:
+            query_texts: List of query texts
+            n_results: Number of results to return
+            where: Optional metadata filter
+            where_document: Optional document content filter
+            include: Optional list of fields to include
+            embedding_model: Optional embedding model name to use for generating query embeddings
+            
+        Returns:
+            Dictionary with results in ChromaDB format
+        """
+        logger.debug(f"DEBUG VectorCollection.query: query_texts={query_texts}, n_results={n_results}")
+        logger.debug(f"DEBUG VectorCollection.query: where={where}, where_document={where_document}")
+        logger.debug(f"DEBUG VectorCollection.query: include={include}, embedding_model={embedding_model}")
+        logger.debug(f"DEBUG VectorCollection.query: Collection has {len(self.vectors)} vectors and {len(self.ids)} IDs")
+        
+        # Initialize results
+        results = {
+            "ids": [],
+            "documents": [],
+            "metadatas": [],
+            "distances": [],
+            "embeddings": []
+        }
+        
+        # Process each query
+        for query_text in query_texts:
+            # Get embedding using the async embedding service with the specified model
+            logger.debug(f"DEBUG VectorCollection.query: Getting embedding for '{query_text}' using model: {embedding_model or 'default'}")
+            query_embedding = await self.embedding_service.get_embedding(query_text, model=embedding_model)
+            logger.debug(f"DEBUG VectorCollection.query: Embedding shape: {len(query_embedding)}")
+            
+            # Search with the embedding
+            logger.debug(f"Searching for query text: '{query_text}' in collection '{self.name}'")
+            search_results = self.search(
+                query_vector=query_embedding,
+                top_k=n_results,
+                filter=where,
+                similarity_threshold=0.0  # Set to 0 to get all results for debugging
+            )
+            
+            logger.debug(f"DEBUG VectorCollection.query: Found {len(search_results)} raw search results")
+            
+            # Format results in ChromaDB format
+            ids = []
+            documents = []
+            metadatas = []
+            distances = []
+            embeddings = []
+            
+            for i, item in enumerate(search_results):
+                ids.append(item["id"])
+                
+                # Extract document from metadata
+                metadata = item.get("metadata", {})
+                doc = ""
+                
+                # Try different known keys for document content
+                if "text" in metadata:
+                    doc = metadata["text"]
+                    logger.debug(f"DEBUG VectorCollection.query: Found document in 'text' field, length: {len(doc)}")
+                elif "document" in metadata:
+                    doc = metadata["document"]
+                    logger.debug(f"DEBUG VectorCollection.query: Found document in 'document' field, length: {len(doc)}")
+                elif "content" in metadata:
+                    doc = metadata["content"]
+                    logger.debug(f"DEBUG VectorCollection.query: Found document in 'content' field, length: {len(doc)}")
+                
+                # If still empty, check if metadata itself is the document content
+                if not doc and isinstance(metadata, str):
+                    doc = metadata
+                    logger.debug(f"DEBUG VectorCollection.query: Using metadata itself as document, length: {len(doc)}")
+                
+                # Apply document content filter if specified
+                if where_document and where_document.get("$contains"):
+                    filter_text = where_document["$contains"]
+                    if filter_text not in doc:
+                        logger.debug(f"DEBUG VectorCollection.query: Skipping doc {i} - doesn't contain filter text")
+                        continue
+                
+                logger.debug(f"Result {i+1}: id={item['id']}, similarity={item.get('similarity', 0.0):.4f}, doc_length={len(doc)}")
+                
+                # Add the document and metadata to results
+                documents.append(doc)
+                metadatas.append(metadata)
+                
+                # Convert similarity to distance (0 = exact match)
+                distance = 1.0 - item.get("similarity", 0.0)
+                distances.append(distance)
+                
+                # Include embedding if requested
+                if "embeddings" in (include or []):
+                    embeddings.append(item.get("vector", []))
+            
+            # Add to results
+            results["ids"].append(ids)
+            results["documents"].append(documents)
+            results["metadatas"].append(metadatas)
+            results["distances"].append(distances)
+            
+            if "embeddings" in (include or []):
+                results["embeddings"].append(embeddings)
+            
+            logger.debug(f"DEBUG VectorCollection.query: Final formatted results - {len(documents)} documents")
+            
+        return results
+
 
 class VectorDatabaseService:
     """Vector database service for semantic search."""
@@ -571,24 +716,47 @@ class VectorDatabaseService:
         self.chroma_client = None
         if self.use_chromadb and CHROMADB_AVAILABLE:
             try:
+                # Create ChromaDB directory if it doesn't exist
+                chroma_dir = self.base_dir / "chromadb"
+                chroma_dir.mkdir(parents=True, exist_ok=True)
+                
                 self.chroma_client = chromadb.PersistentClient(
-                    path=str(self.base_dir / "chromadb"),
+                    path=str(chroma_dir),
                     settings=ChromaSettings(
                         anonymized_telemetry=False,
                         allow_reset=True
                     )
                 )
+                
+                # Test if it works properly
+                test_collections = self.chroma_client.list_collections()
+                logger.debug(f"ChromaDB initialized with {len(test_collections)} existing collections")
+                
                 logger.info(
                     "Using ChromaDB for vector storage",
                     emoji_key="vector"
                 )
             except Exception as e:
                 logger.error(
-                    f"Failed to initialize ChromaDB: {str(e)}. Falling back to local storage.",
+                    f"Failed to initialize ChromaDB: {str(e)}. Vector operations will not work properly.",
                     emoji_key="error"
                 )
+                # We'll raise an error rather than falling back to local storage
+                # as that creates inconsistency
                 self.use_chromadb = False
+                self.chroma_client = None
+                
+                # Re-raise if ChromaDB was explicitly requested
+                if use_chromadb:
+                    raise ValueError(f"ChromaDB initialization failed: {str(e)}")
         else:
+            if use_chromadb and not CHROMADB_AVAILABLE:
+                logger.error(
+                    "ChromaDB was explicitly requested but is not available. Please install it with: pip install chromadb",
+                    emoji_key="error"
+                )
+                raise ImportError("ChromaDB was requested but is not installed")
+                
             self.use_chromadb = False
             
         # Collections
@@ -604,7 +772,47 @@ class VectorDatabaseService:
             emoji_key="vector"
         )
     
-    def create_collection(
+    async def _reset_chroma_client(self) -> bool:
+        """Reset or recreate the ChromaDB client.
+        
+        Returns:
+            True if successful
+        """
+        if not CHROMADB_AVAILABLE or not self.use_chromadb:
+            return False
+            
+        try:
+            # First try using the reset API if available
+            if self.chroma_client and hasattr(self.chroma_client, 'reset'):
+                try:
+                    self.chroma_client.reset()
+                    logger.debug("Reset ChromaDB client successfully")
+                    return True
+                except Exception as e:
+                    logger.debug(f"Failed to reset ChromaDB client using reset(): {str(e)}")
+            
+            # If that fails, recreate the client
+            chroma_dir = self.base_dir / "chromadb"
+            chroma_dir.mkdir(parents=True, exist_ok=True)
+            
+            self.chroma_client = chromadb.PersistentClient(
+                path=str(chroma_dir),
+                settings=ChromaSettings(
+                    anonymized_telemetry=False,
+                    allow_reset=True
+                )
+            )
+            
+            logger.debug("Successfully recreated ChromaDB client")
+            return True
+        except Exception as e:
+            logger.error(
+                f"Failed to reset or recreate ChromaDB client: {str(e)}",
+                emoji_key="error"
+            )
+            return False
+    
+    async def create_collection(
         self,
         name: str,
         dimension: int = 1536,
@@ -627,28 +835,52 @@ class VectorDatabaseService:
         Raises:
             ValueError: If collection already exists and overwrite is False
         """
-        # Check if collection already exists
+        # Check if collection already exists in memory
         if name in self.collections and not overwrite:
             raise ValueError(f"Collection '{name}' already exists")
-            
-        # Create collection
-        if self.use_chromadb and self.chroma_client is not None:
-            # ChromaDB collection
+        
+        # For consistency, if overwrite is True, explicitly delete any existing collection
+        if overwrite:
             try:
-                # Delete if exists and overwrite is True
-                # In ChromaDB v0.6.0+, list_collections() returns names not objects
-                existing_collections = self.chroma_client.list_collections()
-                if overwrite and name in existing_collections:
-                    self.chroma_client.delete_collection(name)
+                # Delete from memory collections
+                if name in self.collections:
+                    del self.collections[name]
+            
+                # Try to delete from ChromaDB
+                await self.delete_collection(name)
+                logger.debug(f"Deleted existing collection '{name}' for overwrite")
                 
-                # Ensure metadata is non-empty
-                if not metadata:
-                    metadata = {"description": "Vector collection", "created_at": time.strftime("%Y-%m-%d")}
+                # If using ChromaDB and overwrite is True, also try to reset the client
+                if self.use_chromadb and self.chroma_client:
+                    await self._reset_chroma_client()
+                    logger.debug("Reset ChromaDB client before creating new collection")
                 
-                # Create collection
+                # Force a delay to ensure deletions complete
+                await asyncio.sleep(1.0)
+                
+            except Exception as e:
+                logger.debug(f"Error during collection cleanup for overwrite: {str(e)}")
+        
+        # Create collection based on storage type
+        if self.use_chromadb and self.chroma_client is not None:
+            # Use ChromaDB
+            # Sanitize metadata for ChromaDB (no None values)
+            sanitized_metadata = {}
+            if metadata:
+                for k, v in metadata.items():
+                    if v is not None and not isinstance(v, (str, int, float, bool)):
+                        sanitized_metadata[k] = str(v)  # Convert to string
+                    elif v is not None:
+                        sanitized_metadata[k] = v  # Keep as is if it's a valid type
+            
+            # Force a delay to ensure previous deletions have completed
+            await asyncio.sleep(0.1)
+            
+            # Create collection
+            try:
                 collection = self.chroma_client.create_collection(
                     name=name,
-                    metadata=metadata
+                    metadata=sanitized_metadata or {"description": "Vector collection"}
                 )
                 
                 logger.info(
@@ -659,24 +891,25 @@ class VectorDatabaseService:
                 self.collections[name] = collection
                 return collection
             except Exception as e:
+                # Instead of falling back to local storage, raise the error
                 logger.error(
-                    f"Failed to create ChromaDB collection: {str(e)}. Falling back to local storage.",
+                    f"Failed to create ChromaDB collection: {str(e)}",
                     emoji_key="error"
                 )
-                # Fall back to local storage
-        
-        # Local storage collection
-        collection = VectorCollection(
-            name=name,
-            dimension=dimension,
-            similarity_metric=similarity_metric,
-            metadata=metadata
-        )
-        
-        self.collections[name] = collection
-        return collection
+                raise ValueError(f"Failed to create ChromaDB collection: {str(e)}")
+        else:
+            # Use local storage
+            collection = VectorCollection(
+                name=name,
+                dimension=dimension,
+                similarity_metric=similarity_metric,
+                metadata=metadata
+            )
+            
+            self.collections[name] = collection
+            return collection
     
-    def get_collection(self, name: str) -> Optional[Union[VectorCollection, Any]]:
+    async def get_collection(self, name: str) -> Optional[Union[VectorCollection, Any]]:
         """Get a collection by name.
         
         Args:
@@ -695,7 +928,22 @@ class VectorDatabaseService:
             try:
                 # In ChromaDB v0.6.0+, list_collections() returns names not objects
                 existing_collections = self.chroma_client.list_collections()
-                if name in existing_collections:
+                existing_collection_names = []
+                
+                # Handle both chromadb v0.6.0+ and older versions
+                if existing_collections and not isinstance(existing_collections[0], str):
+                    # v0.6.0+ returns collection objects
+                    for collection in existing_collections:
+                        # Access name attribute or use object itself if it's a string
+                        if hasattr(collection, 'name'):
+                            existing_collection_names.append(collection.name)
+                        else:
+                            existing_collection_names.append(str(collection))
+                else:
+                    # Older versions return string names directly
+                    existing_collection_names = existing_collections
+                    
+                if name in existing_collection_names:
                     collection = self.chroma_client.get_collection(name)
                     self.collections[name] = collection
                     return collection
@@ -720,7 +968,7 @@ class VectorDatabaseService:
         
         return None
     
-    def list_collections(self) -> List[str]:
+    async def list_collections(self) -> List[str]:
         """List all collection names.
         
         Returns:
@@ -731,8 +979,22 @@ class VectorDatabaseService:
         # Add collections from ChromaDB
         if self.use_chromadb and self.chroma_client is not None:
             try:
-                for collection in self.chroma_client.list_collections():
-                    collection_names.add(collection.name)
+                # Handle both chromadb v0.6.0+ and older versions
+                chroma_collections = self.chroma_client.list_collections()
+                
+                # Check if we received a list of collection objects or just names
+                if chroma_collections and not isinstance(chroma_collections[0], str):
+                    # v0.6.0+ returns collection objects
+                    for collection in chroma_collections:
+                        # Access name attribute or use object itself if it's a string
+                        if hasattr(collection, 'name'):
+                            collection_names.add(collection.name)
+                        else:
+                            collection_names.add(str(collection))
+                else:
+                    # Older versions return string names directly
+                    for collection in chroma_collections:
+                        collection_names.add(collection)
             except Exception as e:
                 logger.error(
                     f"Failed to list ChromaDB collections: {str(e)}",
@@ -748,7 +1010,7 @@ class VectorDatabaseService:
         
         return list(collection_names)
     
-    def delete_collection(self, name: str) -> bool:
+    async def delete_collection(self, name: str) -> bool:
         """Delete a collection.
         
         Args:
@@ -761,15 +1023,35 @@ class VectorDatabaseService:
         if name in self.collections:
             del self.collections[name]
         
+        success = True
+        
         # Delete from ChromaDB
         if self.use_chromadb and self.chroma_client is not None:
             try:
-                self.chroma_client.delete_collection(name)
+                # Check if collection exists in ChromaDB first
+                exists_in_chromadb = False
+                try:
+                    collections = self.chroma_client.list_collections()
+                    # Handle different versions of ChromaDB API
+                    if collections and hasattr(collections[0], 'name'):
+                        collection_names = [c.name for c in collections]
+                    else:
+                        collection_names = collections
+                        
+                    exists_in_chromadb = name in collection_names
+                except Exception as e:
+                    logger.debug(f"Error checking ChromaDB collections: {str(e)}")
+                
+                # Only try to delete if it exists
+                if exists_in_chromadb:
+                    self.chroma_client.delete_collection(name)
+                    logger.debug(f"Deleted ChromaDB collection '{name}'")
             except Exception as e:
-                logger.error(
+                logger.warning(
                     f"Failed to delete ChromaDB collection: {str(e)}",
-                    emoji_key="error"
+                    emoji_key="warning"
                 )
+                success = False
         
         # Delete from disk
         collection_dir = self.base_dir / "collections" / name
@@ -777,6 +1059,7 @@ class VectorDatabaseService:
             try:
                 import shutil
                 shutil.rmtree(collection_dir)
+                logger.debug(f"Deleted collection directory: {collection_dir}")
             except Exception as e:
                 logger.error(
                     f"Failed to delete collection directory: {str(e)}",
@@ -789,7 +1072,7 @@ class VectorDatabaseService:
             emoji_key="vector"
         )
         
-        return True
+        return success
     
     async def add_texts(
         self,
@@ -817,16 +1100,18 @@ class VectorDatabaseService:
             ValueError: If collection not found
         """
         # Get or create collection
-        collection = self.get_collection(collection_name)
+        collection = await self.get_collection(collection_name)
         if collection is None:
-            collection = self.create_collection(collection_name)
+            collection = await self.create_collection(collection_name)
         
         # Generate embeddings
+        logger.debug(f"Generating embeddings for {len(texts)} texts with model: {embedding_model or 'default'}")
         embeddings = await self.embedding_service.get_embeddings(
             texts=texts,
             model=embedding_model,
             batch_size=batch_size
         )
+        logger.debug(f"Generated {len(embeddings)} embeddings")
         
         # Add to collection
         if self.use_chromadb and isinstance(collection, chromadb.Collection):
@@ -862,11 +1147,27 @@ class VectorDatabaseService:
                 raise
         else:
             # Local collection
-            return collection.add(
+            # For local collection, store text in metadata
+            combined_metadata = []
+            for i, (text, meta) in enumerate(zip(texts, metadatas or [{} for _ in range(len(texts))], strict=False)):
+                # Create metadata with text as main content
+                combined_meta = {"text": text}
+                # Add any other metadata
+                if meta:
+                    combined_meta.update(meta)
+                combined_metadata.append(combined_meta)
+                
+            logger.debug(f"Adding vectors to local collection with metadata: {combined_metadata[0] if combined_metadata else None}")
+            
+            result_ids = collection.add(
                 vectors=embeddings,
                 ids=ids,
-                metadatas=[{"text": text, **(meta or {})} for text, meta in zip(texts, metadatas or [{} for _ in range(len(texts))], strict=False)]
+                metadatas=combined_metadata
             )
+            
+            logger.debug(f"Added {len(result_ids)} vectors to local collection '{collection_name}'")
+            
+            return result_ids
     
     async def search_by_text(
         self,
@@ -875,7 +1176,8 @@ class VectorDatabaseService:
         top_k: int = 5,
         filter: Optional[Dict[str, Any]] = None,
         embedding_model: Optional[str] = None,
-        include_vectors: bool = False
+        include_vectors: bool = False,
+        similarity_threshold: float = 0.0
     ) -> List[Dict[str, Any]]:
         """Search a collection by text query.
         
@@ -886,6 +1188,7 @@ class VectorDatabaseService:
             filter: Optional metadata filter
             embedding_model: Embedding model name
             include_vectors: Whether to include vectors in results
+            similarity_threshold: Minimum similarity score (0.0 to 1.0)
             
         Returns:
             List of search results
@@ -894,15 +1197,9 @@ class VectorDatabaseService:
             ValueError: If collection not found
         """
         # Get collection
-        collection = self.get_collection(collection_name)
+        collection = await self.get_collection(collection_name)
         if collection is None:
             raise ValueError(f"Collection '{collection_name}' not found")
-        
-        # Generate query embedding
-        query_embedding = await self.embedding_service.get_embedding(
-            text=query_text,
-            model=embedding_model
-        )
         
         # Search collection
         if self.use_chromadb and isinstance(collection, chromadb.Collection):
@@ -916,22 +1213,36 @@ class VectorDatabaseService:
                 if include_vectors:
                     include_params.append("embeddings")
                 
-                # Search ChromaDB collection
+                # Get embedding directly from OpenAI to avoid ChromaDB's default model
+                query_embedding = await self.embedding_service.get_embedding(
+                    text=query_text,
+                    model=embedding_model
+                )
+                logger.debug(f"Using explicitly generated embedding with model {embedding_model or 'default'}")
+                
+                # Search ChromaDB collection with our embedding
                 results = collection.query(
-                    query_embeddings=[query_embedding],
+                    query_embeddings=[query_embedding],  # Use our embedding directly, not ChromaDB's
                     n_results=top_k,
                     where=chroma_filter,
+                    where_document=None,
                     include=include_params
                 )
                 
-                # Format results
+                # Format results and apply similarity threshold
                 formatted_results = []
                 for i in range(len(results["ids"][0])):
+                    similarity = 1.0 - float(results["distances"][0][i])  # Convert distance to similarity
+                    
+                    # Skip results below threshold
+                    if similarity < similarity_threshold:
+                        continue
+                        
                     result = {
                         "id": results["ids"][0][i],
                         "text": results["documents"][0][i],
                         "metadata": results["metadatas"][0][i],
-                        "similarity": 1.0 - float(results["distances"][0][i]),  # Convert distance to similarity
+                        "similarity": similarity,
                     }
                     
                     if include_vectors and "embeddings" in results:
@@ -952,7 +1263,8 @@ class VectorDatabaseService:
                 query_text=query_text,
                 top_k=top_k,
                 filter=filter,
-                model=embedding_model
+                model=embedding_model,
+                similarity_threshold=similarity_threshold
             )
             
             # Format results
@@ -1008,17 +1320,17 @@ class VectorDatabaseService:
         
         return saved_count
     
-    def get_stats(self) -> Dict[str, Any]:
-        """Get service statistics.
+    async def get_stats(self) -> Dict[str, Any]:
+        """Get statistics about collections.
         
         Returns:
             Dictionary of statistics
         """
-        collection_names = self.list_collections()
+        collection_names = await self.list_collections()
         collection_stats = {}
         
         for name in collection_names:
-            collection = self.get_collection(name)
+            collection = await self.get_collection(name)
             if collection:
                 if isinstance(collection, VectorCollection):
                     collection_stats[name] = collection.get_stats()
@@ -1027,23 +1339,115 @@ class VectorDatabaseService:
                     try:
                         count = collection.count()
                         collection_stats[name] = {
-                            "name": name,
-                            "vectors_count": count,
-                            "type": "chromadb",
+                            "count": count,
+                            "type": "chromadb"
                         }
-                    except Exception:
+                    except Exception as e:
+                        logger.error(
+                            f"Error getting stats for ChromaDB collection '{name}': {str(e)}",
+                            emoji_key="error"
+                        )
                         collection_stats[name] = {
-                            "name": name,
+                            "count": 0,
                             "type": "chromadb",
+                            "error": str(e)
                         }
         
-        return {
-            "collections_count": len(collection_names),
-            "collections": collection_stats,
-            "base_dir": str(self.base_dir),
-            "using_chromadb": self.use_chromadb,
-            "embedding_service": self.embedding_service.get_stats(),
+        stats = {
+            "collections": len(collection_names),
+            "collection_stats": collection_stats
         }
+        
+        return stats
+
+    async def get_collection_metadata(self, name: str) -> Dict[str, Any]:
+        """Get collection metadata.
+        
+        Args:
+            name: Collection name
+            
+        Returns:
+            Collection metadata
+            
+        Raises:
+            ValueError: If collection not found
+        """
+        # Get collection
+        collection = await self.get_collection(name)
+        if collection is None:
+            raise ValueError(f"Collection '{name}' not found")
+            
+        # Get metadata
+        try:
+            if self.use_chromadb and hasattr(collection, "get_metadata"):
+                # ChromaDB collection
+                return collection.get_metadata() or {}
+            elif hasattr(collection, "metadata"):
+                # Local collection
+                return collection.metadata or {}
+        except Exception as e:
+            logger.error(
+                f"Failed to get collection metadata: {str(e)}",
+                emoji_key="error"
+            )
+        
+        return {}
+
+    async def update_collection_metadata(self, name: str, metadata: Dict[str, Any]) -> bool:
+        """Update collection metadata.
+        
+        Args:
+            name: Collection name
+            metadata: New metadata
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            ValueError: If collection not found
+        """
+        # Get collection
+        collection = await self.get_collection(name)
+        if collection is None:
+            raise ValueError(f"Collection '{name}' not found")
+            
+        # Update metadata
+        try:
+            if self.use_chromadb and hasattr(collection, "update_metadata"):
+                # ChromaDB collection - needs validation
+                validated_metadata = {}
+                for k, v in metadata.items():
+                    # ChromaDB accepts only str, int, float, bool
+                    if isinstance(v, (str, int, float, bool)):
+                        validated_metadata[k] = v
+                    elif v is None:
+                        # Skip None values
+                        logger.debug(f"Skipping None value for metadata key '{k}'")
+                        continue
+                    else:
+                        # Convert other types to string
+                        validated_metadata[k] = str(v)
+                        
+                # Debug log the validated metadata
+                logger.debug(f"Updating ChromaDB collection metadata with: {validated_metadata}")
+                
+                collection.update_metadata(validated_metadata)
+            elif hasattr(collection, "metadata"):
+                # Local collection
+                collection.metadata.update(metadata)
+                
+            logger.info(
+                f"Updated metadata for collection '{name}'",
+                emoji_key="vector"
+            )
+            return True
+        except Exception as e:
+            logger.error(
+                f"Failed to update collection metadata: {str(e)}",
+                emoji_key="error"
+            )
+            # Don't re-raise, just return false
+            return False
 
 
 # Singleton instance getter

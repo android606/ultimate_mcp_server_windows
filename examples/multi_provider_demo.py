@@ -41,7 +41,7 @@ async def run_provider_comparison():
     # Use model names directly if providers are inferred or handled by get_provider
     configs = [
         {"provider": Provider.OPENAI.value, "model": "gpt-4o-mini"},
-        {"provider": Provider.ANTHROPIC.value, "model": "claude-3.5-haiku-latest"}, # Use a valid Claude model
+        {"provider": Provider.ANTHROPIC.value, "model": "claude-3-5-haiku-latest"}, # Use a valid Claude model
         {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash-lite"}, # Use a valid Gemini model
         {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat"} # Use a valid DeepSeek model
     ]

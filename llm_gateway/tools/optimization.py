@@ -9,21 +9,38 @@ from llm_gateway.utils.text import count_tokens  # Import proper token counting
 
 logger = get_logger("llm_gateway.tools.optimization")
 
+# Singleton instance
+_optimization_service = None
+
+def get_optimization_service():
+    """Get the optimization service singleton instance.
+    
+    Returns:
+        OptimizationService instance
+    """
+    global _optimization_service
+    
+    if _optimization_service is None:
+        _optimization_service = OptimizationTools(None)
+    
+    return _optimization_service
+
 
 class OptimizationTools:
     """Cost optimization tools for LLM Gateway."""
     
-    def __init__(self, mcp_server):
+    def __init__(self, mcp_server=None):
         """Initialize the optimization tools.
         
         Args:
-            mcp_server: MCP server instance
+            mcp_server: MCP server instance (optional)
         """
         self.mcp = mcp_server
         self.logger = logger
         
-        # Register tools
-        self._register_tools()
+        # Register tools only if mcp_server is provided
+        if mcp_server is not None:
+            self._register_tools()
         
     def _register_tools(self):
         """Register cost optimization tools with MCP server."""

@@ -1,0 +1,20 @@
+
+        Tech Conference 2024
+        Location: San Francisco Convention Center, 123 Tech Blvd, San Francisco, CA 94103
+        Date: June 15-17, 2024
+        Time: 9:00 AM - 6:00 PM daily
+        
+        Registration Fee: $599 (Early Bird: $499 until March 31)
+        
+        Keynote Speakers:
+        - Dr. Sarah Johnson, AI Research Director at TechCorp
+        - Mark Williams, CTO of FutureTech Industries
+        - Prof. Emily Chen, MIT Computer Science Department
+        
+        Special Events:
+        - Networking Reception: June 15, 7:00 PM - 10:00 PM
+        - Hackathon: June 16, 9:00 PM - 9:00 AM (overnight)
+        - Career Fair: June 17, 1:00 PM - 5:00 PM
+        
+        For more information, contact events@techconference2024.example.com or call (555) 123-4567.
+        

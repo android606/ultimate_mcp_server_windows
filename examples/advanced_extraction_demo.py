@@ -11,12 +11,10 @@ from typing import Any, Dict, List
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-
 from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
 from llm_gateway.core.server import Gateway
+from llm_gateway.tools.extraction import ExtractionTools
 from llm_gateway.utils import get_logger
-# --- Add Rich and Display Imports ---
 from llm_gateway.utils.logging.console import console
 from llm_gateway.utils.display import parse_and_display_result
 from rich.panel import Panel
@@ -25,19 +23,12 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.markup import escape
 from rich import box
-# ----------------------
 
 # Initialize logger
 logger = get_logger("example.advanced_extraction")
 
 # Initialize global gateway
 gateway = None
-
-# Use the shared display utility instead of this function
-# Function kept for backwards compatibility during transition
-def parse_and_display_result_legacy(title: str, input_data: Dict, result: Any):
-    """Legacy version that calls the new shared utility function."""
-    parse_and_display_result(title, input_data, result)
 
 async def setup_gateway():
     """Set up the gateway for demonstration."""
@@ -54,493 +45,157 @@ async def setup_gateway():
     tools_before = await gateway.mcp.list_tools()
     logger.info(f"Tools before registering extraction tools: {[t.name for t in tools_before]}", emoji_key="info")
     
-    # Register custom extraction tools directly without using ExtractionTools class
+    # Register extraction tools using our ExtractionTools class
+    extraction_tools = ExtractionTools(gateway)
     
-    @gateway.mcp.tool()
-    async def extract_json(
-        text: str,
-        json_schema: Dict = None,
-        provider: str = Provider.OPENAI.value,
-        model: str = None,
-        validate_output: bool = True,
-        ctx=None
-    ) -> Dict[str, Any]:
-        """Extract structured JSON data from text."""
-        start_time = time.time()
-        
-        if not text:
-            return {
-                "error": "No text provided",
-                "data": None,
-                "processing_time": 0.0,
-            }
-            
-        # Get the provider instance
-        provider_instance = get_provider(provider)
-        
-        # Prepare schema description
-        schema_description = ""
-        if json_schema:
-            schema_description = f"Use this JSON schema to structure your response:\n{json.dumps(json_schema, indent=2)}\n"
-        
-        # Create prompt for extraction
-        prompt = f"""Extract structured JSON data from the following text.
-{schema_description}
-Text to extract from:
-```
-{text}
-```
-
-Return ONLY valid JSON that represents the extracted data. Do not include any explanations.
-"""
-        
-        # Extract the JSON
-        result = await provider_instance.generate_completion(
-            prompt=prompt,
-            model=model,
-            temperature=0.1,  # Low temperature for consistent extraction
-            max_tokens=4000,  # Allow for large JSON responses
-            response_format={"type": "json_object"}
-        )
-        
-        # Get processing time
-        processing_time = time.time() - start_time
-        
-        # Parse the JSON response
-        try:
-            extracted_data = json.loads(result.text)
-            validation_result = {"valid": True, "errors": []}
-            
-            # Return successful result
-            return {
-                "data": extracted_data,
-                "validation_result": validation_result,
-                "model": result.model,
-                "provider": provider,
-                "tokens": {
-                    "input": result.input_tokens,
-                    "output": result.output_tokens,
-                    "total": result.total_tokens,
-                },
-                "cost": result.cost,
-                "processing_time": processing_time,
-            }
-            
-        except json.JSONDecodeError as e:
-            return {
-                "error": f"Failed to parse JSON: {str(e)}",
-                "raw_text": result.text,
-                "data": None,
-                "model": result.model,
-                "provider": provider,
-                "processing_time": processing_time,
-            }
-    
-    @gateway.mcp.tool()
-    async def extract_table(
-        text: str,
-        headers: List[str] = None,
-        formats: List[str] = None,
-        extract_metadata: bool = False,
-        provider: str = Provider.OPENAI.value,
-        model: str = None,
-        ctx=None
-    ) -> Dict[str, Any]:
-        """Extract tabular data from text."""
-        if formats is None:
-            formats = ["json"]
-        start_time = time.time()
-        
-        if not text:
-            return {
-                "error": "No text provided",
-                "tables": [],
-                "processing_time": 0.0,
-            }
-            
-        # Get the provider instance
-        provider_instance = get_provider(provider)
-        
-        # Create prompt for extraction
-        prompt = f"""Extract tables from the following text.
-
-Text containing table:
-```
-{text}
-```
-
-Return the table in JSON format where each row is an object and keys are column headers.
-Also include table metadata like title, notes, and context.
-
-Format your response as a JSON object with this structure:
-{{
-  "title": "The table title if present",
-  "json": [ 
-    {{ "column1": "value", "column2": "value", ... }},
-    ...
-  ],
-  "markdown": "The table in markdown format",
-  "metadata": {{
-    "notes": ["note1", "note2", ...],
-    "source": "Source information if mentioned"
-  }}
-}}
-
-Return ONLY valid JSON. Do not include any explanations.
-"""
-        
-        # Extract the table
-        result = await provider_instance.generate_completion(
-            prompt=prompt,
-            model=model,
-            temperature=0.1,
-            max_tokens=4000,
-            response_format={"type": "json_object"}
-        )
-        
-        # Get processing time
-        processing_time = time.time() - start_time
-        
-        # Parse the JSON response
-        try:
-            table_data = json.loads(result.text)
-            
-            # Return successful result
-            return {
-                "tables": [table_data],
-                "model": result.model,
-                "provider": provider,
-                "tokens": {
-                    "input": result.input_tokens,
-                    "output": result.output_tokens,
-                    "total": result.total_tokens,
-                },
-                "cost": result.cost,
-                "processing_time": processing_time,
-            }
-            
-        except json.JSONDecodeError as e:
-            return {
-                "error": f"Failed to parse JSON: {str(e)}",
-                "raw_text": result.text,
-                "tables": [],
-                "model": result.model,
-                "provider": provider,
-                "processing_time": processing_time,
-            }
-    
-    @gateway.mcp.tool()
-    async def extract_key_value_pairs(
-        text: str,
-        structured: bool = True,
-        categorize: bool = False,
-        provider: str = Provider.OPENAI.value,
-        model: str = None,
-        ctx=None
-    ) -> Dict[str, Any]:
-        """Extract key-value pairs from text."""
-        start_time = time.time()
-        
-        if not text:
-            return {
-                "error": "No text provided",
-                "pairs": {},
-                "processing_time": 0.0,
-            }
-            
-        # Get the provider instance
-        provider_instance = get_provider(provider)
-        
-        # Create prompt for extraction
-        prompt = f"""Extract key-value pairs from the following text.
-
-Text to extract from:
-```
-{text}
-```
-
-"""
-        if categorize:
-            prompt += """Categorize the extracted pairs.
-
-Format your response as a JSON object with this structure:
-{
-  "people": [
-    {"key": "Name", "value": "John Smith"},
-    {"key": "Title", "value": "CEO"}
-  ],
-  "organizations": [
-    {"key": "Company", "value": "Acme Inc."},
-    {"key": "Industry", "value": "Technology"}
-  ],
-  "dates": [
-    {"key": "Announcement Date", "value": "January 15, 2024"}
-  ],
-  "locations": [...],
-  "products": [...],
-  "financial": [...],
-  "other": [...]
-}
-"""
-        else:
-            prompt += """Format your response as a JSON object where each key-value pair extracted from the text is represented.
-
-For example:
-{
-  "Project Name": "Quantum Computing Research Initiative",
-  "Status": "In Progress",
-  "Completion Percentage": 45,
-  "Budget": "$750,000"
-}
-"""
-        
-        prompt += "\nReturn ONLY valid JSON that represents the extracted key-value pairs. Do not include any explanations."
-        
-        # Extract the key-value pairs
-        result = await provider_instance.generate_completion(
-            prompt=prompt,
-            model=model,
-            temperature=0.1,
-            max_tokens=4000,
-            response_format={"type": "json_object"}
-        )
-        
-        # Get processing time
-        processing_time = time.time() - start_time
-        
-        # Parse the JSON response
-        try:
-            pairs_data = json.loads(result.text)
-            
-            # Return successful result
-            return {
-                "pairs": pairs_data,
-                "model": result.model,
-                "provider": provider,
-                "tokens": {
-                    "input": result.input_tokens,
-                    "output": result.output_tokens,
-                    "total": result.total_tokens,
-                },
-                "cost": result.cost,
-                "processing_time": processing_time,
-            }
-            
-        except json.JSONDecodeError as e:
-            return {
-                "error": f"Failed to parse JSON: {str(e)}",
-                "raw_text": result.text,
-                "pairs": {},
-                "model": result.model,
-                "provider": provider,
-                "processing_time": processing_time,
-            }
-    
-    @gateway.mcp.tool()
-    async def extract_semantic_schema(
-        text: str,
-        format: str = "json_schema",
-        add_descriptions: bool = True,
-        provider: str = Provider.OPENAI.value,
-        model: str = None,
-        ctx=None
-    ) -> Dict[str, Any]:
-        """Infer and extract semantic schema from text."""
-        start_time = time.time()
-        
-        if not text:
-            return {
-                "error": "No text provided",
-                "schema": {},
-                "processing_time": 0.0,
-            }
-            
-        # Get the provider instance
-        provider_instance = get_provider(provider)
-        
-        # Create prompt for schema inference
-        prompt = f"""Create a JSON Schema (draft-07) for the structured data in the following text.
-{' Include field descriptions for all properties.' if add_descriptions else ''}
-
-Text to analyze:
-```
-{text}
-```
-
-Your schema should capture all important entities, properties, and relationships in the data.
-Use appropriate data types (string, number, boolean, array, object) and validation rules.
-The schema should reflect the semantic structure of the data, not just its syntactic form.
-
-Return ONLY valid JSON Schema. Do not include any explanations.
-"""
-        
-        # Extract the schema
-        result = await provider_instance.generate_completion(
-            prompt=prompt,
-            model=model,
-            temperature=0.2,  # Slightly higher for creative schema creation
-            max_tokens=4000,
-            response_format={"type": "json_object"}
-        )
-        
-        # Get processing time
-        processing_time = time.time() - start_time
-        
-        # Parse the JSON response
-        try:
-            schema_data = json.loads(result.text)
-            
-            # Return successful result
-            return {
-                "schema": schema_data,
-                "model": result.model,
-                "provider": provider,
-                "tokens": {
-                    "input": result.input_tokens,
-                    "output": result.output_tokens,
-                    "total": result.total_tokens,
-                },
-                "cost": result.cost,
-                "processing_time": processing_time,
-            }
-            
-        except json.JSONDecodeError as e:
-            return {
-                "error": f"Failed to parse JSON: {str(e)}",
-                "raw_text": result.text,
-                "schema": {},
-                "model": result.model,
-                "provider": provider,
-                "processing_time": processing_time,
-            }
-    
-    # Verify extraction tools are registered
+    # Get available tools after registering extraction tools
     tools_after = await gateway.mcp.list_tools()
-    extraction_tool_names = [t.name for t in tools_after if t.name.startswith('extract_')]
-    logger.info(f"Registered extraction tools: {extraction_tool_names}", emoji_key="info")
+    logger.info(f"Tools after registering extraction tools: {[t.name for t in tools_after]}", emoji_key="info")
     
-    logger.success("Gateway initialized with extraction tools", emoji_key="success")
+    # Create a set of the new tools added
+    new_tools = set([t.name for t in tools_after]) - set([t.name for t in tools_before])
+    logger.success(f"Added extraction tools: {new_tools}", emoji_key="success")
+    
+    return extraction_tools
 
-
-async def json_extraction_demo():
-    """Demonstrate JSON extraction with schema validation."""
-    logger.info("Starting JSON extraction demo", emoji_key="start")
+async def run_json_extraction_example():
+    """Demonstrate JSON extraction."""
+    console.print(Rule("[bold blue]1. JSON Extraction Example[/bold blue]"))
     
-    # Sample text with embedded information
-    text = """
-    Project Status Report - March 2024
+    # Load sample text
+    sample_path = Path(__file__).parent / "data" / "sample_event.txt"
+    if not sample_path.exists():
+        # Create a sample text for demonstration
+        sample_text = """
+        Tech Conference 2024
+        Location: San Francisco Convention Center, 123 Tech Blvd, San Francisco, CA 94103
+        Date: June 15-17, 2024
+        Time: 9:00 AM - 6:00 PM daily
+        
+        Registration Fee: $599 (Early Bird: $499 until March 31)
+        
+        Keynote Speakers:
+        - Dr. Sarah Johnson, AI Research Director at TechCorp
+        - Mark Williams, CTO of FutureTech Industries
+        - Prof. Emily Chen, MIT Computer Science Department
+        
+        Special Events:
+        - Networking Reception: June 15, 7:00 PM - 10:00 PM
+        - Hackathon: June 16, 9:00 PM - 9:00 AM (overnight)
+        - Career Fair: June 17, 1:00 PM - 5:00 PM
+        
+        For more information, contact events@techconference2024.example.com or call (555) 123-4567.
+        """
+        # Ensure the data directory exists
+        os.makedirs(os.path.dirname(sample_path), exist_ok=True)
+        # Write sample text to file
+        with open(sample_path, "w") as f:
+            f.write(sample_text)
+    else:
+        # Read existing sample text
+        with open(sample_path, "r") as f:
+            sample_text = f.read()
     
-    Project Name: Quantum Computing Research Initiative
-    Project ID: QC-2024-03
-    Status: In Progress
-    Completion: 45%
+    # Display sample text
+    console.print(Panel(sample_text, title="Sample Event Text", border_style="blue"))
     
-    Team Members:
-    - Dr. Sarah Chen (Lead Researcher)
-    - Dr. Robert Patel (Quantum Algorithm Specialist)
-    - Maria Rodriguez (Software Engineer)
-    - James Wilson (Data Scientist)
-    
-    Key Milestones:
-    1. Initial research phase - Completed on January 15, 2024
-    2. Algorithm development - Completed on February 28, 2024
-    3. Prototype implementation - In progress, expected completion on April 10, 2024
-    4. Testing and validation - Not started, scheduled for April 15, 2024
-    5. Final documentation - Not started, scheduled for May 5, 2024
-    
-    Budget Information:
-    Total budget: $750,000
-    Spent to date: $320,000
-    Remaining: $430,000
-    
-    Key Challenges:
-    - Error correction rates still below target thresholds
-    - Integration with existing systems more complex than anticipated
-    - Need additional computing resources for large-scale simulations
-    
-    Next Steps:
-    - Complete prototype implementation by April 10
-    - Request additional computing resources by March 15
-    - Schedule weekly progress review meetings
-    """
-    
-    # Define the extraction schema
-    schema = {
+    # Define JSON schema for event
+    event_schema = {
         "type": "object",
         "properties": {
-            "project": {
+            "name": {"type": "string", "description": "Event name"},
+            "location": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string"},
-                    "id": {"type": "string"},
-                    "status": {"type": "string"},
-                    "completion_percentage": {"type": "number"}
-                },
-                "required": ["name", "id", "status"]
-            },
-            "team": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "role": {"type": "string"}
-                    },
-                    "required": ["name"]
+                    "venue": {"type": "string"},
+                    "address": {"type": "string"},
+                    "city": {"type": "string"},
+                    "state": {"type": "string"},
+                    "zip": {"type": "string"}
                 }
             },
-            "milestones": {
+            "dates": {
+                "type": "object",
+                "properties": {
+                    "start": {"type": "string", "format": "date"},
+                    "end": {"type": "string", "format": "date"}
+                }
+            },
+            "time": {"type": "string"},
+            "registration": {
+                "type": "object",
+                "properties": {
+                    "regular_fee": {"type": "number"},
+                    "early_bird_fee": {"type": "number"},
+                    "early_bird_deadline": {"type": "string", "format": "date"}
+                }
+            },
+            "speakers": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
                         "name": {"type": "string"},
-                        "status": {"type": "string"},
-                        "completion_date": {"type": "string"}
+                        "title": {"type": "string"},
+                        "organization": {"type": "string"}
                     }
                 }
             },
-            "budget": {
-                "type": "object",
-                "properties": {
-                    "total": {"type": "number"},
-                    "spent": {"type": "number"},
-                    "remaining": {"type": "number"}
+            "special_events": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "date": {"type": "string", "format": "date"},
+                        "time": {"type": "string"}
+                    }
                 }
             },
-            "challenges": {
-                "type": "array",
-                "items": {"type": "string"}
-            },
-            "next_steps": {
-                "type": "array",
-                "items": {"type": "string"}
+            "contact": {
+                "type": "object",
+                "properties": {
+                    "email": {"type": "string", "format": "email"},
+                    "phone": {"type": "string"}
+                }
             }
         }
     }
     
-    # Log extraction attempt
-    logger.info("Performing JSON extraction with schema", emoji_key="processing")
+    # Display JSON schema
+    schema_json = json.dumps(event_schema, indent=2)
+    console.print(Panel(
+        Syntax(schema_json, "json", theme="monokai", line_numbers=True),
+        title="Event JSON Schema",
+        border_style="green"
+    ))
+    
+    # Extract JSON using extract_json tool
+    logger.info("Extracting structured JSON data from text...", emoji_key="processing")
     
     try:
-        # Call the extract_json tool directly
+        start_time = time.time()
+        
+        # Call the extract_json method
         result = await gateway.mcp.call_tool("extract_json", {
-            "text": text,
-            "json_schema": schema,
+            "text": sample_text,
+            "json_schema": event_schema,
             "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
             "validate_output": True
         })
         
-        # Parse the result using the shared utility
-        parse_and_display_result("JSON Extraction Demo", {"text": text, "json_schema": schema}, result)
+        # Display the results using the utility function
+        parse_and_display_result(
+            title="JSON Extraction Results",
+            input_data={"text": sample_text, "schema": event_schema},
+            result=result,
+            console=console
+        )
         
-        return result
-            
     except Exception as e:
-        logger.error(f"Error in JSON extraction: {str(e)}", emoji_key="error")
-        return None
-
+        logger.error(f"Error extracting JSON: {str(e)}", emoji_key="error", exc_info=True)
+        
+    console.print()
 
 async def table_extraction_demo():
     """Demonstrate table extraction capabilities."""
@@ -749,7 +404,7 @@ async def main():
         console.print(Rule("[bold magenta]Advanced Extraction Demos Starting[/bold magenta]"))
         
         # Run JSON extraction demo
-        await json_extraction_demo()
+        await run_json_extraction_example()
         
         # Run table extraction demo
         await table_extraction_demo()

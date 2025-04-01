@@ -6,6 +6,33 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, validator
 
 
+class TournamentBase(BaseModel):
+    """Base class for tournament-related models."""
+    tournament_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    status: str = "PENDING"
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+
+
+class TournamentPlayerBase(BaseModel):
+    """Base class for tournament players/competitors."""
+    player_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    model_id: str
+
+
+class TournamentMatch(BaseModel):
+    """Represents a match between players in a tournament."""
+    match_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    tournament_id: str
+    players: List[str]  # List of player_ids
+    winner: Optional[str] = None  # player_id of winner
+    match_data: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=datetime.now)
+    completed_at: Optional[datetime] = None
+
+
 class TournamentStatus(str, Enum):
     PENDING = "PENDING"
     CREATED = "CREATED"

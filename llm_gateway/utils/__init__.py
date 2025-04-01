@@ -11,8 +11,10 @@ from llm_gateway.utils.logging.logger import (
     success,
     warning,
 )
+from llm_gateway.utils.parsing import parse_result, process_mcp_result
 
 __all__ = [
+    # Logging utilities
     "logger",
     "console",
     "debug",
@@ -21,5 +23,10 @@ __all__ = [
     "warning",
     "error",
     "critical",
-    "section"
+    "section",
+    "get_logger",
+    
+    # Parsing utilities
+    "parse_result",
+    "process_mcp_result",
 ]

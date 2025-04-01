@@ -34,7 +34,7 @@ from llm_gateway.core.server import Gateway
 from llm_gateway.core.models.requests import CompletionRequest
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.prompts import PromptTemplate
-from llm_gateway.utils import get_logger
+from llm_gateway.utils import get_logger, parse_result, process_mcp_result
 from llm_gateway.utils.logging.console import console
 from llm_gateway.utils.display import display_tournament_status, display_tournament_results
 from rich.panel import Panel

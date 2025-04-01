@@ -1,4 +1,9 @@
-"""Display utilities for rich output formatting in demos and applications."""
+"""Display utilities for the LLM Gateway.
+
+This module contains reusable display functions for formatting and
+presenting results from LLM Gateway operations using Rich.
+"""
+
 import json
 from typing import Any, Dict, List, Optional, Union
 
@@ -165,49 +170,6 @@ def display_text_content_result(
             title="[bold]Result Data[/bold]",
             border_style="blue"
         ))
-
-
-def parse_and_display_result(
-    title: str, 
-    input_data: Optional[Dict] = None, 
-    result: Any = None, 
-    display_input: bool = True,
-    console_instance: Optional[Console] = None
-):
-    """
-    Parse and display results using Rich with consistent formatting across demos.
-    
-    Args:
-        title: Title to display for this result section
-        input_data: Dictionary containing input data (e.g., text, schema)
-        result: Result object from an LLM Gateway tool call
-        display_input: Whether to display the input data
-        console_instance: Optional console instance to use (defaults to shared console)
-    """
-    # Use provided console or default to shared console
-    output = console_instance or console
-    
-    # Display section title
-    output.print(Rule(f"[bold blue]{escape(title)}[/bold blue]"))
-
-    # Display input if requested
-    if display_input and input_data:
-        _display_input_data(input_data, output)
-
-    # Handle different result formats
-    if result is not None:
-        # For TextContent, use the specialized function
-        if isinstance(result, list) and result and hasattr(result[0], 'text'):
-            # Use extract_and_parse_content and display appropriately
-            parsed_data = extract_and_parse_content(result)
-            _display_result_content(parsed_data, output)
-        elif hasattr(result, 'text'):
-            # Single TextContent object
-            parsed_data = extract_and_parse_content(result)
-            _display_result_content(parsed_data, output)
-        else:
-            # Use existing handler for other types
-            _parse_and_display_output(result, output)
 
 
 def _display_input_data(input_data: Dict, output: Console):
@@ -678,87 +640,6 @@ def display_analytics_metrics(metrics_data: Dict, output: Optional[Console] = No
             
             output.print(distribution_table)
 
-def display_cache_stats(stats: Dict, progression_stats: Optional[Dict[int, Dict]] = None, output: Optional[Console] = None):
-    """Display cache statistics in an attractive format.
-    
-    Args:
-        stats: Cache statistics dictionary
-        progression_stats: Optional dictionary of stats progression through test runs
-        output: Optional console to output to
-    """
-    # Use provided console or default
-    output = output or console
-    
-    # Display section header
-    output.print(Rule("[bold green]Cache Statistics[/bold green]"))
-    
-    # Create stats table
-    stats_table = Table(box=box.ROUNDED, show_header=True)
-    stats_table.add_column("Metric", style="cyan")
-    stats_table.add_column("Value", style="white", justify="right")
-    
-    actual_stats = stats.get("stats", {})
-    
-    hits = actual_stats.get('hits', 0)
-    misses = actual_stats.get('misses', 0)
-    total = hits + misses
-    hit_ratio = hits / total if total > 0 else 0
-    saved_tokens = actual_stats.get('total_saved_tokens', 0)
-    saved_cost = actual_stats.get('estimated_cost_savings', 0.0)
-
-    # Display configuration stats
-    stats_table.add_row("Cache Enabled", "✅" if stats.get("enabled", False) else "❌")
-    stats_table.add_row("TTL", f"{stats.get('ttl', 0):,} seconds")
-    stats_table.add_row("Max Entries", f"{stats.get('max_size', 0):,}")
-    stats_table.add_row("Current Size", f"{stats.get('size', 0):,}")
-    
-    # Add a separator
-    stats_table.add_section()
-    
-    # Add performance stats
-    stats_table.add_row("Cache Hits", f"{hits:,}")
-    stats_table.add_row("Cache Misses", f"{misses:,}")
-    stats_table.add_row("Total Lookups", f"{total:,}")
-    stats_table.add_row("Hit Ratio", f"{hit_ratio:.2%}")
-    stats_table.add_row("Total Saved Tokens", f"{saved_tokens:,}")
-    stats_table.add_row("Estimated Cost Savings", f"${saved_cost:.6f}")
-    
-    output.print(stats_table)
-    
-    # Display stats progression if provided
-    if progression_stats and len(progression_stats) >= 2:
-        output.print()
-        prog_table = Table(title="Cache Hit Progression", box=box.MINIMAL)
-        prog_table.add_column("Stage")
-        prog_table.add_column("Hits", justify="right")
-        prog_table.add_column("Hit Ratio", justify="right")
-        
-        for stage, stats_data in sorted(progression_stats.items()):
-            stage_hits = stats_data.get('hits', 0)
-            stage_misses = stats_data.get('misses', 0)
-            stage_total = stage_hits + stage_misses
-            stage_ratio = stage_hits / stage_total if stage_total > 0 else 0
-            
-            if stage == 1:
-                stage_name = "After 1st (Miss)"
-            elif stage == 2:
-                stage_name = "After 2nd (Hit)"
-            elif stage == 3:
-                stage_name = "After 3rd (Bypass)"
-            elif stage == 4:
-                stage_name = "After 4th (Hit)"
-            else:
-                stage_name = f"Stage {stage}"
-                
-            prog_table.add_row(
-                stage_name,
-                str(stage_hits),
-                f"{stage_ratio:.2%}"
-            )
-            
-        output.print(prog_table)
-
-
 # --- Tournament Display Functions ---
 
 def display_tournament_status(status_data: Dict[str, Any], output: Optional[Console] = None):
@@ -873,4 +754,241 @@ def display_tournament_results(results_data: Dict[str, Any], output: Optional[Co
     
     # Display execution stats if available
     if any(key in results_data for key in ["processing_time", "cost", "tokens"]):
-        _display_stats(results_data, display) 
+        _display_stats(results_data, display)
+
+def display_completion_result(
+    console: Console, 
+    result: Any, 
+    title: str = "Completion Result"
+):
+    """Display a completion result with stats.
+    
+    Args:
+        console: Rich console to print to
+        result: Completion result to display
+        title: Title for the result panel
+    """
+    # Display the completion text
+    console.print(Panel(
+        result.text.strip(),
+        title=title,
+        border_style="green",
+        expand=False
+    ))
+    
+    # Display stats
+    stats_table = Table(title="Completion Stats", show_header=False, box=None)
+    stats_table.add_column("Metric", style="green")
+    stats_table.add_column("Value", style="white")
+    
+    # Add standard metrics if they exist
+    if hasattr(result, "input_tokens"):
+        stats_table.add_row("Input Tokens", str(result.input_tokens))
+    if hasattr(result, "output_tokens"):
+        stats_table.add_row("Output Tokens", str(result.output_tokens))
+    if hasattr(result, "total_tokens"):
+        stats_table.add_row("Total Tokens", str(result.total_tokens))
+    if hasattr(result, "cost"):
+        stats_table.add_row("Cost", f"${result.cost:.6f}")
+    if hasattr(result, "processing_time"):
+        stats_table.add_row("Processing Time", f"{result.processing_time:.3f}s")
+    
+    console.print(stats_table)
+
+def display_cache_stats(
+    stats: Dict[str, Any], 
+    stats_log: Optional[Dict[int, Dict[str, int]]] = None,
+    console: Optional[Console] = None
+):
+    """Display cache statistics in a formatted table.
+    
+    Args:
+        stats: Cache statistics dictionary
+        stats_log: Optional log of statistics at different stages
+        console: Rich console to print to (creates one if None)
+    """
+    if console is None:
+        from llm_gateway.utils.logging.console import console
+    
+    # Create the stats table
+    stats_table = Table(title="Cache Statistics", box=box.SIMPLE)
+    stats_table.add_column("Metric", style="cyan")
+    stats_table.add_column("Value", style="white")
+    
+    # Add enabled state
+    stats_table.add_row(
+        "Cache Enabled",
+        "[green]Yes[/green]" if stats.get("enabled", False) else "[red]No[/red]"
+    )
+    
+    # Add persistence information
+    stats_table.add_row(
+        "Persistence",
+        "[green]Enabled[/green]" if stats.get("persistence", False) else "[yellow]Disabled[/yellow]"
+    )
+    
+    # Add hit and miss counts
+    cache_stats = stats.get("stats", {})
+    stats_table.add_row("Total Gets", str(cache_stats.get("get_count", 0)))
+    stats_table.add_row("Cache Hits", str(cache_stats.get("hit_count", 0)))
+    stats_table.add_row("Cache Misses", str(cache_stats.get("miss_count", 0)))
+    stats_table.add_row("Total Sets", str(cache_stats.get("set_count", 0)))
+    
+    # Calculate hit rate
+    gets = cache_stats.get("get_count", 0)
+    hits = cache_stats.get("hit_count", 0)
+    hit_rate = (hits / gets) * 100 if gets > 0 else 0
+    stats_table.add_row("Hit Rate", f"{hit_rate:.1f}%")
+    
+    # Add estimated savings if available
+    if "savings" in stats:
+        savings = stats["savings"]
+        if isinstance(savings, dict) and "cost" in savings:
+            stats_table.add_row("Cost Savings", f"${savings['cost']:.6f}")
+        if isinstance(savings, dict) and "time" in savings:
+            stats_table.add_row("Time Savings", f"{savings['time']:.3f}s")
+    
+    console.print(stats_table)
+    
+    # Display changes over time if stats_log is provided
+    if stats_log and len(stats_log) > 1:
+        changes_table = Table(title="Cache Changes During Demo", box=box.SIMPLE)
+        changes_table.add_column("Stage", style="cyan")
+        changes_table.add_column("Gets", style="white")
+        changes_table.add_column("Hits", style="green")
+        changes_table.add_column("Misses", style="yellow")
+        changes_table.add_column("Sets", style="blue")
+        
+        for stage, stage_stats in sorted(stats_log.items()):
+            changes_table.add_row(
+                f"Step {stage}",
+                str(stage_stats.get("get_count", 0)),
+                str(stage_stats.get("hit_count", 0)),
+                str(stage_stats.get("miss_count", 0)),
+                str(stage_stats.get("set_count", 0))
+            )
+        
+        console.print(changes_table)
+
+def parse_and_display_result(
+    title: str, 
+    input_data: Dict, 
+    result: Any,
+    console: Optional[Console] = None
+):
+    """Parse and display extraction results.
+    
+    Args:
+        title: Title for the display
+        input_data: Input data used for the extraction
+        result: Extraction result
+        console: Rich console to print to (creates one if None)
+    """
+    if console is None:
+        from llm_gateway.utils.logging.console import console
+    
+    console.print(Rule(f"[bold blue]{title}[/bold blue]"))
+    
+    # Check for errors first
+    if "error" in result and result["error"]:
+        console.print(f"[bold red]Error:[/bold red] {result['error']}")
+        if "raw_text" in result:
+            console.print(Panel(result["raw_text"], title="Raw Response", border_style="red"))
+        return
+    
+    # Display the extracted data
+    if "data" in result:
+        data = result["data"]
+        
+        # Special handling for different extraction types
+        if isinstance(data, list) and title.lower().startswith("table"):
+            # Table data handling
+            display_table_data(data, console)
+        elif isinstance(data, dict) and "key_value_pairs" in data:
+            # Key-value pair handling
+            display_key_value_pairs(data["key_value_pairs"], console)
+        else:
+            # Generic JSON data
+            json_str = json.dumps(data, indent=2)
+            syntax = Syntax(json_str, "json", theme="monokai", line_numbers=True)
+            console.print(Panel(syntax, title="Extracted Data", border_style="green"))
+    
+    # Display performance metrics
+    if any(k in result for k in ["tokens", "cost", "processing_time"]):
+        metrics_table = Table(title="Performance Metrics", box=None)
+        metrics_table.add_column("Metric", style="cyan")
+        metrics_table.add_column("Value", style="white")
+        
+        # Add provider and model info
+        if "provider" in result:
+            metrics_table.add_row("Provider", result["provider"])
+        if "model" in result:
+            metrics_table.add_row("Model", result["model"])
+        
+        # Add token usage
+        if "tokens" in result:
+            tokens = result["tokens"]
+            if isinstance(tokens, dict):
+                for token_type, count in tokens.items():
+                    metrics_table.add_row(f"{token_type.title()} Tokens", str(count))
+            else:
+                metrics_table.add_row("Total Tokens", str(tokens))
+        
+        # Add cost and timing
+        if "cost" in result:
+            metrics_table.add_row("Cost", f"${result['cost']:.6f}")
+        if "processing_time" in result:
+            metrics_table.add_row("Processing Time", f"{result['processing_time']:.3f}s")
+        
+        console.print(metrics_table)
+
+def display_table_data(table_data: List[Dict], console: Console):
+    """Display tabular data extracted from text.
+    
+    Args:
+        table_data: List of dictionaries representing table rows
+        console: Rich console to print to
+    """
+    if not table_data:
+        console.print("[yellow]No table data found[/yellow]")
+        return
+    
+    # Create a Rich table from the data
+    rich_table = Table(box=box.SIMPLE)
+    
+    # Add columns from the first row's keys
+    columns = list(table_data[0].keys())
+    for column in columns:
+        rich_table.add_column(str(column), style="cyan")
+    
+    # Add rows
+    for row in table_data:
+        rich_table.add_row(*[str(row.get(col, "")) for col in columns])
+    
+    console.print(rich_table)
+    
+    # Also display as JSON for reference
+    json_str = json.dumps(table_data, indent=2)
+    syntax = Syntax(json_str, "json", theme="monokai", line_numbers=True)
+    console.print(Panel(syntax, title="Table Data (JSON)", border_style="blue"))
+
+def display_key_value_pairs(pairs: List[Dict], console: Console):
+    """Display key-value pairs extracted from text.
+    
+    Args:
+        pairs: List of dictionaries with 'key' and 'value' fields
+        console: Rich console to print to
+    """
+    if not pairs:
+        console.print("[yellow]No key-value pairs found[/yellow]")
+        return
+    
+    # Create a Rich table for the key-value pairs
+    kv_table = Table(box=None)
+    kv_table.add_column("Key", style="green")
+    kv_table.add_column("Value", style="white")
+    
+    for pair in pairs:
+        kv_table.add_row(pair.get("key", ""), pair.get("value", ""))
+    
+    console.print(Panel(kv_table, title="Extracted Key-Value Pairs", border_style="green")) 
