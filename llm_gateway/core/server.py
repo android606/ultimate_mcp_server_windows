@@ -3,7 +3,7 @@ import asyncio
 import logging
 import logging.config
 import os
-import sys  # Add sys import
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 # Import core specifically to set the global instance
 import llm_gateway.core 
-import llm_gateway # <-- ADD THIS IMPORT
+import llm_gateway
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +24,6 @@ from llm_gateway.config import get_config
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.core.tournaments.manager import tournament_manager
-from llm_gateway.tools import register_all_tools
 from llm_gateway.utils.logging import logger
 from llm_gateway.utils.logging.logger import get_logger
 
@@ -136,7 +135,6 @@ class ProviderStatus:
     models: List[Dict[str, Any]]
     error: Optional[str] = None
 
-
 class Gateway:
     """Main LLM Gateway implementation."""
     
@@ -160,6 +158,7 @@ class Gateway:
         # Initialize provider tracking
         self.providers = {}
         self.provider_status = {}
+        self.marqo_available = False # Initialize state
         
         # Create MCP server with host and port settings
         self.mcp = FastMCP(
@@ -226,11 +225,27 @@ class Gateway:
         Yields:
             Dict containing initialized resources
         """
+        # Import here to avoid circular import
+        from llm_gateway.tools.marqo_fused_search import check_marqo_availability, DEFAULT_MARQO_URL
+        
         self.logger.info(f"Starting LLM Gateway '{self.name}'")
         
         # Initialize providers
         await self._initialize_providers()
         
+        # --- Check Marqo Availability ---
+        try:
+            self.marqo_available = await check_marqo_availability(DEFAULT_MARQO_URL)
+            if not self.marqo_available:
+                self.logger.warning("Marqo health check failed. Marqo-related tools will be disabled.")
+            else:
+                # Register Marqo tools only if available
+                self._register_marqo_tools() # Moved here from _register_tools
+        except Exception as e:
+            self.logger.error(f"Error during Marqo health check: {e}", exc_info=True)
+            self.marqo_available = False # Assume unavailable on error
+        # --------------------------------
+
         # --- Set the global instance variable --- 
         # Make the fully initialized instance accessible globally AFTER init
         llm_gateway.core._gateway_instance = self
@@ -417,7 +432,10 @@ first and be prepared to adapt to available providers.
         
     def _register_tools(self):
         """Register MCP tools."""
-        # Add a simple echo tool for testing
+        # Import here to avoid circular dependency
+        from llm_gateway.tools import register_all_tools
+        self.logger.info("Registering core tools...")
+        # Echo tool
         @self.mcp.tool()
         @self.log_tool_calls
         async def echo(message: str, ctx: Context = None) -> Dict[str, Any]:
@@ -439,34 +457,35 @@ first and be prepared to adapt to available providers.
         
         # Register provider-specific tools that aren't part of standard tool classes
         self._register_provider_tools()
-        
-        # Register Tournament Tools
-        self._register_tournament_tools()
-        
-    def _register_provider_tools(self):
-        """Register provider-related tools."""
-        # Provider tools are now registered via register_all_tools through ProviderTools
-        # This method is kept for backward compatibility but does nothing
-        pass
-    
-    def _register_document_tools(self):
-        """Register document processing tools."""
-        # Document tools are now registered via register_all_tools through DocumentTools
-        # This method is kept for backward compatibility but does nothing
-        pass
-    
-    def _register_cost_tools(self):
-        """Register cost optimization tools."""
-        # Cost tools are now registered via register_all_tools through OptimizationTools
-        # This method is kept for backward compatibility but does nothing
-        pass
+        self._register_document_tools()
+        self._register_cost_tools()
 
-    # --- Tournament Tools Registration --- 
-    def _register_tournament_tools(self):
-        """Register tournament tools with MCP."""
-        # Tournament tools are now registered via register_all_tools through TournamentTools
-        # This method is kept for backward compatibility but does nothing
-        pass
+    def _register_marqo_tools(self):
+        """Register Marqo search tools if Marqo is available."""
+        # This check is slightly redundant now as we call this method
+        # only after self.marqo_available is set to True, but keep for safety.
+        if self.marqo_available:
+            self.logger.info("Registering Marqo search tools...")
+            try:
+                # Ensure the tool is imported correctly
+                from llm_gateway.tools.marqo_fused_search import marqo_fused_search
+
+                tools_to_register = [marqo_fused_search]
+
+                for tool_func in tools_to_register:
+                    # Apply the logging decorator
+                    logged_tool_func = self.log_tool_calls(tool_func)
+                    # Register with MCP server
+                    self.mcp.tool(name=tool_func.__name__)(logged_tool_func)
+                    self.logger.debug(f"Registered Marqo tool: {tool_func.__name__}")
+                self.logger.info("Marqo tools registered successfully.")
+            except ImportError:
+                 self.logger.error("Marqo tools import failed unexpectedly even though Marqo seemed available. Skipping registration.")
+            except Exception as e:
+                 self.logger.error(f"Failed to register Marqo tools: {e}", exc_info=True)
+        else:
+             # This case should technically not be hit anymore due to the call location in lifespan
+             self.logger.warning("Marqo is unavailable (called _register_marqo_tools while unavailable). Skipping registration of Marqo tools.")
 
     def _register_resources(self):
         """Register MCP resources."""

@@ -17,6 +17,10 @@ from llm_gateway.cli.commands import (
 )
 from llm_gateway.utils import get_logger
 
+# Import tool registration functions/modules
+# Import Marqo health check
+
+
 # Use consistent namespace
 logger = get_logger("llm_gateway.main")
 

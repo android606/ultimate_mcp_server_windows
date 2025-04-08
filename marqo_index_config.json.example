@@ -1,0 +1,59 @@
+# marqo_index_config.json.example
+# Copy this file to marqo_index_config.json and customize it for YOUR Marqo index.
+
+{
+    "default_marqo_url": "http://localhost:8882",
+    "default_index_name": "your_marqo_index_name",
+    "default_schema": {
+        "fields": {
+            # --- Core Content & Vector ---
+            # Field containing the main text content to display in results.
+            "main_content": {"type": "text", "role": "content"},
+            # Field storing the vector embedding used for semantic search.
+            "text_embedding": {"type": "tensor", "role": "tensor_vector"},
+
+            # --- Example Metadata Fields ---
+            # Replace these with fields relevant to your data.
+            "category": {
+                "type": "keyword",       # Use 'keyword' for exact matches (faster filtering).
+                "role": "metadata",      # Identifies this as a metadata field.
+                "filterable": true      # Set to true if you want to filter by this field.
+            },
+            "title": {
+                "type": "text",          # Use 'text' for fields you might want to search lexically.
+                "role": "metadata",
+                "filterable": true,
+                "searchable": "lexical"  # Set to 'lexical' to enable keyword search on this field.
+            },
+            "creation_date": {
+                "type": "timestamp",     # Use 'timestamp' for date/time fields.
+                "role": "date",          # Identifies this as the primary date field for range filters.
+                "filterable": true,
+                "sortable": true        # Set to true if you want to sort results by this date.
+            },
+            "numeric_value": {
+                "type": "float",       # Or 'integer'.
+                "role": "metadata",      # Or 'content_attribute' if derived from content.
+                "filterable": true,
+                "sortable": true
+            },
+            "is_published": {
+                "type": "boolean",
+                "role": "metadata",
+                "filterable": true
+            },
+
+            # --- Marqo Internal ---
+            # Marqo uses _id internally. Include if needed for specific filters.
+            "_id": {"type": "keyword", "role": "internal"}
+        },
+        
+        # --- Schema-Level Definitions ---
+        # Explicitly name the primary tensor field used for semantic search.
+        "tensor_field": "text_embedding",
+        # Name the field containing the main text content to display.
+        "default_content_field": "main_content",
+        # Name the field used for date range filtering (must have role: "date").
+        "default_date_field": "creation_date"
+    }
+} 

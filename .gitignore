@@ -193,3 +193,4 @@ regenerate_markdown_progress.json.bak
 storage/tournaments/
 cache/cache.pkl
 cache/disk_cache/cache.db
+marqo_index_config.json

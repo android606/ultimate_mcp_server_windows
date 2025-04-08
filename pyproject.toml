@@ -69,6 +69,7 @@ dependencies = [
     "pydantic-settings",
     "jsonschema",
     "matplotlib",
+    "marqo", # Added for Marqo search tool
 ]
 
 [project.optional-dependencies]

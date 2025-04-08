@@ -273,6 +273,184 @@ print(f"Workflow completed in {results['processing_time']:.2f}s")
 print(f"Total cost: ${results['total_cost']:.6f}")
 ```
 
+### Document Chunking
+
+To break a large document into smaller, manageable chunks:
+
+```python
+large_document = "... your very large document content ..."
+
+chunking_response = await client.tools.chunk_document(
+    document=large_document,
+    chunk_size=500,     # Target size in tokens
+    overlap=50,         # Token overlap between chunks
+    method="semantic"   # Or "token", "structural"
+)
+
+if chunking_response["success"]:
+    print(f"Document divided into {chunking_response['chunk_count']} chunks.")
+    # chunking_response['chunks'] contains the list of text chunks
+else:
+    print(f"Error: {chunking_response['error']}")
+```
+
+### Multi-Provider Completion
+
+To get completions for the same prompt from multiple providers/models simultaneously for comparison:
+
+```python
+multi_response = await client.tools.multi_completion(
+    prompt="What are the main benefits of using the MCP protocol?",
+    providers=[
+        {"provider": "openai", "model": "gpt-4o-mini"},
+        {"provider": "anthropic", "model": "claude-3-haiku-20240307"},
+        {"provider": "gemini", "model": "gemini-2.0-flash-lite"}
+    ],
+    temperature=0.5
+)
+
+if multi_response["success"]:
+    print("Multi-completion results:")
+    for provider_key, result in multi_response["results"].items():
+        if result["success"]:
+            print(f"--- {provider_key} ---")
+            print(f"Completion: {result['completion']}")
+            print(f"Cost: ${result['cost']:.6f}")
+        else:
+            print(f"--- {provider_key} Error: {result['error']} ---")
+else:
+    print(f"Multi-completion failed: {multi_response['error']}")
+```
+
+### Structured Data Extraction (JSON)
+
+To extract information from text into a specific JSON schema:
+
+```python
+text_with_data = "User John Doe (john.doe@example.com) created an account on 2024-07-15. His user ID is 12345."
+
+desired_schema = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "email": {"type": "string", "format": "email"},
+        "creation_date": {"type": "string", "format": "date"},
+        "user_id": {"type": "integer"}
+    },
+    "required": ["name", "email", "creation_date", "user_id"]
+}
+
+json_response = await client.tools.extract_json(
+    document=text_with_data,
+    json_schema=desired_schema,
+    provider="openai", # Choose a provider capable of structured extraction
+    model="gpt-4o-mini"
+)
+
+if json_response["success"]:
+    print(f"Extracted JSON: {json_response['json_data']}")
+    print(f"Cost: ${json_response['cost']:.6f}")
+else:
+    print(f"Error: {json_response['error']}")
+```
+
+### Retrieval-Augmented Generation (RAG) Query
+
+To ask a question using RAG, where the system retrieves relevant context before generating an answer (assuming relevant documents have been indexed):
+
+```python
+rag_response = await client.tools.rag_query( # Assuming a tool name like rag_query
+    query="What were the key findings in the latest financial report?",
+    # Parameters to control retrieval, e.g.:
+    # index_name="financial_reports",
+    # top_k=3, 
+    provider="anthropic",
+    model="claude-3-haiku-20240307" # Model to generate the answer based on context
+)
+
+if rag_response["success"]:
+    print(f"RAG Answer:\n{rag_response['answer']}")
+    # Potentially include retrieved sources: rag_response['sources']
+    print(f"Cost: ${rag_response['cost']:.6f}")
+else:
+    print(f"Error: {rag_response['error']}")
+```
+
+### Fused Search (Keyword + Semantic)
+
+To perform a hybrid search combining keyword relevance and semantic similarity using Marqo:
+
+```python
+fused_search_response = await client.tools.fused_search( # Assuming a tool name like fused_search
+    query="impact of AI on software development productivity",
+    # Parameters for Marqo index and tuning:
+    # index_name="tech_articles",
+    # keyword_weight=0.3, # Weight for keyword score (0.0 to 1.0)
+    # semantic_weight=0.7, # Weight for semantic score (0.0 to 1.0)
+    # top_n=5,
+    # filter_string="year > 2023"
+)
+
+if fused_search_response["success"]:
+    print(f"Fused Search Results ({len(fused_search_response['results'])} hits):")
+    for hit in fused_search_response["results"]:
+        print(f" - Score: {hit['_score']:.4f}, ID: {hit['_id']}, Content: {hit.get('text', '')[:100]}...")
+else:
+    print(f"Error: {fused_search_response['error']}")
+```
+
+### Local Text Processing
+
+To perform local, offline text operations without calling an LLM API:
+
+```python
+# Assuming a tool that bundles local text functions
+local_process_response = await client.tools.process_local_text( 
+    text="  Extra   spaces   and\nnewlines\t here.  ",
+    operations=[
+        {"action": "trim_whitespace"},
+        {"action": "normalize_newlines"},
+        {"action": "lowercase"}
+    ]
+)
+
+if local_process_response["success"]:
+    print(f"Processed Text: '{local_process_response['processed_text']}'")
+else:
+    print(f"Error: {local_process_response['error']}")
+```
+
+### Running a Model Tournament
+
+To compare the outputs of multiple models on a specific task (e.g., code generation):
+
+```python
+# Assuming a tournament tool
+tournament_response = await client.tools.run_model_tournament(
+    task_type="code_generation",
+    prompt="Write a Python function to calculate the factorial of a number.",
+    competitors=[
+        {"provider": "openai", "model": "gpt-4o-mini"},
+        {"provider": "anthropic", "model": "claude-3-opus-20240229"}, # Higher-end model for comparison
+        {"provider": "deepseek", "model": "deepseek-coder"}
+    ],
+    evaluation_criteria=["correctness", "efficiency", "readability"],
+    # Optional: ground_truth="def factorial(n): ..." 
+)
+
+if tournament_response["success"]:
+    print("Tournament Results:")
+    # tournament_response['results'] would contain rankings, scores, outputs
+    for rank, result in enumerate(tournament_response.get("ranking", [])):
+        print(f"  {rank+1}. {result['provider']}/{result['model']} - Score: {result['score']:.2f}")
+    print(f"Total Cost: ${tournament_response['total_cost']:.6f}")
+else:
+    print(f"Error: {tournament_response['error']}")
+
+```
+
+*(More tool examples can be added here...)*
+
 ## Getting Started
 
 ### Installation
@@ -326,6 +504,91 @@ docker compose up
 ```
 
 Once running, the server will be available at `http://localhost:8013`.
+
+## Advanced Configuration
+
+While the `.env` file is convenient for basic setup, the LLM Gateway offers more detailed configuration options primarily managed through environment variables.
+
+### Server Configuration
+
+- `SERVER_HOST`: (Default: `127.0.0.1`) The network interface the server listens on. Use `0.0.0.0` to listen on all interfaces (necessary for Docker or external access).
+- `SERVER_PORT`: (Default: `8013`) The port the server listens on.
+- `API_PREFIX`: (Default: `/`) The URL prefix for the API endpoints.
+
+### Logging Configuration
+
+- `LOG_LEVEL`: (Default: `INFO`) Controls the verbosity of logs. Options: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`.
+- `USE_RICH_LOGGING`: (Default: `true`) Use Rich library for colorful, formatted console logs. Set to `false` for plain text logs (better for file redirection or some log aggregation systems).
+- `LOG_FORMAT`: (Optional) Specify a custom log format string.
+- `LOG_TO_FILE`: (Optional, e.g., `gateway.log`) Path to a file where logs should also be written.
+
+### Cache Configuration
+
+- `CACHE_ENABLED`: (Default: `true`) Enable or disable caching globally.
+- `CACHE_TTL`: (Default: `86400` seconds, i.e., 24 hours) Default Time-To-Live for cached items. Specific tools might override this.
+- `CACHE_TYPE`: (Default: `memory`) The type of cache backend. Options might include `memory`, `redis`, `diskcache`. (*Note: Check current implementation for supported types*).
+- `CACHE_MAX_SIZE`: (Optional) Maximum number of items or memory size for the cache.
+- `REDIS_URL`: (Required if `CACHE_TYPE=redis`) Connection URL for the Redis cache server (e.g., `redis://localhost:6379/0`).
+
+### Provider Timeouts & Retries
+
+- `PROVIDER_TIMEOUT`: (Default: `120` seconds) Default timeout for requests to LLM provider APIs.
+- `PROVIDER_MAX_RETRIES`: (Default: `3`) Default number of retries for failed provider requests (e.g., due to temporary network issues or rate limits).
+- Specific provider timeouts/retries might be configurable via dedicated variables like `OPENAI_TIMEOUT`, `ANTHROPIC_MAX_RETRIES`, etc. (*Note: Check current implementation*).
+
+### Tool-Specific Configuration
+
+- Some tools might have their own specific environment variables for configuration (e.g., `MARQO_URL` for fused search, default chunking parameters). Refer to the documentation or source code of individual tools.
+
+*Always ensure your environment variables are set correctly before starting the server. Changes often require a server restart.* 
+
+## Deployment Considerations
+
+While running the server directly with `python` or `docker compose up` is suitable for development and testing, consider the following for more robust or production deployments:
+
+### 1. Running as a Background Service
+
+To ensure the gateway runs continuously and restarts automatically on failure or server reboot, use a process manager:
+
+- **`systemd` (Linux):** Create a service unit file (e.g., `/etc/systemd/system/llm-gateway.service`) to manage the process. This allows commands like `sudo systemctl start|stop|restart|status llm-gateway`.
+- **`supervisor`:** A popular process control system written in Python. Configure `supervisord` to monitor and control the gateway process.
+- **Docker Restart Policies:** If using Docker (standalone or Compose), configure appropriate restart policies (e.g., `unless-stopped` or `always`) in your `docker run` command or `docker-compose.yml` file.
+
+### 2. Using a Reverse Proxy (Nginx/Caddy/Apache)
+
+Placing a reverse proxy in front of the LLM Gateway is highly recommended:
+
+- **HTTPS/SSL Termination:** The proxy can handle SSL certificates (e.g., using Let's Encrypt with Caddy or Certbot with Nginx/Apache), encrypting traffic between clients and the proxy.
+- **Load Balancing:** If you need to run multiple instances of the gateway for high availability or performance, the proxy can distribute traffic among them.
+- **Path Routing:** Map external paths (e.g., `https://api.yourdomain.com/llm-gateway/`) to the internal gateway server (`http://localhost:8013`).
+- **Security Headers:** Add important security headers (like CSP, HSTS).
+- **Buffering/Caching:** Some proxies offer additional request/response buffering or caching capabilities.
+
+*Example Nginx `location` block (simplified):*
+```nginx
+location /llm-gateway/ {
+    proxy_pass http://127.0.0.1:8013/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # Add configurations for timeouts, buffering, etc.
+}
+```
+
+### 3. Container Orchestration (Kubernetes/Swarm)
+
+If deploying in a containerized environment:
+
+- **Health Checks:** Implement and configure health check endpoints (e.g., the `/healthz` mentioned earlier) in your deployment manifests so the orchestrator can monitor the service's health.
+- **Configuration:** Use ConfigMaps and Secrets (Kubernetes) or equivalent mechanisms to manage environment variables and API keys securely, rather than hardcoding them in images or relying solely on `.env` files.
+- **Resource Limits:** Define appropriate CPU and memory requests/limits for the gateway container to ensure stable performance and prevent resource starvation.
+- **Service Discovery:** Utilize the orchestrator's service discovery mechanisms instead of hardcoding IP addresses or hostnames.
+
+### 4. Resource Allocation
+
+- Ensure the host machine or container has sufficient **RAM**, especially if using in-memory caching or processing large documents/requests.
+- Monitor **CPU usage**, particularly under heavy load or when multiple complex operations run concurrently.
 
 ## Cost Savings With Delegation
 
@@ -429,6 +692,11 @@ This ensures seamless integration with Claude and other MCP-compatible agents.
 │  │     Tools     │  │  Extraction   │  │  Coordination │        │
 │  └───────────────┘  └───────────────┘  └───────────────┘        │
 │                                                                 │
+│  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐        │
+│  │   RAG Tools   │  │ Local Text    │  │  Meta Tools   │        │
+│  │               │  │    Tools      │  │               │        │
+│  └───────────────┘  └───────────────┘  └───────────────┘        │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -521,6 +789,36 @@ When Claude delegates a task to LLM Gateway:
   - Configurable similarity thresholds
   - Fast vector operations
 
+- **Advanced Fused Search (Marqo)**:
+  - Leverages Marqo for combined keyword and semantic search
+  - Tunable weighting between keyword and vector relevance
+  - Supports complex filtering and faceting
+
+### Retrieval-Augmented Generation (RAG)
+
+- **Contextual Generation**:
+  - Augments LLM prompts with relevant retrieved information
+  - Improves factual accuracy and reduces hallucinations
+  - Integrates with vector search and document stores
+
+- **Workflow Integration**:
+  - Seamlessly combine document retrieval with generation tasks
+  - Customizable retrieval and generation strategies
+
+### Local Text Processing
+
+- **Offline Operations**:
+  - Provides tools for text manipulation that run locally, without API calls
+  - Includes functions for cleaning, formatting, and basic analysis
+  - Useful for pre-processing text before sending to LLMs or post-processing results
+
+### Meta Operations
+
+- **Introspection and Management**:
+  - Tools for querying server capabilities and status
+  - May include functions for managing configurations or tool settings dynamically
+  - Facilitates more complex agent interactions and self-management
+
 ### System Features
 
 - **Rich Logging**:
@@ -545,6 +843,131 @@ When Claude delegates a task to LLM Gateway:
   - Direct tool invocation from command line
   - Configuration management
   - Cache and server status inspection
+
+## Tool Usage Examples
+
+This section provides examples of how an MCP client (like Claude 3.7) would invoke specific tools provided by the LLM Gateway. These examples assume you have an initialized `mcp.client.Client` instance named `client` connected to the gateway.
+
+### Basic Completion
+
+To get a simple text completion from a chosen provider:
+
+```python
+response = await client.tools.completion(
+    prompt="Write a short poem about a robot learning to dream.",
+    provider="openai",  # Or "anthropic", "gemini", "deepseek"
+    model="gpt-4o-mini", # Specify the desired model
+    max_tokens=100,
+    temperature=0.7
+)
+
+if response["success"]:
+    print(f"Completion: {response['completion']}")
+    print(f"Cost: ${response['cost']:.6f}")
+else:
+    print(f"Error: {response['error']}")
+```
+
+### Document Summarization
+
+To summarize a piece of text, potentially delegating to a cost-effective model:
+
+```python
+document_text = "... your long document content here ..."
+
+summary_response = await client.tools.summarize_document(
+    document=document_text,
+    provider="gemini",
+    model="gemini-2.0-flash-lite", # Using a cheaper model for summarization
+    format="bullet_points", # Options: "paragraph", "bullet_points"
+    max_length=150 # Target summary length in tokens (approximate)
+)
+
+if summary_response["success"]:
+    print(f"Summary:\n{summary_response['summary']}")
+    print(f"Cost: ${summary_response['cost']:.6f}")
+else:
+    print(f"Error: {summary_response['error']}")
+```
+
+### Entity Extraction
+
+To extract specific types of entities from text:
+
+```python
+text_to_analyze = "Apple Inc. announced its quarterly earnings on May 5th, 2024, reporting strong iPhone sales from its headquarters in Cupertino."
+
+entity_response = await client.tools.extract_entities(
+    document=text_to_analyze,
+    entity_types=["organization", "date", "product", "location"],
+    provider="openai",
+    model="gpt-4o-mini"
+)
+
+if entity_response["success"]:
+    print(f"Extracted Entities: {entity_response['entities']}")
+    print(f"Cost: ${entity_response['cost']:.6f}")
+else:
+    print(f"Error: {entity_response['error']}")
+```
+
+### Executing an Optimized Workflow
+
+To run a multi-step workflow where the gateway optimizes model selection for each step:
+
+```python
+doc_content = "... content for workflow processing ..."
+
+workflow_definition = [
+    {
+        "name": "Summarize",
+        "operation": "summarize_document",
+        "provider_preference": "cost", # Prioritize cheaper models
+        "params": {"format": "paragraph"},
+        "input_from": "original",
+        "output_as": "step1_summary"
+    },
+    {
+        "name": "ExtractKeywords",
+        "operation": "extract_keywords", # Assuming an extract_keywords tool exists
+        "provider_preference": "speed",
+        "params": {"count": 5},
+        "input_from": "step1_summary",
+        "output_as": "step2_keywords"
+    }
+]
+
+workflow_response = await client.tools.execute_optimized_workflow(
+    documents=[doc_content],
+    workflow=workflow_definition
+)
+
+if workflow_response["success"]:
+    print("Workflow executed successfully.")
+    print(f"Results: {workflow_response['results']}") # Contains outputs like step1_summary, step2_keywords
+    print(f"Total Cost: ${workflow_response['total_cost']:.6f}")
+    print(f"Processing Time: {workflow_response['processing_time']:.2f}s")
+else:
+    print(f"Workflow Error: {workflow_response['error']}")
+```
+
+### Listing Available Tools (Meta Tool)
+
+To dynamically discover the tools currently registered and available on the gateway:
+
+```python
+# Assuming a meta-tool for listing capabilities
+list_tools_response = await client.tools.list_tools()
+
+if list_tools_response["success"]:
+    print("Available Tools:")
+    for tool_name, tool_info in list_tools_response["tools"].items():
+        print(f"- {tool_name}: {tool_info.get('description', 'No description')}")
+        # You might also get parameters, etc.
+else:
+    print(f"Error listing tools: {list_tools_response['error']}")
+
+```
 
 ## Real-World Use Cases
 
@@ -583,6 +1006,38 @@ Organizations can use the tournament features to:
 - Generate quantitative performance metrics
 - Make data-driven decisions on model selection
 - Build custom model evaluation frameworks
+
+## Security Considerations
+
+When deploying and operating the LLM Gateway, consider the following security aspects:
+
+1.  **API Key Management:**
+    *   **Never hardcode API keys** in your source code.
+    *   Use environment variables (`.env` file for local development, system environment variables, or secrets management tools like HashiCorp Vault, AWS Secrets Manager, GCP Secret Manager for production).
+    *   Ensure the `.env` file (if used) has strict file permissions (readable only by the user running the gateway).
+    *   Rotate keys periodically and revoke any suspected compromised keys immediately.
+
+2.  **Network Exposure & Access Control:**
+    *   By default, the server binds to `127.0.0.1`, only allowing local connections. Only change `SERVER_HOST` to `0.0.0.0` if you intend to expose it externally, and ensure proper controls are in place.
+    *   **Use a reverse proxy** (Nginx, Caddy, etc.) to handle incoming connections. This allows you to manage TLS/SSL encryption, apply access controls (e.g., IP allow-listing), and potentially add gateway-level authentication.
+    *   Employ **firewall rules** on the host machine or network to restrict access to the `SERVER_PORT` only from trusted sources (like the reverse proxy or specific internal clients).
+
+3.  **Authentication & Authorization:**
+    *   The gateway itself may not have built-in user authentication. Access control typically relies on network security (firewalls, VPNs) and potentially authentication handled by a reverse proxy (e.g., Basic Auth, OAuth2 proxy).
+    *   Ensure that only authorized clients (like your trusted AI agents or applications) can reach the gateway endpoint.
+
+4.  **Rate Limiting & Abuse Prevention:**
+    *   Implement **rate limiting** at the reverse proxy level or using dedicated middleware to prevent denial-of-service attacks or excessive API usage (which can incur high costs).
+
+5.  **Input Validation:**
+    *   While LLM inputs are generally text, be mindful if any tools interpret inputs in ways that could lead to vulnerabilities (e.g., if a tool were to execute code based on input). Sanitize or validate inputs where appropriate for the specific tool's function.
+
+6.  **Dependency Security:**
+    *   Regularly update dependencies (`uv pip install --upgrade ...` or similar) to patch known vulnerabilities in third-party libraries.
+    *   Consider using security scanning tools (like `pip-audit` or GitHub Dependabot alerts) to identify vulnerable dependencies.
+
+7.  **Logging:**
+    *   Be aware that `DEBUG` level logging might log full prompts and responses, potentially including sensitive information. Configure `LOG_LEVEL` appropriately for your environment and ensure log files have proper permissions.
 
 ## License
 

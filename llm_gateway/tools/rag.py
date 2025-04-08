@@ -7,7 +7,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 # Import specific exceptions for better error handling hints
-from llm_gateway.exceptions import KnowledgeBaseError, ProviderError, ToolInputError
+from llm_gateway.exceptions import ProviderError, ResourceError, ToolInputError
 
 # Moved imports for services to the top level
 from llm_gateway.services import (
@@ -92,8 +92,8 @@ async def create_knowledge_base(
         }
 
     Raises:
-        KnowledgeBaseError: If the knowledge base already exists (and overwrite=False) or
-                            if there's an issue during creation (e.g., invalid name).
+        ResourceError: If the knowledge base already exists (and overwrite=False) or
+                        if there's an issue during creation (e.g., invalid name).
         ToolInputError: If the provided name is invalid.
     """
     # Input validation (basic example)
@@ -112,9 +112,9 @@ async def create_knowledge_base(
     except Exception as e:
         logger.error(f"Failed to create knowledge base '{name}': {e}", exc_info=True)
         # Re-raise specific error if possible, otherwise wrap
-        if isinstance(e, (KnowledgeBaseError, ToolInputError)): 
+        if isinstance(e, (ResourceError, ToolInputError)): 
             raise
-        raise KnowledgeBaseError(f"Failed to create knowledge base '{name}': {str(e)}", kb_name=name, cause=e) from e
+        raise ResourceError(f"Failed to create knowledge base '{name}': {str(e)}", resource_type="knowledge_base", resource_id=name, cause=e) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -142,7 +142,7 @@ async def list_knowledge_bases() -> Dict[str, Any]:
             "error": "Failed to retrieve knowledge base list."
         }
     Raises:
-        KnowledgeBaseError: If there's an issue retrieving the list from the backend.
+        ResourceError: If there's an issue retrieving the list from the backend.
     """
     kb_manager = _get_kb_manager()
     try:
@@ -150,7 +150,7 @@ async def list_knowledge_bases() -> Dict[str, Any]:
         return result
     except Exception as e:
         logger.error(f"Failed to list knowledge bases: {e}", exc_info=True)
-        raise KnowledgeBaseError(f"Failed to list knowledge bases: {str(e)}", cause=e) from e
+        raise ResourceError(f"Failed to list knowledge bases: {str(e)}", resource_type="knowledge_base", cause=e) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -177,7 +177,7 @@ async def delete_knowledge_base(name: str) -> Dict[str, Any]:
         }
 
     Raises:
-        KnowledgeBaseError: If the knowledge base doesn't exist or if deletion fails.
+        ResourceError: If the knowledge base doesn't exist or if deletion fails.
         ToolInputError: If the provided name is invalid.
     """
     if not name:
@@ -189,9 +189,9 @@ async def delete_knowledge_base(name: str) -> Dict[str, Any]:
         return result
     except Exception as e:
         logger.error(f"Failed to delete knowledge base '{name}': {e}", exc_info=True)
-        if isinstance(e, (KnowledgeBaseError, ToolInputError)): 
+        if isinstance(e, (ResourceError, ToolInputError)): 
             raise
-        raise KnowledgeBaseError(f"Failed to delete knowledge base '{name}': {str(e)}", kb_name=name, cause=e) from e
+        raise ResourceError(f"Failed to delete knowledge base '{name}': {str(e)}", resource_type="knowledge_base", resource_id=name, cause=e) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -246,8 +246,9 @@ async def add_documents(
         }
 
     Raises:
-        KnowledgeBaseError: If the knowledge base doesn't exist or if there's an error during processing/storage.
+        ResourceError: If the knowledge base doesn't exist or if there's an error during processing/storage.
         ToolInputError: If inputs are invalid (e.g., documents/metadatas length mismatch, invalid chunk_method).
+        ProviderError: If the LLM provider fails during generation.
     """
     if not knowledge_base_name:
         raise ToolInputError("Knowledge base name cannot be empty.")
@@ -272,9 +273,9 @@ async def add_documents(
         return result
     except Exception as e:
         logger.error(f"Failed to add documents to knowledge base '{knowledge_base_name}': {e}", exc_info=True)
-        if isinstance(e, (KnowledgeBaseError, ToolInputError)): 
+        if isinstance(e, (ResourceError, ToolInputError, ProviderError)):
             raise
-        raise KnowledgeBaseError(f"Failed to add documents to '{knowledge_base_name}': {str(e)}", kb_name=knowledge_base_name, cause=e) from e
+        raise ResourceError(f"Failed to add documents to knowledge base '{knowledge_base_name}': {str(e)}", resource_type="knowledge_base", resource_id=knowledge_base_name, cause=e) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -330,7 +331,7 @@ async def retrieve_context(
         }
 
     Raises:
-        KnowledgeBaseError: If the knowledge base doesn't exist or retrieval fails.
+        ResourceError: If the knowledge base doesn't exist or retrieval fails.
         ToolInputError: If inputs are invalid (e.g., invalid retrieval_method).
     """
     if not knowledge_base_name:
@@ -368,10 +369,10 @@ async def retrieve_context(
             )
         return result
     except Exception as e:
-        logger.error(f"Failed to retrieve context from '{knowledge_base_name}': {e}", exc_info=True)
-        if isinstance(e, (KnowledgeBaseError, ToolInputError)): 
+        logger.error(f"Failed to retrieve context from knowledge base '{knowledge_base_name}' for query '{query}': {e}", exc_info=True)
+        if isinstance(e, (ResourceError, ToolInputError)):
             raise
-        raise KnowledgeBaseError(f"Failed to retrieve context from '{knowledge_base_name}': {str(e)}", kb_name=knowledge_base_name, cause=e) from e
+        raise ResourceError(f"Failed to retrieve context from knowledge base '{knowledge_base_name}': {str(e)}", resource_type="knowledge_base", resource_id=knowledge_base_name, cause=e) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -446,7 +447,7 @@ async def generate_with_rag(
         }
 
     Raises:
-        KnowledgeBaseError: If the knowledge base doesn't exist or retrieval fails.
+        ResourceError: If the knowledge base doesn't exist or retrieval fails.
         ProviderError: If the LLM provider fails during generation.
         ToolInputError: If inputs are invalid.
     """
@@ -473,7 +474,7 @@ async def generate_with_rag(
         return result
     except Exception as e:
         logger.error(f"RAG generation failed for query on '{knowledge_base_name}': {e}", exc_info=True)
-        if isinstance(e, (KnowledgeBaseError, ProviderError, ToolInputError)): 
+        if isinstance(e, (ResourceError, ProviderError, ToolInputError)): 
             raise
         # Wrap generic errors
-        raise KnowledgeBaseError(f"RAG generation failed: {str(e)}", kb_name=knowledge_base_name, cause=e) from e 
+        raise ResourceError(f"RAG generation failed: {str(e)}", resource_type="knowledge_base", resource_id=knowledge_base_name, cause=e) from e 
