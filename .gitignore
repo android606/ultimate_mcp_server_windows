@@ -194,3 +194,4 @@ storage/tournaments/
 cache/cache.pkl
 cache/disk_cache/cache.db
 marqo_index_config.json
+marqo_docstring_cache.json

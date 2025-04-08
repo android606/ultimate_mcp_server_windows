@@ -10,6 +10,8 @@ import httpx  # Add import for httpx
 import marqo
 from pydantic import BaseModel, Field, field_validator
 
+from llm_gateway.clients import CompletionClient
+from llm_gateway.constants import Provider
 from llm_gateway.exceptions import ToolExecutionError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
@@ -63,6 +65,118 @@ MARQO_CONFIG = load_marqo_config()
 DEFAULT_MARQO_URL = MARQO_CONFIG.get("default_marqo_url", "http://localhost:8882")
 DEFAULT_INDEX_NAME = MARQO_CONFIG.get("default_index_name", "my_marqo_index") # Use generic default
 DEFAULT_INDEX_SCHEMA = MARQO_CONFIG.get("default_schema", {})
+
+# --- Define cache file path relative to config file ---
+CACHE_FILE_DIR = os.path.dirname(CONFIG_FILE_PATH)
+CACHE_FILE_PATH = os.path.join(CACHE_FILE_DIR, "marqo_docstring_cache.json")
+
+# --- LLM Client for Doc Generation ---
+
+async def _call_llm_for_doc_generation(prompt: str) -> Optional[str]:
+    """Calls the LLM Gateway CompletionClient to generate documentation based on the prompt."""
+    try:
+        # Instantiate the client - assumes necessary env vars/config are set for the gateway
+        client = CompletionClient()
+
+        logger.info("Calling LLM to generate dynamic docstring augmentation...")
+        # Use generate_completion (can also use try_providers if preferred)
+        result = await client.generate_completion(
+            prompt=prompt,
+            provider=Provider.GEMINI.value, # Prioritize Gemini, adjust if needed
+            temperature=0.3, # Lower temperature for more factual/consistent doc generation
+            max_tokens=400, # Allow sufficient length for the documentation section
+            use_cache=True # Cache the generated doc string for a given config
+        )
+
+        # --- FIX: Check for successful result (no exception) and non-empty text --- 
+        # if result.error is None and result.text:
+        if result and result.text: # Exception handled by the outer try/except
+            logger.success(f"Successfully generated doc augmentation via {result.provider}. Length: {len(result.text)}")
+            return result.text.strip()
+        else:
+            # This case might be less likely if exceptions are used for errors, 
+            # but handles cases where generation succeeds but returns empty text or None result unexpectedly.
+            provider_name = result.provider if result else "Unknown"
+            logger.error(f"LLM call for doc generation succeeded but returned no text. Provider: {provider_name}")
+            return None
+
+    except Exception as e:
+        logger.error(f"Error during LLM call for doc generation: {e}", exc_info=True)
+        return None
+
+
+# --- Docstring Augmentation Generation ---
+
+async def _generate_docstring_augmentation_from_config(config: Dict[str, Any]) -> str:
+    """Generates dynamic documentation augmentation by calling an LLM with the config."""
+    augmentation = ""
+    try:
+        index_name = config.get("default_index_name", "(Not specified)")
+        schema = config.get("default_schema", {})
+        schema_fields = schema.get("fields", {})
+        date_field = schema.get("default_date_field")
+
+        # Basic check: Don't call LLM for clearly minimal/default schemas
+        if index_name == "my_marqo_index" and len(schema_fields) <= 3: # Heuristic
+             logger.info("Skipping LLM doc generation for minimal default config.")
+             return ""
+
+        # Format schema fields for the prompt
+        formatted_schema = []
+        for name, props in schema_fields.items():
+            details = [f"type: {props.get('type')}"]
+            if props.get("role"): 
+                details.append(f"role: {props.get('role')}")
+            if props.get("filterable"): 
+                details.append("filterable")
+            if props.get("sortable"): 
+                details.append("sortable")
+            if props.get("searchable"): 
+                details.append(f"searchable: {props.get('searchable')}")
+            formatted_schema.append(f"  - {name}: ({', '.join(details)})")
+        schema_str = "\n".join(formatted_schema)
+
+        # Construct the prompt for the LLM
+        prompt = f"""
+        Analyze the following Marqo index configuration and generate a concise markdown documentation section for a search tool using this index. Your goal is to help a user understand what kind of data they can search and how to use the tool effectively.
+
+        Instructions:
+        1.  **Infer Domain:** Based *only* on the index name and field names/types/roles, what is the likely subject matter or domain of the documents in this index (e.g., financial reports, product catalogs, medical articles, general documents)? State this clearly.
+        2.  **Purpose:** Briefly explain the primary purpose of using a search tool with this index.
+        3.  **Keywords:** Suggest 3-5 relevant keywords a user might include in their search queries for this specific index.
+        4.  **Example Queries:** Provide 1-2 diverse example queries demonstrating typical use cases.
+        5.  **Filtering:** Explain how the 'filters' parameter can be used, mentioning 1-2 specific filterable fields from the schema with examples (e.g., `filters={{"field_name": "value"}}`).
+        6.  **Date Filtering:** If a default date field is specified (`{date_field}`), mention that the `date_range` parameter can be used with it.
+        7.  **Format:** Output *only* the generated markdown section, starting with `---` and `**Configuration-Specific Notes:**`.
+
+        Configuration Details:
+        ----------------------
+        Index Name: {index_name}
+        Default Date Field: {date_field or 'Not specified'}
+
+        Schema Fields:
+        {schema_str}
+        ----------------------
+
+        Generated Documentation Section (Markdown):
+        """
+
+        logger.info(f"Attempting to generate docstring augmentation via LLM for index: {index_name}")
+        logger.debug(f"LLM Prompt for doc generation:\n{prompt}")
+
+        # Call the LLM
+        generated_text = await _call_llm_for_doc_generation(prompt)
+
+        if generated_text:
+            augmentation = "\n\n" + generated_text # Add separators
+        else:
+            logger.warning("LLM call failed or returned no content. No dynamic augmentation added.")
+
+    except Exception as e:
+        logger.error(f"Error preparing data or prompt for LLM doc generation: {e}", exc_info=True)
+
+    return augmentation
+
 
 # --- Health Check ---
 
@@ -318,7 +432,7 @@ async def marqo_fused_search(
         - `limit`, `offset`, `processing_time_ms`, `query`: Search metadata.
         - `error`: Error message string if the search failed.
         - `success`: Boolean indicating success or failure.
-        Example Successful Return:
+    Example Successful Return:
         `{
             "results": [
                 {
@@ -534,11 +648,122 @@ async def marqo_fused_search(
 
     return final_response.dict()
 
+
+# --- Dynamically Augment Docstring ---
+# Logic to generate and apply dynamic documentation based on MARQO_CONFIG via LLM call.
+
+_docstring_augmentation_result: Optional[str] = None # Store the generated string
+_docstring_generation_done: bool = False # Flag to ensure generation/loading happens only once
+
+async def trigger_dynamic_docstring_generation():
+    """Runs the generation process, checking cache first. Should be called once from the main async context."""
+    global _docstring_augmentation_result, _docstring_generation_done
+    if _docstring_generation_done:
+        return # Already done
+
+    logger.info("Checking cache and potentially triggering dynamic docstring generation...")
+    cached_data = None
+    current_config_mtime = 0.0
+
+    # 1. Get config file modification time
+    try:
+        if os.path.exists(CONFIG_FILE_PATH):
+             current_config_mtime = os.path.getmtime(CONFIG_FILE_PATH)
+        else:
+             logger.warning(f"Marqo config file not found at {CONFIG_FILE_PATH} for mtime check.")
+    except Exception as e:
+        logger.error(f"Error getting modification time for {CONFIG_FILE_PATH}: {e}", exc_info=True)
+
+    # 2. Try to load cache
+    try:
+        if os.path.exists(CACHE_FILE_PATH):
+            with open(CACHE_FILE_PATH, 'r') as f:
+                cached_data = json.load(f)
+                logger.info(f"Loaded docstring augmentation cache from {CACHE_FILE_PATH}")
+    except Exception as e:
+        logger.warning(f"Could not load or parse cache file {CACHE_FILE_PATH}: {e}. Will regenerate.", exc_info=True)
+        cached_data = None # Ensure regeneration if cache is corrupt
+
+    # 3. Check cache validity
+    if (
+        cached_data and
+        isinstance(cached_data, dict) and
+        "timestamp" in cached_data and
+        "augmentation" in cached_data and
+        current_config_mtime > 0 and # Ensure we got a valid mtime for the config
+        abs(cached_data["timestamp"] - current_config_mtime) < 1e-6 # Compare timestamps (allowing for float precision)
+    ):
+        logger.info("Cache is valid. Using cached docstring augmentation.")
+        _docstring_augmentation_result = cached_data["augmentation"]
+    else:
+        logger.info("Cache invalid, missing, or config file updated. Regenerating docstring augmentation via LLM...")
+        # Call the async function that constructs prompt and calls LLM
+        generated_augmentation = await _generate_docstring_augmentation_from_config(MARQO_CONFIG)
+
+        if generated_augmentation:
+             _docstring_augmentation_result = generated_augmentation
+             # Save to cache if successful
+             try:
+                 cache_content = {
+                     "timestamp": current_config_mtime,
+                     "augmentation": _docstring_augmentation_result
+                 }
+                 with open(CACHE_FILE_PATH, 'w') as f:
+                     json.dump(cache_content, f, indent=2)
+                 logger.info(f"Saved new docstring augmentation to cache: {CACHE_FILE_PATH}")
+             except Exception as e:
+                 logger.error(f"Failed to save docstring augmentation to cache file {CACHE_FILE_PATH}: {e}", exc_info=True)
+        else:
+             _docstring_augmentation_result = "" # Ensure it's a string even if generation fails
+             logger.error("LLM generation failed. Docstring will not be augmented.")
+             # Optional: Consider removing the cache file if generation fails to force retry next time?
+             # try:
+             #     if os.path.exists(CACHE_FILE_PATH):
+             #         os.remove(CACHE_FILE_PATH)
+             # except Exception as e_rem:
+             #     logger.error(f"Failed to remove potentially stale cache file {CACHE_FILE_PATH}: {e_rem}")
+
+    _docstring_generation_done = True
+    logger.info("Dynamic docstring generation/loading process complete.")
+    # Now apply the result (either cached or newly generated)
+    _apply_generated_docstring()
+
+
+def _apply_generated_docstring():
+    """Applies the augmentation result to the actual docstring. Can be called after generation."""
+    global _docstring_augmentation_result
+
+    # Check if augmentation was successful and produced content
+    if _docstring_augmentation_result:
+        if marqo_fused_search.__doc__:
+            base_doc = marqo_fused_search.__doc__.strip()
+            # Avoid appending if already present (simple check)
+            if "Configuration-Specific Notes:" not in base_doc:
+                 marqo_fused_search.__doc__ = base_doc + _docstring_augmentation_result
+                 logger.info(f"Dynamically generated docstring augmentation applied. New length: {len(marqo_fused_search.__doc__)}")
+        else:
+            logger.warning("marqo_fused_search function is missing a base docstring. Augmentation skipped.")
+
+
+# IMPORTANT:
+# The async function `trigger_dynamic_docstring_generation()`
+# must be called from your main application's async setup code
+# (e.g., FastAPI startup event) *before* the tool documentation is needed.
+
+
 # Example usage (for testing locally, if needed)
 async def _run_test():
+    # Example: Ensure dynamic docstring is generated before running the test search
+    # In a real app, this trigger would happen during startup.
+    await trigger_dynamic_docstring_generation()
+    print("--- Current Docstring ---")
+    print(marqo_fused_search.__doc__)
+    print("-----------------------")
+
     test_query = "revenue growth"
     logger.info(f"Running test search with query: '{test_query}'")
     try:
+        # Assuming MARQO_CONFIG points to the financial index for this test
         results = await marqo_fused_search(
             query=test_query,
             limit=5,
@@ -552,6 +777,5 @@ async def _run_test():
         logger.error(f"Test search failed: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    import asyncio  # noqa: F401
-    # asyncio.run(_run_test())
-    pass # Avoid running test automatically when imported 
+    import asyncio
+    asyncio.run(_run_test()) 

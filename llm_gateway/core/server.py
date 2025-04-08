@@ -27,6 +27,9 @@ from llm_gateway.core.tournaments.manager import tournament_manager
 from llm_gateway.utils.logging import logger
 from llm_gateway.utils.logging.logger import get_logger
 
+# --- Import the trigger function ---
+from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
+
 # --- Define Logging Configuration Dictionary ---
 
 LOG_FILE_PATH = "logs/llm_gateway.log"
@@ -232,7 +235,18 @@ class Gateway:
         
         # Initialize providers
         await self._initialize_providers()
-        
+
+        # --- Trigger Dynamic Docstring Generation ---
+        # This should run after config is loaded but before the server is fully ready
+        # It checks cache and potentially calls an LLM.
+        self.logger.info("Initiating dynamic docstring generation for Marqo tool...")
+        try:
+            await trigger_dynamic_docstring_generation()
+            self.logger.info("Dynamic docstring generation/loading complete.")
+        except Exception as e:
+            self.logger.error(f"Error during dynamic docstring generation startup task: {e}", exc_info=True)
+        # ---------------------------------------------
+
         # --- Check Marqo Availability ---
         try:
             self.marqo_available = await check_marqo_availability(DEFAULT_MARQO_URL)
@@ -261,6 +275,8 @@ class Gateway:
         self.logger.info("Lifespan context initialized, MCP server ready to handle requests")
         
         try:
+            await trigger_dynamic_docstring_generation()
+            logger.info("Dynamic docstring generation/loading complete.")
             yield context
         finally:
             # --- Clear the global instance on shutdown --- 
@@ -454,11 +470,6 @@ first and be prepared to adapt to available providers.
         # Register all standard tools using the register_all_tools function
         self.logger.info("Calling register_all_tools to register standalone and class-based tools...")
         register_all_tools(self.mcp)
-        
-        # Register provider-specific tools that aren't part of standard tool classes
-        self._register_provider_tools()
-        self._register_document_tools()
-        self._register_cost_tools()
 
     def _register_marqo_tools(self):
         """Register Marqo search tools if Marqo is available."""
@@ -1545,32 +1556,6 @@ first and be prepared to adapt to available providers.
                 }
             }
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Server lifespan context manager.
-    
-    Args:
-        app: FastAPI application instance
-    """
-    logger.info("Starting LLM Gateway server")
-    
-    try:
-        # Get the global gateway instance - don't recreate it
-        global _gateway_instance
-        if not _gateway_instance:
-            _gateway_instance = Gateway()
-            
-        # Server is ready
-        logger.info("LLM Gateway server ready")
-        
-        yield
-        
-    finally:
-        logger.info("Shutting down LLM Gateway server")
-
-
-from fastapi.responses import Response, RedirectResponse
 
 def create_server() -> FastAPI:
     """Create and configure the FastAPI server."""

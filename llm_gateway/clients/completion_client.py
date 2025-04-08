@@ -1,9 +1,10 @@
 """High-level client for LLM completion operations."""
 
+import asyncio
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
+from llm_gateway.core.providers.base import BaseProvider, get_provider
 from llm_gateway.services.cache import get_cache_service
 from llm_gateway.utils import get_logger
 
@@ -16,28 +17,24 @@ class CompletionClient:
     with support for caching, streaming, and multi-provider operations.
     """
     
-    def __init__(self, default_provider: str = Provider.OPENAI.value):
+    def __init__(self, default_provider: str = Provider.OPENAI.value, use_cache_by_default: bool = True):
         """Initialize the completion client.
         
         Args:
             default_provider: Default provider to use for completions
+            use_cache_by_default: Whether to use cache by default
         """
         self.default_provider = default_provider
         self.cache_service = get_cache_service()
+        self.use_cache_by_default = use_cache_by_default
         
-    async def initialize_provider(self, provider_name: str, api_key: Optional[str] = None):
-        """Initialize a provider for use.
-        
-        Args:
-            provider_name: Name of the provider to initialize
-            api_key: Optional API key (defaults to config system)
-            
-        Returns:
-            Initialized provider
-        """
+    async def initialize_provider(self, provider_name: str, api_key: Optional[str] = None) -> BaseProvider:
+        """Initialize and return a provider instance."""
         try:
-            provider = get_provider(provider_name, api_key=api_key)
-            await provider.initialize()
+            provider = await get_provider(provider_name, api_key=api_key)
+            # Ensure the provider is initialized (some might need async init)
+            if hasattr(provider, 'initialize') and asyncio.iscoroutinefunction(provider.initialize):
+                await provider.initialize()
             return provider
         except Exception as e:
             logger.error(f"Failed to initialize provider {provider_name}: {e}", emoji_key="error")
