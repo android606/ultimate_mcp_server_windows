@@ -377,6 +377,13 @@ async def marqo_fused_search(
 ) -> Dict[str, Any]:
     """Performs a hybrid semantic and keyword search on a configured Marqo index.
 
+    This tool automatically combines **lexical (keyword)** and **semantic (meaning-based)** search capabilities.
+    You can provide simple, direct search terms. For specific phrases or keywords, the tool's lexical
+    search component will find exact matches. For broader concepts or related ideas, the semantic
+    search component will find relevant results based on meaning, even if the exact words aren't present.
+    **Therefore, you generally do not need to formulate overly complex queries with many variations;
+    trust the hybrid search to find relevant matches.**
+
     This tool allows searching a Marqo index with flexible filtering based on a
     provided or default index schema. It supports hybrid search, date ranges,
     metadata filtering, sorting, and faceting.
@@ -409,6 +416,9 @@ async def marqo_fused_search(
                  OR conditions (e.g., `"year": [2023, 2024]`).
         date_range: (Optional) Date range object with `start_date` and/or `end_date`. Applied to the field
                     specified by `default_date_field` in the schema.
+                    **To filter by time, first inspect the available fields in the `index_schema`
+                    (or the 'Configuration-Specific Notes' section below if available) to find the appropriate
+                    date/timestamp field, then use this parameter.**
         semantic_weight: (Optional) Weight for semantic vs. lexical search in hybrid mode (0.0 to 1.0).
                          0.0 = pure lexical, 1.0 = pure semantic. Requires both tensor and lexical
                          fields defined in schema or `hybrid_search_attributes`. Default 0.7.
