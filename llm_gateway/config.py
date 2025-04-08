@@ -7,6 +7,7 @@ from environment variables and config files.
 import json
 import logging  # Use standard logging for config loading messages
 import os
+import sys  # Add sys import
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +32,8 @@ _config = None
 
 # Basic logger for config loading issues before full logging is set up
 config_logger = logging.getLogger("llm_gateway.config")
-config_logger.addHandler(logging.StreamHandler()) # Simple handler for early messages
+handler = logging.StreamHandler(sys.stderr)  # Explicitly use stderr
+config_logger.addHandler(handler)
 config_logger.setLevel(logging.INFO)
 
 

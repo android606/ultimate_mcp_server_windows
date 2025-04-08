@@ -2,1344 +2,1145 @@
 import asyncio
 import re
 import time
+import json
+import traceback
 from typing import Any, Dict, List, Optional
+
+# Optional imports for semantic chunking
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.metrics.pairwise import cosine_similarity
+    _semantic_libs_available = True
+except ImportError:
+    _semantic_libs_available = False
+
+# Optional import for accurate token counting
+try:
+    import tiktoken
+    _tiktoken_available = True
+except ImportError:
+    _tiktoken_available = False
 
 from llm_gateway.constants import Provider, TaskType
 from llm_gateway.core.providers.base import get_provider
+from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError
 from llm_gateway.services.cache import with_cache
-from llm_gateway.tools.base import BaseTool
+from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
 
 logger = get_logger("llm_gateway.tools.document")
 
+# --- Standalone Helper Functions (Moved out of class) --- 
 
-class DocumentTools(BaseTool):
-    """Document processing tools for LLM Gateway."""
-    
-    tool_name = "document"
-    description = "Document processing tools for chunking, summarization, and extraction."
-    
-    def __init__(self, mcp_server):
-        """Initialize the document tools.
-        
-        Args:
-            mcp_server: MCP server instance or Gateway
-        """
-        super().__init__(mcp_server)
-        
-    def _register_tools(self):
-        """Register document processing tools with MCP server."""
-        
-        @self.mcp.tool()
-        @with_cache(ttl=24 * 60 * 60)  # Cache for 24 hours
-        async def chunk_document(
-            document: str,
-            chunk_size: int = 1000,
-            chunk_overlap: int = 100,
-            method: str = "token",
-            ctx=None
-        ) -> Dict[str, Any]:
-            """
-            Chunk a document into smaller pieces for processing.
-            
-            Args:
-                document: Document text to chunk
-                chunk_size: Target size of each chunk
-                chunk_overlap: Number of tokens/chars to overlap between chunks
-                method: Chunking method (token, character, paragraph, or semantic)
-                
-            Returns:
-                Dictionary containing chunks and metadata
-            """
-            start_time = time.time()
-            
-            # Super defensive check for document
-            if not document or not isinstance(document, str):
-                logger.warning(f"Invalid document provided: {type(document)}")
-                empty_doc = "" if document is None else str(document)
-                return {
-                    "error": "Document is empty or invalid",
-                    "chunks": [empty_doc] if empty_doc else [],
-                    "chunk_count": 1 if empty_doc else 0,
-                    "processing_time": 0.0,
-                }
-            
-            # Normalize parameters
-            try:
-                chunk_size = int(chunk_size)
-                if chunk_size <= 0:
-                    chunk_size = 1000
-                    logger.warning(f"Invalid chunk_size corrected to {chunk_size}")
-                    
-                chunk_overlap = int(chunk_overlap)
-                if chunk_overlap < 0 or chunk_overlap >= chunk_size:
-                    chunk_overlap = min(100, chunk_size // 10)
-                    logger.warning(f"Invalid chunk_overlap corrected to {chunk_overlap}")
-                    
-                if not isinstance(method, str):
-                    method = "token"
-                    logger.warning(f"Invalid method corrected to {method}")
-            except (TypeError, ValueError) as e:
-                logger.error(f"Parameter normalization error: {str(e)}")
-                chunk_size = 1000
-                chunk_overlap = 100
-                method = "token"
-            
-            try:
-                # Log input parameters for debugging
-                logger.info(
-                    f"Starting chunking with method={method}, size={chunk_size}, overlap={chunk_overlap}, doc_length={len(document)}"
-                )
-                
-                # Select chunking method
-                if method == "token":
-                    chunks = self._chunk_by_tokens(document, chunk_size, chunk_overlap)
-                elif method == "character":
-                    chunks = self._chunk_by_characters(document, chunk_size, chunk_overlap)
-                elif method == "paragraph":
-                    chunks = self._chunk_by_paragraphs(document, chunk_size, chunk_overlap)
-                elif method == "semantic":
-                    chunks = await self._chunk_by_semantic_boundaries(document, chunk_size, chunk_overlap)
-                else:
-                    chunks = self._chunk_by_tokens(document, chunk_size, chunk_overlap)
-                
-                # Verify chunks - make sure we got a list
-                if not isinstance(chunks, list):
-                    logger.error(f"Chunking returned non-list type: {type(chunks)}")
-                    chunks = [document] if document else []
-                
-                # Final validation to ensure we have proper string chunks 
-                valid_chunks = []
-                for i, chunk in enumerate(chunks):
-                    if not chunk:  # Skip empty chunks
-                        continue
-                        
-                    if not isinstance(chunk, str):
-                        logger.warning(f"Chunk {i} is not a string: {type(chunk)}, converting")
-                        try:
-                            chunk = str(chunk)
-                        except Exception:
-                            logger.error(f"Could not convert chunk {i} to string, skipping")
-                            continue
-                            
-                    valid_chunks.append(chunk)
-                    
-                # If we lost all chunks in validation, return the original document
-                if not valid_chunks and document:
-                    logger.warning("No valid chunks after validation, using original document")
-                    valid_chunks = [document]
-                
-                # Log chunk info for debugging
-                for i, chunk in enumerate(valid_chunks[:5]):  # Log first 5 chunks only
-                    logger.debug(f"Chunk {i}: length={len(chunk)}, starts_with={chunk[:30]}...")
-                
-                processing_time = time.time() - start_time
-                
-                # Log result
-                logger.info(
-                    f"Chunked document into {len(valid_chunks)} chunks using {method} method",
-                    emoji_key=TaskType.SUMMARIZATION.value,
-                    time=processing_time
-                )
-                
-                return {
-                    "chunks": valid_chunks,
-                    "chunk_count": len(valid_chunks),
-                    "method": method,
-                    "processing_time": processing_time,
-                }
-                
-            except Exception as e:
-                import traceback
-                err_trace = traceback.format_exc()
-                logger.error(
-                    f"Error in chunk_document: {str(e)}\n{err_trace}",
-                    emoji_key="error"
-                )
-                # Return document as single chunk if there's an error
-                if document:
-                    return {
-                        "error": f"Chunking failed: {str(e)}",
-                        "traceback": err_trace,
-                        "chunks": [document],
-                        "chunk_count": 1,
-                        "method": method,
-                        "processing_time": time.time() - start_time,
-                    }
-                else:
-                    return {
-                        "error": f"Chunking failed: {str(e)}",
-                        "traceback": err_trace,
-                        "chunks": [],
-                        "chunk_count": 0,
-                        "method": method,
-                        "processing_time": time.time() - start_time,
-                    }
-            
-        @self.mcp.tool()
-        @with_cache(ttl=7 * 24 * 60 * 60)  # Cache for 7 days
-        async def summarize_document(
-            document: str,
-            provider: str = Provider.OPENAI.value,
-            model: Optional[str] = None,
-            max_length: int = 300,
-            format: str = "paragraph",
-            ctx=None
-        ) -> Dict[str, Any]:
-            """
-            Summarize a document using the specified provider.
-            
-            Args:
-                document: Document text to summarize
-                provider: LLM provider to use
-                model: Model name (default based on provider)
-                max_length: Maximum summary length in words
-                format: Summary format (paragraph, bullet_points, or key_points)
-                
-            Returns:
-                Dictionary containing summary and metadata
-            """
-            start_time = time.time()
-            
-            if not document:
-                return {
-                    "error": "Document is empty",
-                    "summary": "",
-                    "processing_time": 0.0,
-                }
-                
-            # Prepare prompt based on requested format
-            if format == "bullet_points":
-                prompt = f"""Summarize the following document as a list of bullet points. Keep the summary concise, focusing on the most important information, and limit it to approximately {max_length} words.
-
-Document:
-{document}
-
-Summary (as bullet points):"""
-            elif format == "key_points":
-                prompt = f"""Extract the key points from the following document. Identify the most important information, main arguments, and conclusions. Limit the summary to approximately {max_length} words.
-
-Document:
-{document}
-
-Key points:"""
-            else:  # paragraph format
-                prompt = f"""Provide a concise summary of the following document in paragraph form. Focus on the main ideas, key information, and conclusions. Limit the summary to approximately {max_length} words.
-
-Document:
-{document}
-
-Summary:"""
-            
-            # Get provider instance
-            provider_instance = get_provider(provider)
-            
-            # Generate summary
-            result = await provider_instance.generate_completion(
-                prompt=prompt,
-                model=model,
-                temperature=0.3,  # Lower temperature for more focused summary
-                max_tokens=int(max_length * 1.5),  # Convert words to tokens (approximate)
-            )
-            
-            processing_time = time.time() - start_time
-            
-            # Log result
-            logger.success(
-                f"Document summarized successfully with {provider}/{result.model}",
-                emoji_key=TaskType.SUMMARIZATION.value,
-                tokens={
-                    "input": result.input_tokens,
-                    "output": result.output_tokens
-                },
-                cost=result.cost,
-                time=processing_time
-            )
-            
-            return {
-                "summary": result.text,
-                "model": result.model,
-                "provider": provider,
-                "format": format,
-                "tokens": {
-                    "input": result.input_tokens,
-                    "output": result.output_tokens,
-                    "total": result.total_tokens,
-                },
-                "cost": result.cost,
-                "processing_time": processing_time,
-            }
-            
-        @self.mcp.tool()
-        @with_cache(ttl=14 * 24 * 60 * 60)  # Cache for 14 days
-        async def extract_entities(
-            document: str,
-            entity_types: Optional[List[str]] = None,
-            provider: str = Provider.OPENAI.value,
-            model: Optional[str] = None,
-            ctx=None
-        ) -> Dict[str, Any]:
-            """
-            Extract entities from a document.
-            
-            Args:
-                document: Document text to analyze
-                entity_types: Types of entities to extract (defaults to ["person", "organization", "location", "date", "number"])
-                provider: LLM provider to use
-                model: Model name (default based on provider)
-                
-            Returns:
-                Dictionary containing extracted entities and metadata
-            """
-            start_time = time.time()
-            
-            if not document:
-                return {
-                    "error": "Document is empty",
-                    "entities": {},
-                    "processing_time": 0.0,
-                }
-                
-            # Set default entity types if None
-            if entity_types is None:
-                entity_types = ["person", "organization", "location", "date", "number"]
-            
-            # Validate entity types
-            valid_types = [
-                "person", "organization", "location", "date", "time", 
-                "number", "currency", "product", "event", "work", "law",
-                "language", "facility", "url", "email"
-            ]
-            
-            entity_types = [et for et in entity_types if et in valid_types]
-            if not entity_types:
-                entity_types = ["person", "organization", "location"]
-                
-            # Prepare prompt
-            prompt = f"""Extract all entities of the following types from the document: {', '.join(entity_types)}.
-Return the entities in JSON format, with each entity type as a key and a list of unique entities as the value.
-If an entity appears multiple times, only include it once in the list. Include any relevant qualifiers or descriptions with the entities.
-
-For example:
-{{
-  "person": ["John Smith (CEO)", "Jane Doe (researcher)"],
-  "organization": ["Acme Corp", "XYZ University"],
-  "location": ["New York City", "Paris, France"],
-  ...
-}}
-
-Document:
-{document}
-
-Extracted entities (JSON format):"""
-            
-            # Get provider instance
-            provider_instance = get_provider(provider)
-            
-            # Extract entities
-            result = await provider_instance.generate_completion(
-                prompt=prompt,
-                model=model,
-                temperature=0.1,  # Low temperature for consistent extraction
-                max_tokens=2000,   # Allow for potentially lengthy entity lists
-            )
-            
-            processing_time = time.time() - start_time
-            
-            # Parse JSON response
-            import json
-            try:
-                response_text = result.text.strip()
-                
-                # Extract JSON part if response includes other text
-                json_match = re.search(r"({[\s\S]*})", response_text)
-                if json_match:
-                    json_str = json_match.group(1)
-                else:
-                    json_str = response_text
-                    
-                entities = json.loads(json_str)
-                
-                # Ensure all requested entity types exist in response
-                for entity_type in entity_types:
-                    if entity_type not in entities:
-                        entities[entity_type] = []
-                        
-                # Log result
-                logger.success(
-                    f"Extracted {sum(len(entities[et]) for et in entities)} entities " +
-                    f"across {len(entities)} types",
-                    emoji_key=TaskType.EXTRACTION.value,
-                    tokens={
-                        "input": result.input_tokens,
-                        "output": result.output_tokens
-                    },
-                    cost=result.cost,
-                    time=processing_time
-                )
-                
-                return {
-                    "entities": entities,
-                    "model": result.model,
-                    "provider": provider,
-                    "tokens": {
-                        "input": result.input_tokens,
-                        "output": result.output_tokens,
-                        "total": result.total_tokens,
-                    },
-                    "cost": result.cost,
-                    "processing_time": processing_time,
-                }
-                
-            except json.JSONDecodeError:
-                logger.error(
-                    "Failed to parse JSON response from entity extraction",
-                    emoji_key="error"
-                )
-                
-                # Return raw text if JSON parsing fails
-                return {
-                    "error": "Failed to parse structured entities",
-                    "raw_text": result.text,
-                    "model": result.model,
-                    "provider": provider,
-                    "tokens": {
-                        "input": result.input_tokens,
-                        "output": result.output_tokens,
-                        "total": result.total_tokens,
-                    },
-                    "cost": result.cost,
-                    "processing_time": processing_time,
-                }
-                
-            except Exception as e:
-                logger.error(
-                    f"Error extracting entities: {str(e)}",
-                    emoji_key="error"
-                )
-                return {
-                    "error": str(e),
-                    "entities": {},
-                    "model": model,
-                    "provider": provider,
-                    "tokens": {"input": 0, "output": 0, "total": 0},
-                    "cost": 0.0,
-                    "processing_time": time.time() - start_time,
-                }
-                
-        @self.mcp.tool()
-        @with_cache(ttl=14 * 24 * 60 * 60)  # Cache for 14 days
-        async def generate_qa_pairs(
-            document: str,
-            num_questions: int = 5,
-            question_types: List[str] = ["factual", "conceptual"],
-            provider: str = Provider.OPENAI.value,
-            model: Optional[str] = None,
-            ctx=None
-        ) -> Dict[str, Any]:
-            """
-            Generate question-answer pairs from a document.
-            
-            Args:
-                document: Document text to analyze
-                num_questions: Number of QA pairs to generate
-                question_types: Types of questions to generate
-                provider: LLM provider to use
-                model: Model name (default based on provider)
-                
-            Returns:
-                Dictionary containing QA pairs and metadata
-            """
-            start_time = time.time()
-            
-            if not document:
-                return {
-                    "error": "Document is empty",
-                    "qa_pairs": [],
-                    "processing_time": 0.0,
-                }
-                
-            # Validate question types
-            valid_types = ["factual", "conceptual", "open-ended", "analytical", "procedural"]
-            question_types = [qt for qt in question_types if qt in valid_types]
-            if not question_types:
-                question_types = ["factual", "conceptual"]
-                
-            # Prepare prompt
-            prompt = f"""Generate {num_questions} question-answer pairs based on the following document. 
-Include a mix of these question types: {', '.join(question_types)}.
-Return the QA pairs in JSON format, where each pair has a "question", "answer", and "type" field.
-
-For example:
-[
-  {{
-    "question": "What is the main topic of the document?",
-    "answer": "The document discusses the effects of climate change on marine ecosystems.",
-    "type": "conceptual"
-  }},
-  ...
-]
-
-Document:
-{document}
-
-QA pairs (JSON format):"""
-            
-            # Get provider instance
-            provider_instance = get_provider(provider)
-            
-            # Generate QA pairs
-            result = await provider_instance.generate_completion(
-                prompt=prompt,
-                model=model,
-                temperature=0.5,  # Moderate temperature for creativity but consistency
-                max_tokens=num_questions * 150,  # Approximate token count for response
-            )
-            
-            processing_time = time.time() - start_time
-            
-            # Parse JSON response
-            import json
-            try:
-                response_text = result.text.strip()
-                
-                # Extract JSON part if response includes other text
-                json_match = re.search(r"(\[[\s\S]*\])", response_text)
-                if json_match:
-                    json_str = json_match.group(1)
-                else:
-                    json_str = response_text
-                    
-                qa_pairs = json.loads(json_str)
-                
-                # Log result
-                logger.success(
-                    f"Generated {len(qa_pairs)} QA pairs",
-                    emoji_key=TaskType.GENERATION.value,
-                    tokens={
-                        "input": result.input_tokens,
-                        "output": result.output_tokens
-                    },
-                    cost=result.cost,
-                    time=processing_time
-                )
-                
-                return {
-                    "qa_pairs": qa_pairs,
-                    "model": result.model,
-                    "provider": provider,
-                    "tokens": {
-                        "input": result.input_tokens,
-                        "output": result.output_tokens,
-                        "total": result.total_tokens,
-                    },
-                    "cost": result.cost,
-                    "processing_time": processing_time,
-                }
-                
-            except json.JSONDecodeError:
-                logger.error(
-                    "Failed to parse JSON response from QA generation",
-                    emoji_key="error"
-                )
-                
-                # Return raw text if JSON parsing fails
-                return {
-                    "error": "Failed to parse structured QA pairs",
-                    "raw_text": result.text,
-                    "model": result.model,
-                    "provider": provider,
-                    "tokens": {
-                        "input": result.input_tokens,
-                        "output": result.output_tokens,
-                        "total": result.total_tokens,
-                    },
-                    "cost": result.cost,
-                    "processing_time": processing_time,
-                }
-                
-            except Exception as e:
-                logger.error(
-                    f"Error generating QA pairs: {str(e)}",
-                    emoji_key="error"
-                )
-                return {
-                    "error": str(e),
-                    "qa_pairs": [],
-                    "model": model,
-                    "provider": provider,
-                    "tokens": {"input": 0, "output": 0, "total": 0},
-                    "cost": 0.0,
-                    "processing_time": time.time() - start_time,
-                }
-                
-        @self.mcp.tool()
-        @with_cache(ttl=7 * 24 * 60 * 60)  # Cache for 7 days
-        async def process_document_batch(
-            documents: List[str],
-            operation: str,
-            provider: str = Provider.OPENAI.value,
-            model: Optional[str] = None,
-            max_concurrency: int = 5,
-            operation_params: Optional[Dict[str, Any]] = None,
-            ctx=None
-        ) -> Dict[str, Any]:
-            """
-            Process a batch of documents with the specified operation.
-            
-            Args:
-                documents: List of document texts to process
-                operation: Operation to perform (summarize, extract_entities, generate_qa)
-                provider: LLM provider to use
-                model: Model name (default based on provider)
-                max_concurrency: Maximum number of concurrent operations
-                operation_params: Additional parameters for the operation
-                
-            Returns:
-                Dictionary containing results for each document
-            """
-            start_time = time.time()
-            
-            if not documents:
-                return {
-                    "error": "No documents provided",
-                    "results": [],
-                    "processing_time": 0.0,
-                }
-            
-            try:
-                # Set default operation params
-                operation_params = operation_params or {}
-                
-                # Validate operation
-                valid_operations = ["summarize", "extract_entities", "generate_qa"]
-                if operation not in valid_operations:
-                    return {
-                        "error": f"Invalid operation: {operation}. " +
-                                f"Valid options: {', '.join(valid_operations)}",
-                        "results": [],
-                        "processing_time": 0.0,
-                    }
-                    
-                # Log batch info
-                logger.info(f"Processing batch of {len(documents)} documents with operation: {operation}")
-                
-                # Create tasks for each document
-                tasks = []
-                semaphore = asyncio.Semaphore(max_concurrency)
-                
-                async def process_document(doc_index: int, doc_text: str):
-                    async with semaphore:
-                        try:
-                            logger.debug(f"Processing document {doc_index}, length={len(doc_text)}")
-                            
-                            if operation == "summarize":
-                                tool_result = await summarize_document(
-                                    document=doc_text,
-                                    provider=provider,
-                                    model=model,
-                                    **operation_params
-                                )
-                            elif operation == "extract_entities":
-                                tool_result = await extract_entities(
-                                    document=doc_text,
-                                    provider=provider,
-                                    model=model,
-                                    **operation_params
-                                )
-                            elif operation == "generate_qa":
-                                tool_result = await generate_qa_pairs(
-                                    document=doc_text,
-                                    provider=provider,
-                                    model=model,
-                                    **operation_params
-                                )
-                            else:
-                                tool_result = {"error": f"Unsupported operation: {operation}"}
-                                
-                            return {
-                                "document_index": doc_index,
-                                "result": tool_result,
-                                "success": "error" not in tool_result,
-                            }
-                        except Exception as e:
-                            import traceback
-                            err_trace = traceback.format_exc()
-                            logger.error(
-                                f"Error processing document {doc_index}: {str(e)}\n{err_trace}",
-                                emoji_key="error"
-                            )
-                            return {
-                                "document_index": doc_index,
-                                "result": {
-                                    "error": str(e),
-                                    "traceback": err_trace
-                                },
-                                "success": False,
-                            }
-                
-                for i, doc in enumerate(documents):
-                    tasks.append(process_document(i, doc))
-                    
-                # Process documents concurrently
-                results = await asyncio.gather(*tasks)
-                
-                processing_time = time.time() - start_time
-                
-                # Calculate success rate and statistics
-                success_count = sum(1 for r in results if r["success"])
-                
-                # Log result
-                logger.success(
-                    f"Batch processed {len(documents)} documents " +
-                    f"({success_count} successful, {len(documents) - success_count} failed)",
-                    emoji_key="processing",
-                    time=processing_time
-                )
-                
-                # Return results sorted by document index
-                sorted_results = sorted(results, key=lambda r: r["document_index"])
-                
-                return {
-                    "results": sorted_results,
-                    "success_count": success_count,
-                    "failure_count": len(documents) - success_count,
-                    "operation": operation,
-                    "provider": provider,
-                    "processing_time": processing_time,
-                }
-                
-            except Exception as e:
-                import traceback
-                err_trace = traceback.format_exc()
-                logger.error(
-                    f"Error in batch processing: {str(e)}\n{err_trace}",
-                    emoji_key="error"
-                )
-                return {
-                    "error": f"Batch processing failed: {str(e)}",
-                    "traceback": err_trace,
-                    "results": [],
-                    "success_count": 0,
-                    "failure_count": len(documents),
-                    "operation": operation,
-                    "provider": provider,
-                    "processing_time": time.time() - start_time,
-                }
-
-    def _chunk_by_tokens(self, document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Chunk document by estimated token count using a more accurate tokenization.
-        
-        Args:
-            document: Document text
-            chunk_size: Target chunk size in tokens
-            chunk_overlap: Overlap between chunks in tokens
-            
-        Returns:
-            List of document chunks
-        """
-        try:
-            # Use tiktoken if available for accurate tokenization
-            try:
-                import tiktoken
-                # Use cl100k_base encoding which is used by most recent models
-                encoding = tiktoken.get_encoding("cl100k_base")
-                tokens = encoding.encode(document)
-                
-                logger.debug(f"Tokenized document: {len(tokens)} tokens")
-                
-                chunks = []
-                i = 0
-                while i < len(tokens):
-                    # Get current chunk
-                    chunk_end = min(i + chunk_size, len(tokens))
-                    
-                    # Try to end at a sentence boundary if possible
-                    if chunk_end < len(tokens):
-                        # Find a period or newline in the last 20% of the chunk
-                        look_back_size = min(chunk_size // 5, 100)  # Look back up to 100 tokens or 20%
-                        for j in range(chunk_end, max(i, chunk_end - look_back_size), -1):
-                            # Check if token corresponds to period, question mark, exclamation mark, or newline
-                            token_text = encoding.decode([tokens[j]])
-                            if token_text in [".", "?", "!", "\n"]:
-                                # Found a good break point, but make sure we include it
-                                chunk_end = j + 1
-                                break
-                    
-                    # Decode the chunk back to text
-                    current_chunk = encoding.decode(tokens[i:chunk_end])
-                    
-                    # Improve semantic coherence of large chunks
-                    if len(current_chunk) > chunk_size // 4:
-                        improved_chunks = self._improve_chunk_coherence(current_chunk, chunk_size)
-                        chunks.extend(improved_chunks)
-                    else:
-                        chunks.append(current_chunk)
-                    
-                    # Move to next chunk with overlap
-                    i += max(1, chunk_size - chunk_overlap)  # Ensure we make progress
-                
-                return chunks
-                
-            except ImportError:
-                # Fallback to our token estimator if tiktoken not available
-                logger.info("tiktoken not available, falling back to token estimation")
-                return self._chunk_by_token_estimation(document, chunk_size, chunk_overlap)
-                
-        except Exception as e:
-            import traceback
-            err_trace = traceback.format_exc()
-            logger.error(f"Error in _chunk_by_tokens: {str(e)}\n{err_trace}")
-            # Return document as a single chunk rather than failing completely
-            return [document]
-
-    def _improve_chunk_coherence(self, chunk_text: str, target_size: int) -> List[str]:
-        """Improve the semantic coherence of a chunk by finding better split points.
-        
-        Args:
-            chunk_text: Text of the chunk to improve
-            target_size: Target size for chunks
-            
-        Returns:
-            List of improved chunks
-        """
-        try:
-            # Log input for debugging
-            logger.debug(f"Improving chunk coherence: text_length={len(chunk_text)}, target_size={target_size}")
-            
-            # Defensive check - return original if empty or tiny
-            if not chunk_text or len(chunk_text) < 50:
-                return [chunk_text]
-            
-            # Split into sentences
-            sentence_pattern = r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s+(?=[A-Z])'
-            sentences = re.split(sentence_pattern, chunk_text)
-            
-            # Filter out empty sentences
-            sentences = [s for s in sentences if s and s.strip()]
-            
-            logger.debug(f"Split into {len(sentences)} sentences")
-            
-            # If only a few sentences, not much we can do
-            if len(sentences) <= 3:
-                return [chunk_text]
-            
-            # Find natural groupings of sentences
-            groups = []
-            current_group = [sentences[0]]
-            
-            # Group by keywords and semantic transitions
-            transition_words = {"however", "nevertheless", "conversely", "meanwhile", 
-                              "furthermore", "additionally", "consequently", "therefore",
-                              "thus", "hence", "accordingly", "subsequently"}
-            
-            for i in range(1, len(sentences)):
-                sentence = sentences[i]
-                if not sentence or not sentence.strip():
-                    continue
-                    
-                # Check for transition indicators
-                words = sentence.split()
-                if not words:
-                    current_group.append(sentence)
-                    continue
-                
-                sentence_start = ' '.join(words[:min(3, len(words))]).lower()
-                has_transition = any(tw in sentence_start for tw in transition_words)
-                
-                # Check sentence length - very short sentences often continue previous thought
-                is_short = len(words) < 5
-                
-                # Start new group on transitions or long content shifts
-                if has_transition or (not is_short and len(current_group) >= 3):
-                    groups.append(current_group)
-                    current_group = [sentence]
-                else:
-                    current_group.append(sentence)
-            
-            # Add the last group
-            if current_group:
-                groups.append(current_group)
-            
-            logger.debug(f"Created {len(groups)} sentence groups")
-            
-            # If no groups were created, return original
-            if not groups:
-                return [chunk_text]
-            
-            # Combine groups into chunks of appropriate size
-            improved_chunks = []
-            current_combined = []
-            current_size = 0
-            
-            for group in groups:
-                # Join the group sentences with spaces instead of blindly
-                group_sentences = [s.strip() for s in group if s and s.strip()]
-                if not group_sentences:
-                    continue
-                    
-                group_text = ' '.join(group_sentences)
-                group_size = len(group_text)
-                
-                if current_size + group_size > target_size and current_combined:
-                    combined_text = ' '.join(current_combined)
-                    if combined_text:  # Don't add empty chunks
-                        improved_chunks.append(combined_text)
-                    current_combined = [group_text]
-                    current_size = group_size
-                else:
-                    current_combined.append(group_text)
-                    current_size += group_size
-            
-            # Add the last combined group
-            if current_combined:
-                combined_text = ' '.join(current_combined)
-                if combined_text:  # Don't add empty chunks
-                    improved_chunks.append(combined_text)
-            
-            logger.debug(f"Created {len(improved_chunks)} improved chunks")
-            
-            # In case we end up with no chunks (rare), return the original
-            if not improved_chunks:
-                return [chunk_text]
-                
-            return improved_chunks
-            
-        except Exception as e:
-            import traceback
-            err_trace = traceback.format_exc()
-            logger.error(f"Error in _improve_chunk_coherence: {str(e)}\n{err_trace}")
-            # Return original text as a single chunk to avoid failing
+def _improve_chunk_coherence(chunk_text: str, target_size: int) -> List[str]:
+    """Improve the semantic coherence of a chunk..."""
+    try:
+        logger.debug(f"Improving chunk coherence: text_length={len(chunk_text)}, target_size={target_size}")
+        if not chunk_text or len(chunk_text) < 50: 
             return [chunk_text]
-
-    def _chunk_by_token_estimation(self, document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Chunk document by estimated token count when tiktoken is not available.
+        sentence_pattern = r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s+(?=[A-Z])'
+        sentences = [s for s in re.split(sentence_pattern, chunk_text) if s and s.strip()]
+        logger.debug(f"Split into {len(sentences)} sentences")
+        if len(sentences) <= 3: 
+            return [chunk_text]
         
-        Args:
-            document: Document text
-            chunk_size: Target chunk size in tokens
-            chunk_overlap: Overlap between chunks in tokens
-            
-        Returns:
-            List of document chunks
-        """
-        try:
-            # Safety check
-            if not document:
-                return [document]
-            
-            # Tokenize document
-            estimated_tokens = self.estimate_tokens(document)
-            
-            # Make sure we have at least some tokens
-            if not estimated_tokens:
-                logger.warning("No tokens estimated, returning document as single chunk")
-                return [document]
-                
-            logger.debug(f"Estimated tokens: {len(estimated_tokens)} for document of length {len(document)}")
-            
-            # Create chunks based on estimated tokens
-            chunks = []
-            i = 0
-            while i < len(estimated_tokens):
-                # Get current chunk end index
-                chunk_end = min(i + chunk_size, len(estimated_tokens))
-                
-                # Try to end at a sentence boundary if within reasonable distance
-                if chunk_end < len(estimated_tokens):
-                    # Find a good breakpoint in the last 10% of the chunk
-                    search_start = max(i, chunk_end - (chunk_size // 10))
-                    for j in range(chunk_end, search_start, -1):
-                        if j >= 0 and j < len(estimated_tokens) and estimated_tokens[j] in [".", "?", "!"]:
-                            chunk_end = j + 1
-                            break
-                
-                # Safely reconstruct text from tokens
-                token_slice = estimated_tokens[i:chunk_end]
-                if not token_slice:  # Skip empty slices
-                    i += max(1, chunk_size - chunk_overlap)
-                    continue
-                
-                # Rebuild text carefully
-                current_chunk = ""
-                for token in token_slice:
-                    if not token:  # Skip empty tokens
-                        continue
-                    # Add proper spacing
-                    if token.startswith("'") or token in [",", ".", ":", ";", "!", "?"]:
-                        current_chunk += token
-                    else:
-                        current_chunk += " " + token
-                current_chunk = current_chunk.strip()
-                
-                # Skip empty chunks
-                if not current_chunk:
-                    i += max(1, chunk_size - chunk_overlap)
-                    continue
-                
-                # Apply semantic coherence improvements only for significant chunks
-                if len(current_chunk) > chunk_size // 4 and len(current_chunk) > 100:
-                    try:
-                        improved_chunks = self._improve_chunk_coherence(current_chunk, chunk_size)
-                        chunks.extend(improved_chunks)
-                    except Exception as e:
-                        logger.error(f"Error improving chunk coherence: {str(e)}, using original chunk")
-                        chunks.append(current_chunk)
-                else:
-                    chunks.append(current_chunk)
-                
-                # Move to next chunk with overlap
-                next_position = max(1, chunk_size - chunk_overlap)
-                i += next_position  # Ensure we make progress
-                logger.debug(f"Moving to next chunk position: {i} (advanced by {next_position})")
-            
-            # Ensure we returned something
-            if not chunks:
-                logger.warning("No chunks created, returning original document")
-                return [document]
-                
-            logger.debug(f"Created {len(chunks)} chunks via token estimation")
-            return chunks
-            
-        except Exception as e:
-            import traceback
-            err_trace = traceback.format_exc()
-            logger.error(f"Error in _chunk_by_token_estimation: {str(e)}\n{err_trace}")
-            # Return document as a single chunk rather than failing
-            return [document]
+        groups = []
+        current_group = [sentences[0]]
+        transition_words = {"however", "nevertheless", "conversely", "meanwhile", 
+                          "furthermore", "additionally", "consequently", "therefore",
+                          "thus", "hence", "accordingly", "subsequently"}
         
-    def estimate_tokens(self, document: str) -> List[str]:
-        """Estimate tokenization of text for chunk size calculation.
-        
-        Args:
-            document: Text content to estimate tokens for
-            
-        Returns:
-            List of estimated tokens
-        """
-        try:
-            # Safety check
-            if not document:
-                return []
-                
-            # Split text into words
-            words = re.findall(r'\w+|[^\w\s]', document)
-            
-            # Safety check
+        for i in range(1, len(sentences)):
+            sentence = sentences[i]
+            if not sentence or not sentence.strip(): 
+                continue
+            words = sentence.split()
             if not words:
-                logger.warning("No words found in document")
-                return [document]  # Return the whole document as a token
-            
-            tokens = []
-            for word in words:
-                # Skip empty words
-                if not word:
-                    continue
-                    
-                # Handle different token types
-                if word.isdigit():
-                    # Numbers are typically 1 token per 2-3 digits
-                    for i in range(0, len(word), 3):
-                        tokens.append(word[i:i+3])
-                else:
-                    # Regular words are split by subword tokenization
-                    # This is a simplified approximation
-                    if len(word) <= 4:
-                        tokens.append(word)
-                    else:
-                        # Split longer words into subword pieces
-                        remaining = word
-                        while remaining:
-                            # Take chunks of 4-6 chars as common subword sizes
-                            piece_size = min(4 + (len(remaining) % 3), len(remaining))
-                            tokens.append(remaining[:piece_size])
-                            remaining = remaining[piece_size:]
-            
-            # Safety check - make sure we have tokens
-            if not tokens:
-                logger.warning("No tokens generated from words")
-                return [document]  # Return the whole document as a token
-                
-            logger.debug(f"Estimated {len(tokens)} tokens from {len(words)} words")
-            return tokens
-            
-        except Exception as e:
-            import traceback
-            err_trace = traceback.format_exc()
-            logger.error(f"Error in estimate_tokens: {str(e)}\n{err_trace}")
-            # Return minimal set of tokens to prevent failure
-            return [document]
-
-    def _chunk_by_characters(self, document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Chunk document by character count.
+                current_group.append(sentence)
+                continue
+            sentence_start = ' '.join(words[:min(3, len(words))]).lower()
+            has_transition = any(tw in sentence_start for tw in transition_words)
+            is_short = len(words) < 5
+            if has_transition or (not is_short and len(current_group) >= 3):
+                groups.append(current_group)
+                current_group = [sentence]
+            else:
+                current_group.append(sentence)
+        if current_group: 
+            groups.append(current_group)
+        logger.debug(f"Created {len(groups)} sentence groups")
+        if not groups: 
+            return [chunk_text]
         
-        Args:
-            document: Document text
-            chunk_size: Target chunk size in characters
-            chunk_overlap: Overlap between chunks in characters
-            
-        Returns:
-            List of document chunks
-        """
+        improved_chunks = []
+        current_combined = []
+        current_size = 0
+        for group in groups:
+            group_sentences = [s.strip() for s in group if s and s.strip()]
+            if not group_sentences: 
+                continue
+            group_text = ' '.join(group_sentences)
+            group_size = len(group_text)
+            if current_size + group_size > target_size and current_combined:
+                combined_text = ' '.join(current_combined)
+                if combined_text: 
+                    improved_chunks.append(combined_text)
+                current_combined = [group_text]
+                current_size = group_size
+            else:
+                current_combined.append(group_text)
+                current_size += group_size
+        if current_combined:
+            combined_text = ' '.join(current_combined)
+            if combined_text: 
+                improved_chunks.append(combined_text)
+        logger.debug(f"Created {len(improved_chunks)} improved chunks")
+        return improved_chunks if improved_chunks else [chunk_text]
+    except Exception as e:
+        logger.error(f"Error in _improve_chunk_coherence: {str(e)}\n{traceback.format_exc()}")
+        return [chunk_text]
+
+def _estimate_tokens(document: str) -> List[str]:
+    """Estimate tokenization..."""
+    try:
+        if not document: 
+            return []
+        words = re.findall(r'\w+|[^\w\s]', document)
+        if not words: 
+             logger.warning("No words found in document for token estimation")
+             return [document] # Return whole doc as one token if no words
+        tokens = []
+        for word in words:
+            if not word: 
+                continue
+            if word.isdigit():
+                for i in range(0, len(word), 3):
+                    tokens.append(word[i:i+3])
+            else:
+                if len(word) <= 4:
+                    tokens.append(word)
+                else:
+                    remaining = word
+                    while remaining:
+                        piece_size = min(4 + (len(remaining) % 3), len(remaining))
+                        tokens.append(remaining[:piece_size])
+                        remaining = remaining[piece_size:]
+        if not tokens: 
+             logger.warning("No tokens generated from words")
+             return [document] # Return whole doc if tokenization failed
+        logger.debug(f"Estimated {len(tokens)} tokens from {len(words)} words")
+        return tokens
+    except Exception as e:
+        logger.error(f"Error in _estimate_tokens: {str(e)}\n{traceback.format_exc()}")
+        return [document]
+
+def _chunk_by_token_estimation(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Chunk document by estimated token count..."""
+    try:
+        if not document: 
+            return [document]
+        estimated_tokens = _estimate_tokens(document) 
+        if not estimated_tokens: 
+            return [document]
+        logger.debug(f"Estimated tokens: {len(estimated_tokens)} for document of length {len(document)}")
         chunks = []
         i = 0
-        while i < len(document):
-            # Get current chunk
-            chunk_end = min(i + chunk_size, len(document))
-            
-            # Try to end at sentence boundary
-            if chunk_end < len(document):
-                # Look for sentence boundary within the last 20% of the chunk
-                search_start = chunk_end - (chunk_size // 5)
-                search_text = document[search_start:chunk_end]
-                
-                # Find last sentence boundary
-                sentence_end = max(
-                    search_text.rfind('. '),
-                    search_text.rfind('? '),
-                    search_text.rfind('! '),
-                    search_text.rfind('\n\n')
-                )
-                
-                if sentence_end != -1:
-                    chunk_end = search_start + sentence_end + 2  # Include the period and space
-            
-            # Extract current chunk
-            current_chunk = document[i:chunk_end]
-            chunks.append(current_chunk)
-            
-            # Move to next chunk with overlap
-            i += chunk_size - chunk_overlap
-            
-            # Ensure we make progress
-            if i <= 0:
-                i = chunk_end
-        
-        return chunks
-
-    def _chunk_by_paragraphs(self, document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Chunk document by paragraphs.
-        
-        Args:
-            document: Document text
-            chunk_size: Maximum characters per chunk
-            chunk_overlap: Not used in this method
-            
-        Returns:
-            List of document chunks
-        """
-        # Split document into paragraphs
-        paragraphs = re.split(r'\n\s*\n', document)
-        
-        chunks = []
-        current_chunk = []
-        current_size = 0
-        
-        for paragraph in paragraphs:
-            paragraph = paragraph.strip()
-            if not paragraph:
+        while i < len(estimated_tokens):
+            chunk_end = min(i + chunk_size, len(estimated_tokens))
+            if chunk_end < len(estimated_tokens):
+                search_start = max(i, chunk_end - (chunk_size // 10))
+                for j in range(chunk_end, search_start, -1):
+                    # Check bounds before accessing estimated_tokens[j]
+                    if j >= 0 and j < len(estimated_tokens) and estimated_tokens[j] in [".", "?", "!"]:
+                        chunk_end = j + 1
+                        break
+            token_slice = estimated_tokens[i:chunk_end]
+            if not token_slice: 
+                i += max(1, chunk_size - chunk_overlap)
                 continue
-                
-            paragraph_size = len(paragraph)
-            
-            # If adding this paragraph exceeds chunk size and we already have content,
-            # finish the current chunk
-            if current_size + paragraph_size > chunk_size and current_chunk:
-                chunks.append('\n\n'.join(current_chunk))
-                current_chunk = []
-                current_size = 0
-            
-            # If a single paragraph is larger than chunk size, split it
-            if paragraph_size > chunk_size:
-                # Split the paragraph using character chunking
-                paragraph_chunks = self._chunk_by_characters(paragraph, chunk_size, chunk_overlap)
-                for p_chunk in paragraph_chunks:
-                    chunks.append(p_chunk)
+            current_chunk = ""
+            for token in token_slice:
+                if not token: 
+                    continue
+                if token.startswith("'") or token in [",", ".", ":", ";", "!", "?"] or not current_chunk:
+                    current_chunk += token
+                else:
+                    current_chunk += " " + token
+            current_chunk = current_chunk.strip()
+            if not current_chunk:
+                i += max(1, chunk_size - chunk_overlap)
+                continue
+            if len(current_chunk) > chunk_size // 4 and len(current_chunk) > 100:
+                try:
+                    improved_chunks = _improve_chunk_coherence(current_chunk, chunk_size) 
+                    chunks.extend(improved_chunks)
+                except Exception as e:
+                    logger.error(f"Error improving chunk coherence: {str(e)}, using original chunk")
+                    chunks.append(current_chunk)
             else:
-                # Add paragraph to current chunk
-                current_chunk.append(paragraph)
-                current_size += paragraph_size + 4  # Add 4 for the newlines
-        
-        # Add the last chunk if there's anything left
-        if current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
-        
+                chunks.append(current_chunk)
+            next_position = max(1, chunk_size - chunk_overlap)
+            i += next_position
+            logger.debug(f"Moving to next chunk position: {i} (advanced by {next_position})")
+        if not chunks: 
+             logger.warning("No chunks created via token estimation, returning original")
+             return [document]
+        logger.debug(f"Created {len(chunks)} chunks via token estimation")
         return chunks
+        # --- End of Restored Logic --- 
+    except Exception as e:
+         logger.error(f"Error in _chunk_by_token_estimation: {str(e)}\n{traceback.format_exc()}")
+         return [document]
 
-    async def _chunk_by_semantic_boundaries(self, document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
-        """Chunk document by semantic boundaries based on content analysis.
-        
-        This uses multiple techniques to identify semantic boundaries:
-        1. Structure-based: Headers, lists, and other formatting elements
-        2. Content-based: Topic shifts and semantic units
-        3. NLP-based: If available, uses embeddings to ensure semantic coherence
-        
-        Args:
-            document: Document text
-            chunk_size: Target chunk size in characters
-            chunk_overlap: Overlap between chunks in characters
-            
-        Returns:
-            List of document chunks
-        """
-        # Try to use sentence transformers for embeddings if available
-        embedding_available = False
+def _chunk_by_tokens(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Chunk document by token count using tiktoken, prioritizing sentence boundaries.
+
+    Requires the 'tiktoken' library to be installed. Falls back to character chunking
+    if tiktoken is unavailable.
+
+    Args:
+        document: Document text
+        chunk_size: Target chunk size in tokens
+        chunk_overlap: Overlap between chunks in tokens (must be < chunk_size)
+
+    Returns:
+        List of document chunks
+    """
+    global _tiktoken_available
+    if not _tiktoken_available:
+        logger.warning("tiktoken library not found. Falling back to character chunking for _chunk_by_tokens.")
+        # Fallback to character chunking if tiktoken is missing
+        return _chunk_by_characters(document, chunk_size * 4, chunk_overlap * 4) # Estimate char size
+
+    if chunk_overlap >= chunk_size:
+         logger.warning(f"Chunk overlap ({chunk_overlap}) >= chunk size ({chunk_size}). Setting overlap to {chunk_size // 5}.")
+         chunk_overlap = chunk_size // 5 # Ensure overlap is smaller
+
+    try:
+        encoding = tiktoken.get_encoding("cl100k_base")
+        tokens = encoding.encode(document)
+        num_tokens = len(tokens)
+        if num_tokens == 0:
+            return []
+
+        logger.debug(f"Tokenized document: {num_tokens} tokens")
+        chunks = []
+        start_index = 0
+
+        # Define sentence ending punctuation tokens (using common token representations)
         try:
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer('all-MiniLM-L6-v2')  # Small, fast model
-            embedding_available = True
-        except ImportError:
-            # Continue without embeddings
-            pass
-        
-        # 1. Initial structural analysis
-        # Define patterns for structural elements
-        patterns = {
-            'header': r'(?:^|\n)(?:#{1,6}|\*{1,3}|=+|-+|\d+\.) +(.+?)(?:\n|$)',
-            'list_item': r'(?:^|\n)(?:[-*+]|\d+\.) +(.+?)(?:\n|$)',
-            'paragraph': r'(?:^|\n)(.+?)(?:\n\s*\n|$)',
-            'code_block': r'(?:^|\n)```.*?\n(.+?)```(?:\n|$)',
-            'table': r'(?:^|\n)(?:\|.+?\|)(?:\n\|[-:]+\|[-:]+\|)+(?:\n\|.+?\|)+',
-            "quote": r"(?:^|\n)>+(.+?)(?:\n\s*\n|$)",
-        }
-        
-        # Identify structural elements and their positions
-        structure_elements = []
-        for elem_type, pattern in patterns.items():
-            for match in re.finditer(pattern, document, re.DOTALL):
-                structure_elements.append({
-                    'type': elem_type,
-                    'start': match.start(),
-                    'end': match.end(),
-                    'text': match.group(0)
-                })
-        
-        # Sort elements by position
-        structure_elements.sort(key=lambda x: x['start'])
-        
-        # 2. Identify potential semantic boundaries
-        # First, split into sentences
+             end_punctuations = {'.', '?', '', '\n'}
+             end_punctuation_tokens = {
+                 t for p in end_punctuations for t in encoding.encode(p, allowed_special='all')
+             }
+             if '\n\n' in encoding._special_tokens:
+                  end_punctuation_tokens.add(encoding._special_tokens['\n\n'])
+             logger.debug(f"Sentence end tokens identified: {end_punctuation_tokens}")
+        except Exception as enc_ex:
+             logger.warning(f"Could not encode sentence end punctuations: {enc_ex}. Using basic set.")
+             end_punctuation_tokens = {encoding.encode(p)[0] for p in ['.', '?', ''] if encoding.encode(p)}
+
+
+        while start_index < num_tokens:
+            target_end_index = min(start_index + chunk_size, num_tokens)
+            best_end_index = target_end_index
+
+            if target_end_index < num_tokens:
+                look_back_limit = max(start_index, target_end_index - max(1, min(100, chunk_size // 5)))
+                found_boundary = False
+                for i in range(target_end_index - 1, look_back_limit - 1, -1):
+                    if i < num_tokens and tokens[i] in end_punctuation_tokens:
+                        best_end_index = i + 1
+                        found_boundary = True
+                        break
+                if not found_boundary and target_end_index > 0 and tokens[target_end_index-1] in end_punctuation_tokens:
+                     best_end_index = target_end_index
+
+            current_chunk_tokens = tokens[start_index:best_end_index]
+            if not current_chunk_tokens: 
+                break
+            current_chunk = encoding.decode(current_chunk_tokens).strip()
+
+            if current_chunk: 
+                chunks.append(current_chunk)
+
+            next_start_index = max(start_index + 1, best_end_index - chunk_overlap)
+            if next_start_index <= start_index:
+                 next_start_index = start_index + 1
+            start_index = next_start_index
+
+        logger.debug(f"Created {len(chunks)} chunks via token chunking.")
+        return chunks if chunks else ([document] if document else [])
+
+    except Exception as e:
+        logger.error(f"Error in _chunk_by_tokens: {str(e)}\n{traceback.format_exc()}")
+        return _chunk_by_characters(document, chunk_size * 4, chunk_overlap * 4)
+
+def _chunk_by_characters(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Chunk document by character count, prioritizing sentence boundaries.
+
+    Args:
+        document: Document text
+        chunk_size: Target chunk size in characters
+        chunk_overlap: Overlap between chunks in characters (must be < chunk_size)
+
+    Returns:
+        List of document chunks
+    """
+    try:
+        chunks = []
+        i = 0
+        doc_len = len(document)
+        if doc_len == 0:
+            return []
+
+        if chunk_overlap >= chunk_size:
+             logger.warning(f"Chunk overlap ({chunk_overlap}) >= chunk size ({chunk_size}). Setting overlap to {chunk_size // 5}.")
+             chunk_overlap = chunk_size // 5
+
+        while i < doc_len:
+            target_end_index = min(i + chunk_size, doc_len)
+            best_end_index = target_end_index
+
+            if target_end_index < doc_len:
+                search_start = max(i, target_end_index - max(20, min(100, chunk_size // 5)))
+                search_text = document[search_start:target_end_index]
+                boundaries = ['. ', '? ', '! ', '\n\n', '\n- ', '\n* ']
+                found_ends = [search_text.rfind(b) for b in boundaries if search_text.rfind(b) != -1]
+
+                if found_ends:
+                    last_boundary_pos_in_search = max(found_ends)
+                    potential_end = search_start + last_boundary_pos_in_search + 2
+                    if potential_end > i + (chunk_size // 10):
+                         best_end_index = potential_end
+
+            current_chunk = document[i:best_end_index].strip()
+            if current_chunk:
+                 chunks.append(current_chunk)
+
+            next_start_index = max(i + 1, best_end_index - chunk_overlap)
+            if next_start_index <= i:
+                 next_start_index = i + 1
+            i = next_start_index
+
+        return chunks if chunks else ([document] if document else [])
+    except Exception as e:
+        logger.error(f"Error in _chunk_by_characters: {str(e)}\n{traceback.format_exc()}")
+        return [document] if document else []
+
+def _chunk_by_paragraphs(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Chunk document by paragraphs, preserving paragraphs and adding overlap.
+
+    Args:
+        document: Document text
+        chunk_size: Target maximum characters per chunk (soft limit).
+        chunk_overlap: Number of *paragraphs* to overlap (0 or 1 recommended).
+
+    Returns:
+        List of document chunks.
+    """
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', document) if p.strip()]
+    if not paragraphs: 
+        return [document] if document.strip() else []
+
+    chunks = []
+    current_chunk_paras = []
+    current_len = 0
+    join_str = "\n\n"
+    join_len = len(join_str)
+    para_overlap = 1 if chunk_overlap > 0 else 0
+    last_paragraph_for_overlap = None
+
+    for _i, para in enumerate(paragraphs):
+        para_len = len(para)
+
+        if para_len > chunk_size:
+            if current_chunk_paras:
+                chunks.append(join_str.join(current_chunk_paras))
+            chunks.append(para)
+            last_paragraph_for_overlap = para
+            current_chunk_paras = []
+            current_len = 0
+            continue
+
+        projected_len = current_len + para_len + (join_len if current_chunk_paras else 0)
+        if current_chunk_paras and projected_len > chunk_size:
+            chunks.append(join_str.join(current_chunk_paras))
+            overlap_paras = [last_paragraph_for_overlap] if para_overlap > 0 and last_paragraph_for_overlap else []
+            current_chunk_paras = overlap_paras + [para]
+            current_len = sum(len(p) for p in current_chunk_paras) + (join_len * (len(current_chunk_paras) -1) if len(current_chunk_paras)>1 else 0)
+        else:
+            if not current_chunk_paras and para_overlap > 0 and last_paragraph_for_overlap and last_paragraph_for_overlap is not para :
+                 current_chunk_paras.append(last_paragraph_for_overlap)
+                 current_len += len(last_paragraph_for_overlap)
+            current_chunk_paras.append(para)
+            current_len += para_len + (join_len if len(current_chunk_paras) > 1 else 0)
+
+        last_paragraph_for_overlap = para
+
+    if current_chunk_paras:
+        final_chunk_text = join_str.join(current_chunk_paras)
+        if not chunks or chunks[-1] != final_chunk_text:
+             chunks.append(final_chunk_text)
+
+    return chunks if chunks else ([document] if document.strip() else [])
+
+async def _chunk_by_semantic_boundaries(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """Chunk document by semantic boundaries using sentence embeddings. Includes overlap.
+
+    Requires 'sentence-transformers' and 'scikit-learn' libraries.
+    Falls back to paragraph chunking if libraries are unavailable or an error occurs.
+
+    Args:
+        document: Document text
+        chunk_size: Target chunk size in characters (approximate).
+        chunk_overlap: Number of *sentences* to overlap.
+
+    Returns:
+        List of document chunks.
+    """
+    global _semantic_libs_available
+    if not _semantic_libs_available:
+        logger.warning("Semantic libraries not found, falling back to paragraph chunking.")
+        return _chunk_by_paragraphs(document, chunk_size, chunk_overlap)
+
+    try:
+        model = SentenceTransformer('all-MiniLM-L6-v2')
         sentence_pattern = r'(?<!\w\.\w.)(?<![A-Z][a-z]\.)(?<=\.|\?|\!)\s+(?=[A-Z])'
-        sentences = re.split(sentence_pattern, document)
-        
-        # Calculate sentence embeddings if available
-        sentence_embeddings = []
-        sample_indices = []
-        if embedding_available:
-            # Only embed a subset of sentences if document is very large
-            if len(sentences) > 500:
-                # Sample sentences throughout the document
-                step = max(1, len(sentences) // 500)
-                sample_indices = list(range(0, len(sentences), step))
-                sample_sentences = [sentences[i] for i in sample_indices]
-                sentence_embeddings = model.encode(sample_sentences)
-            else:
-                sample_indices = list(range(len(sentences)))
-                sentence_embeddings = model.encode(sentences)
-        
-        # 3. Identify topic shifts using embeddings
-        topic_boundaries = []
-        if embedding_available and len(sentence_embeddings) > 1:
-            # Calculate cosine similarity between adjacent sentences
-            from sklearn.metrics.pairwise import cosine_similarity
+        sentences = [s.strip() for s in re.split(sentence_pattern, document) if s and s.strip()]
+        if not sentences: 
+            return [document] if document.strip() else []
+
+        sentence_embeddings = model.encode(sentences)
+        topic_boundaries = set()
+        if len(sentence_embeddings) > 1:
             similarities = []
             for i in range(len(sentence_embeddings) - 1):
-                sim = cosine_similarity(
-                    [sentence_embeddings[i]], 
-                    [sentence_embeddings[i + 1]]
-                )[0][0]
+                emb1 = sentence_embeddings[i].reshape(1, -1)
+                emb2 = sentence_embeddings[i+1].reshape(1, -1)
+                sim = cosine_similarity(emb1, emb2)[0][0]
                 similarities.append(sim)
-            
-            # Identify significant drops in similarity
-            # (indicates potential topic shift)
-            avg_sim = sum(similarities) / len(similarities)
-            std_sim = (sum((s - avg_sim) ** 2 for s in similarities) / len(similarities)) ** 0.5
-            threshold = avg_sim - std_sim
-            
-            for i, sim in enumerate(similarities):
-                if sim < threshold and i < len(sample_indices) - 1:
-                    topic_boundaries.append(sample_indices[i])
-        
-        # 4. Create chunks based on both structural and semantic boundaries
+
+            if similarities:
+                avg_sim = sum(similarities) / len(similarities)
+                variance = sum((s - avg_sim) ** 2 for s in similarities) / len(similarities)
+                std_sim = variance ** 0.5 if variance >= 0 else 0 # Handle potential floating point issues
+                threshold = avg_sim - (std_sim * 1.0) # Tune this multiplier
+                topic_boundaries = {i for i, sim in enumerate(similarities) if sim < threshold}
+                logger.debug(f"Semantic boundaries identified at sentence indices: {sorted(list(topic_boundaries))}")
+
         chunks = []
-        current_chunk = []
-        current_size = 0
-        
-        # Combine all boundaries
-        all_boundaries = []
-        
-        # Add structural boundaries
-        for elem in structure_elements:
-            if elem['type'] == 'header':
-                all_boundaries.append({'pos': elem['start'], 'weight': 1.0})
-            elif elem['type'] == 'paragraph':
-                all_boundaries.append({'pos': elem['start'], 'weight': 0.5})
-        
-        # Add topic shift boundaries
-        for pos in topic_boundaries:
-            all_boundaries.append({'pos': pos, 'weight': 0.8})
-        
-        # Sort boundaries by position
-        all_boundaries.sort(key=lambda x: x['pos'])
-        
-        # Split document into sections at boundaries
-        if not all_boundaries:
-            # No clear boundaries found, fall back to paragraph chunking
-            return self._chunk_by_paragraphs(document, chunk_size, chunk_overlap)
-        
-        # Create sections from boundaries
-        sections = []
-        last_pos = 0
-        
-        for boundary in all_boundaries:
-            if boundary['pos'] > last_pos:
-                section_text = document[last_pos:boundary['pos']].strip()
-                if section_text:
-                    sections.append(section_text)
-                last_pos = boundary['pos']
-        
-        # Add final section
-        if last_pos < len(document):
-            section_text = document[last_pos:].strip()
-            if section_text:
-                sections.append(section_text)
-        
-        # Process sections into chunks
-        for section in sections:
-            section_size = len(section)
+        current_chunk_sentences = []
+        last_chunk_end_index = -1 # Keep track of where the previous chunk ended *before* overlap
+
+        for i in range(len(sentences)):
+            # Determine start index for this potential chunk (includes overlap)
+            current_start_index = max(0, last_chunk_end_index + 1 - chunk_overlap) if chunks else 0
+            current_chunk_sentences = sentences[current_start_index : i+1]
+            current_chunk_text = " ".join(current_chunk_sentences)
+
+            # Check if we should end the chunk
+            should_end = False
+            # Use boundary index i (end of sentence i, start of sentence i+1 is boundary)
+            if i in topic_boundaries and len(current_chunk_text) > chunk_size // 2: # Boundary found, substantial content
+                 should_end = True
+            elif len(current_chunk_text) > chunk_size * 1.25: # Exceeded target size considerably
+                 should_end = True
+            elif i == len(sentences) - 1: # Last sentence
+                 should_end = True
+
+            if should_end:
+                 # Finalize the text for this chunk (using sentences up to index i)
+                 final_chunk_sentences = sentences[current_start_index : i+1]
+                 final_chunk_text = " ".join(final_chunk_sentences).strip()
+
+                 if final_chunk_text:
+                     chunks.append(final_chunk_text)
+                 last_chunk_end_index = i # Record where this chunk ended (sentence index)
+                 # Next iteration will calculate overlap based on this
+
+        logger.debug(f"Created {len(chunks)} semantic chunks.")
+        return chunks if chunks else ([document] if document.strip() else [])
+
+    except Exception as e:
+        logger.error(f"Error in _chunk_by_semantic_boundaries: {e}\n{traceback.format_exc()}")
+        return _chunk_by_paragraphs(document, chunk_size, chunk_overlap) # Fallback
+
+# --- Standalone Tool Functions --- 
+
+# Removed DocumentTools class and _register_tools method
+
+# Removed @self.mcp.tool(), added @with_tool_metrics, @with_error_handling
+@with_tool_metrics 
+@with_error_handling
+@with_cache(ttl=24 * 60 * 60)  # Cache for 24 hours
+async def chunk_document(
+    document: str,
+    chunk_size: int = 1000,
+    chunk_method: str = "semantic",
+    chunk_overlap: int = 0
+) -> List[str]:
+    """Splits a large document into smaller, manageable text chunks.
+
+    This tool is essential for processing documents that exceed the context window limits
+    of LLMs. It breaks down text using various strategies to maintain coherence.
+
+    Args:
+        document: The full text of the document to be chunked.
+        chunk_size: The target size for each chunk. Interpretation depends on `chunk_method`:
+                    - For "token": Approximate number of tokens (requires tiktoken).
+                    - For "character": Number of characters.
+                    - For "paragraph": Soft maximum number of characters per chunk (keeps paragraphs whole).
+                    - For "semantic": Approximate number of characters (uses sentence embeddings, requires sentence-transformers).
+                    Defaults to 1000.
+        chunk_method: The strategy for splitting the document:
+                      - "token": Chunks by token count, attempting to respect sentence boundaries.
+                                 Best for strict LLM input limits.
+                      - "character": Chunks by character count, attempting to respect sentence boundaries.
+                                   Useful when token counting is unavailable or less critical.
+                      - "paragraph": Splits into paragraphs, then groups paragraphs into chunks near `chunk_size`.
+                                   Preserves paragraph structure.
+                      - "semantic": (Recommended for coherence) Splits into sentences and groups them based
+                                    on semantic similarity using embeddings. Requires extra libraries.
+                                    Overlap is measured in *sentences* for this method.
+                      Defaults to "semantic".
+        chunk_overlap: The number of units (tokens, characters, paragraphs, or sentences depending on `chunk_method`)
+                       to overlap between consecutive chunks. Helps maintain context across chunks.
+                       Set to 0 for no overlap. Default is 0.
+                       Note: For "paragraph" and "semantic", overlap > 0 usually means 1 paragraph/sentence overlap.
+
+    Returns:
+        A list of strings, where each string is a chunk of the original document.
+
+    Raises:
+        ValueError: If an invalid `chunk_method` is provided.
+        Exception: For unexpected errors during chunking.
+    """
+    start_time = time.time()
+    
+    # Super defensive check for document
+    if not document or not isinstance(document, str):
+        logger.warning(f"Invalid document provided: {type(document)}")
+        empty_doc = "" if document is None else str(document)
+        return [empty_doc] if empty_doc else []
+    
+    # Normalize parameters
+    try:
+        chunk_size = int(chunk_size)
+        if chunk_size <= 0:
+            chunk_size = 1000
+            logger.warning(f"Invalid chunk_size corrected to {chunk_size}")
             
-            # If adding this section exceeds chunk size and we already have content,
-            # finish the current chunk
-            if current_size + section_size > chunk_size and current_chunk:
-                chunks.append('\n\n'.join(current_chunk))
+        chunk_overlap = int(chunk_overlap)
+        if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+            chunk_overlap = min(100, chunk_size // 10)
+            logger.warning(f"Invalid chunk_overlap corrected to {chunk_overlap}")
+            
+        if not isinstance(chunk_method, str):
+            chunk_method = "semantic"
+            logger.warning(f"Invalid chunk_method corrected to {chunk_method}")
+    except (TypeError, ValueError) as e:
+        logger.error(f"Parameter normalization error: {str(e)}")
+        chunk_size = 1000
+        chunk_overlap = 100
+        chunk_method = "semantic"
+    
+    try:
+        # Log input parameters for debugging
+        logger.info(
+            f"Starting chunking with method={chunk_method}, size={chunk_size}, overlap={chunk_overlap}, doc_length={len(document)}"
+        )
+        
+        # Select chunking method - call standalone helpers
+        if chunk_method == "token":
+            chunks = _chunk_by_tokens(document, chunk_size, chunk_overlap)
+        elif chunk_method == "character":
+            chunks = _chunk_by_characters(document, chunk_size, chunk_overlap)
+        elif chunk_method == "paragraph":
+            chunks = _chunk_by_paragraphs(document, chunk_size, chunk_overlap)
+        elif chunk_method == "semantic":
+            chunks = await _chunk_by_semantic_boundaries(document, chunk_size, chunk_overlap)
+        else:
+            logger.warning(f"Unknown chunking method '{chunk_method}', defaulting to 'token'.")
+            chunks = _chunk_by_tokens(document, chunk_size, chunk_overlap)
+        
+        # Verify chunks - make sure we got a list
+        if not isinstance(chunks, list):
+            logger.error(f"Chunking returned non-list type: {type(chunks)}")
+            chunks = [document] if document else []
+        
+        # Final validation to ensure we have proper string chunks 
+        valid_chunks = []
+        for i, chunk in enumerate(chunks):
+            if not chunk:  # Skip empty chunks
+                continue
                 
-                # Include the last section from the previous chunk for context
-                if current_chunk and chunk_overlap > 0:
-                    current_chunk = [current_chunk[-1]]
-                    current_size = len(current_chunk[-1])
+            if not isinstance(chunk, str):
+                logger.warning(f"Chunk {i} is not a string: {type(chunk)}, converting")
+                try:
+                    chunk = str(chunk)
+                except Exception:
+                    logger.error(f"Could not convert chunk {i} to string, skipping")
+                    continue
+                    
+            valid_chunks.append(chunk)
+            
+        # If we lost all chunks in validation, return the original document
+        if not valid_chunks and document:
+            logger.warning("No valid chunks after validation, using original document")
+            valid_chunks = [document]
+        
+        # Log chunk info for debugging
+        for i, chunk in enumerate(valid_chunks[:5]):  # Log first 5 chunks only
+            logger.debug(f"Chunk {i}: length={len(chunk)}, starts_with={chunk[:30]}...")
+        
+        processing_time = time.time() - start_time
+        
+        # Log result
+        logger.info(
+            f"Chunked document into {len(valid_chunks)} chunks using {chunk_method} method",
+            emoji_key=TaskType.SUMMARIZATION.value,
+            time=processing_time
+        )
+        
+        return valid_chunks
+        
+    except Exception as e:
+        import traceback
+        err_trace = traceback.format_exc()
+        logger.error(
+            f"Error in chunk_document: {str(e)}\n{err_trace}",
+            emoji_key="error"
+        )
+        # Return document as single chunk if there's an error
+        if document:
+            return [document]
+        else:
+            return []
+
+@with_cache(ttl=24 * 60 * 60) # Cache summaries for 24 hours
+@with_tool_metrics
+@with_error_handling
+async def summarize_document(
+    document: str,
+    provider: str = Provider.OPENAI.value,
+    model: Optional[str] = None,
+    max_length: Optional[int] = None,
+    summary_format: str = "paragraph",
+    is_chunk: bool = False,
+    chunk_index: Optional[int] = None,
+    total_chunks: Optional[int] = None
+) -> Dict[str, Any]:
+    """Generates a concise summary of the provided text using an LLM.
+
+    Useful for condensing large documents or text chunks into key points.
+    Often used after `chunk_document` to summarize parts of a larger document.
+    Results are cached for 24 hours based on the input document and parameters.
+
+    Args:
+        document: The text content to summarize.
+        provider: The name of the LLM provider (e.g., "openai", "anthropic"). Defaults to "openai".
+        model: The specific model ID (e.g., "openai/gpt-4o-mini"). Uses provider default if None.
+        max_length: (Optional) Target maximum length for the summary (in tokens).
+        summary_format: (Optional) Desired format for the summary (e.g., "paragraph", "bullet points"). Default "paragraph".
+        is_chunk: (Internal Use/Optional) Set to True if the input `document` is a chunk of a larger document.
+        chunk_index: (Internal Use/Optional) If `is_chunk` is True, the index of this chunk (1-based).
+        total_chunks: (Internal Use/Optional) If `is_chunk` is True, the total number of chunks.
+
+    Returns:
+        A dictionary containing the summary and metadata:
+        {
+            "summary": "The generated summary text...",
+            "model": "provider/model-used",
+            "provider": "provider-name",
+            "tokens": { ... },    # Token usage for the summarization task
+            "cost": 0.000088,   # Estimated cost in USD
+            "processing_time": 3.14, # Execution time in seconds
+            "cached_result": false, # True if served from cache
+            "success": true
+        }
+
+    Raises:
+        ProviderError: If the provider is unavailable or the LLM request fails.
+        ToolError: For other internal errors.
+    """
+    start_time = time.time()
+    logger.info(f"Summarizing document (length: {len(document)}) with {provider}/{model or 'default'}")
+
+    # Construct prompt
+    prompt = f"Summarize the following text in {summary_format}" 
+    if max_length:
+        prompt += f" with a target maximum length of {max_length} tokens" 
+    if is_chunk and chunk_index is not None and total_chunks is not None:
+        prompt += f" (This is chunk {chunk_index} of {total_chunks}). Focus on the main points of this specific chunk."
+    else:
+        prompt += "."
+    prompt += f"\n\nText:\n{document}"
+
+    try:
+        # Use chat completion for better instruction following
+        from .completion import chat_completion # Import dynamically
+        
+        result = await chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            provider=provider,
+            model=model,
+            temperature=0.3, # Lower temperature for factual summary
+            max_tokens=max_length * 2 if max_length else None # Give ample room
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if result.get("success"):
+            summary_text = result["message"]["content"]
+            logger.success(
+                f"Document summarized successfully with {provider}/{result.get('model', 'unknown')}",
+                emoji_key=TaskType.SUMMARIZATION.value,
+                cost=result.get("cost", 0.0),
+                time=processing_time
+            )
+            return {
+                "summary": summary_text,
+                "model": result.get("model"),
+                "provider": provider,
+                "tokens": result.get("tokens"),
+                "cost": result.get("cost", 0.0),
+                "processing_time": processing_time,
+                "cached_result": result.get("cached_result", False),
+                "success": True
+            }
+        else:
+            raise ProviderError(f"Chat completion for summarization failed: {result.get('error')}", provider=provider, model=model)
+            
+    except Exception as e:
+         error_model = model or f"{provider}/default"
+         if isinstance(e, ProviderError):
+             raise # Re-raise if it's already the correct type
+         else:
+             raise ProviderError(
+                 f"Summarization failed for model '{error_model}': {str(e)}", 
+                 provider=provider, 
+                 model=error_model,
+                 cause=e
+             ) from e
+
+@with_cache(ttl=24 * 60 * 60)
+@with_tool_metrics
+@with_error_handling
+async def extract_entities(
+    document: str,
+    entity_types: List[str],
+    provider: str = Provider.OPENAI.value,
+    model: Optional[str] = None,
+    output_format: str = "list"
+) -> Dict[str, Any]:
+    """Extracts specific types of named entities (e.g., names, places, dates) from text using an LLM.
+
+    Use this tool to identify and pull out structured information from unstructured text.
+    Can operate on full documents or individual chunks.
+    Results are cached for 24 hours.
+
+    Args:
+        document: The text content to extract entities from.
+        entity_types: A list of strings specifying the types of entities to extract
+                      (e.g., ["Person Name", "Organization", "Location", "Date", "Product Name", "Email Address"]).
+                      Be specific for better results.
+        provider: The name of the LLM provider. Defaults to "openai".
+        model: The specific model ID. Uses provider default if None.
+        output_format: (Optional) Desired format for the results ("list" or "json").
+                       - "list": Returns entities grouped by type: `{"Person Name": ["Alice", "Bob"], ...}`
+                       - "json": Attempts to return a structured JSON string (model dependent).
+                       Defaults to "list".
+
+    Returns:
+        A dictionary containing the extracted entities and metadata:
+        {
+            "entities": { ... }, # Structure depends on output_format
+            "model": "provider/model-used",
+            "provider": "provider-name",
+            "tokens": { ... },
+            "cost": 0.000095,
+            "processing_time": 2.8,
+            "cached_result": false,
+            "success": true
+        }
+
+    Raises:
+        ToolInputError: If `entity_types` is empty or invalid.
+        ProviderError: If the provider/LLM fails.
+        ToolError: For other internal errors.
+    """
+    start_time = time.time()
+    if not entity_types or not isinstance(entity_types, list):
+        raise ToolInputError("entity_types must be a non-empty list of strings.", param_name="entity_types", provided_value=entity_types)
+    
+    logger.info(f"Extracting entities ({', '.join(entity_types)}) from document (length: {len(document)}) with {provider}/{model or 'default'}")
+    
+    # Construct prompt
+    entities_str = ", ".join(entity_types)
+    prompt = f"Extract the following types of entities from the text below: {entities_str}.\n"
+    if output_format == "json":
+        prompt += "Format the output as a JSON object where keys are the entity types and values are lists of the extracted entities found in the text.\n"
+    else: # Default to list/dict format
+        prompt += "List the extracted entities grouped by their type. If no entities of a type are found, omit the type or provide an empty list.\n"
+    prompt += f"\nText:\n{document}"
+
+    try:
+        from .completion import chat_completion # Import dynamically
+        result = await chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            provider=provider,
+            model=model,
+            temperature=0.1 # Low temperature for factual extraction
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if result.get("success"):
+            extracted_text = result["message"]["content"]
+            entities_data = extracted_text # Default to raw text if parsing fails
+            
+            # Attempt to parse based on requested format
+            try:
+                if output_format == "json":
+                    # Remove potential markdown code fences
+                    extracted_text = re.sub(r"^```json\n?|\n?```$", "", extracted_text.strip())
+                    entities_data = json.loads(extracted_text)
                 else:
-                    current_chunk = []
-                    current_size = 0
+                    # Basic parsing for list format (assumes Type: item1, item2...)
+                    parsed_entities = {}
+                    lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
+                    current_type = None
+                    for line in lines:
+                        match = re.match(r"^(.*?):(.*)", line)
+                        if match:
+                            current_type = match.group(1).strip()
+                            items_str = match.group(2).strip()
+                            if current_type not in parsed_entities:
+                                 parsed_entities[current_type] = []
+                            if items_str: 
+                                parsed_entities[current_type].extend([item.strip() for item in items_str.split(',') if item.strip()])
+                        elif current_type and line.startswith(('-', '*')):
+                             # Handle bullet points under a type
+                             item = line[1:].strip()
+                             if item:
+                                 parsed_entities[current_type].append(item)
+                        elif current_type:
+                             # Assume continuation of the last type if not formatted clearly
+                             items_str = line.strip()
+                             if items_str:
+                                  parsed_entities[current_type].extend([item.strip() for item in items_str.split(',') if item.strip()])
+                                  
+                    # Filter based on originally requested types for safety
+                    entities_data = {k: v for k, v in parsed_entities.items() if k in entity_types}
+                    
+            except json.JSONDecodeError:
+                logger.warning(f"Failed to parse LLM output as JSON for entity extraction. Returning raw text.")
+                entities_data = {"raw_output": extracted_text} # Return raw if JSON fails
+            except Exception as parse_err:
+                 logger.warning(f"Failed to parse LLM output for entity extraction ({output_format}): {parse_err}. Returning raw text.")
+                 entities_data = {"raw_output": extracted_text}
+
+            logger.success(
+                f"Entities extracted successfully with {provider}/{result.get('model', 'unknown')}",
+                emoji_key=TaskType.EXTRACTION.value,
+                cost=result.get("cost", 0.0),
+                time=processing_time
+            )
+            return {
+                "entities": entities_data,
+                "model": result.get("model"),
+                "provider": provider,
+                "tokens": result.get("tokens"),
+                "cost": result.get("cost", 0.0),
+                "processing_time": processing_time,
+                "cached_result": result.get("cached_result", False),
+                "success": True
+            }
+        else:
+            raise ProviderError(f"Chat completion for entity extraction failed: {result.get('error')}", provider=provider, model=model)
             
-            # If a single section is larger than chunk size, split it
-            if section_size > chunk_size:
-                # If current chunk has content, finish it first
-                if current_chunk:
-                    chunks.append('\n\n'.join(current_chunk))
-                    current_chunk = []
-                    current_size = 0
+    except Exception as e:
+        error_model = model or f"{provider}/default"
+        if isinstance(e, ProviderError):
+             raise # Re-raise if it's already the correct type
+        else:
+             raise ProviderError(
+                 f"Entity extraction failed for model '{error_model}': {str(e)}", 
+                 provider=provider, 
+                 model=error_model,
+                 cause=e
+             ) from e
+
+@with_tool_metrics
+@with_error_handling
+async def generate_qa_pairs(
+    document: str,
+    num_pairs: int = 5,
+    provider: str = Provider.OPENAI.value,
+    model: Optional[str] = None
+) -> Dict[str, Any]:
+    """Generates question-answer pairs based on the provided text content using an LLM.
+
+    Useful for creating study materials, verifying comprehension, or generating training data
+    for question-answering systems. Can operate on full documents or chunks.
+
+    Args:
+        document: The text content to generate Q&A pairs from.
+        num_pairs: The desired number of question-answer pairs to generate. Default 5.
+        provider: The name of the LLM provider. Defaults to "openai".
+        model: The specific model ID. Uses provider default if None.
+
+    Returns:
+        A dictionary containing the generated Q&A pairs and metadata:
+        {
+            "qa_pairs": [
+                {"question": "What is...?", "answer": "It is..."},
+                {"question": "Why did...?", "answer": "Because..."},
+                ...
+            ],
+            "model": "provider/model-used",
+            "provider": "provider-name",
+            "tokens": { ... },
+            "cost": 0.000110,
+            "processing_time": 4.5,
+            "success": true
+        }
+
+    Raises:
+        ProviderError: If the provider/LLM fails.
+        ToolError: For other internal errors, including failure to parse the LLM output.
+    """
+    start_time = time.time()
+    logger.info(f"Generating {num_pairs} Q&A pairs from document (length: {len(document)}) with {provider}/{model or 'default'}")
+    
+    # Construct prompt
+    prompt = f"Generate exactly {num_pairs} question and answer pairs based on the following text. " \
+             f"Format the output as a JSON list of objects, where each object has a 'question' key and an 'answer' key. " \
+             f"Ensure the questions are relevant to the main topics and the answers are accurate according to the text.\n\n" \
+             f"Text:\n{document}"
+
+    try:
+        from .completion import chat_completion # Import dynamically
+        result = await chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            provider=provider,
+            model=model,
+            temperature=0.5 # Moderate temperature for some creativity in questions
+        )
+        
+        processing_time = time.time() - start_time
+        
+        if result.get("success"):
+            qa_text = result["message"]["content"]
+            qa_pairs_data = []
+            try:
+                # Attempt to parse the JSON list
+                # Remove potential markdown code fences
+                qa_text = re.sub(r"^```json\n?|\n?```$", "", qa_text.strip())
+                qa_pairs_data = json.loads(qa_text)
+                if not isinstance(qa_pairs_data, list):
+                    raise ValueError("LLM did not return a JSON list.")
+                # Basic validation of list items
+                for item in qa_pairs_data:
+                     if not isinstance(item, dict) or 'question' not in item or 'answer' not in item:
+                          raise ValueError("List items are not valid Q&A objects (missing keys).")
+                          
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.error(f"Failed to parse Q&A pairs from LLM output: {e}. Raw output:\n{qa_text}")
+                # Raise a ToolError as the tool failed its primary function
+                raise ToolError(status_code=500, detail=f"Failed to parse generated Q&A pairs from the LLM response: {e}")
+
+            logger.success(
+                f"Q&A pairs generated successfully with {provider}/{result.get('model', 'unknown')}",
+                emoji_key=TaskType.QUESTION_ANSWERING.value,
+                cost=result.get("cost", 0.0),
+                time=processing_time,
+                pairs_generated=len(qa_pairs_data)
+            )
+            return {
+                "qa_pairs": qa_pairs_data,
+                "model": result.get("model"),
+                "provider": provider,
+                "tokens": result.get("tokens"),
+                "cost": result.get("cost", 0.0),
+                "processing_time": processing_time,
+                # "cached_result": result.get("cached_result", False), # Cache not enabled by default
+                "success": True
+            }
+        else:
+             raise ProviderError(f"Chat completion for Q&A generation failed: {result.get('error')}", provider=provider, model=model)
+
+    except Exception as e:
+        error_model = model or f"{provider}/default"
+        if isinstance(e, (ProviderError, ToolError)):
+             raise # Re-raise if it's already the correct type
+        else:
+             raise ProviderError(
+                 f"Q&A generation failed for model '{error_model}': {str(e)}", 
+                 provider=provider, 
+                 model=error_model,
+                 cause=e
+             ) from e
+
+@with_tool_metrics
+@with_error_handling
+async def process_document_batch(
+    documents: List[str],
+    operations: List[Dict[str, Any]],
+    max_concurrency: int = 5
+) -> List[Dict[str, Any]]:
+    """Processes a batch of documents through a sequence of operations (e.g., chunk, summarize).
+
+    This tool orchestrates multiple document processing steps (like chunking followed by summarizing)
+    across a list of documents, running operations concurrently where possible.
+
+    NOTE: This is a higher-level orchestration tool. Consider using `execute_optimized_workflow`
+          from the optimization tools for more complex, cost/model-aware workflows.
+
+    Args:
+        documents: A list of strings, where each string is a document to process.
+        operations: A list of dictionaries, each defining an operation to perform sequentially.
+                    Each operation dict should contain:
+                    - 'operation': Name of the tool function to call (e.g., 'chunk_document', 'summarize_document').
+                    - 'params': Dictionary of parameters for the tool function (excluding the main document input).
+                    - 'input_key': (Optional) Key in the results dict of the *previous* operation to use as input.
+                                     If omitted or first operation, uses the original document.
+                    - 'output_key': Key under which to store the result of this operation.
+        max_concurrency: Maximum number of documents to process in parallel for each operation stage. Default 5.
+
+    Returns:
+        A list of dictionaries, one for each input document, containing the results of all operations applied to it.
+        Example for one document:
+        {
+            "original_document_index": 0,
+            "chunked_content": ["chunk1...", "chunk2..."], # Result of 'chunk_document' stored under 'chunked_content'
+            "summary": "Overall summary...",             # Result of 'summarize_document'
+            "error": null                             # Error message if any operation failed for this document
+        }
+
+    Raises:
+        ToolError: For invalid operation definitions or major processing failures.
+                   Individual document/operation errors are captured in the results list.
+    """
+    start_time = time.time()
+    logger.info(f"Starting batch processing for {len(documents)} documents with {len(operations)} operations.")
+
+    # Map operation names to functions
+    op_map = {
+        "chunk_document": chunk_document,
+        "summarize_document": summarize_document,
+        "extract_entities": extract_entities,
+        "generate_qa_pairs": generate_qa_pairs
+    }
+
+    # Initialize results structure
+    batch_results = [
+        {"original_document_index": i, "error": None}
+        for i in range(len(documents))
+    ]
+
+    # Use original documents as the first input
+    current_inputs = documents
+
+    for op_index, op_def in enumerate(operations):
+        op_name = op_def.get("operation")
+        op_params = op_def.get("params", {})
+        input_key = op_def.get("input_key") # If None, uses current_inputs
+        output_key = op_def.get("output_key")
+
+        if not op_name or op_name not in op_map or not output_key:
+            raise ToolInputError(f"Invalid operation definition at index {op_index}: Must have valid 'operation' ({list(op_map.keys())}) and 'output_key'.")
+        
+        op_func = op_map[op_name]
+        logger.info(f"Executing Operation {op_index + 1}: {op_name} (Output Key: {output_key}) on {len(current_inputs)} items...")
+
+        tasks = []
+        semaphore = asyncio.Semaphore(max_concurrency)
+        results_for_next_stage = [None] * len(documents) # Prepare storage for this stage's output
+
+        async def run_operation(index, input_data):
+            async with semaphore:
+                if batch_results[index]["error"]: # Skip if previous stage failed for this doc
+                    return None 
                 
-                # Split the section using paragraph chunking
-                section_chunks = self._chunk_by_paragraphs(section, chunk_size, chunk_overlap)
-                for s_chunk in section_chunks:
-                    chunks.append(s_chunk)
-            else:
-                # Add section to current chunk
-                current_chunk.append(section)
-                current_size += section_size + 4  # Add 4 for the newlines
+                # Determine the actual input for this operation
+                actual_input = None
+                if input_key:
+                     # Find the result from the previous stage for this document index
+                     prev_result = batch_results[index].get(input_key)
+                     if prev_result is None:
+                          error_msg = f"Input key '{input_key}' not found in results for document {index} for operation '{op_name}'"
+                          batch_results[index]["error"] = error_msg
+                          logger.warning(error_msg)
+                          return None
+                     actual_input = prev_result
+                else:
+                     # Use the item from the current_inputs list (original doc or result of prev op)
+                     actual_input = input_data
+                
+                if actual_input is None: # Should not happen if logic above is correct, but safety check
+                     error_msg = f"Could not determine input for operation '{op_name}' on document {index}."
+                     batch_results[index]["error"] = error_msg
+                     logger.error(error_msg)
+                     return None
+
+                try:
+                    # Assume the first arg is the main input (document/text)
+                    # This might need adjustment for tools with different signatures
+                    if op_name == "chunk_document":
+                        result = await op_func(document=actual_input, **op_params)
+                    elif op_name in ["summarize_document", "extract_entities", "generate_qa_pairs"]:
+                         # These tools return dicts, we usually want the main result field
+                         result_dict = await op_func(document=actual_input, **op_params)
+                         if result_dict.get("success"):
+                              if op_name == "summarize_document":
+                                   result = result_dict.get("summary")
+                              elif op_name == "extract_entities":
+                                   result = result_dict.get("entities")
+                              elif op_name == "generate_qa_pairs":
+                                   result = result_dict.get("qa_pairs")
+                              else:
+                                   result = result_dict # Fallback
+                         else:
+                              raise ToolError(status_code=500, detail=result_dict.get("error", "Operation failed"))
+                    else:
+                        # Default call structure - might need refinement
+                        result = await op_func(actual_input, **op_params)
+                        
+                    # Store result for the next stage
+                    results_for_next_stage[index] = result 
+                    return result
+                except Exception as e:
+                    error_msg = f"Error during '{op_name}' on document {index}: {type(e).__name__}: {str(e)}"
+                    batch_results[index]["error"] = error_msg # Store error at the document level
+                    logger.error(error_msg, exc_info=False) # Log error but don't need full trace always
+                    return None # Indicate failure for this document
+
+        # Create tasks based on the correct input source for this stage
+        if input_key:
+             # Input comes from previous results, use batch_results index
+             tasks = [run_operation(i, None) for i in range(len(documents))] 
+        else:
+             # Input comes from current_inputs list (original docs or results list from prior stage)
+             tasks = [run_operation(i, current_inputs[i]) for i in range(len(current_inputs))] 
+             
+        op_results = await asyncio.gather(*tasks)
         
-        # Add the last chunk if there's anything left
-        if current_chunk:
-            chunks.append('\n\n'.join(current_chunk))
+        # Store results in the main batch_results structure
+        for i, res in enumerate(op_results):
+            if batch_results[i]["error"] is None: # Only store if no error occurred for this doc
+                 if res is not None: # Check if the operation itself succeeded
+                    batch_results[i][output_key] = res
+                 else:
+                      # If res is None but no error was set, something went wrong internally
+                      if batch_results[i]["error"] is None:
+                           batch_results[i]["error"] = f"Operation '{op_name}' did not return a result for document {i}."
         
-        return chunks
+        # Prepare inputs for the *next* operation stage
+        # If the current op failed for a doc, the input for next stage will be None
+        current_inputs = results_for_next_stage 
+
+    processing_time = time.time() - start_time
+    logger.success(f"Batch processing finished in {processing_time:.2f} seconds.")
+    return batch_results

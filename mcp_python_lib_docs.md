@@ -634,6 +634,160 @@ MCP servers declare capabilities during initialization:
 | `logging`   | -                            | Server logging configuration       |
 | `completion`| -                            | Argument completion suggestions    |
 
+## Tool Composition Patterns
+
+When building complex workflows with MCP, effectively chaining tools together is crucial for success:
+
+```python
+from mcp.server.fastmcp import FastMCP, Context
+
+mcp = FastMCP("Analytics Pipeline")
+
+@mcp.tool()
+async def fetch_data(source: str, date_range: str, ctx: Context) -> str:
+    """Fetch raw data from a source for analysis"""
+    # Fetch operation that might be slow
+    await ctx.report_progress(0.3, 1.0)
+    return f"Data from {source} for {date_range}"
+
+@mcp.tool()
+def transform_data(raw_data: str, format_type: str = "json") -> dict:
+    """Transform raw data into structured format"""
+    # Data transformation logic
+    return {"processed": raw_data, "format": format_type}
+
+@mcp.tool()
+def analyze_data(data: dict, metric: str) -> str:
+    """Analyze transformed data with specific metrics"""
+    # Analysis logic
+    return f"Analysis of {metric}: Result based on {data['processed']}"
+
+# Usage pattern (for LLMs):
+# 1. First fetch the raw data
+# 2. Transform the fetched data
+# 3. Then analyze the transformed result
+```
+
+**Pattern: Sequential Dependency Chain**
+```
+fetch_data → transform_data → analyze_data
+```
+
+**Pattern: Parallel Processing with Aggregation**
+```python
+@mcp.tool()
+async def parallel_process(sources: list[str], ctx: Context) -> dict:
+    """Process multiple sources in parallel and aggregate results"""
+    results = {}
+    for i, source in enumerate(sources):
+        # Get data for each source (these could be separate tool calls)
+        data = await fetch_data(source, "last_week", ctx)
+        transformed = transform_data(data)
+        results[source] = transformed
+        await ctx.report_progress(i / len(sources), 1.0)
+    return results
+```
+
+## Error Recovery Strategies
+
+When tools fail or return unexpected results, LLMs should follow these recovery patterns:
+
+**Strategy: Retry with Backoff**
+```python
+@mcp.tool()
+async def resilient_operation(resource_id: str, ctx: Context) -> str:
+    """Example of resilient operation with retry logic"""
+    MAX_ATTEMPTS = 3
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        try:
+            # Attempt the operation
+            return f"Successfully processed {resource_id}"
+        except Exception as e:
+            if attempt == MAX_ATTEMPTS:
+                # If final attempt, report the failure clearly
+                ctx.warning(f"Operation failed after {MAX_ATTEMPTS} attempts: {str(e)}")
+                return f"ERROR: Could not process {resource_id} - {str(e)}"
+            # For earlier attempts, log and retry
+            ctx.info(f"Attempt {attempt} failed, retrying...")
+            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+```
+
+**Strategy: Fallback Chain**
+```python
+@mcp.tool()
+async def get_data_with_fallbacks(primary_source: str, fallback_sources: list[str] = None) -> dict:
+    """Try multiple data sources in order until one succeeds"""
+    sources = [primary_source] + (fallback_sources or [])
+    
+    errors = []
+    for source in sources:
+        try:
+            # Try to get data from this source
+            result = {"source": source, "data": f"Data from {source}"}
+            return result
+        except Exception as e:
+            # Record the error and try the next source
+            errors.append(f"{source}: {str(e)}")
+    
+    # If all sources failed, return a clear error with history
+    return {"error": "All sources failed", "attempts": errors}
+```
+
+**Error Reporting Best Practices**
+- Always return structured error information (not just exception text)
+- Include specific error codes when possible
+- Provide actionable suggestions for recovery
+- Log detailed error context for debugging
+
+## Resource Selection Optimization
+
+Efficiently managing resources within context limits requires strategic selection:
+
+**Progressive Loading Pattern**
+```python
+@mcp.tool()
+async def analyze_document(doc_uri: str, ctx: Context) -> str:
+    """Analyze a document with progressively loaded sections"""
+    # First load metadata for quick access
+    metadata = await ctx.read_resource(f"{doc_uri}/metadata")
+    
+    # Based on metadata, selectively load relevant sections
+    relevant_sections = identify_relevant_sections(metadata)
+    
+    # Only load sections that are actually needed
+    section_data = {}
+    for section in relevant_sections:
+        section_data[section] = await ctx.read_resource(f"{doc_uri}/sections/{section}")
+    
+    # Process with only the necessary context
+    return f"Analysis of {len(section_data)} relevant sections"
+```
+
+**Context Budget Management**
+```python
+@mcp.tool()
+async def summarize_large_dataset(dataset_uri: str, ctx: Context) -> str:
+    """Summarize a large dataset while respecting context limits"""
+    # Get total size to plan the approach
+    metadata = await ctx.read_resource(f"{dataset_uri}/metadata")
+    total_size = metadata.get("size_kb", 0)
+    
+    if total_size > 100:  # Arbitrary threshold
+        # For large datasets, use chunking approach
+        chunks = await ctx.read_resource(f"{dataset_uri}/summary_chunks")
+        return f"Summary of {len(chunks)} chunks: {', '.join(chunks)}"
+    else:
+        # For smaller datasets, process everything at once
+        full_data = await ctx.read_resource(dataset_uri)
+        return f"Complete analysis of {dataset_uri}"
+```
+
+**Resource Relevance Filtering**
+- Focus on the most recent/relevant data first
+- Filter resources to match the specific query intent
+- Use metadata to decide which resources to load
+- Prefer sampling representative data over loading everything
+
 ## Documentation
 
 - [Model Context Protocol documentation](https://modelcontextprotocol.io)

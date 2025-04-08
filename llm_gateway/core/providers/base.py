@@ -244,32 +244,27 @@ class BaseProvider(abc.ABC):
         return result, processing_time
 
 
-def get_provider(provider_name: str, **kwargs) -> BaseProvider:
-    """Factory function to get a provider instance by name.
+async def get_provider(provider_name: str, **kwargs) -> BaseProvider:
+    """Factory function to get an initialized provider instance by name.
     
     Args:
         provider_name: Provider name
         **kwargs: Provider-specific options
         
     Returns:
-        BaseProvider: Provider instance
+        BaseProvider: Initialized provider instance
         
     Raises:
-        ValueError: If provider name is invalid
+        ValueError: If provider name is invalid or initialization fails
     """
-    # Get the current config
     cfg = get_config()
-    
-    # Normalize provider name
     provider_name = provider_name.lower().strip()
     
-    # Import here to avoid circular imports
     from llm_gateway.core.providers.anthropic import AnthropicProvider
     from llm_gateway.core.providers.deepseek import DeepSeekProvider
     from llm_gateway.core.providers.gemini import GeminiProvider
     from llm_gateway.core.providers.openai import OpenAIProvider
     
-    # Map provider names to classes
     providers = {
         Provider.OPENAI.value: OpenAIProvider,
         Provider.ANTHROPIC.value: AnthropicProvider,
@@ -280,15 +275,18 @@ def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     if provider_name not in providers:
         raise ValueError(f"Invalid provider name: {provider_name}")
         
-    # Get provider-specific config
     provider_cfg = getattr(cfg, 'providers', {}).get(provider_name, None)
     
-    # Only use config API key if not provided in kwargs
     if 'api_key' not in kwargs and provider_cfg and provider_cfg.api_key:
         kwargs['api_key'] = provider_cfg.api_key
     
-    # Instantiate the provider class with config API key and any extra kwargs
     provider_class = providers[provider_name]
     instance = provider_class(**kwargs)
     
+    # Initialize the provider immediately
+    initialized = await instance.initialize()
+    if not initialized:
+        # Raise an error if initialization fails to prevent returning an unusable instance
+        raise ValueError(f"Failed to initialize provider: {provider_name}")
+
     return instance

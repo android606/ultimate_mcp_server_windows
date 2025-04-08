@@ -1,5 +1,6 @@
 """Helper functions for the LLM Gateway CLI."""
 import json
+import sys
 from typing import Any, Dict, List, Optional, Union
 
 from rich.console import Console
@@ -13,7 +14,7 @@ from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
-console = Console()
+console = Console(file=sys.stderr)
 
 
 def print_cost_table() -> None:

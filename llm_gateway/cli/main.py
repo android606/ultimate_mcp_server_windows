@@ -13,7 +13,6 @@ from llm_gateway.cli.commands import (
     run_server,
     test_provider,
 )
-from llm_gateway.config import config
 from llm_gateway.utils import get_logger
 
 # Use the consistent namespace approach
@@ -66,6 +65,13 @@ def create_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Number of worker processes (default: from config)"
+    )
+    server_parser.add_argument(
+        "--transport-mode",
+        type=str,
+        choices=["sse", "stdio"],
+        default="stdio",
+        help="Transport mode to use: 'sse' for HTTP server or 'stdio' for Claude Desktop (default: stdio)"
     )
     
     # List providers command
@@ -214,7 +220,8 @@ def main(args: Optional[List[str]] = None) -> int:
                 host=parsed_args.host,
                 port=parsed_args.port,
                 workers=parsed_args.workers,
-                log_level=log_level
+                log_level=log_level,
+                transport_mode=parsed_args.transport_mode
             )
             return 0
             
@@ -241,7 +248,7 @@ def main(args: Optional[List[str]] = None) -> int:
             prompt = parsed_args.prompt
             if prompt is None:
                 if sys.stdin.isatty():
-                    print("Enter prompt (Ctrl+D to finish):")
+                    sys.stderr.write("Enter prompt (Ctrl+D to finish):\n")
                 prompt = sys.stdin.read().strip()
             
             asyncio.run(generate_completion(

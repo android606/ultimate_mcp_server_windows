@@ -59,7 +59,16 @@ class Logger:
             capture_output: Whether to capture and store log output
         """
         self.name = name
-        self.console = console or globals().get("console", Console()) # Use local console instance
+        # Use provided console or get global console, defaulting to stderr console
+        if console is not None:
+            self.console = console
+        else:
+            global_console = globals().get("console")
+            if global_console is not None:
+                self.console = global_console
+            else:
+                self.console = Console(file=sys.stderr)
+                
         self.level = level.lower()
         self.show_timestamps = show_timestamps
         self.component = component

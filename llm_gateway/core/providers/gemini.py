@@ -1,9 +1,8 @@
 """Google Gemini provider implementation."""
 import time
-import asyncio
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from google import genai  # Changed import statement
+from google import genai
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
@@ -146,7 +145,7 @@ class GeminiProvider(BaseProvider):
             
             # Log success
             self.logger.success(
-                f"Gemini completion successful",
+                "Gemini completion successful",
                 emoji_key="success",
                 model=model,
                 tokens={
@@ -249,7 +248,7 @@ class GeminiProvider(BaseProvider):
             # Log success
             processing_time = time.time() - start_time
             self.logger.success(
-                f"Gemini streaming completion successful",
+                "Gemini streaming completion successful",
                 emoji_key="success",
                 model=model,
                 chunks=total_chunks,
@@ -287,6 +286,11 @@ class GeminiProvider(BaseProvider):
             },
             {
                 "id": "gemini-2.0-pro",
+                "provider": self.provider_name,
+                "description": "More capable Gemini model",
+            },
+            {
+                "id": "gemini-2.5-pro-preview-03-25",
                 "provider": self.provider_name,
                 "description": "Most capable Gemini model",
             },

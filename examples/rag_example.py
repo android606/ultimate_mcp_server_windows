@@ -336,9 +336,9 @@ async def run_rag_demo():
         if provider_key == "gemini":
             model = "gemini-2.0-flash-lite"
         elif provider_key == "openai":
-            model = "gpt-3.5-turbo"
+            model = "gpt-4o-mini"
         elif provider_key == "anthropic":
-            model = "claude-3-haiku-20240307"
+            model = "claude-3-haiku-latest"
         else:
             # Get first available model or fallback
             models = getattr(provider, 'available_models', [])

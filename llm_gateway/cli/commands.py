@@ -23,7 +23,7 @@ from llm_gateway.services.cache import get_cache_service
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
-console = Console()
+console = Console(file=sys.stderr)  # Use stderr to avoid interfering with MCP protocol
 
 
 def run_server(
@@ -31,6 +31,7 @@ def run_server(
     port: Optional[int] = None,
     workers: Optional[int] = None,
     log_level: Optional[str] = None,
+    transport_mode: str = "sse",
 ) -> None:
     """Run the LLM Gateway server.
     
@@ -39,6 +40,7 @@ def run_server(
         port: Port to listen on (default: from config)
         workers: Number of worker processes (default: from config)
         log_level: Log level (default: from config)
+        transport_mode: Transport mode to use ('sse' or 'stdio') (default: sse)
     """
     # Get the current config
     cfg = get_config()
@@ -60,6 +62,7 @@ def run_server(
     console.print(f"Port: [cyan]{cfg.server.port}[/cyan]")
     console.print(f"Workers: [cyan]{cfg.server.workers}[/cyan]")
     console.print(f"Log level: [cyan]{effective_log_level.upper()}[/cyan]")
+    console.print(f"Transport mode: [cyan]{transport_mode}[/cyan]")
     console.print()
     
     # Start server using the factory pattern 
@@ -68,6 +71,7 @@ def run_server(
         port=cfg.server.port,
         workers=cfg.server.workers,
         log_level=effective_log_level,
+        transport_mode=transport_mode,
     )
 
 
@@ -333,7 +337,7 @@ async def generate_completion(
             full_text = ""
             async for chunk, metadata in stream:  # noqa: B007
                 console.print(chunk, end="")
-                sys.stdout.flush()
+                sys.stderr.flush()  # Use stderr instead of stdout
                 full_text += chunk
             
             elapsed_time = time.time() - start_time

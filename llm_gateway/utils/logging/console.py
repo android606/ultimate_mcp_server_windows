@@ -4,20 +4,27 @@ Rich console configuration for Gateway logging system.
 This module provides a configured Rich console instance for beautiful terminal output,
 along with utility functions for common console operations.
 """
-from typing import Optional, Dict, Any, List, Union, Tuple
+import sys  # Add this import
 from contextlib import contextmanager
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+from rich.box import ROUNDED, Box
 from rich.console import Console, ConsoleRenderable
-from rich.text import Text
+from rich.live import Live
 from rich.panel import Panel
-from rich.table import Table
-from rich.box import Box, ROUNDED
-from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn
-from rich.progress import TimeRemainingColumn, SpinnerColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.status import Status
 from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
 from rich.traceback import install as install_rich_traceback
-from rich.live import Live
 from rich.tree import Tree
 
 # Use relative import for theme
@@ -33,6 +40,7 @@ console = Console(
     record=False, # Set to True to capture output for testing
     width=None,  # Auto-width, or set a fixed width if desired
     color_system="auto", # "auto", "standard", "256", "truecolor"
+    file=sys.stderr,  # Always use stderr to avoid interfering with JSON-RPC messages on stdout
 )
 
 # Install rich traceback handler for beautiful error tracebacks
