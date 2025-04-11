@@ -8,18 +8,21 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from rich import box
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
+
 from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway  # Use Gateway to get MCP
 from llm_gateway.tools.meta import MetaTools  # Import MetaTools
 from llm_gateway.utils import get_logger
+
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.markup import escape
-from rich import box
+
 # ----------------------
 
 # Initialize logger
@@ -204,7 +207,8 @@ async def run_comparison_demo():
         "Completeness: Does it mention 2-3 distinct and significant benefits?",
     ]
     console.print("[cyan]Evaluation Criteria:[/cyan]")
-    for i, criterion in enumerate(criteria): console.print(f"  {i+1}. {escape(criterion)}")
+    for i, criterion in enumerate(criteria): 
+        console.print(f"  {i+1}. {escape(criterion)}")
 
     # --- Criteria Weights (Optional) ---
     criteria_weights = {

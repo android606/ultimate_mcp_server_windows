@@ -9,21 +9,22 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from decouple import config as decouple_config
+from rich import box
+from rich.live import Live
+from rich.markup import escape
+from rich.rule import Rule
+from rich.table import Table
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.analytics.metrics import get_metrics_tracker
 from llm_gateway.services.analytics.reporting import AnalyticsReporting
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import display_analytics_metrics
+
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.display import display_analytics_metrics
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.live import Live
-from rich.markup import escape
-from rich import box
+
 # ----------------------
 
 # Initialize logger
@@ -43,6 +44,7 @@ async def simulate_llm_usage():
         Provider.OPENAI: decouple_config("OPENAI_API_KEY", default=None),
         Provider.ANTHROPIC: decouple_config("ANTHROPIC_API_KEY", default=None),
         Provider.GEMINI: decouple_config("GEMINI_API_KEY", default=None),
+        Provider.OPENROUTER: decouple_config("OPENROUTER_API_KEY", default=None),
     }
 
     for provider_enum, api_key in provider_configs.items():

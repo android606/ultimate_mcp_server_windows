@@ -2,27 +2,25 @@
 """Demo of advanced extraction capabilities using LLM Gateway MCP server."""
 import asyncio
 import json
+import os
 import sys
 import time
-import os
 from pathlib import Path
-from typing import Any, Dict, List
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.tools.extraction import ExtractionTools
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.logging.console import console
 from llm_gateway.utils.display import parse_and_display_result
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.markup import escape
-from rich import box
+from llm_gateway.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.advanced_extraction")
@@ -174,7 +172,7 @@ async def run_json_extraction_example():
     logger.info("Extracting structured JSON data from text...", emoji_key="processing")
     
     try:
-        start_time = time.time()
+        start_time = time.time()  # noqa: F841
         
         # Call the extract_json method
         result = await gateway.mcp.call_tool("extract_json", {

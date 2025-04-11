@@ -33,8 +33,6 @@ logger = get_logger("example.advanced_vector_search")
 
 # Get API key from environment
 openai_api_key = decouple_config('OPENAI_API_KEY', default=None)
-# Add other keys if needed, e.g., for Cohere
-# cohere_api_key = decouple_config('COHERE_API_KEY', default=None)
 
 # Initialize global gateway
 gateway = None

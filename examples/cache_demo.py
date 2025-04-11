@@ -8,105 +8,20 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from decouple import config as decouple_config
+from rich.markup import escape
+from rich.rule import Rule
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.cache import get_cache_service, run_completion_with_cache
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import display_cache_stats
+
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.display import display_cache_stats
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.markup import escape
-from rich import box
+
 # ----------------------
 
 # Initialize logger
 logger = get_logger("example.cache_demo")
-
-
-async def run_completion_with_cache(
-    prompt: str,
-    provider_name: str = Provider.OPENAI.value,
-    model: str = None,
-    use_cache: bool = True
-):
-    """Run a completion with caching.
-    
-    Args:
-        prompt: Text prompt
-        provider_name: Provider to use
-        model: Model name (optional)
-        use_cache: Whether to use cache
-        
-    Returns:
-        Completion result
-    """
-    # Get provider with API key directly from decouple
-    api_key = None
-    # Simplify key retrieval slightly
-    key_map = {
-        Provider.OPENAI.value: "OPENAI_API_KEY",
-        Provider.ANTHROPIC.value: "ANTHROPIC_API_KEY",
-        Provider.GEMINI.value: "GEMINI_API_KEY",
-        Provider.DEEPSEEK.value: "DEEPSEEK_API_KEY"
-    }
-    api_key_name = key_map.get(provider_name)
-    if api_key_name:
-        api_key = decouple_config(api_key_name, default=None)
-    
-    if not api_key:
-        # Log warning but allow fallback if provider supports keyless (unlikely for these)
-        logger.warning(f"API key for {provider_name} not found. Request may fail.", emoji_key="warning")
-
-    try:
-        provider = get_provider(provider_name, api_key=api_key)
-        await provider.initialize()
-    except Exception as e:
-         logger.error(f"Failed to initialize provider {provider_name}: {e}", emoji_key="error")
-         raise # Re-raise exception to stop execution if provider fails
-    
-    cache_service = get_cache_service()
-    
-    # Create a more robust cache key (consider all relevant params)
-    model_id = model or provider.get_default_model() # Ensure we have a model id
-    params_hash = hash((prompt, 0.1)) # Hash includes temp, etc. - simplified here
-    cache_key = f"completion:{provider_name}:{model_id}:{params_hash}"
-    
-    if use_cache and cache_service.enabled:
-        cached_result = await cache_service.get(cache_key)
-        if cached_result is not None:
-            logger.success("Cache hit! Using cached result", emoji_key="cache")
-            # Simulate processing time for cache retrieval (negligible)
-            cached_result.processing_time = 0.001 
-            return cached_result
-    
-    # Generate completion if not cached or cache disabled
-    if use_cache:
-        logger.info("Cache miss. Generating new completion...", emoji_key="processing")
-    else:
-        logger.info("Cache disabled by request. Generating new completion...", emoji_key="processing")
-        
-    # Use the determined model_id
-    result = await provider.generate_completion(
-        prompt=prompt,
-        model=model_id,
-        temperature=0.1, 
-    )
-    
-    # Save to cache if enabled
-    if use_cache and cache_service.enabled:
-        await cache_service.set(
-            key=cache_key,
-            value=result,
-            ttl=3600 # 1 hour TTL
-        )
-        logger.info(f"Result saved to cache (key: ...{cache_key[-10:]})", emoji_key="cache")
-        
-    return result
 
 
 async def demonstrate_cache():

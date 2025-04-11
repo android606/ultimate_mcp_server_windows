@@ -8,22 +8,22 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from decouple import config as decouple_config
+from rich import box
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
 
 from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.services.prompts import PromptTemplate, get_prompt_repository
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import display_text_content_result
+
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.display import display_text_content_result, parse_and_display_result
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.markup import escape
-from rich import box
+
 # ----------------------
 
 # Initialize logger
@@ -413,7 +413,7 @@ async def demonstrate_llm_with_templates():
         console.print(Panel(
             escape(mock_response),
             title="[bold yellow]Mock Translation (No Providers Available)[/bold yellow]",
-            subtitle=f"Original: \"{translation_vars['text']}\"",
+            subtitle=f'Original: "{translation_vars['text']}"',
             border_style="yellow",
             expand=False
         ))
@@ -480,7 +480,7 @@ async def main():
         console.print() # Add space
         
         # Demonstrate repository usage
-        retrieved_template = await demonstrate_prompt_repository()
+        retrieved_template = await demonstrate_prompt_repository()  # noqa: F841
         console.print()
         
         # Demonstrate using a template with LLM - no longer check for retrieved_template

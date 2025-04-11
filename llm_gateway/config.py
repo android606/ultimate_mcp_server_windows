@@ -213,7 +213,7 @@ def load_config(
             env_config = DecoupleConfig(RepositoryEnv(env_file))
             
             # Load API keys from .env into environment variables
-            env_var_keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY"]
+            env_var_keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"]
             for key in env_var_keys:
                 try:
                     value = env_config.get(key, default=None)

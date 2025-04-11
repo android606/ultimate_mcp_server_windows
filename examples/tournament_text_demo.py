@@ -21,27 +21,28 @@ Options:
 import argparse
 import asyncio
 import json
+import os
 import re
 import sys
-import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.core.models.requests import CompletionRequest
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.prompts import PromptTemplate
-from llm_gateway.utils import get_logger, parse_result, process_mcp_result
-from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.display import display_tournament_status, display_tournament_results
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
 from rich import box
 from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+
+from llm_gateway.core.models.requests import CompletionRequest
+from llm_gateway.core.providers.base import get_provider
+from llm_gateway.core.server import Gateway
+from llm_gateway.services.prompts import PromptTemplate
+from llm_gateway.utils import get_logger, process_mcp_result
+from llm_gateway.utils.display import display_tournament_results, display_tournament_status
+from llm_gateway.utils.logging.console import console
 
 
 def parse_arguments():
@@ -291,27 +292,6 @@ async def setup_gateway():
     logger.success("Gateway initialized", emoji_key="success")
 
 
-# Helper function to process results from MCP tool calls
-def process_mcp_result(result):
-    """Process result from MCP tool call, handling both list and dictionary formats."""
-    # If result is a list, use the first item
-    if isinstance(result, list) and result:
-        result = result[0]
-    
-    # Handle TextContent objects (access their text attribute)
-    if hasattr(result, 'text'):
-        try:
-            # Try to parse the text as JSON
-            parsed = json.loads(result.text)
-            return parsed
-        except json.JSONDecodeError:
-            # If it's not valid JSON, return a dictionary with the text
-            return {"text": result.text}
-            
-    # Return as is if already a dictionary or other type
-    return result
-
-
 async def poll_tournament_status(tournament_id: str, storage_path: Optional[str] = None, interval: int = 5) -> Optional[str]:
     """Poll the tournament status until it reaches a final state.
     
@@ -471,7 +451,7 @@ async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
         except asyncio.TimeoutError:
             logger.warning(f"Evaluation with {evaluation_model} timed out after 45 seconds", emoji_key="warning")
             return {
-                "error": f"Evaluation timed out after 45 seconds",
+                "error": "Evaluation timed out after 45 seconds",
                 "model_used": evaluation_model,
                 "eval_prompt": evaluation_prompt,
                 "cost": 0.0
@@ -509,7 +489,7 @@ async def calculate_tournament_costs(rounds_results, evaluation_cost=None):
     total_cost = 0.0
     
     # Process costs for each round
-    for round_idx, round_data in enumerate(rounds_results):
+    for _round_idx, round_data in enumerate(rounds_results):
         responses = round_data.get('responses', {})
         for model_id, response in responses.items():
             metrics = response.get('metrics', {})
@@ -754,7 +734,7 @@ async def run_tournament_demo():
                                         
                                         console.print(Panel(
                                             escape(fallback_evaluation["evaluation"]),
-                                            title=f"[bold]Fallback Evaluation (by gpt-4o-mini)[/bold]",
+                                            title="[bold]Fallback Evaluation (by gpt-4o-mini)[/bold]",
                                             border_style="yellow",
                                             expand=False
                                         ))
@@ -764,7 +744,7 @@ async def run_tournament_demo():
                                             try:
                                                 fallback_eval_file = os.path.join(storage_path, "fallback_evaluation.md")
                                                 with open(fallback_eval_file, "w", encoding="utf-8") as f:
-                                                    f.write(f"# Fallback Essay Evaluation by gpt-4o-mini\n\n")
+                                                    f.write("# Fallback Essay Evaluation by gpt-4o-mini\n\n")
                                                     f.write(fallback_evaluation["evaluation"])
                                                 
                                                 logger.info(f"Fallback evaluation saved to {fallback_eval_file}", emoji_key="save")
@@ -823,8 +803,8 @@ async def run_tournament_demo():
                         try:
                             cost_file = os.path.join(storage_path, "cost_summary.md")
                             with open(cost_file, "w", encoding="utf-8") as f:
-                                f.write(f"# Tournament Cost Summary\n\n")
-                                f.write(f"## Per-Model Costs\n\n")
+                                f.write("# Tournament Cost Summary\n\n")
+                                f.write("## Per-Model Costs\n\n")
                                 
                                 for model_id, cost in sorted(model_costs.items()):
                                     if model_id == 'evaluation':
@@ -834,7 +814,7 @@ async def run_tournament_demo():
                                     
                                     f.write(f"- **{display_model}**: ${cost:.6f}\n")
                                 
-                                f.write(f"\n## Grand Total\n\n")
+                                f.write("\n## Grand Total\n\n")
                                 f.write(f"**TOTAL COST**: ${total_cost:.6f}\n")
                             
                             logger.info(f"Cost summary saved to {cost_file}", emoji_key="save")

@@ -9,6 +9,7 @@ class Provider(str, Enum):
     ANTHROPIC = "anthropic"
     DEEPSEEK = "deepseek"
     GEMINI = "gemini"
+    OPENROUTER = "openrouter"
 
 
 class TaskType(str, Enum):
@@ -52,6 +53,10 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     "gemini-2.0-flash": {"input": 0.35, "output": 1.05},
     "gemini-2.0-flash-thinking-exp-01-21": {"input": 0.0, "output": 0.0},
     "gemini-2.5-pro-exp-03-25": {"input": 0.0, "output": 0.5},
+
+    # OpenRouter models
+    "mistralai/mistral-nemo": {"input": 0.035, "output": 0.08}, 
+    "openrouter/quasar-alpha": {"input": 0.0, "output": 0.0},  
 }
 
 
@@ -60,7 +65,8 @@ DEFAULT_MODELS = {
     Provider.OPENAI: "gpt-4o-mini",
     Provider.ANTHROPIC: "claude-3-5-haiku-latest",
     Provider.DEEPSEEK: "deepseek-chat",
-    Provider.GEMINI: "gemini-2.0-flash-lite"
+    Provider.GEMINI: "gemini-2.0-flash-lite",
+    Provider.OPENROUTER: "openrouter/quasar-alpha"
 }
 
 
@@ -104,5 +110,6 @@ EMOJI_MAP = {
     Provider.OPENAI: "🟢",
     Provider.ANTHROPIC: "🟣",
     Provider.DEEPSEEK: "🟠", 
-    Provider.GEMINI: "🔵"
+    Provider.GEMINI: "🔵",
+    Provider.OPENROUTER: "🌐"
 }

@@ -10,28 +10,24 @@ from typing import Any, Dict, List, Optional
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.fastmcp import FastMCP
+from rich import box
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
-from llm_gateway.core.server import Gateway
 from llm_gateway.utils import get_logger, process_mcp_result
+
+# --- Add Display Utils Import ---
+from llm_gateway.utils.display import _display_stats
+
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.markup import escape
-from rich import box
-# --- Add Display Utils Import ---
-from llm_gateway.utils.display import (
-    display_text_content_result,
-    parse_and_display_result,
-    extract_and_parse_content,
-    _display_stats,
-    _display_json_data
-)
+
 # ----------------------
 
 # Initialize logger
@@ -386,7 +382,7 @@ async def run_delegate_task_demo():
     logger.info("Running delegate_task demo...", emoji_key="start")
     
     task_description = "Generate a short marketing blurb for a new AI-powered writing assistant."
-    prompt = "Write a catchy, 2-sentence marketing blurb for \'AI Writer Pro\', a tool that helps users write faster and better."
+    prompt = "Write a catchy, 2-sentence marketing blurb for 'AI Writer Pro', a tool that helps users write faster and better."
     console.print(f"[cyan]Task Description:[/cyan] {escape(task_description)}")
     console.print(f"[cyan]Prompt:[/cyan] {escape(prompt)}")
 

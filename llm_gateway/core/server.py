@@ -305,6 +305,7 @@ class Gateway:
             Provider.ANTHROPIC.value: "ANTHROPIC_API_KEY",
             Provider.DEEPSEEK.value: "DEEPSEEK_API_KEY",
             Provider.GEMINI.value: "GEMINI_API_KEY",
+            Provider.OPENROUTER.value: "OPENROUTER_API_KEY",
         }
         
         for provider_name, env_var in env_var_map.items():

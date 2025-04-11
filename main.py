@@ -168,7 +168,7 @@ def create_parser() -> argparse.ArgumentParser:
         "--providers",
         type=str,
         nargs="+",
-        default=["openai", "anthropic", "deepseek", "gemini"],
+        default=["openai", "anthropic", "deepseek", "gemini", "openrouter"],
         help="Providers to benchmark (default: all)"
     )
     benchmark_parser.add_argument(

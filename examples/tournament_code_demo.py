@@ -20,28 +20,26 @@ Options:
 import argparse
 import asyncio
 import json
-import sys
-import os
-from pathlib import Path
-from typing import Any, Dict, List, Optional
 import re
+import sys
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.core.models.requests import CompletionRequest
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.prompts import PromptTemplate
-from llm_gateway.utils import get_logger, parse_result, process_mcp_result
-from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.display import display_tournament_status, display_tournament_results
-from llm_gateway.tools import extract_code_from_response
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
 from rich import box
 from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+
+from llm_gateway.core.server import Gateway
+from llm_gateway.services.prompts import PromptTemplate
+from llm_gateway.tools import extract_code_from_response
+from llm_gateway.utils import get_logger, process_mcp_result
+from llm_gateway.utils.display import display_tournament_results, display_tournament_status
+from llm_gateway.utils.logging.console import console
 
 
 def parse_arguments():
