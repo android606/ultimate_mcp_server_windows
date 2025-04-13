@@ -1651,6 +1651,512 @@ async def record_action_completion(
         logger.error(f"Error recording action completion for {action_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to record action completion: {str(e)}") from e
     
+
+@with_tool_metrics
+@with_error_handling
+async def get_action_details(
+    action_id: Optional[str] = None,
+    action_ids: Optional[List[str]] = None,
+    include_dependencies: bool = False,
+    db_path: str = DEFAULT_DB_PATH
+) -> Dict[str, Any]:
+    """Retrieves detailed information about one or more actions.
+    
+    Fetch complete details about specific actions by their IDs, either individually
+    or in batch. Optionally includes information about action dependencies.
+    
+    Args:
+        action_id: ID of a single action to retrieve (ignored if action_ids is provided)
+        action_ids: Optional list of action IDs to retrieve in batch
+        include_dependencies: Whether to include dependency information for each action
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        Dictionary containing action details:
+        {
+            "actions": [
+                {
+                    "action_id": "uuid-string",
+                    "workflow_id": "workflow-uuid",
+                    "action_type": "tool_use",
+                    "status": "completed",
+                    "title": "Load data",
+                    ... other action fields ...
+                    "dependencies": { # Only if include_dependencies=True
+                        "depends_on": ["action-id-1", "action-id-2"],
+                        "dependent_actions": ["action-id-3"]
+                    }
+                },
+                ... more actions if batch ...
+            ],
+            "success": true,
+            "processing_time": 0.123
+        }
+        
+    Raises:
+        ToolInputError: If neither action_id nor action_ids is provided, or if no matching actions found
+        ToolError: If database operation fails
+    """
+    start_time = time.time()
+    
+    # Validate inputs
+    if not action_id and not action_ids:
+        raise ToolInputError("Either action_id or action_ids must be provided", param_name="action_id")
+    
+    # Convert single action_id to list if action_ids not provided
+    target_action_ids = action_ids or [action_id]
+    
+    try:
+        async with DBConnection(db_path) as conn:
+            # Prepare query - query all fields from actions plus tags
+            placeholders = ', '.join(['?'] * len(target_action_ids))
+            select_query = f"""
+                SELECT a.*, GROUP_CONCAT(t.name) as tags_str
+                FROM actions a
+                LEFT JOIN action_tags at ON a.action_id = at.action_id
+                LEFT JOIN tags t ON at.tag_id = t.tag_id
+                WHERE a.action_id IN ({placeholders})
+                GROUP BY a.action_id
+            """
+            
+            actions_result = []
+            async with conn.execute(select_query, target_action_ids) as cursor:
+                async for row in cursor:
+                    action_data = dict(row)
+                    
+                    # Process tags
+                    if action_data.get("tags_str"):
+                        action_data["tags"] = action_data["tags_str"].split(',')
+                    else:
+                        action_data["tags"] = []
+                    action_data.pop("tags_str", None)
+                    
+                    # Deserialize JSON fields
+                    if action_data.get("tool_args"):
+                        action_data["tool_args"] = await MemoryUtils.deserialize(action_data["tool_args"])
+                    
+                    if action_data.get("tool_result"):
+                        action_data["tool_result"] = await MemoryUtils.deserialize(action_data["tool_result"])
+                    
+                    # Include dependencies if requested
+                    if include_dependencies:
+                        action_data["dependencies"] = {
+                            "depends_on": [],
+                            "dependent_actions": []
+                        }
+                        
+                        # Get actions this action depends on
+                        async with conn.execute(
+                            "SELECT target_action_id, dependency_type FROM dependencies WHERE source_action_id = ?", 
+                            (action_data["action_id"],)
+                        ) as dep_cursor:
+                            action_data["dependencies"]["depends_on"] = [
+                                {"action_id": row["target_action_id"], "type": row["dependency_type"]}
+                                for row in await dep_cursor.fetchall()
+                            ]
+                        
+                        # Get actions that depend on this action
+                        async with conn.execute(
+                            "SELECT source_action_id, dependency_type FROM dependencies WHERE target_action_id = ?", 
+                            (action_data["action_id"],)
+                        ) as dep_cursor:
+                            action_data["dependencies"]["dependent_actions"] = [
+                                {"action_id": row["source_action_id"], "type": row["dependency_type"]}
+                                for row in await dep_cursor.fetchall()
+                            ]
+                    
+                    actions_result.append(action_data)
+            
+            if not actions_result:
+                action_ids_str = ", ".join(target_action_ids[:5]) + ("..." if len(target_action_ids) > 5 else "")
+                raise ToolInputError(f"No actions found with IDs: {action_ids_str}", param_name="action_id" if action_id else "action_ids")
+            
+            processing_time = time.time() - start_time
+            logger.info(f"Retrieved details for {len(actions_result)} actions", emoji_key="search")
+            
+            # Return single action directly if only one was requested via action_id
+            result = {
+                "actions": actions_result,
+                "success": True,
+                "processing_time": processing_time
+            }
+            
+            return result
+    
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving action details: {e}", exc_info=True)
+        raise ToolError(f"Failed to retrieve action details: {str(e)}") from e
+
+"""
+Extensions to the Unified Memory System to support Agent Loop v3.0
+================================================================
+
+This module implements additional functions needed to fully support
+Agent Loop v3.0's more advanced features like dependency checking,
+link traversal, and context compression.
+
+These functions integrate with the existing unified_memory.py system.
+"""
+
+import asyncio
+import json
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
+
+import aiosqlite
+
+# Reuse the existing infrastructure from unified_memory.py
+from llm_gateway.exceptions import ToolError, ToolInputError
+from llm_gateway.services.vector.embeddings import get_embedding_service
+from llm_gateway.tools.base import with_error_handling, with_tool_metrics
+from llm_gateway.utils import get_logger
+
+# Import from unified_memory.py
+from unified_memory import (
+    ActionStatus, DBConnection, MemoryLevel, MemoryType, LinkType, 
+    MemoryUtils, DEFAULT_DB_PATH, ThoughtType
+)
+
+# Import for summarization
+from llm_gateway.core.providers.base import get_provider
+
+logger = get_logger("llm_gateway.tools.unified_memory_extensions")
+
+# ======================================================
+# Action Details Retrieval
+# ======================================================
+
+@with_tool_metrics
+@with_error_handling
+async def get_action_details(
+    action_id: Optional[str] = None,
+    action_ids: Optional[List[str]] = None,
+    include_dependencies: bool = False,
+    db_path: str = DEFAULT_DB_PATH
+) -> Dict[str, Any]:
+    """Retrieves detailed information about one or more actions.
+    
+    Fetch complete details about specific actions by their IDs, either individually
+    or in batch. Optionally includes information about action dependencies.
+    
+    Args:
+        action_id: ID of a single action to retrieve (ignored if action_ids is provided)
+        action_ids: Optional list of action IDs to retrieve in batch
+        include_dependencies: Whether to include dependency information for each action
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        Dictionary containing action details:
+        {
+            "actions": [
+                {
+                    "action_id": "uuid-string",
+                    "workflow_id": "workflow-uuid",
+                    "action_type": "tool_use",
+                    "status": "completed",
+                    "title": "Load data",
+                    ... other action fields ...
+                    "dependencies": { # Only if include_dependencies=True
+                        "depends_on": ["action-id-1", "action-id-2"],
+                        "dependent_actions": ["action-id-3"]
+                    }
+                },
+                ... more actions if batch ...
+            ],
+            "success": true,
+            "processing_time": 0.123
+        }
+        
+    Raises:
+        ToolInputError: If neither action_id nor action_ids is provided, or if no matching actions found
+        ToolError: If database operation fails
+    """
+    start_time = time.time()
+    
+    # Validate inputs
+    if not action_id and not action_ids:
+        raise ToolInputError("Either action_id or action_ids must be provided", param_name="action_id")
+    
+    # Convert single action_id to list if action_ids not provided
+    target_action_ids = action_ids or [action_id]
+    
+    try:
+        async with DBConnection(db_path) as conn:
+            # Prepare query - query all fields from actions plus tags
+            placeholders = ', '.join(['?'] * len(target_action_ids))
+            select_query = f"""
+                SELECT a.*, GROUP_CONCAT(t.name) as tags_str
+                FROM actions a
+                LEFT JOIN action_tags at ON a.action_id = at.action_id
+                LEFT JOIN tags t ON at.tag_id = t.tag_id
+                WHERE a.action_id IN ({placeholders})
+                GROUP BY a.action_id
+            """
+            
+            actions_result = []
+            async with conn.execute(select_query, target_action_ids) as cursor:
+                async for row in cursor:
+                    action_data = dict(row)
+                    
+                    # Process tags
+                    if action_data.get("tags_str"):
+                        action_data["tags"] = action_data["tags_str"].split(',')
+                    else:
+                        action_data["tags"] = []
+                    action_data.pop("tags_str", None)
+                    
+                    # Deserialize JSON fields
+                    if action_data.get("tool_args"):
+                        action_data["tool_args"] = await MemoryUtils.deserialize(action_data["tool_args"])
+                    
+                    if action_data.get("tool_result"):
+                        action_data["tool_result"] = await MemoryUtils.deserialize(action_data["tool_result"])
+                    
+                    # Include dependencies if requested
+                    if include_dependencies:
+                        action_data["dependencies"] = {
+                            "depends_on": [],
+                            "dependent_actions": []
+                        }
+                        
+                        # Get actions this action depends on
+                        async with conn.execute(
+                            "SELECT target_action_id, dependency_type FROM dependencies WHERE source_action_id = ?", 
+                            (action_data["action_id"],)
+                        ) as dep_cursor:
+                            action_data["dependencies"]["depends_on"] = [
+                                {"action_id": row["target_action_id"], "type": row["dependency_type"]}
+                                for row in await dep_cursor.fetchall()
+                            ]
+                        
+                        # Get actions that depend on this action
+                        async with conn.execute(
+                            "SELECT source_action_id, dependency_type FROM dependencies WHERE target_action_id = ?", 
+                            (action_data["action_id"],)
+                        ) as dep_cursor:
+                            action_data["dependencies"]["dependent_actions"] = [
+                                {"action_id": row["source_action_id"], "type": row["dependency_type"]}
+                                for row in await dep_cursor.fetchall()
+                            ]
+                    
+                    actions_result.append(action_data)
+            
+            if not actions_result:
+                action_ids_str = ", ".join(target_action_ids[:5]) + ("..." if len(target_action_ids) > 5 else "")
+                raise ToolInputError(f"No actions found with IDs: {action_ids_str}", param_name="action_id" if action_id else "action_ids")
+            
+            processing_time = time.time() - start_time
+            logger.info(f"Retrieved details for {len(actions_result)} actions", emoji_key="search")
+            
+            # Return single action directly if only one was requested via action_id
+            result = {
+                "actions": actions_result,
+                "success": True,
+                "processing_time": processing_time
+            }
+            
+            return result
+    
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving action details: {e}", exc_info=True)
+        raise ToolError(f"Failed to retrieve action details: {str(e)}") from e
+
+# ======================================================
+# Contextual Summarization (Used in Agent Context Compression)
+# ======================================================
+
+@with_tool_metrics
+@with_error_handling
+async def summarize_context_block(
+    text_to_summarize: str,
+    target_tokens: int = 500,
+    context_type: str = "actions",  # "actions", "memories", "thoughts", etc.
+    workflow_id: Optional[str] = None,
+    db_path: str = DEFAULT_DB_PATH
+) -> Dict[str, Any]:
+    """Summarizes a specific block of context for an agent, optimized for preserving key information.
+    
+    A specialized version of summarize_text designed specifically for compressing agent context
+    blocks like action histories, memory sets, or thought chains. Uses optimized prompting
+    based on context_type to preserve the most relevant information for agent decision-making.
+    
+    Args:
+        text_to_summarize: Context block text to summarize
+        target_tokens: Desired length of summary (default 500)
+        context_type: Type of context being summarized (affects prompting)
+        workflow_id: Optional workflow ID for logging
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        Dictionary containing the generated summary:
+        {
+            "summary": "Concise context summary...",
+            "context_type": "actions",
+            "compression_ratio": 0.25,  # ratio of summary length to original length
+            "success": true,
+            "processing_time": 0.123
+        }
+        
+    Raises:
+        ToolInputError: If text_to_summarize is empty
+        ToolError: If summarization fails
+    """
+    start_time = time.time()
+    
+    if not text_to_summarize:
+        raise ToolInputError("Text to summarize cannot be empty", param_name="text_to_summarize")
+    
+    # Select appropriate prompt template based on context type
+    if context_type == "actions":
+        prompt_template = """
+You are an expert context summarizer for an AI agent. Your task is to summarize the following ACTION HISTORY logs 
+while preserving the most important information for the agent to maintain situational awareness.
+
+For actions, focus on:
+1. Key actions that changed state or produced important outputs
+2. Failed actions and their error reasons
+3. The most recent 2-3 actions regardless of importance
+4. Any actions that created artifacts or memories
+5. Sequential relationships between actions
+
+Produce a VERY CONCISE summary that maintains the chronological flow and preserves action IDs 
+when referring to specific actions. Aim for approximately {target_tokens} tokens.
+
+ACTION HISTORY TO SUMMARIZE:
+{text_to_summarize}
+
+CONCISE ACTION HISTORY SUMMARY:
+"""
+    elif context_type == "memories":
+        prompt_template = """
+You are an expert context summarizer for an AI agent. Your task is to summarize the following MEMORY ENTRIES
+while preserving the most important information for the agent to maintain understanding.
+
+For memories, focus on:
+1. High importance memories (importance > 7)
+2. High confidence memories (confidence > 0.8)
+3. Insights and facts over observations
+4. Memory IDs should be preserved when referring to specific memories
+5. Connected memories that form knowledge networks
+
+Produce a VERY CONCISE summary that preserves the key information, high-value insights, and 
+critical relationships. Aim for approximately {target_tokens} tokens.
+
+MEMORY ENTRIES TO SUMMARIZE:
+{text_to_summarize}
+
+CONCISE MEMORY SUMMARY:
+"""
+    elif context_type == "thoughts":
+        prompt_template = """
+You are an expert context summarizer for an AI agent. Your task is to summarize the following THOUGHT CHAINS
+while preserving the reasoning, decisions, and insights.
+
+For thoughts, focus on:
+1. Goals, decisions, and conclusions
+2. Key hypotheses and critical reflections
+3. The most recent thoughts that may affect current reasoning
+4. Thought IDs should be preserved when referring to specific thoughts
+
+Produce a VERY CONCISE summary that captures the agent's reasoning process and main insights.
+Aim for approximately {target_tokens} tokens.
+
+THOUGHT CHAINS TO SUMMARIZE:
+{text_to_summarize}
+
+CONCISE THOUGHT SUMMARY:
+"""
+    else:
+        # Generic template for other context types
+        prompt_template = """
+You are an expert context summarizer for an AI agent. Your task is to create a concise summary of the following text
+while preserving the most important information for the agent to maintain awareness and functionality.
+
+Focus on information that is:
+1. Recent and relevant to current goals
+2. Critical for understanding the current state
+3. Containing unique identifiers that need to be preserved
+4. Representing significant events, insights, or patterns
+
+Produce a VERY CONCISE summary that maximizes the agent's ability to operate with this reduced context.
+Aim for approximately {target_tokens} tokens.
+
+TEXT TO SUMMARIZE:
+{text_to_summarize}
+
+CONCISE SUMMARY:
+"""
+    
+    try:
+        # Use the default provider for context summarization
+        # Here we prioritize speed and cost over quality
+        provider = "anthropic"  # Using Anthropic for summarization
+        model = "claude-3-5-haiku-latest"  # Using Haiku for faster, cheaper summarization
+        
+        # Get provider instance
+        provider_instance = await get_provider(provider)
+        if not provider_instance:
+            raise ToolError(f"Failed to initialize provider '{provider}'. Check configuration.")
+        
+        # Prepare prompt
+        prompt = prompt_template.format(
+            text_to_summarize=text_to_summarize,
+            target_tokens=target_tokens
+        )
+        
+        # Generate summary
+        generation_result = await provider_instance.generate_completion(
+            prompt=prompt,
+            model=model,
+            max_tokens=target_tokens + 50,  # Add some buffer for prompt tokens
+            temperature=0.2  # Lower temperature for more deterministic summaries
+        )
+        
+        summary_text = generation_result.text.strip()
+        if not summary_text:
+            raise ToolError("LLM returned empty context summary.")
+        
+        # Calculate compression ratio
+        compression_ratio = len(summary_text) / max(1, len(text_to_summarize))
+        
+        # Log the operation if workflow_id provided
+        if workflow_id:
+            async with DBConnection(db_path) as conn:
+                await MemoryUtils._log_memory_operation(
+                    conn, workflow_id, "compress_context", None, None, 
+                    {
+                        "context_type": context_type,
+                        "original_length": len(text_to_summarize),
+                        "summary_length": len(summary_text),
+                        "compression_ratio": compression_ratio
+                    }
+                )
+                await conn.commit()
+        
+        processing_time = time.time() - start_time
+        logger.info(
+            f"Compressed {context_type} context: {len(text_to_summarize)} → {len(summary_text)} chars (ratio: {compression_ratio:.2f})",
+            emoji_key="compression", time=processing_time
+        )
+        
+        return {
+            "summary": summary_text,
+            "context_type": context_type,
+            "compression_ratio": compression_ratio,
+            "success": True,
+            "processing_time": processing_time
+        }
+    
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(f"Error summarizing context block: {e}", exc_info=True)
+        raise ToolError(f"Failed to summarize context block: {str(e)}") from e
+            
 # ======================================================
 # 3.5 Action Dependency Tools
 # ======================================================
@@ -5563,6 +6069,232 @@ async def update_memory(
         logger.error(f"Error updating memory {memory_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to update memory: {str(e)}") from e
 
+
+# ======================================================
+# Linked Memories Retrieval
+# ======================================================
+
+@with_tool_metrics
+@with_error_handling
+async def get_linked_memories(
+    memory_id: str,
+    direction: str = "both",  # "outgoing", "incoming", or "both"
+    link_type: Optional[str] = None,  # Optional filter by link type
+    limit: int = 10,
+    include_memory_details: bool = True,
+    db_path: str = DEFAULT_DB_PATH
+) -> Dict[str, Any]:
+    """Retrieves memories linked to/from the specified memory.
+    
+    Fetches all memories linked to or from a given memory, optionally filtered by link type.
+    Can include basic or detailed information about the linked memories.
+    
+    Args:
+        memory_id: ID of the memory to get links for
+        direction: Which links to include - "outgoing" (memory_id is the source),
+                  "incoming" (memory_id is the target), or "both" (default)
+        link_type: Optional filter for specific link types (e.g., "related", "supports")
+        limit: Maximum number of links to return per direction (default 10)
+        include_memory_details: Whether to include full details of the linked memories
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        Dictionary containing the linked memories organized by direction:
+        {
+            "memory_id": "memory-uuid",
+            "links": {
+                "outgoing": [
+                    {
+                        "link_id": "link-uuid",
+                        "source_memory_id": "memory-uuid", 
+                        "target_memory_id": "linked-memory-uuid",
+                        "link_type": "related",
+                        "strength": 0.85,
+                        "description": "Auto-link based on similarity",
+                        "created_at_unix": 1678886400,
+                        "target_memory": { # Only if include_memory_details=True
+                            "memory_id": "linked-memory-uuid",
+                            "description": "Memory description",
+                            "memory_type": "observation",
+                            ... other memory fields ...
+                        }
+                    },
+                    ... more outgoing links ...
+                ],
+                "incoming": [
+                    {
+                        "link_id": "link-uuid",
+                        "source_memory_id": "other-memory-uuid",
+                        "target_memory_id": "memory-uuid",
+                        "link_type": "supports",
+                        "strength": 0.7,
+                        "description": "Supporting evidence",
+                        "created_at_unix": 1678885400,
+                        "source_memory": { # Only if include_memory_details=True
+                            "memory_id": "other-memory-uuid",
+                            "description": "Memory description",
+                            "memory_type": "fact",
+                            ... other memory fields ...
+                        }
+                    },
+                    ... more incoming links ...
+                ]
+            },
+            "success": true,
+            "processing_time": 0.123
+        }
+        
+    Raises:
+        ToolInputError: If memory_id is not provided or direction is invalid
+        ToolError: If database operation fails
+    """
+    start_time = time.time()
+    
+    if not memory_id:
+        raise ToolInputError("Memory ID is required", param_name="memory_id")
+    
+    valid_directions = ["outgoing", "incoming", "both"]
+    direction = direction.lower()
+    if direction not in valid_directions:
+        raise ToolInputError(f"Direction must be one of: {', '.join(valid_directions)}", param_name="direction")
+    
+    if link_type:
+        try:
+            LinkType(link_type.lower())  # Validate enum
+        except ValueError as e:
+            valid_types = [lt.value for lt in LinkType]
+            raise ToolInputError(f"Invalid link_type. Must be one of: {', '.join(valid_types)}", param_name="link_type") from e
+    
+    # Initialize result structure
+    result = {
+        "memory_id": memory_id,
+        "links": {
+            "outgoing": [],
+            "incoming": []
+        },
+        "success": True,
+        "processing_time": 0.0
+    }
+    
+    try:
+        async with DBConnection(db_path) as conn:
+            # Check if memory exists
+            async with conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (memory_id,)) as cursor:
+                if not await cursor.fetchone():
+                    raise ToolInputError(f"Memory {memory_id} not found", param_name="memory_id")
+            
+            # Process outgoing links (memory_id is the source)
+            if direction in ["outgoing", "both"]:
+                outgoing_query = """
+                    SELECT ml.*, m.memory_type AS target_type, m.description AS target_description
+                    FROM memory_links ml
+                    JOIN memories m ON ml.target_memory_id = m.memory_id
+                    WHERE ml.source_memory_id = ?
+                """
+                params = [memory_id]
+                
+                if link_type:
+                    outgoing_query += " AND ml.link_type = ?"
+                    params.append(link_type.lower())
+                
+                outgoing_query += " ORDER BY ml.created_at DESC LIMIT ?"
+                params.append(limit)
+                
+                async with conn.execute(outgoing_query, params) as cursor:
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        link_data = dict(row)
+                        
+                        # Add target memory details if requested
+                        if include_memory_details:
+                            target_memory_id = link_data["target_memory_id"]
+                            async with conn.execute(
+                                """
+                                SELECT memory_id, memory_level, memory_type, importance, confidence, 
+                                       description, created_at, updated_at, tags
+                                FROM memories WHERE memory_id = ?
+                                """, 
+                                (target_memory_id,)
+                            ) as mem_cursor:
+                                target_memory = await mem_cursor.fetchone()
+                                if target_memory:
+                                    mem_dict = dict(target_memory)
+                                    # Process fields
+                                    mem_dict["created_at_unix"] = mem_dict["created_at"]
+                                    mem_dict["updated_at_unix"] = mem_dict["updated_at"]
+                                    mem_dict["tags"] = await MemoryUtils.deserialize(mem_dict.get("tags"))
+                                    link_data["target_memory"] = mem_dict
+                        
+                        # Format link data
+                        link_data["created_at_unix"] = link_data["created_at"]
+                        result["links"]["outgoing"].append(link_data)
+            
+            # Process incoming links (memory_id is the target)
+            if direction in ["incoming", "both"]:
+                incoming_query = """
+                    SELECT ml.*, m.memory_type AS source_type, m.description AS source_description
+                    FROM memory_links ml
+                    JOIN memories m ON ml.source_memory_id = m.memory_id
+                    WHERE ml.target_memory_id = ?
+                """
+                params = [memory_id]
+                
+                if link_type:
+                    incoming_query += " AND ml.link_type = ?"
+                    params.append(link_type.lower())
+                
+                incoming_query += " ORDER BY ml.created_at DESC LIMIT ?"
+                params.append(limit)
+                
+                async with conn.execute(incoming_query, params) as cursor:
+                    rows = await cursor.fetchall()
+                    for row in rows:
+                        link_data = dict(row)
+                        
+                        # Add source memory details if requested
+                        if include_memory_details:
+                            source_memory_id = link_data["source_memory_id"]
+                            async with conn.execute(
+                                """
+                                SELECT memory_id, memory_level, memory_type, importance, confidence, 
+                                       description, created_at, updated_at, tags
+                                FROM memories WHERE memory_id = ?
+                                """, 
+                                (source_memory_id,)
+                            ) as mem_cursor:
+                                source_memory = await mem_cursor.fetchone()
+                                if source_memory:
+                                    mem_dict = dict(source_memory)
+                                    # Process fields
+                                    mem_dict["created_at_unix"] = mem_dict["created_at"]
+                                    mem_dict["updated_at_unix"] = mem_dict["updated_at"]
+                                    mem_dict["tags"] = await MemoryUtils.deserialize(mem_dict.get("tags"))
+                                    link_data["source_memory"] = mem_dict
+                        
+                        # Format link data
+                        link_data["created_at_unix"] = link_data["created_at"]
+                        result["links"]["incoming"].append(link_data)
+            
+            # Record access stats for the source memory
+            await MemoryUtils._update_memory_access(conn, memory_id)
+            await conn.commit()
+            
+            processing_time = time.time() - start_time
+            logger.info(
+                f"Retrieved {len(result['links']['outgoing'])} outgoing and {len(result['links']['incoming'])} incoming links for memory {memory_id}",
+                emoji_key="link"
+            )
+            
+            result["processing_time"] = processing_time
+            return result
+    
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving linked memories: {e}", exc_info=True)
+        raise ToolError(f"Failed to retrieve linked memories: {str(e)}") from e
+
+
 # ======================================================
 # Meta-Cognition Tools (Adapted from cognitive_memory)
 # ======================================================
@@ -6101,6 +6833,168 @@ async def generate_reflection(
     except Exception as e:
         logger.error(f"Failed to generate reflection: {str(e)}", exc_info=True)
         raise ToolError(f"Failed to generate reflection: {str(e)}") from e
+
+
+# ======================================================
+# Text Summarization (using LLM)
+# ======================================================
+
+@with_tool_metrics
+@with_error_handling
+async def summarize_text(
+    text_to_summarize: str,
+    target_tokens: int = 500,
+    prompt_template: Optional[str] = None,
+    provider: str = "openai",
+    model: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    record_summary: bool = False,
+    db_path: str = DEFAULT_DB_PATH
+) -> Dict[str, Any]:
+    """Summarizes text content using an LLM to generate a concise summary.
+    
+    Uses the configured LLM provider to generate a summary of the provided text,
+    optimizing for the requested token length. Optionally stores the summary
+    as a memory in the specified workflow.
+    
+    Args:
+        text_to_summarize: Text content to summarize
+        target_tokens: Approximate desired length of summary (default 500)
+        prompt_template: Optional custom prompt template for summarization
+        provider: LLM provider to use for summarization (default "openai")
+        model: Specific model to use, or None for provider default
+        workflow_id: Optional workflow ID to store the summary in
+        record_summary: Whether to store the summary as a memory
+        db_path: Path to the SQLite database file
+        
+    Returns:
+        Dictionary containing the generated summary:
+        {
+            "summary": "Concise summary text...",
+            "original_length": 2500,  # Approximate character count
+            "summary_length": 350,    # Approximate character count
+            "stored_memory_id": "memory-uuid" | None,  # Only if record_summary=True
+            "success": true,
+            "processing_time": 0.123
+        }
+        
+    Raises:
+        ToolInputError: If text_to_summarize is empty or provider/model is invalid
+        ToolError: If summarization fails or database operation fails
+    """
+    start_time = time.time()
+    
+    if not text_to_summarize:
+        raise ToolInputError("Text to summarize cannot be empty", param_name="text_to_summarize")
+    
+    if record_summary and not workflow_id:
+        raise ToolInputError("Workflow ID is required when record_summary=True", param_name="workflow_id")
+    
+    # Ensure target_tokens is reasonable
+    target_tokens = max(50, min(2000, target_tokens))
+    
+    # Use default models for common providers if none specified
+    default_models = {
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-3-haiku-20240307"
+    }
+    model_to_use = model or default_models.get(provider)
+    
+    # Default prompt template if none provided
+    if not prompt_template:
+        prompt_template = """
+You are an expert summarizer. Your task is to create a concise and accurate summary of the following text.
+The summary should be approximately {target_tokens} tokens long.
+Focus on the main points, key information, and essential details.
+Maintain the tone and factual accuracy of the original text.
+
+TEXT TO SUMMARIZE:
+{text_to_summarize}
+
+CONCISE SUMMARY:
+"""
+    
+    try:
+        # Get provider instance from llm_gateway
+        provider_instance = await get_provider(provider)
+        if not provider_instance:
+            raise ToolError(f"Failed to initialize provider '{provider}'. Check configuration.")
+        
+        # Prepare prompt by filling in the template
+        prompt = prompt_template.format(
+            text_to_summarize=text_to_summarize,
+            target_tokens=target_tokens
+        )
+        
+        # Generate summary using LLM provider
+        generation_result = await provider_instance.generate_completion(
+            prompt=prompt,
+            model=model_to_use,
+            max_tokens=target_tokens + 100,  # Add some buffer for prompt tokens
+            temperature=0.3  # Lower temperature for more deterministic summaries
+        )
+        
+        summary_text = generation_result.text.strip()
+        if not summary_text:
+            raise ToolError("LLM returned empty summary.")
+        
+        # Optional: Store summary as a memory
+        stored_memory_id = None
+        if record_summary and workflow_id:
+            # Validate workflow exists
+            async with DBConnection(db_path) as conn:
+                async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
+                    if not await cursor.fetchone():
+                        raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
+                
+                # Create new memory entry for the summary
+                memory_id = MemoryUtils.generate_id()
+                now_unix = int(time.time())
+                
+                description = f"Summary of text ({len(text_to_summarize)} chars)"
+                tags = json.dumps(["summary", "automated", "text_summary"])
+                
+                await conn.execute(
+                    """
+                    INSERT INTO memories (memory_id, workflow_id, content, memory_level, memory_type, 
+                                        importance, confidence, description, source, tags, 
+                                        created_at, updated_at, access_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (memory_id, workflow_id, summary_text, MemoryLevel.SEMANTIC.value, MemoryType.SUMMARY.value,
+                     6.0, 0.85, description, "summarize_text", tags,
+                     now_unix, now_unix, 0)
+                )
+                
+                # Log the operation
+                await MemoryUtils._log_memory_operation(
+                    conn, workflow_id, "create_summary", memory_id, None, 
+                    {"original_length": len(text_to_summarize), "summary_length": len(summary_text)}
+                )
+                
+                await conn.commit()
+                stored_memory_id = memory_id
+        
+        processing_time = time.time() - start_time
+        logger.info(
+            f"Generated summary of {len(text_to_summarize)} chars text to {len(summary_text)} chars",
+            emoji_key="scissors", time=processing_time
+        )
+        
+        return {
+            "summary": summary_text,
+            "original_length": len(text_to_summarize),
+            "summary_length": len(summary_text),
+            "stored_memory_id": stored_memory_id,
+            "success": True,
+            "processing_time": processing_time
+        }
+    
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(f"Error summarizing text: {e}", exc_info=True)
+        raise ToolError(f"Failed to summarize text: {str(e)}") from e
 
 
 # --- 17. Maintenance (Adapted from cognitive_memory) ---
@@ -7335,7 +8229,7 @@ __all__ = [
     # Workflow
     "create_workflow", "update_workflow_status", "list_workflows", "get_workflow_details",
     # Actions
-    "record_action_start", "record_action_completion", "get_recent_actions",
+    "record_action_start", "record_action_completion", "get_recent_actions", "get_action_details", 
     # Action Dependency Tools
     "add_action_dependency", "get_action_dependencies",
     # Artifacts
@@ -7343,13 +8237,13 @@ __all__ = [
     # Thoughts
     "record_thought", "create_thought_chain", "get_thought_chain",
     # Core Memory
-    "store_memory", "get_memory_by_id", "create_memory_link", "search_semantic_memories", "query_memories", "hybrid_search_memories", "update_memory",
+    "store_memory", "get_memory_by_id", "create_memory_link", "search_semantic_memories", "query_memories", "hybrid_search_memories", "update_memory", "get_linked_memories", 
     # Context & State
     "get_working_memory", "focus_memory", "optimize_working_memory", "save_cognitive_state", "load_cognitive_state", "get_workflow_context",
     # Automated Cognitive Management
     "auto_update_focus", "promote_memory_level",
     # Meta-Cognition & Maintenance
-    "consolidate_memories", "generate_reflection", "delete_expired_memories", "compute_memory_statistics", "compute_memory_statistics",
+    "consolidate_memories", "generate_reflection", "summarize_text", "delete_expired_memories", "compute_memory_statistics", "compute_memory_statistics",
     # Reporting & Visualization
     "generate_workflow_report", "visualize_reasoning_chain", "visualize_memory_network",
 ]
