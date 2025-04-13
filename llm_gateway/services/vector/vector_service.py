@@ -1,4 +1,5 @@
 """Vector database service for semantic search."""
+import asyncio
 import json
 import time
 import uuid
@@ -6,7 +7,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
-import asyncio
 
 from llm_gateway.services.vector.embeddings import cosine_similarity, get_embedding_service
 from llm_gateway.utils import get_logger
@@ -748,7 +748,7 @@ class VectorDatabaseService:
                 
                 # Re-raise if ChromaDB was explicitly requested
                 if use_chromadb:
-                    raise ValueError(f"ChromaDB initialization failed: {str(e)}")
+                    raise ValueError(f"ChromaDB initialization failed: {str(e)}") from e
         else:
             if use_chromadb and not CHROMADB_AVAILABLE:
                 logger.error(
@@ -896,7 +896,7 @@ class VectorDatabaseService:
                     f"Failed to create ChromaDB collection: {str(e)}",
                     emoji_key="error"
                 )
-                raise ValueError(f"Failed to create ChromaDB collection: {str(e)}")
+                raise ValueError(f"Failed to create ChromaDB collection: {str(e)}") from e
         else:
             # Use local storage
             collection = VectorCollection(
@@ -1149,7 +1149,7 @@ class VectorDatabaseService:
             # Local collection
             # For local collection, store text in metadata
             combined_metadata = []
-            for i, (text, meta) in enumerate(zip(texts, metadatas or [{} for _ in range(len(texts))], strict=False)):
+            for _i, (text, meta) in enumerate(zip(texts, metadatas or [{} for _ in range(len(texts))], strict=False)):
                 # Create metadata with text as main content
                 combined_meta = {"text": text}
                 # Add any other metadata

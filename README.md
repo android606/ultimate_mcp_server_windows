@@ -147,6 +147,9 @@ Process large documents efficiently:
   - Symlink security verification
   - Parent directory existence checking
 
+### Browser Automation with Playwright
+  - Enable agents to interact with websites: navigate, click, type, scrape data, take screenshots, generate PDFs, download/upload files, and execute JavaScript via Playwright integration.
+
 ### Structured Data Extraction
 
 - **JSON Extraction**: Extract structured JSON with schema validation
@@ -482,6 +485,38 @@ else:
     print(f"Error: {local_process_response['error']}")
 ```
 
+### Browser Automation Example: Getting Started and Basic Interaction
+
+```python
+# Agent uses the gateway to open a browser, navigate, and extract text
+
+# Initialize the browser (optional, defaults can be used)
+init_response = await client.tools.browser_init(headless=True) # Run without GUI
+if not init_response["success"]:
+    print(f"Browser init failed: {init_response.get('error')}")
+    # Handle error...
+
+# Navigate to a page
+nav_response = await client.tools.browser_navigate(
+    url="https://example.com",
+    wait_until="load"
+)
+if nav_response["success"]:
+    print(f"Navigated to: {nav_response['url']}, Title: {nav_response['title']}")
+    # Agent can use the snapshot for context: nav_response['snapshot']
+else:
+    print(f"Navigation failed: {nav_response.get('error')}")
+    # Handle error...
+
+# Extract the heading text
+text_response = await client.tools.browser_get_text(selector="h1")
+if text_response["success"]:
+    print(f"Extracted text: {text_response['text']}")
+
+# Close the browser when done
+close_response = await client.tools.browser_close()
+print(f"Browser closed: {close_response['success']}")
+
 ### Running a Model Tournament
 
 To compare the outputs of multiple models on a specific task (e.g., code generation):
@@ -760,6 +795,11 @@ This ensures seamless integration with Claude and other MCP-compatible agents.
 │  │               │  │    Tools      │  │               │        │
 │  └───────────────┘  └───────────────┘  └───────────────┘        │
 │                                                                 │
+│  ┌───────────────┐  ┌───────────────┐                           │
+│  │ Browser Tools │  │ Filesystem    │                           │
+│  │ (Playwright)  │  │    Tools      │                           │
+│  └───────────────┘  └───────────────┘                           │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -904,6 +944,13 @@ When Claude delegates a task to LLM Gateway:
   - Provides tools for text manipulation that run locally, without API calls
   - Includes functions for cleaning, formatting, and basic analysis
   - Useful for pre-processing text before sending to LLMs or post-processing results
+
+### Browser Automation (Playwright)
+- **Capabilities:** Enables agents to control a web browser instance (Chromium, Firefox, WebKit) via Playwright.
+- **Actions:** Supports navigation, clicking elements, typing text, selecting options, handling checkboxes, taking screenshots (full page, element, viewport), generating PDFs, downloading/uploading files, executing JavaScript, and managing browser tabs.
+- **State Management:** Maintains browser sessions, contexts, and pages. Provides tools to initialize, close, and install browsers.
+- **Agent Feedback:** Many tools return a `snapshot` of the page's accessibility tree, URL, and title after an action, giving the agent context about the resulting page state.
+- **Configuration:** Allows setting headless mode, user data directories for persistence, timeouts, and specific browser executables.
 
 ### Meta Operations
 
