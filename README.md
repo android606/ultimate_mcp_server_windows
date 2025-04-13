@@ -133,6 +133,20 @@ Process large documents efficiently:
   - Question generation
   - Batch processing
 
+### Secure Filesystem Operations
+
+- **File Access Controls**: Restrict operations to allowed directories
+- **Smart File Editing**: Text-based file editing with whitespace-insensitive matching
+- **Comprehensive Operations**:
+  - Read and write files with proper encoding handling
+  - Edit existing files with smart pattern matching
+  - Create, list, and traverse directories
+  - Move files and directories securely
+- **Security Features**:
+  - Path validation and normalization
+  - Symlink security verification
+  - Parent directory existence checking
+
 ### Structured Data Extraction
 
 - **JSON Extraction**: Extract structured JSON with schema validation
@@ -153,6 +167,54 @@ Process large documents efficiently:
 - **Vector Storage**: Efficient storage and retrieval of vector embeddings
 - **Hybrid Search**: Combine keyword and semantic search capabilities
 - **Batched Processing**: Efficiently process large datasets
+
+### Retrieval-Augmented Generation (RAG)
+
+- **Contextual Generation**:
+  - Augments LLM prompts with relevant retrieved information
+  - Improves factual accuracy and reduces hallucinations
+  - Integrates with vector search and document stores
+
+- **Workflow Integration**:
+  - Seamlessly combine document retrieval with generation tasks
+  - Customizable retrieval and generation strategies
+
+### Secure Filesystem Operations
+
+- **Path Management**:
+  - Robust path validation and normalization
+  - Symlink security verification to prevent traversal attacks
+  - Configurable allowed directories for security boundaries
+
+- **File Operations**:
+  - Read files with proper encoding detection
+  - Write files with proper directory validation
+  - Smart text replacement for editing existing files
+  - Detailed file metadata retrieval
+
+- **Directory Operations**:
+  - Directory creation with recursive support
+  - Directory listing with detailed metadata
+  - Hierarchical directory tree visualization
+  - File and directory movement with security checks
+
+- **Search Capabilities**:
+  - Recursive file and directory searching
+  - Case-insensitive pattern matching
+  - Exclude patterns for filtering results
+
+- **Security Features**:
+  - Enforcement of allowed directory restrictions
+  - Path normalization to prevent directory traversal attacks
+  - Parent directory validation for write operations
+  - Symlink target verification
+
+### Local Text Processing
+
+- **Offline Operations**:
+  - Provides tools for text manipulation that run locally, without API calls
+  - Includes functions for cleaning, formatting, and basic analysis
+  - Useful for pre-processing text before sending to LLMs or post-processing results
 
 ## Usage Examples
 
@@ -805,6 +867,36 @@ When Claude delegates a task to LLM Gateway:
 - **Workflow Integration**:
   - Seamlessly combine document retrieval with generation tasks
   - Customizable retrieval and generation strategies
+
+### Secure Filesystem Operations
+
+- **Path Management**:
+  - Robust path validation and normalization
+  - Symlink security verification to prevent traversal attacks
+  - Configurable allowed directories for security boundaries
+
+- **File Operations**:
+  - Read files with proper encoding detection
+  - Write files with proper directory validation
+  - Smart text replacement for editing existing files
+  - Detailed file metadata retrieval
+
+- **Directory Operations**:
+  - Directory creation with recursive support
+  - Directory listing with detailed metadata
+  - Hierarchical directory tree visualization
+  - File and directory movement with security checks
+
+- **Search Capabilities**:
+  - Recursive file and directory searching
+  - Case-insensitive pattern matching
+  - Exclude patterns for filtering results
+
+- **Security Features**:
+  - Enforcement of allowed directory restrictions
+  - Path normalization to prevent directory traversal attacks
+  - Parent directory validation for write operations
+  - Symlink target verification
 
 ### Local Text Processing
 

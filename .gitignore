@@ -200,3 +200,5 @@ cache/disk_cache/cache.db-wal
 logs
 *.db-shm
 *.db-wal
+cache/disk_cache/cache.db-shm
+cache/disk_cache/cache.db-wal

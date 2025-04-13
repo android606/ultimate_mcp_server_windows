@@ -28,6 +28,21 @@ from .document import (
     summarize_document,
 )
 
+# Import filesystem tools
+from .filesystem import (
+    create_directory,
+    directory_tree,
+    edit_file,
+    get_file_info,
+    list_allowed_directories,
+    list_directory,
+    move_file,
+    read_file,
+    read_multiple_files,
+    search_files,
+    write_file,
+)
+
 # Import new standalone functions from extraction.py
 from .extraction import (
     extract_code_from_response,
@@ -114,6 +129,19 @@ __all__ = [
     "recommend_model",
     "execute_optimized_workflow",
     
+    # Filesystem tools
+    "read_file",
+    "read_multiple_files",
+    "write_file",
+    "edit_file",
+    "create_directory",
+    "list_directory",
+    "directory_tree",
+    "move_file",
+    "search_files",
+    "get_file_info",
+    "list_allowed_directories",
+    
     # Other tool classes (to be refactored) - Should be empty now
     # Removed: "OptimizationTools",
     
@@ -162,6 +190,19 @@ STANDALONE_TOOL_FUNCTIONS = [
     compare_models,
     recommend_model,
     execute_optimized_workflow,
+    
+    # Filesystem tools
+    read_file,
+    read_multiple_files,
+    write_file,
+    edit_file,
+    create_directory,
+    list_directory,
+    directory_tree,
+    move_file,
+    search_files,
+    get_file_info,
+    list_allowed_directories,
 ]
 
 # Registry of tool classes (for tools still using the class pattern) - Should be empty
@@ -203,7 +244,7 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
     # --- Register Class-Based Tools (Refactoring Needed Here) ---
     # This section should ideally do nothing now if all tools are refactored.
     # Keeping the discovery logic commented out or removed might be cleaner.
-    class_based_modules_to_skip = ["meta", "document", "extraction", "rag", "tournament", "optimization"] # Added optimization  # noqa: F841
+    class_based_modules_to_skip = ["meta", "document", "extraction", "rag", "tournament", "optimization", "filesystem"] # Added filesystem
     # No need to iterate if CLASS_BASED_TOOL_REGISTRY is empty and all modules are skipped.
     # class_based_modules = []
     # package = importlib.import_module(__name__.split('.')[0] + ".tools")
