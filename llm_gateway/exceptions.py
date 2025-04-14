@@ -5,19 +5,27 @@ from typing import Any, Dict
 
 class ToolError(Exception):
     """Base exception for all tool-related errors."""
-    
-    def __init__(self, message, error_code=None, details=None):
+
+    def __init__(self, message, error_code=None, details=None, context=None):
         """Initialize the tool error.
-        
+
         Args:
             message: Error message
             error_code: Error code (for categorization)
-            details: Additional error details
+            details: Additional error details dictionary
+            context: Context dictionary (will be merged into details and stored)
         """
         self.error_code = error_code or "TOOL_ERROR"
-        self.details = details or {}
-        super().__init__(message)
 
+        # Combine details and context, giving precedence to context if keys overlap
+        combined_details = details.copy() if details else {} # Start with a copy of details or empty dict
+        if context and isinstance(context, dict):
+            combined_details.update(context) # Merge context into the combined dict
+
+        self.details = combined_details # Store the combined dictionary
+        self.context = context or {} # Also store original context separately for compatibility
+
+        super().__init__(message)
 
 class ToolInputError(ToolError):
     """Exception raised for errors in the tool input parameters."""

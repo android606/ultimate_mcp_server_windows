@@ -4,22 +4,7 @@ import inspect
 from typing import Any, Dict, Type
 
 # Import base decorators/classes that might be used by other tool modules
-from llm_gateway.tools.base import (
-    BaseTool,  # Keep BaseTool in case other modules use it
-    register_tool,  # Keep if used elsewhere, otherwise remove
-    with_error_handling,  # Make sure this is available if used directly
-    with_retry,
-    with_tool_metrics,
-)
-
-# Import other tool modules/classes if they exist and follow the class pattern
-# Removed: from llm_gateway.tools.optimization import OptimizationTools
-from llm_gateway.utils import get_logger
-
-# Import standalone tool functions
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
-
-# Import new standalone functions from document.py
 from .document import (
     chunk_document,
     extract_entities,
@@ -27,8 +12,6 @@ from .document import (
     process_document_batch,
     summarize_document,
 )
-
-# Import filesystem tools
 from .filesystem import (
     create_directory,
     directory_tree,
@@ -41,6 +24,7 @@ from .filesystem import (
     read_multiple_files,
     search_files,
     write_file,
+    # ProtectionTriggeredError is imported by demo directly from filesystem
 )
 
 # Import new standalone functions from extraction.py
@@ -83,6 +67,16 @@ from .tournament import (
     get_tournament_results,
     get_tournament_status,
     list_tournaments,
+)
+
+from llm_gateway.utils import get_logger
+
+from llm_gateway.tools.base import (
+    BaseTool,  # Keep BaseTool in case other modules use it
+    register_tool,  # Keep if used elsewhere, otherwise remove
+    with_error_handling,  # Make sure this is available if used directly
+    with_retry,
+    with_tool_metrics,
 )
 
 # Update __all__ - remove classes/functions that are no longer relevant or defined

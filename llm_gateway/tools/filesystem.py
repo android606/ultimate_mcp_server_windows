@@ -17,8 +17,9 @@ from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Set, Tupl
 
 import aiofiles
 import aiofiles.os
+from pydantic import BaseModel
 
-from llm_gateway.config import get_config
+from llm_gateway.config import get_config, GatewayConfig, FilesystemConfig
 from llm_gateway.exceptions import ToolError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
@@ -54,148 +55,93 @@ class ProtectionTriggeredError(ToolError):
 
 # --- Configuration and Security ---
 
-def get_filesystem_config() -> Dict[str, Any]:
-    """Get filesystem configuration, including protection settings."""
-    cfg = get_config()
-    # Use getattr for safer access if 'filesystem' key might be missing.
-    fs_config = getattr(cfg, 'filesystem', {})
-    if not isinstance(fs_config, dict):
-         logger.error("Filesystem configuration ('filesystem') is not a dictionary. Using defaults.", emoji_key="config")
-         return {} # Return empty dict to use defaults downstream
+def get_filesystem_config() -> 'FilesystemConfig': # Use type hint from config module
+    """Get filesystem configuration object from the main config."""
+    cfg: GatewayConfig = get_config()
+    # Access the validated FilesystemConfig object directly
+    fs_config = cfg.filesystem
+    if not fs_config: # Should not happen with default_factory, but check defensively
+         logger.error("Filesystem configuration missing after load. Using defaults.", emoji_key="config")
+         from llm_gateway.config import FilesystemConfig # Local import to avoid circularity at top level
+         return FilesystemConfig()
     return fs_config
 
 def get_protection_config(operation_type: Literal['deletion', 'modification']) -> Dict[str, Any]:
-    """Get protection settings for a specific operation type."""
+    """Get protection settings for a specific operation type as a dictionary."""
     fs_config = get_filesystem_config()
-    protection_config = fs_config.get(f'file_{operation_type}_protection', {})
-    if not isinstance(protection_config, dict):
-        logger.warning(f"Protection config for '{operation_type}' is not a dictionary. Using defaults.", emoji_key="config")
-        protection_config = {}
+    protection_attr_name = f'file_{operation_type}_protection'
 
-    # Define defaults for protection settings
-    defaults = {
-        "enabled": False,
-        "max_files_threshold": 100,        # Trigger detailed check above 100 files
-        "datetime_stddev_threshold_sec": 60 * 60 * 24 * 30, # ~1 month variance threshold
-        "file_type_variance_threshold": 5, # Trigger if > 5 unique file extensions found
-        "max_stat_errors_pct": 10,         # Allow up to 10% stat errors before aborting check
-    }
+    if hasattr(fs_config, protection_attr_name):
+        protection_config_obj = getattr(fs_config, protection_attr_name)
+        if protection_config_obj and isinstance(protection_config_obj, BaseModel): # Check it's a Pydantic model instance
+            # Convert the Pydantic model to a dictionary for consistent access
+            return protection_config_obj.model_dump()
+        else:
+             logger.warning(f"Protection config for '{operation_type}' is not a valid model instance. Using defaults.", emoji_key="config")
+    else:
+         logger.warning(f"Protection config attribute '{protection_attr_name}' not found. Using defaults.", emoji_key="config")
 
-    # Merge defaults with loaded config
-    merged_config = defaults.copy()
-    merged_config.update(protection_config)
-
-    # Basic type validation for merged settings
-    for key, default_value in defaults.items():
-        if key not in merged_config or not isinstance(merged_config[key], type(default_value)):
-             logger.warning(f"Invalid type for protection config '{operation_type}.{key}'. Expected {type(default_value)}, got {type(merged_config.get(key))}. Using default: {default_value}", emoji_key="config")
-             merged_config[key] = default_value
-        # Ensure numerical thresholds are non-negative
-        if isinstance(default_value, (int, float)) and merged_config[key] < 0:
-             logger.warning(f"Negative value for protection config '{operation_type}.{key}'. Using default: {default_value}", emoji_key="config")
-             merged_config[key] = default_value
-
-    return merged_config
-
-
+    # Return default dictionary structure if config is missing or invalid
+    # Fetch defaults from the Pydantic model definition if possible
+    try:
+        from llm_gateway.config import FilesystemProtectionConfig
+        return FilesystemProtectionConfig().model_dump()
+    except ImportError: # Fallback if import fails
+        return {
+            "enabled": False, "max_files_threshold": 100,
+            "datetime_stddev_threshold_sec": 60 * 60 * 24 * 30,
+            "file_type_variance_threshold": 5, "max_stat_errors_pct": 10.0
+        }
+    
 def get_allowed_directories() -> List[str]:
     """Get allowed directories from configuration.
 
     Reads the configuration, normalizes paths (absolute, resolves symlinks),
-    and returns a list of unique allowed directory paths.
+    and returns a list of unique allowed directory paths. Assumes paths were expanded
+    during config load.
 
     Returns:
         List of normalized, absolute directory paths that can be accessed.
     """
     fs_config = get_filesystem_config()
-    allowed_config: List[str] = fs_config.get('allowed_directories', [])
+    # Access the already expanded list from the validated config object
+    allowed_config: List[str] = fs_config.allowed_directories
 
     if not allowed_config:
         logger.warning(
-            "No filesystem directories configured for access. All operations will be rejected.",
+            "No filesystem directories configured or loaded for access. All operations may be rejected.",
             emoji_key="security"
         )
         return []
 
+    # Paths should already be expanded and absolute from config loading.
+    # We still need to normalize and ensure uniqueness.
     normalized: List[str] = []
     for d in allowed_config:
         try:
-            # Ensure d is a string before processing
-            if not isinstance(d, str):
-                logger.warning(f"Ignoring non-string entry in allowed_directories config: {d!r}", emoji_key="config")
-                continue
-            # Resolve user ~, symlinks, ensure absolute, and normalize the path structure
-            # This is done synchronously during config load for early failure detection.
-            real_d = os.path.realpath(os.path.expanduser(d))
-            abs_d = os.path.abspath(real_d)
-            norm_d = os.path.normpath(abs_d)
+            # Basic normalization (separator consistency)
+            norm_d = os.path.normpath(d)
             if norm_d not in normalized: # Avoid duplicates
                  normalized.append(norm_d)
         except Exception as e:
-            # Log errors during processing but continue with other directories
-            logger.error(f"Error processing configured allowed directory '{d}': {e}. Skipping.", emoji_key="config")
+            # Log errors during normalization but continue
+            logger.error(f"Error normalizing configured allowed directory '{d}': {e}. Skipping.", emoji_key="config")
 
-    # Check if any directories were successfully normalized.
-    if not normalized and allowed_config: # Only log error if config list was not empty initially
+    if not normalized and allowed_config:
         logger.error(
-            "Filesystem access potentially misconfigured: No valid allowed directories could be determined after processing the configured list.",
+            "Filesystem access potentially misconfigured: No valid allowed directories remain after normalization.",
             emoji_key="security"
         )
     elif not normalized:
-         # This case is already logged by the initial warning if allowed_config was empty.
+         # Warning about no configured dirs was logged earlier if allowed_config was empty.
          pass
 
-
-    logger.info(
-        f"Filesystem tools configured with {len(normalized)} allowed directories",
-        emoji_key="config",
-        allowed_directories=normalized # Log the final, normalized list
+    # Debug log the final effective list used by tools
+    logger.debug(
+        f"Filesystem tools operating with {len(normalized)} normalized allowed directories",
+        allowed_directories=normalized
     )
-
     return normalized
-
-# --- Allowed Directories Cache ---
-_ALLOWED_DIRECTORIES: Optional[List[str]] = None
-_CACHE_TIMESTAMP: float = 0
-# Cache TTL (Time-To-Live) in seconds, configurable via environment variable.
-_CACHE_TTL: int = int(os.environ.get("FS_CACHE_TTL", 300)) # 5 minutes default
-
-def get_allowed_dirs() -> List[str]:
-    """Get cached allowed directories or recompute if cache is expired or invalid.
-
-    Uses a simple time-based cache to avoid repeatedly reading and processing
-    the configuration for allowed directories.
-
-    Returns:
-        List of normalized absolute allowed directory paths.
-    """
-    global _ALLOWED_DIRECTORIES, _CACHE_TIMESTAMP
-
-    current_time = time.monotonic() # Use monotonic clock for measuring time intervals.
-
-    # Check cache validity (not populated, timestamp invalid, or TTL expired)
-    if _ALLOWED_DIRECTORIES is None or \
-       not isinstance(_CACHE_TIMESTAMP, (int, float)) or \
-       _CACHE_TIMESTAMP <= 0 or \
-       (current_time - _CACHE_TIMESTAMP) > _CACHE_TTL:
-        try:
-            # Refresh config settings first, as get_allowed_directories uses them
-            # (Note: get_config() typically handles its own caching/refresh logic)
-            # For simplicity here, we assume get_config() provides fresh enough data
-            # when needed.
-            _ALLOWED_DIRECTORIES = get_allowed_directories()
-            _CACHE_TIMESTAMP = current_time
-            logger.info(f"Refreshed allowed directories cache. TTL: {_CACHE_TTL}s", emoji_key="cache")
-        except Exception as e:
-            # Handle potential errors during config refresh. Keep stale cache if available.
-            logger.error(f"Failed to refresh allowed directories cache: {e}", exc_info=True, emoji_key="error")
-            if _ALLOWED_DIRECTORIES is None: # If cache was never populated, critical failure.
-                 logger.critical("Filesystem tool cannot operate: failed to load allowed directories initially.", emoji_key="security")
-                 return []
-            # else: return the potentially stale cache, log warning maybe?
-
-    # Ensure return is always a list, even if cache failed and was initially None.
-    return _ALLOWED_DIRECTORIES if _ALLOWED_DIRECTORIES is not None else []
 
 
 # --- Path Validation ---
@@ -244,48 +190,53 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
             provided_value=path
         ) from e
 
-    # Check against allowed directories (uses cached list)
-    allowed_dirs = get_allowed_dirs()
+    # --- Use get_allowed_directories which reads from config ---
+    allowed_dirs = get_allowed_directories()
     if not allowed_dirs:
         raise ToolError(
             "Filesystem access is disabled: No allowed directories are configured or loadable.",
-            context={"configured_directories": 0}
+            context={"configured_directories": 0} # Provide context
         )
 
     # Ensure normalized_path is truly *under* an allowed dir.
-    # Requires normalized paths and compares against normalized allowed dirs.
     is_allowed = False
     original_validated_path = normalized_path # Store before symlink resolution
     for allowed_dir in allowed_dirs:
+        # Ensure allowed_dir is also normalized for comparison
+        norm_allowed_dir = os.path.normpath(allowed_dir)
         # Path must be exactly the allowed dir or start with the allowed dir + separator.
-        if normalized_path == allowed_dir or normalized_path.startswith(allowed_dir + os.sep):
+        if normalized_path == norm_allowed_dir or normalized_path.startswith(norm_allowed_dir + os.sep):
             is_allowed = True
             break
 
     if not is_allowed:
-        logger.warning(f"Path '{normalized_path}' denied access. Not within allowed directories.", emoji_key="security")
+        logger.warning(f"Path '{normalized_path}' denied access. Not within allowed directories: {allowed_dirs}", emoji_key="security")
         raise ToolInputError(
             f"Access denied: Path '{path}' resolves to '{normalized_path}', which is outside the allowed directories.",
             param_name="path",
             provided_value=path,
+            # Add context about allowed dirs for debugging? Potentially sensitive.
+            # context={"allowed": allowed_dirs}
         )
 
     # Filesystem checks using aiofiles.os
     current_validated_path = normalized_path # Start with normalized path
     try:
-        path_exists = await aiofiles.os.path.exists(current_validated_path)
-
-        # Handle symlinks securely: resolve and re-validate the target path
-        is_link = False
+        # Use lstat to check the item itself first, before resolving links
         try:
-            # Check if the path *itself* is a link, even if broken
-            # lexists checks link itself, exists checks link target existence
-            if await aiofiles.os.path.lexists(current_validated_path):
-                is_link = await aiofiles.os.path.islink(current_validated_path)
-        except OSError:
-             # If checking islink fails (e.g., permission denied partway down the path), treat as potentially unsafe.
-             logger.warning(f"Could not determine if '{current_validated_path}' is a symlink due to OSError. Proceeding cautiously.", emoji_key="warning")
+            lstat_info = await aiofiles.os.lstat(current_validated_path)
+            path_exists_locally = True # lstat succeeded, so the path entry itself exists
+            is_link = os.path.stat.S_ISLNK(lstat_info.st_mode)
+        except FileNotFoundError:
+             path_exists_locally = False
+             is_link = False
+        except OSError as e:
+             # Handle other OS errors during lstat
+             logger.error(f"OS Error during lstat check for '{current_validated_path}': {e}", exc_info=True)
+             raise ToolError(f"Filesystem error checking path status for '{path}': {str(e)}", context={"path": path, "resolved_path": current_validated_path}) from e
 
+
+        # Resolve symlink if it exists and re-validate
         if is_link:
             try:
                 real_path = await aiofiles.os.path.realpath(current_validated_path)
@@ -294,7 +245,8 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
                 # Re-check if the *real* resolved path is within allowed directories
                 is_real_allowed = False
                 for allowed_dir in allowed_dirs:
-                   if real_normalized == allowed_dir or real_normalized.startswith(allowed_dir + os.sep):
+                   norm_allowed_dir = os.path.normpath(allowed_dir)
+                   if real_normalized == norm_allowed_dir or real_normalized.startswith(norm_allowed_dir + os.sep):
                         is_real_allowed = True
                         break
 
@@ -305,29 +257,24 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
                         provided_value=path
                     )
 
-                # If validation passed, use the real path for further checks
+                # If validation passed, use the real path for further checks *about the target*
                 current_validated_path = real_normalized
-                # Re-check existence for the resolved path
+                # Re-check existence *of the target*
                 path_exists = await aiofiles.os.path.exists(current_validated_path)
 
             except OSError as e:
                  # Handle errors during realpath resolution (e.g., broken link, permissions)
                  if isinstance(e, FileNotFoundError):
-                     # If the link itself is broken.
+                     # Broken link - the link entry exists, but target doesn't
+                     path_exists = False
                      if check_exists is True:
                          raise ToolInputError(
-                             f"Required path '{path}' is a broken symbolic link (points to non-existent target of '{original_validated_path}').",
+                             f"Required path '{path}' is a symbolic link pointing to a non-existent target ('{original_validated_path}' -> target missing).",
                              param_name="path", provided_value=path
                          ) from e
-                     # If check_exists=False, we expect non-existence, a broken link is fine *if* we operate on the link path.
-                     # However, most operations follow links. If check_exists is False or None,
-                     # and we resolved a link, use the *original* validated path for subsequent checks/operations
-                     # as the target doesn't exist or is irrelevant.
-                     # Let's restore the path *before* realpath resolution if link was broken.
+                     # If check_exists is False or None, a broken link might be acceptable depending on the operation.
+                     # Keep current_validated_path as the *link path itself* if the target doesn't exist.
                      current_validated_path = original_validated_path
-                     # The link path itself exists (lexists was true), but its target doesn't.
-                     path_exists = False # Target does not exist.
-
                  else:
                      raise ToolInputError(
                          f"Error resolving symbolic link '{path}': {str(e)}",
@@ -337,6 +284,10 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
                 raise
             except Exception as e: # Catch other unexpected errors during link resolution
                 raise ToolError(f"Unexpected error resolving symbolic link for '{path}': {str(e)}", context={"path": path}) from e
+        else:
+             # Not a link, so existence check result is based on the initial check
+             path_exists = path_exists_locally
+
 
         # Check existence requirement *after* potential symlink resolution
         if check_exists is True and not path_exists:
@@ -351,7 +302,7 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
                 param_name="path",
                 provided_value=path
             )
-        # else: check_exists is None, or condition met (exists=True and path_exists=True, or exists=False and path_exists=False)
+        # else: check_exists is None, or condition met
 
 
         # If path doesn't exist and creation is likely (check_exists is False or None), check parent.
@@ -359,38 +310,36 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
             parent_dir = os.path.dirname(current_validated_path)
             # Check if parent_dir is the same as path (e.g., root '/' or normalization issue)
             if parent_dir == current_validated_path:
-                 # Parent check likely not needed or meaningful for root-like paths.
-                 pass
+                 pass # Parent check likely not needed or meaningful for root-like paths.
             else:
                 try:
-                    parent_exists = await aiofiles.os.path.exists(parent_dir)
-                    if not parent_exists:
-                        raise ToolInputError(
-                            f"Cannot operate on '{path}': Parent directory '{parent_dir}' does not exist.",
-                            param_name="path",
-                            provided_value=path
-                        )
-                    parent_is_dir = await aiofiles.os.path.isdir(parent_dir)
-                    if not parent_is_dir:
-                         raise ToolInputError(
-                            f"Cannot operate on '{path}': Parent path '{parent_dir}' exists but is not a directory.",
-                            param_name="path",
-                            provided_value=path
-                        )
+                    # Check parent existence and type using aiofiles.os
+                    if not await aiofiles.os.path.isdir(parent_dir):
+                        if await aiofiles.os.path.exists(parent_dir):
+                             raise ToolInputError(
+                                f"Cannot operate on '{path}': Parent path '{parent_dir}' exists but is not a directory.",
+                                param_name="path", provided_value=path
+                             )
+                        else:
+                             raise ToolInputError(
+                                f"Cannot operate on '{path}': Parent directory '{parent_dir}' does not exist.",
+                                param_name="path", provided_value=path
+                             )
+
                     # Optional: Check if parent directory is writable if requested
                     if check_parent_writable:
                          # os.access is sync, but typically very fast. Async alternative is complex.
                          if not os.access(parent_dir, os.W_OK | os.X_OK): # Check Write and Execute (needed to enter/write)
                               raise ToolInputError(
                                   f"Cannot operate on '{path}': Parent directory '{parent_dir}' is not writable or accessible.",
-                                  param_name="path",
-                                  provided_value=path
+                                  param_name="path", provided_value=path
                               )
                 except OSError as e:
+                    # Catch errors during parent checks (e.g., permission denied on parent itself)
                     raise ToolError(f"Filesystem error checking parent directory '{parent_dir}' for '{path}': {str(e)}", context={"path": path, "parent": parent_dir}) from e
 
     except OSError as e:
-        # Catch filesystem errors during async checks like exists, isdir, islink
+        # Catch filesystem errors during async checks like exists, isdir, islink on the primary path
         raise ToolError(f"Filesystem error validating path '{path}': {str(e)}", context={"path": path, "resolved_path": current_validated_path, "error": str(e)}) from e
     except ToolInputError: # Re-raise ToolInputErrors from validation logic
         raise
@@ -920,18 +869,15 @@ async def _check_protection_heuristics(
 ) -> None:
     """
     Check if a bulk operation on multiple files triggers safety protection heuristics.
-
-    Raises ProtectionTriggeredError if the operation is blocked.
-
-    Args:
-        paths: List of file/directory paths targeted by the operation.
-        operation_type: 'deletion' or 'modification'.
+    (Modified to use get_protection_config which reads from validated config)
     """
+    # --- Use get_protection_config which reads from main config ---
     config = get_protection_config(operation_type)
     if not config.get('enabled', False):
         return # Protection disabled for this operation type
 
     num_paths = len(paths)
+    # --- Read thresholds from the loaded config dictionary ---
     max_files_threshold = config.get('max_files_threshold', 100)
 
     # Only run detailed checks if the number of files exceeds the threshold
@@ -952,38 +898,30 @@ async def _check_protection_heuristics(
         else:
             failed_stat_count += 1
 
-    # Check if too many stat calls failed
     total_attempted = len(paths)
-    max_errors_pct = config.get('max_stat_errors_pct', 10)
+    # --- Read threshold from config dict ---
+    max_errors_pct = config.get('max_stat_errors_pct', 10.0)
     if total_attempted > 0 and (failed_stat_count / total_attempted * 100) > max_errors_pct:
-         # Abort check if we couldn't get reliable info for a significant portion
-         logger.warning(f"Protection check aborted: Failed to get metadata for {failed_stat_count}/{total_attempted} paths ({failed_stat_count / total_attempted * 100:.1f}%), exceeding threshold of {max_errors_pct}%.", emoji_key="warning")
-         # Decide whether to block or allow here? Let's be cautious and block if check is unreliable.
          raise ProtectionTriggeredError(
              f"Operation blocked because safety check could not reliably gather file metadata ({failed_stat_count}/{total_attempted} failures).",
              context={"failed_stats": failed_stat_count, "total_paths": total_attempted}
          )
 
     num_valid_stats = len(successful_stats)
-    if num_valid_stats < 2: # Need at least 2 points for standard deviation
+    if num_valid_stats < 2:
         logger.info("Protection check skipped: Not enough valid file metadata points obtained.", emoji_key="info")
-        return # Not enough data to perform variance checks
+        return
 
     # --- Calculate Heuristics ---
     creation_times = [ts[0] for ts, ext in successful_stats]
     modification_times = [ts[1] for ts, ext in successful_stats]
-    extensions = {ext for ts, ext in successful_stats if ext and ext != ".<dir>"} # Ignore directories for type variance
+    extensions = {ext for ts, ext in successful_stats if ext and ext != ".<dir>"}
 
     try:
-        # Use population standard deviation (pstdev) if available, otherwise sample (stdev)
-        # Check for NaN results if list contains identical timestamps
         ctime_stddev = statistics.pstdev(creation_times) if num_valid_stats > 1 else 0.0
         mtime_stddev = statistics.pstdev(modification_times) if num_valid_stats > 1 else 0.0
-        if math.isnan(ctime_stddev): 
-            ctime_stddev = 0.0
-        if math.isnan(mtime_stddev): 
-            mtime_stddev = 0.0
-
+        if math.isnan(ctime_stddev): ctime_stddev = 0.0
+        if math.isnan(mtime_stddev): mtime_stddev = 0.0
     except statistics.StatisticsError as e:
          logger.warning(f"Could not calculate timestamp standard deviation: {e}", emoji_key="warning")
          ctime_stddev = 0.0
@@ -991,7 +929,7 @@ async def _check_protection_heuristics(
 
     num_unique_extensions = len(extensions)
 
-    # --- Compare against Thresholds ---
+    # --- Read thresholds from config dict ---
     dt_threshold = config.get('datetime_stddev_threshold_sec', 60 * 60 * 24 * 30)
     type_threshold = config.get('file_type_variance_threshold', 5)
 
@@ -1013,7 +951,8 @@ async def _check_protection_heuristics(
         logger.warning(f"Protection Triggered! Reason: {reason_str}", emoji_key="security")
         raise ProtectionTriggeredError(
             reason_str,
-            context={
+            protection_type=f"{operation_type}_protection", # Add protection type
+            context={ # Use context for structured data
                 "num_paths": num_paths,
                 "num_valid_stats": num_valid_stats,
                 "ctime_stddev_sec": round(ctime_stddev, 2),
@@ -2458,16 +2397,16 @@ async def get_file_info(path: str) -> Dict[str, Any]:
 async def list_allowed_directories() -> Dict[str, Any]:
     """List all directories configured as allowed for filesystem access.
 
-    This is primarily an administrative/debugging tool. Reads from cached config.
+    This is primarily an administrative/debugging tool. Reads from the loaded config.
 
     Returns:
         Dictionary containing the list of allowed base directory paths.
     """
     start_time = time.monotonic()
 
-    # Get allowed directories from the cache/config loader.
+    # --- Use get_allowed_directories which reads from config ---
     try:
-        allowed_dirs = get_allowed_dirs()
+        allowed_dirs = get_allowed_directories()
     except Exception as e:
         # Handle rare errors during config retrieval itself
         raise ToolError(f"Failed to retrieve allowed directories configuration: {e}") from e

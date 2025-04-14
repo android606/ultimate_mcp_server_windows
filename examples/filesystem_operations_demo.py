@@ -9,7 +9,7 @@ import argparse
 import asyncio
 import os
 import platform
-import shutil  # Keep sync shutil for cleanup simplicity
+import shutil
 import sys
 import tempfile
 import time
@@ -27,15 +27,22 @@ try:
              print("Error: Could not reliably determine project root. Make sure llm_gateway is importable.", file=sys.stderr)
              sys.exit(1)
     sys.path.insert(0, str(PROJECT_ROOT))
+
     # --- Important: Configure Allowed Directories ---
     # For this demo, we will dynamically allow the temporary directory.
     # In a real application, this would be set via llm_gateway.config
     # We'll simulate this by setting an environment variable *before* importing the tools.
     # Create a temporary directory *first*
     DEMO_TEMP_DIR = tempfile.mkdtemp(prefix="llm_gateway_fs_demo_")
-    os.environ["LLM_GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"] = f'["{DEMO_TEMP_DIR}"]'
-    # Force config reload if it was cached previously (might be needed in complex setups)
-    os.environ["LLM_GATEWAY_FORCE_CONFIG_RELOAD"] = "true"
+
+    # Format for JSON list in environment variable
+    # Use json.dumps to ensure correct quoting, especially on Windows
+    import json
+    allowed_dirs_json = json.dumps([DEMO_TEMP_DIR])
+    os.environ["GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"] = allowed_dirs_json
+
+    # Force config reload if it was cached previously
+    os.environ["GATEWAY_FORCE_CONFIG_RELOAD"] = "true"
     print(f"INFO: Temporarily allowing access to: {DEMO_TEMP_DIR}")
 except Exception as e:
     print(f"Error during initial setup: {e}", file=sys.stderr)
@@ -44,6 +51,7 @@ except Exception as e:
 
 from rich.markup import escape
 from rich.panel import Panel
+from rich.pretty import pretty_repr
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
@@ -52,8 +60,12 @@ from rich.tree import Tree
 # Now import the tools and other gateway components
 # We must import *after* setting the environment variable for allowed dirs
 try:
-    from llm_gateway.exceptions import ProtectionTriggeredError, ToolError, ToolInputError
+    from llm_gateway.config import get_config  # Import get_config to verify loading later
+    from llm_gateway.exceptions import ToolError, ToolInputError
+
+    # Import ProtectionTriggeredError directly from filesystem
     from llm_gateway.tools.filesystem import (
+        ProtectionTriggeredError,
         create_directory,
         delete_path,
         directory_tree,
@@ -75,7 +87,6 @@ except ImportError as e:
      print(f"Import Error: {e}. Please ensure all dependencies are installed and the script is run from the correct location relative to the project.", file=sys.stderr)
      sys.exit(1)
 
-
 # Initialize logger
 logger = get_logger("example.filesystem")
 
@@ -93,17 +104,17 @@ def parse_arguments():
   security      - Security features demo
 """
     )
-    
+
     parser.add_argument('demo', nargs='?', default='all',
                         choices=['all', 'read', 'write', 'directory', 'move_delete', 'security'],
                         help='Specific demo to run (default: all)')
-    
+
     parser.add_argument('-v', '--verbose', action='store_true',
                         help='Increase output verbosity')
-    
-    parser.add_argument('--rich-tree', action='store_true', 
+
+    parser.add_argument('--rich-tree', action='store_true',
                         help='Use enhanced rich tree visualization for directory trees')
-    
+
     return parser.parse_args()
 
 # --- Demo Setup ---
@@ -124,177 +135,214 @@ async def safe_tool_call(tool_func, args_dict, description=""):
         result = await tool_func(**args_dict)
         duration = time.monotonic() - start_time
 
-        # The tools now often return rich dictionaries, potentially formatted by create_tool_response
-        # or directly structured for success/failure indication.
-        is_error = isinstance(result, dict) and (result.get("isError") or not result.get("success", True))
-        protection_triggered = isinstance(result, dict) and result.get("protectionTriggered")
+        # --- Updated Error Handling Logic ---
+        # Check for the structure returned by format_error_response via @with_error_handling
+        # Success is indicated by the ABSENCE of 'error' or 'isError', or explicitly True if present
+        is_error = isinstance(result, dict) and (result.get("error") is not None or result.get("isError") is True)
+        is_protection_triggered = isinstance(result, dict) and result.get("protectionTriggered") is True
 
-        if protection_triggered:
+        if is_protection_triggered:
+             # Extract details specific to protection error if available
+             error_msg = result.get("error", "Protection triggered, reason unspecified.")
+             context = result.get("details", {}).get("context", "N/A") # Context is nested in details
              console.print(Panel(
                  f"[bold yellow]🛡️ Protection Triggered![/bold yellow]\n"
-                 f"Message: {result.get('message', 'No message')}\n"
-                 f"Context: {result.get('context', {})}",
+                 f"Message: {escape(error_msg)}\n"
+                 f"Context: {pretty_repr(context)}", # Use pretty_repr for context dict
                  title=f"Result: {tool_name} (Blocked)",
                  border_style="yellow",
                  subtitle=f"Duration: {duration:.3f}s"
              ))
              # Return a structure indicating failure due to protection
              return {"success": False, "protection_triggered": True, "result": result}
+
         elif is_error:
-            error_msg = result.get("message", str(result.get("content", "Unknown error")))
-            context = result.get("context", None)
+            # Extract standard error details
+            error_msg = result.get("error", "Unknown error occurred.")
+            error_code = result.get("error_code", "UNKNOWN_ERROR")
+            details = result.get("details", None) # Details can be None or a dict
+
+            # Format the error panel
+            error_content = f"[bold red]Error ({error_code})[/bold red]\n"
+            error_content += f"Message: {escape(str(error_msg))}" # Ensure message is string
+            if details:
+                 # Display details nicely using pretty_repr
+                 error_content += f"\nDetails:\n{pretty_repr(details)}"
+            else:
+                 error_content += "\nDetails: N/A"
+
             console.print(Panel(
-                f"[bold red]Error[/bold red]\n"
-                f"Message: {escape(error_msg)}\n"
-                f"Context: {context if context else 'N/A'}",
+                error_content,
                 title=f"Result: {tool_name} (Failed)",
                 border_style="red",
                 subtitle=f"Duration: {duration:.3f}s"
             ))
-            return {"success": False, "error": error_msg, "context": context, "result": result}
+            return {"success": False, "error": error_msg, "details": details, "result": result}
+        # --- End Updated Error Handling Logic ---
+
         else:
             # Successful result - display nicely
             # Try to format common result structures
             output_content = ""
             if isinstance(result, dict):
-                 # Common success patterns
+                 # Common success patterns (Keep this part mostly as is, might need tweaks based on actual success dicts)
                  if "message" in result:
                       output_content += f"Message: [green]{escape(result['message'])}[/green]\n"
                  if "path" in result:
                       output_content += f"Path: [cyan]{escape(str(result['path']))}[/cyan]\n"
                  if "size" in result:
                       output_content += f"Size: [yellow]{result['size']}[/yellow] bytes\n"
-                 if "created" in result:
-                      output_content += f"Created: {'Yes' if result['created'] else 'No (already existed)'}\n"
-                 if "diff" in result:
-                       output_content += f"Diff:\n{Syntax(result['diff'], 'diff', theme='monokai', background_color='default')}\n"
+                 # Handle 'created' from create_directory
+                 if "created" in result and isinstance(result['created'], bool):
+                    output_content += f"Created: {'Yes' if result['created'] else 'No (already existed)'}\n"
+                 # Handle 'diff' from edit_file
+                 if "diff" in result and result.get("diff") != "No changes detected after applying edits." and result.get("diff") != "No edits provided.":
+                       diff_content = result['diff']
+                       # Check if diff is empty (meaning no functional change despite edits)
+                       if diff_content:
+                            output_content += f"Diff:\n{Syntax(diff_content, 'diff', theme='monokai', background_color='default')}\n"
+                       else:
+                            output_content += "Diff: [dim](No effective changes detected)[/dim]\n"
+                 # Handle 'matches' from search_files
                  if "matches" in result and "pattern" in result:
-                       output_content += f"Search Matches ({len(result['matches'])}):\n"
-                       output_content += "\n".join(f"- [cyan]{escape(os.path.relpath(m, DEMO_ROOT))}[/cyan]" for m in result['matches'][:20])
-                       if len(result['matches']) > 20: 
+                       output_content += f"Search Matches ({len(result['matches'])} for pattern '{result['pattern']}'):\n"
+                       rel_base = Path(result.get("path", ".")) # Base path for relpath calculation
+                       output_content += "\n".join(f"- [cyan]{escape(os.path.relpath(m, rel_base))}[/cyan]" for m in result['matches'][:20])
+                       if len(result['matches']) > 20:
                             output_content += "\n- ... (more matches)"
-                       if "warnings" in result: 
+                       if result.get("warnings"): # Check if warnings list exists and is not empty
                             output_content += "\n[yellow]Warnings:[/yellow]\n" + "\n".join(f"- {escape(w)}" for w in result['warnings']) + "\n"
+                 # Handle 'entries' from list_directory
                  elif "entries" in result and "path" in result: # list_directory
                        output_content += f"Directory Listing for [cyan]{escape(str(result['path']))}[/cyan]:\n"
                        table = Table(show_header=True, header_style="bold magenta", box=None)
-                       table.add_column("Name", style="cyan")
+                       table.add_column("Name", style="cyan", no_wrap=True)
                        table.add_column("Type", style="green")
                        table.add_column("Info", style="yellow")
                        for entry in result.get('entries', []):
                             name = entry.get('name', '?')
                             etype = entry.get('type', 'unknown')
                             info_str = ""
-                            if etype == 'file' and 'size' in entry: 
+                            if etype == 'file' and 'size' in entry:
                                  info_str += f"{entry['size']} bytes"
-                            elif etype == 'symlink' and 'symlink_target' in entry: 
-                                 info_str += f"-> {entry['symlink_target']}"
-                            if 'error' in entry: 
-                                 info_str += f" [red](Error: {entry['error']})[/red]"
+                            elif etype == 'symlink' and 'symlink_target' in entry:
+                                 info_str += f"-> {escape(str(entry['symlink_target']))}" # Escape target
+                            if 'error' in entry:
+                                 info_str += f" [red](Error: {escape(entry['error'])})[/red]" # Escape error
                             icon = "📄" if etype == "file" else "📁" if etype == "directory" else "🔗" if etype=="symlink" else "❓"
                             table.add_row(f"{icon} {escape(name)}", etype, info_str)
-                       from io import StringIO
-                       string_io = StringIO()
-                       console_capture = console.__class__(file=string_io, force_terminal=True, color_system="truecolor")
-                       console_capture.print(table)
-                       output_content += string_io.getvalue()
-                       if "warnings" in result: 
+                       # Use capture context for table rendering
+                       from rich.console import Capture
+                       with Capture() as capture:
+                            console.print(table)
+                       output_content += capture.get()
+                       if result.get("warnings"): # Check warnings for list_directory
                             output_content += "\n[yellow]Warnings:[/yellow]\n" + "\n".join(f"- {escape(w)}" for w in result['warnings']) + "\n"
+                 # Handle 'tree' from directory_tree
                  elif "tree" in result and "path" in result: # directory_tree
                        output_content += f"Directory Tree for [cyan]{escape(str(result['path']))}[/cyan]:\n"
                        rich_tree = Tree(f"📁 [bold cyan]{escape(os.path.basename(result['path']))}[/bold cyan]")
                        def build_rich_tree(parent_node, children):
-                           for item in children:
+                            for item in children:
                                 name = item.get("name", "?")
                                 item_type = item.get("type", "unknown")
                                 info = ""
-                                if "size" in item: 
+                                if "size" in item:
                                      size_bytes = item['size']
-                                     # Improved size formatting
-                                     if size_bytes < 1024:
-                                          info += f" ({size_bytes}b)"
-                                     elif size_bytes < 1024 * 1024:
-                                          info += f" ({size_bytes/1024:.1f}KB)"
-                                     else:
-                                          info += f" ({size_bytes/(1024*1024):.1f}MB)"
+                                     if size_bytes < 1024: 
+                                         info += f" ({size_bytes}b)"
+                                     elif size_bytes < 1024 * 1024: 
+                                         info += f" ({size_bytes/1024:.1f}KB)"
+                                     else: 
+                                         info += f" ({size_bytes/(1024*1024):.1f}MB)"
                                 if "target" in item: 
-                                     info += f" → {item['target']}"
+                                    info += f" → {escape(item['target'])}" # Escape target
                                 if "error" in item: 
-                                     info += f" [red](Error: {item['error']})[/red]"
+                                    info += f" [red](Error: {escape(item['error'])})[/red]" # Escape error
 
                                 if item_type == "directory":
                                     node = parent_node.add(f"📁 [bold cyan]{escape(name)}[/bold cyan]{info}")
                                     if "children" in item: 
-                                         build_rich_tree(node, item["children"])
+                                        build_rich_tree(node, item["children"])
                                 elif item_type == "file":
-                                     # Guess file type for better icon
-                                     icon = "📄"
+                                     icon = "📄" # Default icon
                                      ext = os.path.splitext(name)[1].lower()
-                                     if ext in ['.jpg', '.png', '.gif', '.bmp', '.jpeg', '.svg']:
-                                          icon = "🖼️"
-                                     elif ext in ['.mp3', '.wav', '.ogg', '.flac']:
-                                          icon = "🎵"
-                                     elif ext in ['.mp4', '.avi', '.mov', '.mkv']:
-                                          icon = "🎬"
-                                     elif ext in ['.py', '.js', '.java', '.c', '.cpp', '.go', '.rs']:
-                                          icon = "📜"
-                                     elif ext in ['.json', '.xml', '.yaml', '.yml']:
-                                          icon = "📋"
-                                     elif ext in ['.zip', '.tar', '.gz', '.7z', '.rar']:
-                                          icon = "📦"
-                                     elif ext in ['.md', '.txt', '.doc', '.docx', '.pdf']:
-                                          icon = "📝"
-                                     
+                                     if ext in ['.jpg', '.png', '.gif', '.bmp', '.jpeg', '.svg']: 
+                                         icon = "🖼️"
+                                     elif ext in ['.mp3', '.wav', '.ogg', '.flac']: 
+                                         icon = "🎵"
+                                     elif ext in ['.mp4', '.avi', '.mov', '.mkv']: 
+                                         icon = "🎬"
+                                     elif ext in ['.py', '.js', '.java', '.c', '.cpp', '.go', '.rs']: 
+                                         icon = "📜"
+                                     elif ext in ['.json', '.xml', '.yaml', '.yml']: 
+                                         icon = "📋"
+                                     elif ext in ['.zip', '.tar', '.gz', '.7z', '.rar']: 
+                                         icon = "📦"
+                                     elif ext in ['.md', '.txt', '.doc', '.docx', '.pdf']: 
+                                         icon = "📝"
                                      parent_node.add(f"{icon} [green]{escape(name)}[/green]{info}")
-                                elif item_type == "symlink":
-                                     parent_node.add(f"🔗 [magenta]{escape(name)}[/magenta]{info}")
-                                elif item_type == "info":
-                                     parent_node.add(f"ℹ️ [dim]{escape(name)}[/dim]")
-                                elif item_type == "error":
-                                     parent_node.add(f"❌ [red]{escape(name)}[/red]")
-                                else:
-                                     parent_node.add(f"❓ [yellow]{escape(name)}[/yellow]{info}")
+                                elif item_type == "symlink": 
+                                    parent_node.add(f"🔗 [magenta]{escape(name)}[/magenta]{info}")
+                                elif item_type == "info": 
+                                    parent_node.add(f"ℹ️ [dim]{escape(name)}[/dim]") # Info node from max depth
+                                elif item_type == "error": 
+                                    parent_node.add(f"❌ [red]{escape(name)}[/red]{info}") # Error node from scan error
+                                else: 
+                                    parent_node.add(f"❓ [yellow]{escape(name)}[/yellow]{info}")
                        build_rich_tree(rich_tree, result["tree"])
-                       from io import StringIO
-                       string_io = StringIO()
-                       console_capture = console.__class__(file=string_io, force_terminal=True, color_system="truecolor")
-                       console_capture.print(rich_tree)
-                       output_content += string_io.getvalue()
+                       from rich.console import Capture
+                       with Capture() as capture:
+                           console.print(rich_tree)
+                       output_content += capture.get()
+                 # Handle 'directories' from list_allowed_directories
                  elif "directories" in result and "count" in result: # list_allowed_directories
                         output_content += f"Allowed Directories ({result['count']}):\n"
                         output_content += "\n".join(f"- [green]{escape(d)}[/green]" for d in result['directories']) + "\n"
+                 # Handle 'files' from read_multiple_files
                  elif "files" in result and "succeeded" in result: # read_multiple_files
                         output_content += f"Read Results: [green]{result['succeeded']} succeeded[/green], [red]{result['failed']} failed[/red]\n"
-                        for file_res in result['files']:
+                        for file_res in result.get('files', []): # Use get with default
                             path_str = escape(str(file_res.get('path', 'N/A')))
                             if file_res.get('success'):
                                 size_info = f" ({file_res.get('size', 'N/A')}b)" if 'size' in file_res else ""
-                                content_preview = escape(str(file_res.get('content', ''))[:100]) + "..." if len(str(file_res.get('content', ''))) > 100 else escape(str(file_res.get('content', '')))
-                                output_content += f"- [green]Success[/green]: [cyan]{path_str}[/cyan]{size_info}\n  Content: '{content_preview}'\n"
+                                content_preview = str(file_res.get('content', '')) # Already formatted preview
+                                output_content += f"- [green]Success[/green]: [cyan]{path_str}[/cyan]{size_info}\n  Content: '{escape(content_preview)}'\n" # Escape preview
                             else:
                                 output_content += f"- [red]Failed[/red]: [cyan]{path_str}[/cyan]\n  Error: {escape(str(file_res.get('error', 'Unknown')))}\n"
+                 # Handle MCP 'content' block (from read_file maybe?)
                  elif "content" in result and isinstance(result["content"], list) and len(result["content"]) > 0 and "text" in result["content"][0]:
-                      # Generic MCP content block display
                       output_content += "Content:\n" + "\n".join([escape(block.get("text","")) for block in result["content"] if block.get("type")=="text"]) + "\n"
+                 # Handle 'modified' from get_file_info
                  elif "name" in result and "modified" in result: # get_file_info
                       output_content += f"File Info for [cyan]{escape(result['name'])}[/cyan]:\n"
                       info_table = Table(show_header=False, box=None)
                       info_table.add_column("Property", style="blue")
                       info_table.add_column("Value", style="yellow")
-                      skip_keys = {"success", "message", "path"} # Already shown or redundant
+                      # Keys to exclude from generic table display
+                      skip_keys = {"success", "message", "path", "name"} # Already shown or redundant
                       for k, v in result.items():
                            if k not in skip_keys:
-                               info_table.add_row(escape(k), escape(str(v)))
-                      from io import StringIO
-                      string_io = StringIO()
-                      console_capture = console.__class__(file=string_io, force_terminal=True, color_system="truecolor")
-                      console_capture.print(info_table)
-                      output_content += string_io.getvalue()
+                               # Use pretty_repr for better display of complex values (like lists/dicts)
+                               info_table.add_row(escape(k), pretty_repr(v))
+                      from rich.console import Capture
+                      with Capture() as capture:
+                           console.print(info_table)
+                      output_content += capture.get()
+
+                 # Fallback for other dictionaries
                  else:
-                      # Fallback: Dump the dict (excluding potentially large 'content')
-                      output_content += "Result Data:\n" + escape(str({k:v for k,v in result.items() if k != 'content'})) + "\n"
+                     # Exclude potentially large fields like 'content', 'tree', 'entries', 'matches', 'files'
+                     # from the generic fallback display
+                     excluded_keys = {'content', 'tree', 'entries', 'matches', 'files', 'success', 'message'}
+                     display_dict = {k:v for k,v in result.items() if k not in excluded_keys}
+                     if display_dict: # Only show if there's something left to display
+                         output_content += "Result Data:\n" + pretty_repr(display_dict) + "\n"
+                     elif not output_content: # If nothing else was printed
+                          output_content = "[dim](Tool executed successfully, no specific output format matched)[/dim]"
+
+            # Handle non-dict results (should be rare now)
             else:
-                 # Non-dict result? Should be rare with new structure.
                  output_content = escape(str(result))
 
             console.print(Panel(
@@ -306,30 +354,39 @@ async def safe_tool_call(tool_func, args_dict, description=""):
             return {"success": True, "result": result}
 
     except ProtectionTriggeredError as pte:
+         # Handle ProtectionTriggeredError specifically (raised by tools like delete_path)
          duration = time.monotonic() - start_time
          logger.warning(f"Protection triggered calling {tool_name}: {pte}", emoji_key="security")
          console.print(Panel(
              f"[bold yellow]🛡️ Protection Triggered![/bold yellow]\n"
              f"Message: {escape(str(pte))}\n"
-             f"Context: {pte.context}",
+             f"Context: {pretty_repr(pte.context)}", # Use pretty_repr for context
              title=f"Result: {tool_name} (Blocked)",
              border_style="yellow",
              subtitle=f"Duration: {duration:.3f}s"
          ))
          return {"success": False, "protection_triggered": True, "error": str(pte), "context": pte.context}
     except (ToolInputError, ToolError) as tool_err:
+         # Handle other ToolErrors raised directly by the tool function
          duration = time.monotonic() - start_time
-         logger.error(f"Tool Error calling {tool_name}: {tool_err}", emoji_key="error", details=getattr(tool_err, 'context', None))
+         error_code = getattr(tool_err, 'error_code', 'TOOL_ERROR')
+         details = getattr(tool_err, 'details', 'N/A')
+         logger.error(f"Tool Error calling {tool_name}: {tool_err} ({error_code})", emoji_key="error", details=details)
+
+         error_content = f"[bold red]{type(tool_err).__name__} ({error_code})[/bold red]\n"
+         error_content += f"Message: {escape(str(tool_err))}"
+         error_content += f"\nDetails: {pretty_repr(details)}"
+
          console.print(Panel(
-             f"[bold red]{type(tool_err).__name__}[/bold red]\n"
-             f"Message: {escape(str(tool_err))}\n"
-             f"Context: {getattr(tool_err, 'context', 'N/A')}",
+             error_content,
              title=f"Result: {tool_name} (Failed)",
              border_style="red",
              subtitle=f"Duration: {duration:.3f}s"
          ))
-         return {"success": False, "error": str(tool_err), "context": getattr(tool_err, 'context', None)}
+         # Return structure consistent with handled errors
+         return {"success": False, "error": str(tool_err), "details": details, "error_code": error_code}
     except Exception as e:
+        # Catch unexpected exceptions during the tool call itself
         duration = time.monotonic() - start_time
         logger.critical(f"Unexpected Exception calling {tool_name}: {e}", emoji_key="critical", exc_info=True)
         console.print(Panel(
@@ -339,7 +396,9 @@ async def safe_tool_call(tool_func, args_dict, description=""):
             border_style="red",
             subtitle=f"Duration: {duration:.3f}s"
         ))
-        return {"success": False, "error": f"Unexpected: {str(e)}"}
+        return {"success": False, "error": f"Unexpected: {str(e)}", "details": {"type": type(e).__name__}}
+    
+
 
 async def setup_demo_environment():
     """Create a temporary directory structure for the demo."""
@@ -380,6 +439,10 @@ All operations are restricted to allowed directories for safety.""",
 '''Main entry point for the demo application.'''
 import sys
 from pathlib import Path
+# Import logger for edit demo
+# Assume logger is configured elsewhere
+# import logging
+# logger = logging.getLogger(__name__)
 
 # A line with different whitespace for editing demo
 def main():
@@ -387,12 +450,12 @@ def main():
 	print("Hello from the demo application!")
 
 	# Get configuration
-	config = get_config()
+	config = get_config_local() # Renamed to avoid conflict
 	print(f"Running with debug mode: {config['debug']}")
 
 	return 0
 
-def get_config():
+def get_config_local(): # Renamed
     '''Get application configuration.'''
     return {
         "debug": True,
@@ -454,6 +517,7 @@ All API calls require an authorization token.
 }""",
         DEMO_ROOT / "data" / "sample.csv": "ID,Value,Category\n1,10.5,A\n2,15.2,B\n3,9.8,A",
         DEMO_ROOT / "tests" / "test_helpers.py": """import pytest
+# Adjust import path if needed relative to test execution
 from src.utils.helpers import format_message
 
 def test_format_message():
@@ -474,6 +538,7 @@ def test_format_message():
 
     # Create bulk files for deletion protection test
     bulk_dir = DEMO_ROOT / "bulk_files"
+    bulk_dir.mkdir(exist_ok=True) # Ensure bulk dir exists
     for i in range(BULK_FILES_COUNT):
         # Introduce slight variations in timestamps and extensions
         ext = ".txt" if i % 3 == 0 else ".tmp" if i % 3 == 1 else ".dat"
@@ -482,31 +547,47 @@ def test_format_message():
         # Vary modification times slightly (may not be precise enough on all FS)
         if i % 5 == 0:
              await asyncio.sleep(0.001) # Small delay
-             os.utime(fpath, (time.time() - i * 60, time.time() - i * 60)) # Set past mtime
+             try:
+                  os.utime(fpath, (time.time() - i * 60, time.time() - i * 60)) # Set past mtime
+             except OSError as e:
+                  logger.warning(f"Could not set utime for {fpath}: {e}") # Log utime errors
 
     # Create a symlink (if supported)
     SYMLINK_PATH = DEMO_ROOT / "link_to_src"
-    TARGET_PATH = DEMO_ROOT / "src"
+    TARGET_PATH = DEMO_ROOT / "src" # Link to src directory
     try:
         # Check if symlinks are supported (e.g., Windows needs admin rights or dev mode)
         can_symlink = hasattr(os, "symlink")
+        test_link_path = DEMO_ROOT / "test_link_nul_delete"
         if platform.system() == "Windows":
             # Basic check, might not be perfect
             try:
-                os.symlink("NUL", DEMO_ROOT / "test_link_nul", target_is_directory=False)
-                (DEMO_ROOT / "test_link_nul").unlink()
+                # Use a file target for test link on Windows if dir links need special perms
+                test_target = DEMO_ROOT / "README.md"
+                os.symlink(test_target, test_link_path, target_is_directory=False)
+                test_link_path.unlink() # Clean up test link
             except (OSError, AttributeError, NotImplementedError):
                  can_symlink = False
                  logger.warning("Symlink creation might not be supported or permitted on this system. Skipping symlink tests.", emoji_key="warning")
 
         if can_symlink:
-            os.symlink(TARGET_PATH, SYMLINK_PATH, target_is_directory=True)
-            logger.info(f"Created symlink: {SYMLINK_PATH} -> {TARGET_PATH}", emoji_key="link")
+            # Ensure target exists before creating link
+            if TARGET_PATH.is_dir():
+                 # Use await aiofiles.os.symlink for consistency? No, os.symlink is sync only.
+                 os.symlink(TARGET_PATH, SYMLINK_PATH, target_is_directory=True)
+                 logger.info(f"Created symlink: {SYMLINK_PATH} -> {TARGET_PATH}", emoji_key="link")
+            else:
+                 logger.warning(f"Symlink target {TARGET_PATH} does not exist or is not a directory. Skipping symlink creation.", emoji_key="warning")
+                 SYMLINK_PATH = None
         else:
              SYMLINK_PATH = None # Indicate symlink wasn't created
     except OSError as e:
-        logger.warning(f"Could not create symlink ({SYMLINK_PATH} -> {TARGET_PATH}): {e}. Skipping symlink tests.", emoji_key="warning")
-        SYMLINK_PATH = None # Indicate symlink wasn't created
+        # Handle errors like EEXIST if link already exists, or permission errors
+        if e.errno == 17: # EEXIST
+             logger.warning(f"Symlink {SYMLINK_PATH} already exists. Assuming correct setup.", emoji_key="warning")
+        else:
+             logger.warning(f"Could not create symlink ({SYMLINK_PATH} -> {TARGET_PATH}): {e}. Skipping symlink tests.", emoji_key="warning")
+             SYMLINK_PATH = None # Indicate symlink wasn't created
     except Exception as e:
         logger.error(f"Unexpected error creating symlink: {e}", emoji_key="error", exc_info=True)
         SYMLINK_PATH = None
@@ -514,7 +595,7 @@ def test_format_message():
     logger.success(f"Demo environment set up at: {DEMO_ROOT}", emoji_key="success")
     console.print(Panel(
         f"Created demo project within [cyan]{DEMO_ROOT.parent}[/cyan] at [cyan]{DEMO_ROOT.name}[/cyan]\n"
-        f"Created [bold]{len(project_dirs)}[/bold] directories and [bold]{len(sample_files)}[/bold] files.\n"
+        f"Created [bold]{len(project_dirs)}[/bold] directories and [bold]{len(sample_files)}[/bold] sample files.\n"
         f"Created [bold]{BULK_FILES_COUNT}[/bold] files in 'bulk_files/' for deletion test.\n"
         f"Symlink created: {'Yes' if SYMLINK_PATH else 'No'}",
         title="Demo Environment Ready",
@@ -884,26 +965,44 @@ async def main():
     global DEMO_TEMP_DIR # Make sure main knows about this path
     symlink_path = None
     exit_code = 0
-    
+
     # Parse command line arguments
     args = parse_arguments()
-    
+
     try:
         console.print(Rule("[bold blue]Secure Filesystem Operations Demo[/bold blue]", style="white"))
         logger.info("Starting filesystem operations demonstration", emoji_key="start")
+
+        # --- Verify Config Loading ---
+        try:
+             current_config = get_config()
+             fs_config = current_config.filesystem
+             loaded_allowed_dirs = fs_config.allowed_directories
+             console.print(f"[dim]Config Check: Loaded allowed dirs: {loaded_allowed_dirs}[/dim]")
+             if not loaded_allowed_dirs or DEMO_TEMP_DIR not in loaded_allowed_dirs:
+                  console.print("[bold red]Error:[/bold red] Demo temporary directory not found in loaded allowed directories. Configuration failed.", style="red")
+                  console.print(f"[dim]Expected: {DEMO_TEMP_DIR}[/dim]")
+                  console.print(f"[dim]Loaded Config: {current_config.model_dump()}") # Dump entire config
+                  return 1 # Exit early if config is wrong
+        except Exception as config_err:
+             console.print(f"[bold red]Error checking loaded configuration:[/bold red] {config_err}", style="red")
+             console.print_exception(show_locals=False)
+             return 1
+        # --- End Verify Config Loading ---
+
 
         # Display available options if running all demos
         if args.demo == 'all':
             console.print(Panel(
                 "This demo includes multiple sections showcasing different filesystem operations.\n"
                 "You can run individual sections using the following commands:\n\n"
-                "[yellow]python filesystem_operations_demo.py read[/yellow] - File reading operations\n"
-                "[yellow]python filesystem_operations_demo.py write[/yellow] - File writing and editing operations\n"
-                "[yellow]python filesystem_operations_demo.py directory[/yellow] - Directory operations\n"
-                "[yellow]python filesystem_operations_demo.py move_delete[/yellow] - Move, delete, search & info operations\n"
-                "[yellow]python filesystem_operations_demo.py security[/yellow] - Security features demo\n\n"
+                "[yellow]python examples/filesystem_operations_demo.py read[/yellow] - File reading operations\n"
+                "[yellow]python examples/filesystem_operations_demo.py write[/yellow] - File writing and editing operations\n"
+                "[yellow]python examples/filesystem_operations_demo.py directory[/yellow] - Directory operations\n"
+                "[yellow]python examples/filesystem_operations_demo.py move_delete[/yellow] - Move, delete, search & info operations\n"
+                "[yellow]python examples/filesystem_operations_demo.py security[/yellow] - Security features demo\n\n"
                 "Add [yellow]--rich-tree[/yellow] for enhanced directory visualization!",
-                title="Demo Options", 
+                title="Demo Options",
                 border_style="cyan",
                 expand=False
             ))
@@ -911,30 +1010,30 @@ async def main():
         # Display info message
         console.print(Panel(
             "This demo showcases the secure asynchronous filesystem tools.\n"
-            f"A temporary directory ([cyan]{DEMO_TEMP_DIR}[/cyan]) has been created and automatically configured as the ONLY allowed directory for this demo's operations.",
+            f"A temporary directory ([cyan]{DEMO_TEMP_DIR}[/cyan]) has been created and configured as the ONLY allowed directory for this demo's operations via environment variables.",
             title="About This Demo",
             border_style="cyan"
         ))
 
         # Set up the demo environment *inside* the allowed temp dir
         symlink_path = await setup_demo_environment()
-        
+
         # Run the selected demonstration(s)
         if args.demo == 'all' or args.demo == 'read':
             await demonstrate_file_reading(symlink_path)
-            console.print()
+            console.print() # Add newline
 
         if args.demo == 'all' or args.demo == 'write':
             await demonstrate_file_writing_editing()
-            console.print()
+            console.print() # Add newline
 
         if args.demo == 'all' or args.demo == 'directory':
             await demonstrate_directory_operations(symlink_path, use_rich_tree=args.rich_tree)
-            console.print()
+            console.print() # Add newline
 
         if args.demo == 'all' or args.demo == 'move_delete':
             await demonstrate_move_delete_search(symlink_path)
-            console.print()
+            console.print() # Add newline
 
         if args.demo == 'all' or args.demo == 'security':
             await demonstrate_security_features()
