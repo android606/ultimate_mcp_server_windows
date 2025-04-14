@@ -722,8 +722,15 @@ def with_error_handling(func):
             return format_error_response(e)
             
         except ValueError as e:
-            # Convert ValueError to ToolInputError
-            error = ToolInputError(str(e), details={"original_error": str(e)})
+            # Convert ValueError to ToolInputError with more detailed information
+            error = ToolInputError(
+                f"Invalid input to {tool_name}: {str(e)}",
+                details={
+                    "tool_name": tool_name,
+                    "exception_type": "ValueError",
+                    "original_error": str(e)
+                }
+            )
             
             logger.error(
                 f"Invalid input to {tool_name}: {str(e)}",
@@ -736,14 +743,22 @@ def with_error_handling(func):
             return format_error_response(error)
             
         except Exception as e:
+            # Create a more specific error message that includes the tool name
+            specific_message = f"Execution error in {tool_name}: {str(e)}"
+            
             # Convert to ToolExecutionError for other exceptions
             error = ToolExecutionError(
-                f"Execution error in {tool_name}: {str(e)}",
-                cause=e
+                specific_message,
+                cause=e,
+                details={
+                    "tool_name": tool_name,
+                    "exception_type": type(e).__name__,
+                    "original_message": str(e)
+                }
             )
             
             logger.error(
-                f"Tool execution error: {str(e)}",
+                specific_message,
                 emoji_key="error",
                 tool=tool_name,
                 exc_info=True

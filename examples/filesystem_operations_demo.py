@@ -321,7 +321,7 @@ async def safe_tool_call(tool_func, args_dict, description=""):
                             table.add_row(f"{icon} {escape(name)}", etype, info_str)
                        # Use capture context for table rendering
                        from rich.console import Capture
-                       with Capture() as capture:
+                       with Capture(console) as capture:
                             console.print(table)
                        output_content += capture.get()
                        if result.get("warnings"): # Check warnings for list_directory
@@ -380,7 +380,7 @@ async def safe_tool_call(tool_func, args_dict, description=""):
                                     parent_node.add(f"❓ [yellow]{escape(name)}[/yellow]{info}")
                        build_rich_tree(rich_tree, result["tree"])
                        from rich.console import Capture
-                       with Capture() as capture:
+                       with Capture(console) as capture:
                            console.print(rich_tree)
                        output_content += capture.get()
                  # Handle 'directories' from list_allowed_directories
@@ -414,7 +414,7 @@ async def safe_tool_call(tool_func, args_dict, description=""):
                                # Use pretty_repr for better display of complex values (like lists/dicts)
                                info_table.add_row(escape(k), pretty_repr(v))
                       from rich.console import Capture
-                      with Capture() as capture:
+                      with Capture(console) as capture:
                            console.print(info_table)
                       output_content += capture.get()
 
@@ -463,7 +463,14 @@ async def safe_tool_call(tool_func, args_dict, description=""):
 
          error_content = f"[bold red]{type(tool_err).__name__} ({error_code})[/bold red]\n"
          error_content += f"Message: {escape(str(tool_err))}"
-         error_content += f"\nDetails: {pretty_repr(details)}"
+         if details and details != 'N/A':
+              error_content += f"\nDetails:\n{pretty_repr(details)}"
+         else:
+              error_content += "\nDetails: N/A"
+             
+         # Add debugging info for filesystem operations
+         error_content += f"\n\nFunction: [yellow]{tool_name}[/yellow]"
+         error_content += f"\nArguments: [dim]{args_dict}[/dim]"
 
          console.print(Panel(
              error_content,
@@ -824,6 +831,11 @@ async def demonstrate_directory_operations(symlink_path, use_rich_tree=False):
     logger.info("Demonstrating directory operations...", emoji_key="directory")
 
     # --- Create Directory ---
+    # First ensure parent directory exists
+    logs_dir_path = str(DEMO_ROOT / "logs")
+    await safe_tool_call(create_directory, {"path": logs_dir_path}, description="Creating parent directory (logs)")
+    
+    # Now create nested directory
     new_dir_path = str(DEMO_ROOT / "logs" / "debug")
     await safe_tool_call(create_directory, {"path": new_dir_path}, description="Creating a new nested directory (logs/debug)")
 
@@ -985,9 +997,15 @@ async def demonstrate_move_delete_search(symlink_path):
 
     # --- Delete Symlink (if created) ---
     if symlink_path:
-        await safe_tool_call(get_file_info, {"path": str(symlink_path)}, description=f"Checking symlink {os.path.basename(symlink_path)} exists before deleting")
-        await safe_tool_call(delete_path, {"path": str(symlink_path)}, description=f"Deleting symlink ({os.path.basename(symlink_path)})")
-        await safe_tool_call(get_file_info, {"path": str(symlink_path)}, description="Verifying symlink deletion (should fail)")
+        # Get the exact path string to the symlink without resolving it
+        symlink_str = str(symlink_path)
+        await safe_tool_call(get_file_info, {"path": symlink_str}, description=f"Checking symlink {os.path.basename(symlink_path)} exists before deleting")
+        
+        # Explicitly tell the user what we're doing
+        console.print(f"[cyan]Note:[/cyan] Deleting the symlink itself (not its target) at path: {symlink_str}")
+        
+        await safe_tool_call(delete_path, {"path": symlink_str}, description=f"Deleting symlink ({os.path.basename(symlink_path)})")
+        await safe_tool_call(get_file_info, {"path": symlink_str}, description="Verifying symlink deletion (should fail)")
 
     # --- Delete Empty Directory ---
     empty_dir_to_delete = str(DEMO_ROOT / "logs" / "debug") # Created earlier, should be empty

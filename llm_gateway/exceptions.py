@@ -261,15 +261,23 @@ def format_error_response(error: Exception) -> Dict[str, Any]:
             "error": str(error),
             "error_code": error.error_code,
             "details": error.details,
-            "success": False
+            "success": False,
+            "isError": True
         }
     else:
+        # For unknown errors, use the actual error message instead of a generic message
+        error_message = str(error)
+        if not error_message or error_message.strip() == "":
+            error_message = f"Unknown error of type {type(error).__name__}"
+            
         return {
-            "error": str(error),
-            "error_code": "UNKNOWN_ERROR",
+            "error": error_message,
+            "error_code": "UNKNOWN_ERROR", 
             "details": {
                 "type": type(error).__name__,
+                "message": error_message,
                 "traceback": traceback.format_exc()
             },
-            "success": False
+            "success": False,
+            "isError": True
         } 

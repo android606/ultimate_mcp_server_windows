@@ -145,7 +145,7 @@ def get_allowed_directories() -> List[str]:
 
 
 # --- Path Validation ---
-async def validate_path(path: str, check_exists: Optional[bool] = None, check_parent_writable: bool = False) -> str:
+async def validate_path(path: str, check_exists: Optional[bool] = None, check_parent_writable: bool = False, resolve_symlinks: bool = False) -> Union[str, Dict[str, Any]]:
     """Validate a path for security and accessibility using async I/O.
 
     Performs several checks:
@@ -153,7 +153,7 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
     2.  Normalizes the path (expands user, makes absolute, resolves '../').
     3.  Checks if the normalized path is within the configured allowed directories.
     4.  If check_exists is True, checks if the path exists. If False, checks it does NOT exist.
-    5.  Resolves symbolic links and re-validates the real path against allowed dirs.
+    5.  If resolve_symlinks is True, resolves symbolic links and re-validates the real path against allowed dirs.
     6.  If check_exists is False, checks parent directory existence.
     7.  If `check_parent_writable` is True and path likely needs creation, checks parent directory write permissions.
 
@@ -161,9 +161,11 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
         path: The file or directory path input string to validate.
         check_exists: If True, path must exist. If False, path must NOT exist. If None, existence is not checked.
         check_parent_writable: If True and path doesn't exist/creation is implied, check if parent dir is writable.
+        resolve_symlinks: If True, follows symlinks and returns their target path. If False, keeps the symlink path.
 
     Returns:
-        The normalized, absolute, validated path string.
+        By default: The normalized, absolute, validated path string.
+        If resolve_symlinks=False and path is a symlink: Returns a dict with information about the symlink.
 
     Raises:
         ToolInputError: If the path is invalid (format, permissions, existence violation,
@@ -221,15 +223,30 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
 
     # Filesystem checks using aiofiles.os
     current_validated_path = normalized_path # Start with normalized path
+    result = {}
+    is_symlink = False
+    
     try:
         # Use stat with follow_symlinks=False to check the item itself (similar to lstat)
         try:
             lstat_info = await aiofiles.os.stat(current_validated_path, follow_symlinks=False)
             path_exists_locally = True # stat succeeded, so the path entry itself exists
-            is_link = os.path.stat.S_ISLNK(lstat_info.st_mode)
+            is_symlink = os.path.stat.S_ISLNK(lstat_info.st_mode)
+            
+            if is_symlink and not resolve_symlinks:
+                # If it's a symlink and we're not resolving symlinks, prepare to return info about the symlink
+                result["is_symlink"] = True
+                result["symlink_path"] = current_validated_path
+                try:
+                    # Get the target for information purposes
+                    symlink_target = await aiofiles.os.readlink(current_validated_path)
+                    result["symlink_target"] = symlink_target
+                except OSError as link_err:
+                    result["symlink_target_error"] = str(link_err)
+            
         except FileNotFoundError:
              path_exists_locally = False
-             is_link = False
+             is_symlink = False
         except OSError as e:
              # Handle other OS errors during stat check
              logger.error(f"OS Error during stat check for '{current_validated_path}': {e}", exc_info=True)
@@ -237,11 +254,13 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
 
 
         # Resolve symlink if it exists and re-validate
-        if is_link:
+        symlink_target_path = None
+        if is_symlink and resolve_symlinks:
             try:
                 # Use synchronous os.path.realpath since aiofiles.os.path doesn't have it
                 real_path = os.path.realpath(current_validated_path)
                 real_normalized = os.path.normpath(real_path)
+                symlink_target_path = real_normalized
 
                 # Re-check if the *real* resolved path is within allowed directories
                 is_real_allowed = False
@@ -349,18 +368,29 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
         logger.error(f"Unexpected error during path validation for {path}: {e}", exc_info=True)
         raise ToolError(f"An unexpected error occurred validating path: {str(e)}", context={"path": path}) from e
 
-    # Return the final, validated, normalized, and potentially symlink-resolved path
+    # Return symlink information if we found a symlink and aren't resolving it
+    if is_symlink and not resolve_symlinks:
+        # Add final validation result to the result dictionary
+        result["original_path"] = path
+        result["validated_path"] = current_validated_path
+        if symlink_target_path:
+            result["target_path"] = symlink_target_path
+        return result
+    
+    # Otherwise return the validated path string as before
     return current_validated_path
 
 # --- Helper Functions ---
 
-async def format_file_info(file_path: str) -> Dict[str, Any]:
+async def format_file_info(file_path: str, follow_symlinks: bool = False) -> Dict[str, Any]:
     """Get detailed file or directory information asynchronously.
 
     Uses `aiofiles.os.stat` to retrieve metadata.
 
     Args:
         file_path: Path to file or directory (assumed validated).
+        follow_symlinks: If True, follows symlinks to get info about their targets.
+                        If False, gets info about the symlink itself.
 
     Returns:
         Dictionary with file/directory details (name, path, size, timestamps, type, permissions).
@@ -368,8 +398,8 @@ async def format_file_info(file_path: str) -> Dict[str, Any]:
     """
     try:
         # Use stat results directly where possible to avoid redundant checks
-        # Use stat with follow_symlinks=False to get info about the link itself if it is one, otherwise acts like stat
-        stat_info = await aiofiles.os.stat(file_path, follow_symlinks=False)
+        # Use stat with follow_symlinks parameter to control whether we stat the link or the target
+        stat_info = await aiofiles.os.stat(file_path, follow_symlinks=follow_symlinks)
         mode = stat_info.st_mode
         is_dir = os.path.stat.S_ISDIR(mode)
         is_file = os.path.stat.S_ISREG(mode) # Check for regular file
@@ -417,7 +447,7 @@ async def format_file_info(file_path: str) -> Dict[str, Any]:
             "permissions": oct(os.path.stat.S_IMODE(mode)),
         }
 
-        if is_link:
+        if is_link or (not follow_symlinks and await aiofiles.os.path.islink(file_path)):
              try:
                  # Attempt to read the link target
                  link_target = await aiofiles.os.readlink(file_path)
@@ -1038,8 +1068,8 @@ async def async_walk(
                  # Check entry type, handling potential errors using lstat to check link itself
                  try:
                      # Determine if it's a directory (respecting followlinks for recursion decision later)
-                     is_entry_dir = await entry.is_dir(follow_symlinks=followlinks)
-                     is_entry_link = await entry.is_symlink() # Check if entry *itself* is a link
+                     is_entry_dir = entry.is_dir(follow_symlinks=followlinks)
+                     is_entry_link = entry.is_symlink() # Check if entry *itself* is a link
 
                      if is_entry_dir and (not is_entry_link or followlinks):
                         # It's a directory, or it's a link to a directory and we follow links
@@ -1696,12 +1726,12 @@ async def list_directory(path: str) -> Dict[str, Any]:
             entry_info: Dict[str, Any] = {"name": entry.name}
             try:
                 # Use async methods on the DirEntry object for efficiency, check link status explicitly
-                is_link = await entry.is_symlink() # Checks if entry *itself* is a link
+                is_link = entry.is_symlink() # Checks if entry *itself* is a link
                 entry_info["is_symlink"] = is_link
 
                 # Let's be explicit using lstat results for type determination
                 try:
-                     stat_res = await entry.stat(follow_symlinks=False) # Use lstat via entry
+                     stat_res = entry.stat(follow_symlinks=False) # Use lstat via entry
                      mode = stat_res.st_mode
                      l_is_dir = os.path.stat.S_ISDIR(mode)
                      l_is_file = os.path.stat.S_ISREG(mode)
@@ -1846,7 +1876,7 @@ async def directory_tree(
                 entry_data: Dict[str, Any] = {"name": entry.name}
                 try:
                     # Use lstat via entry to avoid following links unexpectedly
-                    stat_res = await entry.stat(follow_symlinks=False)
+                    stat_res = entry.stat(follow_symlinks=False)
                     mode = stat_res.st_mode
                     l_is_dir = os.path.stat.S_ISDIR(mode)
                     l_is_file = os.path.stat.S_ISREG(mode)
@@ -2023,7 +2053,7 @@ async def move_file(
         # samfile is sync, but should be fast. Requires paths to exist.
         try:
              # Source exists. Does dest exist now (after potential removal)?
-             dest_exists_after_remove = await aiofiles.os.path.lexists(validated_dest)  # noqa: F841
+             dest_exists_after_remove = await aiofiles.os.path.exists(validated_dest)  # noqa: F841
              # Only call samefile if both paths point to existing things after the removal step.
              # This check is mainly useful if overwrite was False and dest didn't exist initially but resolved same as source.
              # If dest existed and overwrite=True, it should have been removed.
@@ -2088,46 +2118,68 @@ async def delete_path(path: str) -> Dict[str, Any]:
     """
     start_time = time.monotonic()
 
-    # Validate path exists (check_exists=True)
-    validated_path = await validate_path(path, check_exists=True)
+    # Validate path exists (check_exists=True), but don't resolve symlinks yet
+    # We need to know if the original path is a symlink to handle it properly
+    validation_result = await validate_path(path, check_exists=True, resolve_symlinks=False)
+
+    # Check if the result is a symlink description dictionary
+    is_symlink = False
+    symlink_path = None
+    if isinstance(validation_result, dict) and validation_result.get("is_symlink"):
+        is_symlink = True
+        symlink_path = validation_result.get("symlink_path")
+        logger.info(f"Detected path as symlink: {symlink_path} -> {validation_result.get('symlink_target')}", emoji_key="info")
+        validated_path = symlink_path
+    else:
+        # Not a symlink, normal validation result (path string)
+        validated_path = validation_result
 
     try:
-        # Check if it's a file, directory, or link using stat with follow_symlinks=False
-        stat_info = await aiofiles.os.stat(validated_path, follow_symlinks=False)
-        is_dir = os.path.stat.S_ISDIR(stat_info.st_mode)
-        is_file = os.path.stat.S_ISREG(stat_info.st_mode)
-        is_link = os.path.stat.S_ISLNK(stat_info.st_mode)
-
         deleted_type = "unknown"
 
-        if is_dir:
-            deleted_type = "directory"
-            logger.info(f"Attempting to delete directory: {validated_path}", emoji_key="delete")
-            # --- Deletion Protection Check ---
-            try:
-                # List all file paths within the directory for heuristic checks
-                contained_file_paths = await _list_paths_recursive(validated_path)
-                if contained_file_paths: # Only run check if directory is not empty
-                     await _check_protection_heuristics(contained_file_paths, 'deletion')
-                else:
-                     logger.info(f"Directory '{validated_path}' is empty, skipping detailed protection check.", emoji_key="info")
-            except ProtectionTriggeredError:
-                raise # Re-raise the specific error if protection blocked the operation
-            except ToolError as list_err:
-                # If listing contents failed, block deletion for safety?
-                raise ToolError(f"Could not list directory contents for safety check before deleting '{validated_path}'. Deletion aborted. Reason: {list_err}", context={"path": validated_path}) from list_err
-            # --- End Protection Check ---
-
-            # Protection passed (or disabled/not triggered), proceed with recursive delete
-            await _async_rmtree(validated_path)
-
-        elif is_file or is_link: # Treat files and links similarly for deletion
-            deleted_type = "link" if is_link else "file"
-            logger.info(f"Attempting to delete {deleted_type}: {validated_path}", emoji_key="delete")
+        # First check if it's a symlink - we want to handle this separately 
+        # to avoid accidentally deleting the target
+        if is_symlink:
+            deleted_type = "symlink"
+            logger.info(f"Attempting to delete symlink: {validated_path}", emoji_key="delete")
             await aiofiles.os.remove(validated_path)
+        
+        # If not a symlink, proceed with regular directory or file deletion
         else:
-            # Should not happen if lexists passed validation, but handle defensively
-            raise ToolError(f"Cannot delete path '{validated_path}': It is neither a file, directory, nor a symbolic link.", context={"path": validated_path})
+            # We need to check if it's a directory or file - use follow_symlinks=True because
+            # we already handled the symlink case above
+            stat_info = await aiofiles.os.stat(validated_path, follow_symlinks=True)
+            is_dir = os.path.stat.S_ISDIR(stat_info.st_mode)
+            is_file = os.path.stat.S_ISREG(stat_info.st_mode)
+
+            if is_dir:
+                deleted_type = "directory"
+                logger.info(f"Attempting to delete directory: {validated_path}", emoji_key="delete")
+                # --- Deletion Protection Check ---
+                try:
+                    # List all file paths within the directory for heuristic checks
+                    contained_file_paths = await _list_paths_recursive(validated_path)
+                    if contained_file_paths: # Only run check if directory is not empty
+                         await _check_protection_heuristics(contained_file_paths, 'deletion')
+                    else:
+                         logger.info(f"Directory '{validated_path}' is empty, skipping detailed protection check.", emoji_key="info")
+                except ProtectionTriggeredError:
+                    raise # Re-raise the specific error if protection blocked the operation
+                except ToolError as list_err:
+                    # If listing contents failed, block deletion for safety?
+                    raise ToolError(f"Could not list directory contents for safety check before deleting '{validated_path}'. Deletion aborted. Reason: {list_err}", context={"path": validated_path}) from list_err
+                # --- End Protection Check ---
+
+                # Protection passed (or disabled/not triggered), proceed with recursive delete
+                await _async_rmtree(validated_path)
+
+            elif is_file:
+                deleted_type = "file"
+                logger.info(f"Attempting to delete file: {validated_path}", emoji_key="delete")
+                await aiofiles.os.remove(validated_path)
+            else:
+                # Should not happen if lexists passed validation, but handle defensively
+                raise ToolError(f"Cannot delete path '{validated_path}': It is neither a file, directory, nor a symbolic link.", context={"path": validated_path})
 
     except OSError as e:
         # Catch errors from remove, rmdir, or during rmtree
@@ -2368,15 +2420,22 @@ async def get_file_info(path: str) -> Dict[str, Any]:
     """
     start_time = time.monotonic()
 
-    # Validate path (must exist, check_exists=True)
-    # We use the path *before* final symlink resolution for format_file_info
-    # to ensure we stat the thing the user asked for (potentially a link).
-    validated_path = await validate_path(path, check_exists=True)
+    # Validate path (must exist, check_exists=True), but don't resolve symlinks
+    # We want to get info about the path as specified by the user
+    validation_result = await validate_path(path, check_exists=True, resolve_symlinks=False)
 
-    # Get file information asynchronously using the helper (which uses lstat)
-    info = await format_file_info(validated_path) # Handles its own OS errors internally
+    # Check if this is a symlink
+    is_symlink = isinstance(validation_result, dict) and validation_result.get("is_symlink")
+    if is_symlink:
+        validated_path = validation_result.get("symlink_path")
+    else:
+        validated_path = validation_result
 
-    # Check if the helper returned an error structure (e.g., OS error during stat)
+    # Get file information asynchronously using the helper
+    # Don't follow symlinks - we want info about the path itself
+    info = await format_file_info(validated_path, follow_symlinks=False) 
+
+    # Check if the helper returned an error structure
     if "error" in info:
          # Propagate the error. Since path validation passed, this is likely
          # a transient issue or permission problem reading metadata. Use ToolError.
