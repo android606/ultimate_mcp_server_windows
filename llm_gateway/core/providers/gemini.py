@@ -307,10 +307,11 @@ class GeminiProvider(BaseProvider):
         Returns:
             Default model name
         """
-        from llm_gateway.config import config
+        from llm_gateway.config import get_config
         
         # Safely get from config if available
         try:
+            config = get_config()
             provider_config = getattr(config, 'providers', {}).get(self.provider_name, None)
             if provider_config and provider_config.default_model:
                 return provider_config.default_model

@@ -222,24 +222,25 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
     # Filesystem checks using aiofiles.os
     current_validated_path = normalized_path # Start with normalized path
     try:
-        # Use lstat to check the item itself first, before resolving links
+        # Use stat with follow_symlinks=False to check the item itself (similar to lstat)
         try:
-            lstat_info = await aiofiles.os.lstat(current_validated_path)
-            path_exists_locally = True # lstat succeeded, so the path entry itself exists
+            lstat_info = await aiofiles.os.stat(current_validated_path, follow_symlinks=False)
+            path_exists_locally = True # stat succeeded, so the path entry itself exists
             is_link = os.path.stat.S_ISLNK(lstat_info.st_mode)
         except FileNotFoundError:
              path_exists_locally = False
              is_link = False
         except OSError as e:
-             # Handle other OS errors during lstat
-             logger.error(f"OS Error during lstat check for '{current_validated_path}': {e}", exc_info=True)
+             # Handle other OS errors during stat check
+             logger.error(f"OS Error during stat check for '{current_validated_path}': {e}", exc_info=True)
              raise ToolError(f"Filesystem error checking path status for '{path}': {str(e)}", context={"path": path, "resolved_path": current_validated_path}) from e
 
 
         # Resolve symlink if it exists and re-validate
         if is_link:
             try:
-                real_path = await aiofiles.os.path.realpath(current_validated_path)
+                # Use synchronous os.path.realpath since aiofiles.os.path doesn't have it
+                real_path = os.path.realpath(current_validated_path)
                 real_normalized = os.path.normpath(real_path)
 
                 # Re-check if the *real* resolved path is within allowed directories
@@ -259,7 +260,7 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
 
                 # If validation passed, use the real path for further checks *about the target*
                 current_validated_path = real_normalized
-                # Re-check existence *of the target*
+                # Re-check existence *of the target* - use exists instead of lexists
                 path_exists = await aiofiles.os.path.exists(current_validated_path)
 
             except OSError as e:
@@ -367,12 +368,12 @@ async def format_file_info(file_path: str) -> Dict[str, Any]:
     """
     try:
         # Use stat results directly where possible to avoid redundant checks
-        # Use lstat to get info about the link itself if it is one, otherwise acts like stat
-        stat_info = await aiofiles.os.lstat(file_path)
+        # Use stat with follow_symlinks=False to get info about the link itself if it is one, otherwise acts like stat
+        stat_info = await aiofiles.os.stat(file_path, follow_symlinks=False)
         mode = stat_info.st_mode
         is_dir = os.path.stat.S_ISDIR(mode)
         is_file = os.path.stat.S_ISREG(mode) # Check for regular file
-        is_link = os.path.stat.S_ISLNK(mode) # Check if the item lstat looked at is a link
+        is_link = os.path.stat.S_ISLNK(mode) # Check if the item stat looked at is a link
 
         # Use timezone-aware ISO format timestamps for machine readability.
         # Handle potential platform differences in ctime availability (fallback to mtime).
@@ -848,8 +849,8 @@ def create_tool_response(content: Any, is_error: bool = False) -> Dict[str, Any]
 async def _get_minimal_stat(path: str) -> Optional[Tuple[Tuple[float, float], str]]:
     """Helper to get minimal stat info (ctime, mtime, extension) for protection checks."""
     try:
-        # Use lstat to get info without following links, as we care about the items being listed
-        stat_info = await aiofiles.os.lstat(path)
+        # Use stat with follow_symlinks=False to get info without following links, as we care about the items being listed
+        stat_info = await aiofiles.os.stat(path, follow_symlinks=False)
         # Use mtime and ctime (platform-dependent creation/metadata change time)
         mtime = stat_info.st_mtime
         try:
@@ -1005,8 +1006,10 @@ async def async_walk(
 
     try:
         # Use async scandir for efficient directory iteration
-        scandir_it = aiofiles.os.scandir(top)
-        async for entry in scandir_it:
+        # scandir returns a coroutine that must be awaited to get the entries
+        scandir_it = await aiofiles.os.scandir(top)
+        # Now iterate through the scandir entries (which should be a list or iterable)
+        for entry in scandir_it:
             try:
                  # Calculate relative path for exclusion check
                  try:
@@ -1225,8 +1228,8 @@ async def read_file(path: str) -> Dict[str, Any]:
 
         # Successfully read content (either text or binary bytes)
         try:
-             # Use lstat to get size of link itself, or file/dir if not link
-             file_size = (await aiofiles.os.lstat(validated_path)).st_size
+             # Use stat with follow_symlinks=False for consistency
+             file_size = (await aiofiles.os.stat(validated_path, follow_symlinks=False)).st_size
         except OSError as stat_err:
              logger.warning(f"Could not get size for file {validated_path} after reading: {stat_err}", emoji_key="warning")
              # Continue without size info
@@ -1365,9 +1368,9 @@ async def read_multiple_files(paths: List[str]) -> Dict[str, Any]:
             # Successfully read content (string or binary preview string)
             task_result["success"] = True
 
-            # Try to get size (use lstat for consistency)
+            # Try to get size (use stat with follow_symlinks=False for consistency)
             try:
-                 file_size = (await aiofiles.os.lstat(validated_path)).st_size
+                 file_size = (await aiofiles.os.stat(validated_path, follow_symlinks=False)).st_size
                  task_result["size"] = file_size
             except OSError as stat_err:
                  logger.warning(f"Could not get size for {validated_path} in multi-read: {stat_err}", emoji_key="warning")
@@ -1459,8 +1462,8 @@ async def write_file(path: str, content: str) -> Dict[str, Any]:
     validated_path = await validate_path(path, check_exists=None, check_parent_writable=True)
 
     # Check if the path exists and is a directory (we shouldn't overwrite a dir with a file).
-    # Use lstat to check the path itself, not following links for this specific check.
-    if await aiofiles.os.path.lexists(validated_path) and await aiofiles.os.path.isdir(validated_path):
+    # Use exists instead of lexists for this check
+    if await aiofiles.os.path.exists(validated_path) and await aiofiles.os.path.isdir(validated_path):
         raise ToolInputError(
             f"Cannot write file: Path '{path}' (resolved to '{validated_path}') exists and is a directory.",
             param_name="path", provided_value=path
@@ -1477,8 +1480,7 @@ async def write_file(path: str, content: str) -> Dict[str, Any]:
     # Verify write success by getting status and size afterwards
     file_size = -1
     try:
-        stat_info = await aiofiles.os.lstat(validated_path) # Use lstat
-        file_size = stat_info.st_size
+        file_size = (await aiofiles.os.stat(validated_path, follow_symlinks=False)).st_size
     except OSError as e:
         # If stat fails after write seemed to succeed, something is wrong.
         logger.error(f"File write appeared successful for {validated_path}, but failed to get status afterwards: {e}", emoji_key="error")
@@ -1610,8 +1612,8 @@ async def create_directory(path: str) -> Dict[str, Any]:
     created = False
     message = ""
     try:
-        # Check existence and type before creating, using lstat to avoid following links.
-        if await aiofiles.os.path.lexists(validated_path):
+        # Check existence and type before creating, using exists instead of lexists
+        if await aiofiles.os.path.exists(validated_path):
             if await aiofiles.os.path.isdir(validated_path):
                 # Directory already exists - idempotent success.
                 logger.info(f"Directory already exists: {path} (resolved: {validated_path})", emoji_key="directory")
@@ -1688,8 +1690,9 @@ async def list_directory(path: str) -> Dict[str, Any]:
     entries: List[Dict[str, Any]] = []
     scan_errors: List[str] = []
     try:
-        # Use async iteration with aiofiles.os.scandir for efficiency
-        async for entry in aiofiles.os.scandir(validated_path):
+        # Use await with scandir rather than async iteration
+        entry_list = await aiofiles.os.scandir(validated_path)
+        for entry in entry_list:
             entry_info: Dict[str, Any] = {"name": entry.name}
             try:
                 # Use async methods on the DirEntry object for efficiency, check link status explicitly
@@ -1837,7 +1840,9 @@ async def directory_tree(
 
         children_nodes: List[Dict[str, Any]] = []
         try:
-            async for entry in aiofiles.os.scandir(current_path):
+            # Await scandir and then iterate over the returned entries
+            entries = await aiofiles.os.scandir(current_path)
+            for entry in entries:
                 entry_data: Dict[str, Any] = {"name": entry.name}
                 try:
                     # Use lstat via entry to avoid following links unexpectedly
@@ -1846,7 +1851,6 @@ async def directory_tree(
                     l_is_dir = os.path.stat.S_ISDIR(mode)
                     l_is_file = os.path.stat.S_ISREG(mode)
                     l_is_link = os.path.stat.S_ISLNK(mode)
-
 
                     if l_is_dir:
                         entry_data["type"] = "directory"
@@ -1867,7 +1871,6 @@ async def directory_tree(
                          entry_data["type"] = "other"
                          if include_size:
                              entry_data["size"] = stat_res.st_size
-
 
                     children_nodes.append(entry_data)
 
@@ -1957,8 +1960,8 @@ async def move_file(
     # A future enhancement could add protection heuristics here if overwriting non-empty dirs was allowed.
 
     try:
-        # Check if destination already exists using lstat (don't follow links for existence check)
-        dest_exists = await aiofiles.os.path.lexists(validated_dest)
+        # Check if destination already exists using exists instead of lexists
+        dest_exists = await aiofiles.os.path.exists(validated_dest)
         dest_is_dir = False
         if dest_exists:
             dest_is_dir = await aiofiles.os.path.isdir(validated_dest) # Check type (follows links if dest is link)
@@ -1973,8 +1976,8 @@ async def move_file(
                  )
 
                  # Check if source and destination types are compatible for overwrite (e.g., cannot replace dir with file easily)
-                 # Use lstat for source type check as well.
-                 source_stat = await aiofiles.os.lstat(validated_source)
+                 # Use stat with follow_symlinks=False for source type check as well.
+                 source_stat = await aiofiles.os.stat(validated_source, follow_symlinks=False)
                  is_source_dir = os.path.stat.S_ISDIR(source_stat.st_mode)
 
                  # Simple check: Prevent overwriting dir with file or vice-versa.
@@ -2089,8 +2092,8 @@ async def delete_path(path: str) -> Dict[str, Any]:
     validated_path = await validate_path(path, check_exists=True)
 
     try:
-        # Check if it's a file, directory, or link using lstat
-        stat_info = await aiofiles.os.lstat(validated_path)
+        # Check if it's a file, directory, or link using stat with follow_symlinks=False
+        stat_info = await aiofiles.os.stat(validated_path, follow_symlinks=False)
         is_dir = os.path.stat.S_ISDIR(stat_info.st_mode)
         is_file = os.path.stat.S_ISREG(stat_info.st_mode)
         is_link = os.path.stat.S_ISLNK(stat_info.st_mode)
@@ -2263,6 +2266,7 @@ async def search_files(
         # Use the async_walk helper for efficient traversal and exclusion handling
         # followlinks=True: Search should probably follow links to find matches within linked dirs too.
         # Exclude patterns will apply to paths within the linked directories relative to the base path.
+        # Since we've fixed async_walk to use await and iterate properly, this should work as expected
         async for root, dirs, files in async_walk(
             validated_path,
             onerror=onerror,

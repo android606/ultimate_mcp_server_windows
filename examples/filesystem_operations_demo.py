@@ -38,12 +38,25 @@ try:
     # Format for JSON list in environment variable
     # Use json.dumps to ensure correct quoting, especially on Windows
     import json
-    allowed_dirs_json = json.dumps([DEMO_TEMP_DIR])
-    os.environ["GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"] = allowed_dirs_json
+    
+    # Set both environment variables for maximum compatibility
+    # 1. The format expected by the Pydantic model with the correct prefix and delimiter
+    os.environ["GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
+    
+    # 2. Direct format for backward compatibility 
+    os.environ["FILESYSTEM_ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
+    
+    # 3. Try an alternate format that more directly sets the field (this is the key change)
+    os.environ["GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
 
     # Force config reload if it was cached previously
     os.environ["GATEWAY_FORCE_CONFIG_RELOAD"] = "true"
+    
+    # Print debug information
     print(f"INFO: Temporarily allowing access to: {DEMO_TEMP_DIR}")
+    print("DEBUG: Environment variables set:")
+    print(f"  GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES = {os.environ['GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES']}")
+    print(f"  GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES = {os.environ['GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES']}")
 except Exception as e:
     print(f"Error during initial setup: {e}", file=sys.stderr)
     sys.exit(1)
@@ -116,6 +129,81 @@ def parse_arguments():
                         help='Use enhanced rich tree visualization for directory trees')
 
     return parser.parse_args()
+
+# --- Verify Configuration Loading ---
+def verify_config():
+    """Verify that the filesystem configuration has loaded correctly."""
+    try:
+        config = get_config()
+        fs_config = config.filesystem
+        allowed_dirs = fs_config.allowed_directories
+        
+        print("Configuration verification:")
+        print(f"  Allowed directories: {allowed_dirs}")
+        
+        if not allowed_dirs:
+            print("WARNING: No allowed directories loaded in filesystem configuration!")
+            print("Check these environment variables:")
+            for key in os.environ:
+                if "ALLOWED_DIRECTORIES" in key:
+                    print(f"  {key} = {os.environ[key]}")
+            
+            # Try direct loading from env vars for debugging
+            from llm_gateway.config import load_config_from_env
+            env_config = load_config_from_env()
+            print("Direct environment config loading result:")
+            for key, value in env_config.items():
+                print(f"  {key}: {value}")
+            
+            print(f"DEMO_TEMP_DIR set to: {DEMO_TEMP_DIR}")
+            
+            # Try to manually fix config as a last resort
+            print("Attempting to force update the config object directly...")
+            force_update_config(DEMO_TEMP_DIR)
+            
+            # Verify again
+            updated_dirs = get_config().filesystem.allowed_directories
+            print(f"After direct update, allowed directories: {updated_dirs}")
+            return DEMO_TEMP_DIR in updated_dirs
+        
+        if DEMO_TEMP_DIR in allowed_dirs:
+            print(f"SUCCESS: Temporary directory {DEMO_TEMP_DIR} properly loaded in configuration!")
+            return True
+        else:
+            print(f"WARNING: Temporary directory {DEMO_TEMP_DIR} not in loaded allowed dirs: {allowed_dirs}")
+            # Try manual fix
+            print("Attempting to force update the config object directly...")
+            force_update_config(DEMO_TEMP_DIR)
+            
+            # Verify again
+            updated_dirs = get_config().filesystem.allowed_directories
+            print(f"After direct update, allowed directories: {updated_dirs}")
+            return DEMO_TEMP_DIR in updated_dirs
+            
+    except Exception as e:
+        print(f"ERROR during config verification: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def force_update_config(temp_dir):
+    """Directly modify the global config object as a last resort to add the allowed directory."""
+    try:
+        from llm_gateway.config import get_config
+        # Get current global config
+        config = get_config()
+        
+        # Expand path for consistency
+        import os
+        expanded_path = os.path.abspath(os.path.expanduser(temp_dir))
+        
+        # Add to allowed directories if not already there
+        if expanded_path not in config.filesystem.allowed_directories:
+            config.filesystem.allowed_directories.append(expanded_path)
+            print(f"Added {expanded_path} to allowed_directories directly in the config object.")
+        
+    except Exception as e:
+        print(f"ERROR: Failed to manually update config: {e}")
 
 # --- Demo Setup ---
 # DEMO_ROOT is the base *within* the allowed temporary directory
@@ -974,6 +1062,14 @@ async def main():
         logger.info("Starting filesystem operations demonstration", emoji_key="start")
 
         # --- Verify Config Loading ---
+        print(Rule("Verifying Configuration", style="dim"))
+        config_valid = verify_config()
+        if not config_valid:
+            # Abort with a clear message if config verification fails
+            console.print("[bold red]Error:[/bold red] Configuration verification failed. Aborting demonstration.", style="red")
+            return 1 # Exit early if config is wrong
+            
+        # --- Verify Config Loading ---
         try:
              current_config = get_config()
              fs_config = current_config.filesystem
@@ -1053,6 +1149,14 @@ async def main():
         await cleanup_demo_environment()
 
     return exit_code
+
+def get_config_local(): # Renamed
+    """Get application configuration."""
+    return {
+        "debug": True,
+        "log_level": "INFO",
+        "max_connections": 10
+    }
 
 if __name__ == "__main__":
     # Basic check for asyncio policy on Windows if needed

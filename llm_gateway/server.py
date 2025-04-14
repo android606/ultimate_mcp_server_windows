@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Main server entry point for LLM Gateway MCP Server."""
 
-from llm_gateway.config import config
+from llm_gateway.config import get_config
 from llm_gateway.core.server import Gateway
 from llm_gateway.utils import get_logger
 
@@ -10,6 +10,7 @@ logger = get_logger("llm_gateway.server_runner")
 
 def main():
     """Run the LLM Gateway MCP server."""
+    config = get_config()
     version = config.server.version
     
     # Log server info with emoji keys for better visual formatting

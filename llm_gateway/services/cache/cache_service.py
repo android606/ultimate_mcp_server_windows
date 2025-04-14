@@ -7,12 +7,12 @@ import pickle
 import time
 from functools import wraps
 from pathlib import Path
-from typing import Any, Dict, Optional, Set, Tuple, Union, Callable
+from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 import aiofiles
 from diskcache import Cache
 
-from llm_gateway.config import config
+from llm_gateway.config import get_config
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -72,6 +72,7 @@ class CacheService:
         """
         # Use config values as defaults
         self._lock = asyncio.Lock()
+        config = get_config()
         self.enabled = enabled if enabled is not None else config.cache.enabled
         self.ttl = ttl if ttl is not None else config.cache.ttl
         self.max_entries = max_entries if max_entries is not None else config.cache.max_entries
@@ -292,7 +293,7 @@ class CacheService:
         # 3. If we still don't have candidates, try more aggressive matching
         if not candidates:
             # For all fuzzy keys, check for substring matches
-            for fuzzy_key, exact_keys in self.fuzzy_lookup.items():
+            for _fuzzy_key, exact_keys in self.fuzzy_lookup.items():
                 # Add all keys from fuzzy lookups that might be related
                 candidates.update(exact_keys)
                     
@@ -313,7 +314,7 @@ class CacheService:
                 candidate_suffix = candidate[-16:] if len(candidate) >= 16 else candidate
                 
                 # Calculate hash similarity (simple version)
-                similarity = sum(a == b for a, b in zip(key_hash_suffix, candidate_suffix)) / len(key_hash_suffix)
+                similarity = sum(a == b for a, b in zip(key_hash_suffix, candidate_suffix, strict=False)) / len(key_hash_suffix)
                 
                 # Only keep candidates with high similarity
                 if similarity > 0.7:  # 70% similarity threshold
@@ -548,7 +549,7 @@ def _should_store_on_disk(value: Any) -> bool:
     try:
         size = len(pickle.dumps(value))
         return size > 100_000  # 100KB
-    except:
+    except Exception:
         # If we can't determine size, err on the side of memory
         return False
 

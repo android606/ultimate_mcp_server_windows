@@ -8,7 +8,7 @@ from typing import Any, Dict, Generator, List, Optional
 import pytest
 from pytest import MonkeyPatch
 
-from llm_gateway.config import config, Config
+from llm_gateway.config import get_config, Config
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
 from llm_gateway.core.server import Gateway

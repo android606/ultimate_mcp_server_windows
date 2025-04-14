@@ -323,7 +323,7 @@ def get_config() -> GatewayConfig:
     # Check if FORCE_RELOAD env var is set
     force_reload_env = "GATEWAY_FORCE_CONFIG_RELOAD"
     if os.environ.get(force_reload_env, "false").lower() == "true":
-        config_logger.info(f"Forcing configuration reload due to {force_reload_env} env var.", emoji_key="cache")
+        config_logger.info(f"Forcing configuration reload due to {force_reload_env} env var.")
         _config = None # Clear global config to trigger reload
         os.environ.pop(force_reload_env, None) # Consume the flag
 
