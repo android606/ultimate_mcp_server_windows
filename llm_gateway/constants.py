@@ -22,6 +22,12 @@ class TaskType(str, Enum):
     CLASSIFICATION = "classification"
     TRANSLATION = "translation"
     QA = "qa"
+    DATABASE = "database"
+    QUERY = "query"
+    BROWSER_AUTOMATION = "browser_automation"
+    DOWNLOAD = "download"
+    UPLOAD = "upload"
+    DOCUMENT_PROCESSING = "document_processing"
 
 
 class LogLevel(str, Enum):
@@ -100,6 +106,8 @@ EMOJI_MAP = {
     "tool": "🛠️",
     "tournament": "🏆",
     "cancel": "🛑",
+    "database": "🗄️",
+    "browser": "🌐",
     
     # Task-specific emojis
     "completion": "✍️",
@@ -108,8 +116,15 @@ EMOJI_MAP = {
     "generation": "🎨",
     "analysis": "📊",
     "classification": "🏷️",
+    "query": "🔍",
+    "browser_automation": "🌐",
+    "database_interactions": "🗄️",
+    "download": "⬇️",
+    "upload": "⬆️",
+    "document_processing": "📄",
     "translation": "🔄",
     "qa": "❓",
+
     
     # Provider-specific emojis
     Provider.OPENAI: "🟢",

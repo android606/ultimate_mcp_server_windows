@@ -49,7 +49,7 @@ async def demonstrate_vector_operations():
     # --- Setup Collection --- 
     try:
         logger.info(f"Creating/resetting collection: {collection_name}", emoji_key="db")
-        vector_db.create_collection(
+        await vector_db.create_collection(
             name=collection_name,
             dimension=embedding_dimension, 
             overwrite=True,
@@ -164,7 +164,8 @@ async def demonstrate_vector_operations():
         console.print(f"[cyan]Input Text:[/cyan] {escape(sample_text)}")
         
         emb_start_time = time.time()
-        embedding = await embedding_service.get_embedding(sample_text)
+        embeddings_list = await embedding_service.create_embeddings([sample_text])
+        embedding = embeddings_list[0]
         emb_time = time.time() - emb_start_time
         logger.success(f"Generated embedding in {emb_time:.3f}s", emoji_key="success")
         
@@ -186,7 +187,7 @@ async def demonstrate_vector_operations():
         # Clean up collection
         try:
              logger.info(f"Deleting collection: {collection_name}", emoji_key="db")
-             vector_db.delete_collection(collection_name)
+             await vector_db.delete_collection(collection_name)
         except Exception as del_e:
             logger.warning(f"Could not delete collection {collection_name}: {del_e}", emoji_key="warning")
 
@@ -210,7 +211,7 @@ async def demonstrate_llm_with_vector_retrieval():
     embedding_dimension = 1536
     try:
         logger.info(f"Setting up collection: {collection_name}", emoji_key="db")
-        vector_db.create_collection(name=collection_name, dimension=embedding_dimension, overwrite=True)
+        await vector_db.create_collection(name=collection_name, dimension=embedding_dimension, overwrite=True)
         documents = [
             "Deep learning uses artificial neural networks with many layers (deep architectures).",
             "Neural networks are inspired by biological brains and consist of interconnected nodes or neurons.",
@@ -304,7 +305,7 @@ Answer:"""
          # Clean up collection
         try:
              logger.info(f"Deleting collection: {collection_name}", emoji_key="db")
-             vector_db.delete_collection(collection_name)
+             await vector_db.delete_collection(collection_name)
         except Exception as del_e:
             logger.warning(f"Could not delete collection {collection_name}: {del_e}", emoji_key="warning")
 

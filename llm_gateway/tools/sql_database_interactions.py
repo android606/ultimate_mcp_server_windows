@@ -152,19 +152,19 @@ async def _execute_safe_query(engine: AsyncEngine, query: str, parameters: Optio
     except ProgrammingError as e:
         error_message = f"Syntax error or access violation executing query: {str(e)}"
         logger.error(error_message, exc_info=True, query=query, params=parameters)
-        raise ToolError(status_code=400, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=400) from e # Use message and http_status_code
     except OperationalError as e:
         error_message = f"Database operational error (e.g., connection issue, missing object): {str(e)}"
         logger.error(error_message, exc_info=True, query=query, params=parameters)
-        raise ToolError(status_code=503, detail=error_message) from e # 503 Service Unavailable might be appropriate
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error executing query: {str(e)}"
         logger.error(error_message, exc_info=True, query=query, params=parameters)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error during query execution: {str(e)}"
         logger.error(error_message, exc_info=True, query=query, params=parameters)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 # --- Tool Functions ---
 
@@ -232,7 +232,7 @@ async def generate_database_documentation(
             if db_type == "postgresql":
                 # Get database name and version
                 result = await conn.execute(text("SELECT current_database(), version()"))
-                db_name, version = await result.fetchone()
+                db_name, version = result.fetchone()
                 db_info["name"] = db_name
                 db_info["version"] = version
 
@@ -240,13 +240,14 @@ async def generate_database_documentation(
                 result = await conn.execute(text("""
                     SELECT pg_size_pretty(pg_database_size(current_database()))
                 """))
-                size = await result.scalar()
+                size = result.scalar()
                 db_info["size"] = size
             else:
                 # SQLite
                 # Get version
                 result = await conn.execute(text("SELECT sqlite_version()"))
-                version = await result.scalar()
+                row = result.fetchone()
+                version = row[0] if row else None # Extract the value from the row
                 db_info["version"] = version
 
                 # Extract path for SQLite from engine URL
@@ -555,7 +556,7 @@ async def generate_database_documentation(
 
         logger.info(
             f"Successfully generated database documentation in {output_format} format",
-            emoji_key=TaskType.DATABASE.value,
+            emoji_key="tool",
             connection_id=connection_id,
             format=output_format,
             tables_count=len(schema_data["tables"]),
@@ -579,7 +580,7 @@ async def generate_database_documentation(
             connection_id=connection_id,
             exc_info=True
         )
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"SQLAlchemy error during documentation generation: {str(e)}"
         logger.error(
@@ -588,7 +589,7 @@ async def generate_database_documentation(
             connection_id=connection_id,
             exc_info=True
         )
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error generating database documentation: {str(e)}"
         logger.error(
@@ -597,11 +598,11 @@ async def generate_database_documentation(
             connection_id=connection_id,
             exc_info=True
         )
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 @with_tool_metrics
 @with_error_handling
-@with_retry(max_retries=2, delay=1) # Use max_retries instead of attempts
+@with_retry(max_retries=2, retry_delay=1) # Use max_retries instead of attempts
 async def connect_to_database(
     connection_string: str,
     connection_id: Optional[str] = None,
@@ -651,6 +652,11 @@ async def connect_to_database(
 
     # Process connection string
     connection_options = connection_options or {}
+
+    # Ensure echo isn't passed twice if it's already in connection_options
+    explicit_echo = echo # Store the explicit echo value
+    if 'echo' in connection_options:
+        explicit_echo = connection_options.pop('echo') # Prioritize value from options if present
 
     # Auto-generate connection ID if not provided
     if not connection_id:
@@ -712,7 +718,7 @@ async def connect_to_database(
         # Create SQLAlchemy async engine
         engine = create_async_engine(
             processed_conn_string,
-            echo=echo,
+            echo=explicit_echo, # Use the determined echo value
             **connection_options
         )
 
@@ -729,7 +735,8 @@ async def connect_to_database(
 
                 # Get SQLite version
                 result = await conn.execute(text("SELECT sqlite_version()"))
-                version = await result.scalar()
+                row = result.fetchone()
+                version = row[0] if row else None # Extract the value from the row
                 db_info["version"] = version
                 sanitized_connection_params["database"] = db_info["path"]
 
@@ -737,7 +744,7 @@ async def connect_to_database(
             elif db_type == "postgresql":
                 # Get PostgreSQL info
                 result = await conn.execute(text("SELECT current_database(), version()"))
-                db_name, version = await result.fetchone()
+                db_name, version = result.fetchone()
                 db_info["database"] = db_name
                 db_info["version"] = version
 
@@ -754,7 +761,7 @@ async def connect_to_database(
             processing_time = time.time() - start_time
             logger.success(
                 f"Successfully connected to {db_type} database with ID {connection_id}",
-                emoji_key=TaskType.DATABASE.value,
+                emoji_key="tool",
                 db_type=db_type,
                 connection_id=connection_id,
                 time=processing_time
@@ -777,7 +784,7 @@ async def connect_to_database(
             db_type=db_type,
             connection_string_used=processed_conn_string # Log the processed string
         )
-        raise ToolError(status_code=503, detail=error_message) from e # 503 better indicates connection failure
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Database setup or configuration error: {str(e)}"
         logger.error(
@@ -786,7 +793,7 @@ async def connect_to_database(
             db_type=db_type,
             connection_string_used=processed_conn_string
         )
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error establishing database connection: {str(e)}"
         logger.error(
@@ -794,7 +801,7 @@ async def connect_to_database(
             emoji_key="error",
             exc_info=True
         )
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 @with_tool_metrics
 @with_error_handling
@@ -831,7 +838,7 @@ async def disconnect_from_database(connection_id: str) -> Dict[str, Any]:
 
         logger.info(
             f"Successfully disconnected from database with ID {connection_id}",
-            emoji_key=TaskType.DATABASE.value,
+            emoji_key="tool",
             connection_id=connection_id
         )
 
@@ -908,15 +915,15 @@ async def get_database_status(connection_id: str) -> Dict[str, Any]:
                     WHERE table_schema = :schema
                 """)
                 table_result = await conn.execute(table_count_query, {"schema": schema_name})
-                stats["tables_count"] = await table_result.scalar()
+                stats["tables_count"] = table_result.scalar()
                 view_result = await conn.execute(view_count_query, {"schema": schema_name})
-                stats["views_count"] = await view_result.scalar()
+                stats["views_count"] = view_result.scalar()
 
                 # Get database size
                 result = await conn.execute(text("""
                     SELECT pg_size_pretty(pg_database_size(current_database()))
                 """))
-                size = await result.scalar()
+                size = result.scalar()
                 stats["size"] = size
 
             else:
@@ -926,13 +933,13 @@ async def get_database_status(connection_id: str) -> Dict[str, Any]:
                     SELECT COUNT(*) FROM sqlite_master
                     WHERE type='table' AND name NOT LIKE 'sqlite_%'
                 """))
-                stats["tables_count"] = await result.scalar()
+                stats["tables_count"] = result.scalar()
 
                 # Views count
                 result = await conn.execute(text("""
                     SELECT COUNT(*) FROM sqlite_master WHERE type='view'
                 """))
-                stats["views_count"] = await result.scalar()
+                stats["views_count"] = result.scalar()
 
                 # For SQLite, get file size if possible
                 try:
@@ -967,7 +974,7 @@ async def get_database_status(connection_id: str) -> Dict[str, Any]:
         if connection_id in _active_connections:
             # We might not want to remove it here, but indicate failure
             pass
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error getting database status: {str(e)}"
         logger.error(
@@ -975,11 +982,11 @@ async def get_database_status(connection_id: str) -> Dict[str, Any]:
             emoji_key="error",
             connection_id=connection_id
         )
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error getting database status: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -1074,11 +1081,35 @@ async def discover_database_schema(
         # Use a single connection for all inspector operations
         async with engine.connect() as conn:
             conn: AsyncConnection # Type hint
-            # Need to get a sync connection for the inspector? No, inspect works with async conn.
-            inspector = sqlalchemy.inspect(engine) # Use inspect on the engine directly
 
-            # Get all tables for the specified schema (or default)
-            table_names = await conn.run_sync(inspector.get_table_names, schema=filter_schema)
+            # Define sync helper functions for inspection
+            def _sync_get_table_names(sync_conn):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_table_names(schema=filter_schema)
+
+            def _sync_get_columns(sync_conn, table_name):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_columns(table_name, schema=filter_schema)
+
+            def _sync_get_indexes(sync_conn, table_name):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_indexes(table_name, schema=filter_schema)
+
+            def _sync_get_foreign_keys(sync_conn, table_name):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_foreign_keys(table_name, schema=filter_schema)
+
+            def _sync_get_view_names(sync_conn):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_view_names(schema=filter_schema)
+
+            def _sync_get_view_definition(sync_conn, view_name):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_view_definition(view_name, schema=filter_schema)
+
+
+            # Get all tables using run_sync with the helper
+            table_names = await conn.run_sync(_sync_get_table_names)
 
             for table_name in table_names:
                 table_info = {
@@ -1090,8 +1121,8 @@ async def discover_database_schema(
                 if db_type == "postgresql":
                     table_info["schema"] = filter_schema or "public" # Record the schema used
 
-                # Get columns information
-                columns = await conn.run_sync(inspector.get_columns, table_name, schema=filter_schema)
+                # Get columns information using run_sync
+                columns = await conn.run_sync(_sync_get_columns, table_name)
                 for column in columns:
                     column_info = {
                         "name": column["name"],
@@ -1127,7 +1158,7 @@ async def discover_database_schema(
                                     "schema_name": filter_schema,
                                     "column_name": column["name"]
                                 })
-                                comment = await result.scalar()
+                                comment = result.scalar()
                                 if comment:
                                     column_info["comment"] = comment
                              except Exception as e:
@@ -1154,16 +1185,16 @@ async def discover_database_schema(
                             "table_name": table_name,
                             "schema_name": filter_schema
                         })
-                        comment = await result.scalar()
+                        comment = result.scalar()
                         if comment:
                             table_info["comment"] = comment
                      except Exception as e:
                          logger.debug(f"Could not get PG table comment for {table_name}: {e}")
 
-                # Get indexes if requested
+                # Get indexes if requested using run_sync
                 if include_indexes:
                     try:
-                        indexes = await conn.run_sync(inspector.get_indexes, table_name, schema=filter_schema)
+                        indexes = await conn.run_sync(_sync_get_indexes, table_name)
                         table_info["indexes"] = []
                         for index in indexes:
                             table_info["indexes"].append({
@@ -1175,10 +1206,10 @@ async def discover_database_schema(
                          logger.warning(f"Could not retrieve indexes for table {table_name}: {e}")
                          table_info["indexes"] = [] # Ensure key exists
 
-                # Get foreign keys if requested
+                # Get foreign keys if requested using run_sync
                 if include_foreign_keys:
                     try:
-                        foreign_keys = await conn.run_sync(inspector.get_foreign_keys, table_name, schema=filter_schema)
+                        foreign_keys = await conn.run_sync(_sync_get_foreign_keys, table_name)
                         table_info["foreign_keys"] = []
                         for fk in foreign_keys:
                             fk_info = {
@@ -1210,9 +1241,9 @@ async def discover_database_schema(
 
                 schema_data["tables"].append(table_info)
 
-            # Get views
+            # Get views using run_sync
             try:
-                 view_names = await conn.run_sync(inspector.get_view_names, schema=filter_schema)
+                 view_names = await conn.run_sync(_sync_get_view_names)
                  for view_name in view_names:
                      view_info = {
                          "name": view_name,
@@ -1220,9 +1251,9 @@ async def discover_database_schema(
                      if db_type == "postgresql":
                          view_info["schema"] = filter_schema or "public"
 
-                     # Get view definition if possible
+                     # Get view definition if possible using run_sync
                      try:
-                         view_def = await conn.run_sync(inspector.get_view_definition, view_name, schema=filter_schema)
+                         view_def = await conn.run_sync(_sync_get_view_definition, view_name)
                          view_info["definition"] = view_def
                      except NotImplementedError:
                          logger.debug(f"View definition retrieval not implemented for dialect {engine.dialect.name}")
@@ -1249,7 +1280,7 @@ async def discover_database_schema(
                          if view_def_query:
                              try:
                                  result = await conn.execute(view_def_query, params)
-                                 view_def = await result.scalar()
+                                 view_def = result.scalar()
                                  if view_def:
                                      view_info["definition"] = view_def
                              except Exception as e_manual:
@@ -1265,7 +1296,7 @@ async def discover_database_schema(
 
         logger.info(
             f"Successfully discovered schema for database: {len(schema_data['tables'])} tables, {len(schema_data['views'])} views",
-            emoji_key=TaskType.DATABASE.value,
+            emoji_key="tool",
             connection_id=connection_id,
             schema_filter=filter_schema
         )
@@ -1274,15 +1305,15 @@ async def discover_database_schema(
     except OperationalError as e:
         error_message = f"Database connection error during schema discovery: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error discovering database schema: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error discovering schema: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -1389,11 +1420,26 @@ async def get_table_details(
 
         async with engine.connect() as conn:
             conn: AsyncConnection # Type hint
-            # Create inspector for schema inspection
-            inspector = sqlalchemy.inspect(engine) # Use inspect on engine
 
-            # Verify table exists (use run_sync for inspector methods)
-            tables = await conn.run_sync(inspector.get_table_names, schema=schema_name)
+            # Define sync helper functions for inspection
+            def _sync_get_table_names(sync_conn, schema):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_table_names(schema=schema)
+
+            def _sync_get_columns(sync_conn, table_name, schema):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_columns(table_name, schema=schema)
+
+            def _sync_get_indexes(sync_conn, table_name, schema):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_indexes(table_name, schema=schema)
+
+            def _sync_get_foreign_keys(sync_conn, table_name, schema):
+                inspector = sqlalchemy.inspect(sync_conn)
+                return inspector.get_foreign_keys(table_name, schema=schema)
+
+            # Verify table exists using run_sync
+            tables = await conn.run_sync(_sync_get_table_names, schema_name)
             if table_name not in tables:
                 schema_msg = f" in schema '{schema_name}'" if schema_name else ""
                 raise ToolInputError(
@@ -1418,8 +1464,8 @@ async def get_table_details(
             if db_type == "postgresql":
                 result["schema_name"] = schema_name
 
-            # Get columns information
-            columns = await conn.run_sync(inspector.get_columns, table_name, schema=schema_name)
+            # Get columns information using run_sync
+            columns = await conn.run_sync(_sync_get_columns, table_name, schema_name)
             column_map = {col["name"]: col for col in columns} # For quick lookup  # noqa: F841
             for column in columns:
                 column_info = {
@@ -1432,9 +1478,9 @@ async def get_table_details(
                 }
                 result["columns"].append(column_info)
 
-            # Get indexes
+            # Get indexes using run_sync
             try:
-                indexes = await conn.run_sync(inspector.get_indexes, table_name, schema=schema_name)
+                indexes = await conn.run_sync(_sync_get_indexes, table_name, schema_name)
                 for index in indexes:
                     result["indexes"].append({
                         "name": index["name"],
@@ -1444,9 +1490,9 @@ async def get_table_details(
             except Exception as e:
                 logger.warning(f"Could not retrieve indexes for table {table_name}: {e}")
 
-            # Get foreign keys (outgoing FKs from this table)
+            # Get foreign keys (outgoing FKs from this table) using run_sync
             try:
-                foreign_keys = await conn.run_sync(inspector.get_foreign_keys, table_name, schema=schema_name)
+                foreign_keys = await conn.run_sync(_sync_get_foreign_keys, table_name, schema_name)
                 for fk in foreign_keys:
                     fk_info = {
                         "name": fk.get("name"),
@@ -1476,11 +1522,16 @@ async def get_table_details(
                 logger.warning(f"Could not retrieve foreign keys for table {table_name}: {e}")
 
             # Find child tables (tables that reference this one)
-            # This is potentially expensive, consider caching schema discovery results
+            # This uses discover_database_schema internally, which already uses run_sync
             try:
-                # Reuse the list of all tables obtained earlier
-                # We need to check FKs for *all* tables pointing to *this* one
-                schema_info = await discover_database_schema(connection_id, include_foreign_keys=True, filter_schema=schema_name)
+                # Pass include_details=False as we only need FK info from other tables here
+                schema_info = await discover_database_schema(
+                    connection_id,
+                    include_indexes=False, # Not needed for this part
+                    include_foreign_keys=True,
+                    detailed=False, # Only need FKs
+                    filter_schema=schema_name
+                )
                 for other_table in schema_info.get("tables", []):
                     if other_table["name"] == table_name:
                         continue
@@ -1514,7 +1565,7 @@ async def get_table_details(
                  table_identifier = f'"{schema_name}"."{table_name}"' if db_type == "postgresql" else f'"{table_name}"'
                  count_query = text(f"SELECT COUNT(*) FROM {table_identifier}")
                  count_result = await conn.execute(count_query)
-                 row_count = await count_result.scalar()
+                 row_count = count_result.scalar()
                  result["row_count"] = row_count if row_count is not None else 0
             except Exception as e:
                 logger.warning(f"Could not determine row count for {table_name}: {e}")
@@ -1533,8 +1584,8 @@ async def get_table_details(
                     sample_rows = []
                     fetched_rows = sample_result.fetchall()
                     for row in fetched_rows:
-                        # Use _mapping for direct dict conversion
-                        sample_rows.append(row._mapping)
+                        # Use _mapping for direct dict conversion without awaiting row
+                        sample_rows.append(dict(row._mapping))
 
                     result["sample_data"] = sample_rows
                 except Exception as e:
@@ -1560,7 +1611,8 @@ async def get_table_details(
                         # Get null count
                         null_query = text(f"SELECT COUNT(*) FROM {table_identifier} WHERE {col_identifier} IS NULL")
                         null_result = await conn.execute(null_query)
-                        stats["null_count"] = await null_result.scalar()
+                        null_count_row = await null_result.fetchone()
+                        stats["null_count"] = null_count_row[0] if null_count_row else 0
 
                         # Basic Numeric Stats (MIN, MAX, AVG)
                         is_numeric = any(t in column_type_str for t in ["int", "float", "double", "decimal", "numeric", "real"])
@@ -1570,7 +1622,8 @@ async def get_table_details(
                                 FROM {table_identifier} WHERE {col_identifier} IS NOT NULL
                             """)
                             num_stats_result = await conn.execute(num_stats_query)
-                            min_val, max_val, avg_val = await num_stats_result.fetchone()
+                            num_stats_row = await num_stats_result.fetchone()
+                            min_val, max_val, avg_val = num_stats_row if num_stats_row else (None, None, None)
                             stats["min"] = min_val
                             stats["max"] = max_val
                             # Format avg nicely, handle potential Decimal types
@@ -1588,7 +1641,8 @@ async def get_table_details(
                                  FROM {table_identifier} WHERE {col_identifier} IS NOT NULL
                              """)
                              str_stats_result = await conn.execute(str_stats_query)
-                             min_len, max_len = await str_stats_result.fetchone()
+                             str_stats_row = str_stats_result.fetchone()
+                             min_len, max_len = str_stats_row if str_stats_row else (None, None)
                              stats["min_length"] = min_len
                              stats["max_length"] = max_len
                         elif is_datey:
@@ -1597,7 +1651,8 @@ async def get_table_details(
                                  FROM {table_identifier} WHERE {col_identifier} IS NOT NULL
                              """)
                              date_stats_result = await conn.execute(date_stats_query)
-                             min_val, max_val = await date_stats_result.fetchone()
+                             date_stats_row = date_stats_result.fetchone()
+                             min_val, max_val = date_stats_row if date_stats_row else (None, None)
                              # Convert date/time objects to ISO strings for JSON compatibility
                              stats["min"] = min_val.isoformat() if min_val else None
                              stats["max"] = max_val.isoformat() if max_val else None
@@ -1614,12 +1669,13 @@ async def get_table_details(
                             try:
                                 unique_query = text(f"SELECT COUNT(DISTINCT {col_identifier}) FROM {table_identifier}")
                                 unique_result = await conn.execute(unique_query)
-                                unique_count = await unique_result.scalar()
+                                unique_row = unique_result.fetchone()
+                                unique_count = unique_row[0] if unique_row else 0
                             except Exception as uc_e:
                                 logger.debug(f"Could not run COUNT DISTINCT on {table_name}.{column_name}: {uc_e}")
                                 # Attempt PG stats estimation if applicable and count distinct failed/skipped
                                 if db_type == "postgresql" and row_count is not None and row_count >= 50000:
-                                     unique_count_estimated = True # Fallback below will estimate
+                                     unique_count_estimated = True # Fallback to PG stats
                         elif db_type == "postgresql":
                              unique_count_estimated = True # Use PG stats for large tables
 
@@ -1639,7 +1695,8 @@ async def get_table_details(
                                     "column_name": column_name,
                                     "total_rows": row_count # Pass total rows for fraction calculation
                                 })
-                                estimated_unique = await pg_stats_result.scalar()
+                                pg_stats_row = pg_stats_result.fetchone()
+                                estimated_unique = pg_stats_row[0] if pg_stats_row else None
                                 if estimated_unique is not None:
                                      unique_count = int(estimated_unique)
                                 else:
@@ -1661,7 +1718,7 @@ async def get_table_details(
 
             logger.info(
                 f"Successfully retrieved details for table '{table_name}'",
-                emoji_key=TaskType.DATABASE.value,
+                emoji_key=TaskType.DATABASE.value, 
                 connection_id=connection_id,
                 table_name=table_name,
                 schema_name=schema_name
@@ -1671,15 +1728,15 @@ async def get_table_details(
     except OperationalError as e:
         error_message = f"Database connection error getting table details: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, schema_name=schema_name, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error getting table details for '{table_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, schema_name=schema_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error getting table details for '{table_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, schema_name=schema_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -1749,10 +1806,13 @@ async def find_related_tables(
         # Use a single connection for inspector operations
         async with engine.connect() as conn:
             conn: AsyncConnection # Type hint
-            inspector = sqlalchemy.inspect(engine) # Use inspect on engine
+            # inspector = sqlalchemy.inspect(engine) # Use inspect on engine - Causes Error
+            # Get inspector using the synchronous connection from run_sync
+            inspector = await conn.run_sync(sqlalchemy.inspect, conn.sync_connection)
 
             # Verify source table exists
-            all_table_names = await conn.run_sync(inspector.get_table_names, schema=schema_name)
+            # all_table_names = await conn.run_sync(inspector.get_table_names, schema=schema_name) # Old way
+            all_table_names = await conn.run_sync(lambda sync_conn: sqlalchemy.inspect(sync_conn).get_table_names(schema=schema_name))
             if table_name not in all_table_names:
                  schema_msg = f" in schema '{schema_name}'" if schema_name else ""
                  raise ToolInputError(
@@ -1770,8 +1830,10 @@ async def find_related_tables(
                 cache_key = (tbl_schema, tbl_name)
                 if cache_key not in schema_cache:
                     try:
-                        cols = await conn.run_sync(inspector.get_columns, tbl_name, schema=tbl_schema)
-                        fks = await conn.run_sync(inspector.get_foreign_keys, tbl_name, schema=tbl_schema)
+                        # cols = await conn.run_sync(inspector.get_columns, tbl_name, schema=tbl_schema)
+                        # fks = await conn.run_sync(inspector.get_foreign_keys, tbl_name, schema=tbl_schema)
+                        cols = await conn.run_sync(lambda sync_conn: sqlalchemy.inspect(sync_conn).get_columns(tbl_name, schema=tbl_schema))
+                        fks = await conn.run_sync(lambda sync_conn: sqlalchemy.inspect(sync_conn).get_foreign_keys(tbl_name, schema=tbl_schema))
                         schema_cache[cache_key] = {"columns": cols, "fks": fks}
                     except Exception as e:
                          logger.warning(f"Failed to cache schema info for {tbl_schema}.{tbl_name}: {e}")
@@ -1935,16 +1997,15 @@ async def find_related_tables(
     except OperationalError as e:
         error_message = f"Database connection error finding related tables: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, schema_name=schema_name, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error finding related tables for '{table_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, schema_name=schema_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error finding related tables for '{table_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, schema_name=schema_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
-
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 @with_tool_metrics
 @with_error_handling
@@ -2026,21 +2087,20 @@ async def analyze_column_statistics(
             schema_name = "public"
 
         async with engine.connect() as conn:
-            conn: AsyncConnection # Type hint
-            inspector = sqlalchemy.inspect(engine) # Use inspect on engine
-
-            # Verify table exists
-            tables = await conn.run_sync(inspector.get_table_names, schema=schema_name)
+            conn: AsyncConnection  # Type hint
+            
+            # Get tables using run_sync with lambda
+            tables = await conn.run_sync(lambda sync_conn: sqlalchemy.inspect(sync_conn).get_table_names(schema=schema_name))
             if table_name not in tables:
-                 schema_msg = f" in schema '{schema_name}'" if schema_name else ""
-                 raise ToolInputError(
+                schema_msg = f" in schema '{schema_name}'" if schema_name else ""
+                raise ToolInputError(
                     f"Table '{table_name}' does not exist{schema_msg}.",
                     param_name="table_name",
                     provided_value=table_name
                 )
 
             # Verify column exists and get its type
-            columns = await conn.run_sync(inspector.get_columns, table_name, schema=schema_name)
+            columns = await conn.run_sync(lambda sync_conn: sqlalchemy.inspect(sync_conn).get_columns(table_name, schema=schema_name))
             column_meta = None
             for col in columns:
                 if col["name"] == column_name:
@@ -2086,7 +2146,7 @@ async def analyze_column_statistics(
                     FROM {table_identifier}
                 """)
                 count_res = await conn.execute(count_query)
-                total_count, null_count = await count_res.fetchone()
+                total_count, null_count = count_res.fetchone()
                 basic_stats["count"] = total_count
                 basic_stats["null_count"] = null_count
                 non_null_count = total_count - null_count
@@ -2101,7 +2161,6 @@ async def analyze_column_statistics(
                 is_string = any(t in column_type.lower() for t in ["char", "text", "string", "varchar"])
                 is_date = any(t in column_type.lower() for t in ["date", "time", "timestamp"])
 
-
                 # --- Unique Count (with estimation logic) ---
                 # Only calculate if non-null values exist
                 if non_null_count > 0:
@@ -2110,11 +2169,12 @@ async def analyze_column_statistics(
                         try:
                             unique_query = text(f"SELECT COUNT(DISTINCT {col_identifier}) FROM {table_identifier}")
                             unique_result = await conn.execute(unique_query)
-                            unique_count = await unique_result.scalar()
+                            unique_row = unique_result.fetchone()  # Removed await
+                            unique_count = unique_row[0] if unique_row else 0
                         except Exception as uc_e:
-                             logger.debug(f"COUNT DISTINCT failed for {table_name}.{column_name}: {uc_e}")
-                             if db_type == "postgresql": 
-                                 unique_count_estimated = True # Fallback to PG stats
+                            logger.debug(f"COUNT DISTINCT failed for {table_name}.{column_name}: {uc_e}")
+                            if db_type == "postgresql": 
+                                unique_count_estimated = True  # Fallback to PG stats
                     # Use PG stats estimate for large PG tables
                     elif db_type == "postgresql":
                         unique_count_estimated = True
@@ -2130,11 +2190,12 @@ async def analyze_column_statistics(
                                 "schema_name": schema_name, "table_name": table_name,
                                 "column_name": column_name, "total_rows": total_count
                             })
-                            estimated_unique = await pg_stats_result.scalar()
+                            pg_stats_row = pg_stats_result.fetchone()  # Removed await
+                            estimated_unique = pg_stats_row[0] if pg_stats_row else None
                             if estimated_unique is not None: 
                                 unique_count = int(estimated_unique)
                             else: 
-                                unique_count_estimated = False # Estimate failed
+                                unique_count_estimated = False  # Estimate failed
                         except Exception as pgs_e:
                             logger.warning(f"Could not query pg_stats for {table_name}.{column_name}: {pgs_e}")
                             unique_count_estimated = False
@@ -2143,14 +2204,13 @@ async def analyze_column_statistics(
                 if unique_count_estimated and unique_count is not None:
                     basic_stats["unique_count_estimated"] = True
 
-
                 # --- Type-Specific Stats (Min, Max, Avg, Lengths, StdDev) ---
                 if non_null_count > 0:
                     if is_numeric:
                         # Min, Max, Avg, StdDev
                         stats_parts = [f"MIN({col_identifier})", f"MAX({col_identifier})", f"AVG({col_identifier})"]
                         # StdDev might not be available everywhere (e.g., older SQLite)
-                        stddev_func = "STDDEV_POP" if db_type == "postgresql" else "STDEV" # STDEV in newer SQLite? Check dialect
+                        stddev_func = "STDDEV_POP" if db_type == "postgresql" else "STDEV"  # STDEV in newer SQLite? Check dialect
                         try:
                             # Test if stddev function exists with a simple query
                             await conn.execute(text(f"SELECT {stddev_func}(1)"))
@@ -2163,13 +2223,14 @@ async def analyze_column_statistics(
                         num_stats_query = text(f"""
                             SELECT {', '.join(stats_parts)} FROM {table_identifier} WHERE {col_identifier} IS NOT NULL
                         """)
-                        num_stats_res = await conn.execute(num_stats_query)
-                        num_stats_vals = await num_stats_res.fetchone()
-                        basic_stats["min"] = num_stats_vals[0]
-                        basic_stats["max"] = num_stats_vals[1]
-                        basic_stats["avg"] = float(num_stats_vals[2]) if num_stats_vals[2] is not None else None
+                        num_stats_result = await conn.execute(num_stats_query)
+                        num_stats_row = num_stats_result.fetchone()  # Removed await
+                        min_val, max_val, avg_val = num_stats_row if num_stats_row else (None, None, None)
+                        basic_stats["min"] = min_val
+                        basic_stats["max"] = max_val
+                        basic_stats["avg"] = float(avg_val) if avg_val is not None else None
                         if has_stddev:
-                            basic_stats["std_dev"] = float(num_stats_vals[3]) if num_stats_vals[3] is not None else None
+                            basic_stats["std_dev"] = float(num_stats_row[3]) if num_stats_row[3] is not None else None
 
                     elif is_string:
                         # Min/Max/Avg Length
@@ -2177,36 +2238,37 @@ async def analyze_column_statistics(
                         str_stats_query = text(f"""
                             SELECT MIN({len_func}({col_identifier})), MAX({len_func}({col_identifier})), AVG({len_func}({col_identifier}))
                             FROM {table_identifier} WHERE {col_identifier} IS NOT NULL AND {col_identifier} != ''
-                        """) # Exclude empty strings from avg/min length
-                        str_stats_res = await conn.execute(str_stats_query)
-                        min_len, max_len, avg_len = await str_stats_res.fetchone()
+                        """)  # Exclude empty strings from avg/min length
+                        str_stats_result = await conn.execute(str_stats_query)
+                        str_stats_row = str_stats_result.fetchone()  # Removed await
+                        min_len, max_len, avg_len = str_stats_row if str_stats_row else (None, None, None)
                         basic_stats["min_length"] = min_len
                         basic_stats["max_length"] = max_len
                         basic_stats["avg_length"] = float(avg_len) if avg_len is not None else None
 
                     elif is_date:
                         # Min/Max Date
-                         date_stats_query = text(f"""
-                             SELECT MIN({col_identifier}), MAX({col_identifier})
-                             FROM {table_identifier} WHERE {col_identifier} IS NOT NULL
-                         """)
-                         date_stats_res = await conn.execute(date_stats_query)
-                         min_val, max_val = await date_stats_res.fetchone()
-                         basic_stats["min"] = min_val.isoformat() if min_val else None
-                         basic_stats["max"] = max_val.isoformat() if max_val else None
+                        date_stats_query = text(f"""
+                            SELECT MIN({col_identifier}), MAX({col_identifier})
+                            FROM {table_identifier} WHERE {col_identifier} IS NOT NULL
+                        """)
+                        date_stats_result = await conn.execute(date_stats_query)
+                        date_stats_row = date_stats_result.fetchone()  # Removed await
+                        min_val, max_val = date_stats_row if date_stats_row else (None, None)
+                        basic_stats["min"] = min_val.isoformat() if min_val else None
+                        basic_stats["max"] = max_val.isoformat() if max_val else None
 
                 result["basic_stats"] = basic_stats
 
             except (OperationalError, ProgrammingError) as e:
-                 logger.error(f"Error calculating basic stats for {table_name}.{column_name}: {e}", exc_info=True)
-                 result["basic_stats"]["error"] = f"Failed to calculate basic stats: {e}"
-                 # Stop further analysis if basic stats failed
-                 return result
+                logger.error(f"Error calculating basic stats for {table_name}.{column_name}: {e}", exc_info=True)
+                result["basic_stats"]["error"] = f"Failed to calculate basic stats: {e}"
+                # Stop further analysis if basic stats failed
+                return result
             except Exception as e:
-                 logger.error(f"Unexpected error during basic stats for {table_name}.{column_name}: {e}", exc_info=True)
-                 result["basic_stats"]["error"] = f"Unexpected error during basic stats: {e}"
-                 return result
-
+                logger.error(f"Unexpected error during basic stats for {table_name}.{column_name}: {e}", exc_info=True)
+                result["basic_stats"]["error"] = f"Unexpected error during basic stats: {e}"
+                return result
 
             # --- Histogram Calculation ---
             if include_histogram and non_null_count > 0:
@@ -2217,41 +2279,42 @@ async def analyze_column_statistics(
                         max_val = basic_stats["max"]
                         histogram["type"] = "numeric"
 
-                        if min_val == max_val: # Handle case where all values are the same
-                             histogram["buckets"].append({
-                                 "range": f"{min_val}",
-                                 "count": non_null_count,
-                                 "percentage": 100.0
-                             })
+                        if min_val == max_val:  # Handle case where all values are the same
+                            histogram["buckets"].append({
+                                "range": f"{min_val}",
+                                "count": non_null_count,
+                                "percentage": 100.0
+                            })
                         else:
-                             # Use database's width_bucket if available (PostgreSQL)
-                             if db_type == "postgresql":
-                                 # Need num_buckets + 1 for range edges
-                                 bucket_query = text(f"""
-                                     SELECT width_bucket({col_identifier}, :min_val, :max_val, :num_buckets) AS bucket, COUNT(*)
-                                     FROM {table_identifier}
-                                     WHERE {col_identifier} IS NOT NULL
-                                     GROUP BY bucket ORDER BY bucket
-                                 """)
-                                 # Add small epsilon to max_val for width_bucket inclusivity
-                                 epsilon = (max_val - min_val) * 0.00001 if max_val != min_val else 0.001
-                                 bucket_res = await conn.execute(bucket_query, {
-                                     "min_val": min_val, "max_val": max_val + epsilon, "num_buckets": num_buckets
-                                 })
-                                 db_buckets = {b: c for b, c in await bucket_res.fetchall()}
+                            # Use database's width_bucket if available (PostgreSQL)
+                            if db_type == "postgresql":
+                                # Need num_buckets + 1 for range edges
+                                bucket_query = text(f"""
+                                    SELECT width_bucket({col_identifier}, :min_val, :max_val, :num_buckets) AS bucket, COUNT(*)
+                                    FROM {table_identifier}
+                                    WHERE {col_identifier} IS NOT NULL
+                                    GROUP BY bucket ORDER BY bucket
+                                """)
+                                # Add small epsilon to max_val for width_bucket inclusivity
+                                epsilon = (max_val - min_val) * 0.00001 if max_val != min_val else 0.001
+                                bucket_res = await conn.execute(bucket_query, {
+                                    "min_val": min_val, "max_val": max_val + epsilon, "num_buckets": num_buckets
+                                })
+                                bucket_rows = bucket_res.fetchall()  # No await needed
+                                db_buckets = {b: c for b, c in bucket_rows}
 
-                                 bucket_width = (max_val - min_val) / num_buckets
-                                 for i in range(1, num_buckets + 1):
-                                     b_count = db_buckets.get(i, 0)
-                                     b_start = min_val + (i - 1) * bucket_width
-                                     b_end = min_val + i * bucket_width
-                                     histogram["buckets"].append({
-                                         "range": f"{b_start:.4g} - {b_end:.4g}",
-                                         "count": b_count,
-                                         "percentage": round((b_count / non_null_count) * 100, 2) if non_null_count else 0
-                                     })
+                                bucket_width = (max_val - min_val) / num_buckets
+                                for i in range(1, num_buckets + 1):
+                                    b_count = db_buckets.get(i, 0)
+                                    b_start = min_val + (i - 1) * bucket_width
+                                    b_end = min_val + i * bucket_width
+                                    histogram["buckets"].append({
+                                        "range": f"{b_start:.4g} - {b_end:.4g}",
+                                        "count": b_count,
+                                        "percentage": round((b_count / non_null_count) * 100, 2) if non_null_count else 0
+                                    })
 
-                             else: # Manual bucketing for SQLite (less efficient)
+                            else:  # Manual bucketing for SQLite (less efficient)
                                 bucket_width = (max_val - min_val) / num_buckets
                                 cases = []
                                 for i in range(num_buckets):
@@ -2267,19 +2330,19 @@ async def analyze_column_statistics(
 
                                 manual_bucket_query = text(f"SELECT {', '.join(cases)} FROM {table_identifier} WHERE {col_identifier} IS NOT NULL")
                                 manual_bucket_res = await conn.execute(manual_bucket_query)
-                                counts = await manual_bucket_res.fetchone()
+                                counts = manual_bucket_res.fetchone()  # No await needed
 
                                 for i in range(num_buckets):
-                                     b_count = counts[i] if counts and counts[i] is not None else 0
-                                     b_start = min_val + i * bucket_width
-                                     b_end = min_val + (i + 1) * bucket_width
-                                     histogram["buckets"].append({
-                                         "range": f"{b_start:.4g} - {b_end:.4g}",
-                                         "count": b_count,
-                                         "percentage": round((b_count / non_null_count) * 100, 2) if non_null_count else 0
-                                     })
+                                    b_count = counts[i] if counts and counts[i] is not None else 0
+                                    b_start = min_val + i * bucket_width
+                                    b_end = min_val + (i + 1) * bucket_width
+                                    histogram["buckets"].append({
+                                        "range": f"{b_start:.4g} - {b_end:.4g}",
+                                        "count": b_count,
+                                        "percentage": round((b_count / non_null_count) * 100, 2) if non_null_count else 0
+                                    })
 
-                    elif is_string or is_date: # Categorical histogram (top N frequencies)
+                    elif is_string or is_date:  # Categorical histogram (top N frequencies)
                         histogram["type"] = "categorical"
                         freq_query = text(f"""
                             SELECT {col_identifier}, COUNT(*) as count
@@ -2291,17 +2354,18 @@ async def analyze_column_statistics(
                         """)
                         freq_res = await conn.execute(freq_query, {"limit": num_buckets})
 
-                        for value, count in await freq_res.fetchall():
-                             display_value = str(value.isoformat()) if is_date and hasattr(value, 'isoformat') else str(value)
-                             if len(display_value) > 50: 
-                                 display_value = display_value[:47] + "..."
-                             histogram["buckets"].append({
-                                 "value": display_value,
-                                 "count": count,
-                                 "percentage": round((count / non_null_count) * 100, 2) if non_null_count else 0
-                             })
+                        fetched_values = freq_res.fetchall()  # Removed await
+                        for value, count in fetched_values:
+                            display_value = str(value.isoformat()) if is_date and hasattr(value, 'isoformat') else str(value)
+                            if len(display_value) > 50: 
+                                display_value = display_value[:47] + "..."
+                            histogram["buckets"].append({
+                                "value": display_value,
+                                "count": count,
+                                "percentage": round((count / non_null_count) * 100, 2) if non_null_count else 0
+                            })
                     else:
-                         histogram["notes"] = "Histogram not applicable for this data type."
+                        histogram["notes"] = "Histogram not applicable for this data type."
 
                     result["histogram"] = histogram
 
@@ -2309,48 +2373,46 @@ async def analyze_column_statistics(
                     logger.warning(f"Histogram calculation failed for {table_name}.{column_name}: {e}")
                     result["histogram"] = {"error": f"Failed to calculate histogram: {e}"}
 
-
             # --- Value Frequencies ---
             if include_unique_values and non_null_count > 0 and unique_count is not None:
-                 value_freqs = {"values": []}
-                 try:
-                     # Only fetch if unique count is reasonably small or if estimate is used
-                     fetch_limit = max_unique_values
-                     # If exact unique count is known and <= limit, fetch that many
-                     if not basic_stats.get("unique_count_estimated") and unique_count <= max_unique_values:
-                          fetch_limit = unique_count
+                value_freqs = {"values": []}
+                try:
+                    # Only fetch if unique count is reasonably small or if estimate is used
+                    fetch_limit = max_unique_values
+                    # If exact unique count is known and <= limit, fetch that many
+                    if not basic_stats.get("unique_count_estimated") and unique_count <= max_unique_values:
+                        fetch_limit = unique_count
 
-                     freq_query = text(f"""
-                         SELECT {col_identifier}, COUNT(*) as count
-                         FROM {table_identifier}
-                         WHERE {col_identifier} IS NOT NULL
-                         GROUP BY {col_identifier}
-                         ORDER BY count DESC
-                         LIMIT :limit
-                     """)
-                     freq_res = await conn.execute(freq_query, {"limit": fetch_limit})
-                     fetched_values = await freq_res.fetchall()
+                    freq_query = text(f"""
+                        SELECT {col_identifier}, COUNT(*) as count
+                        FROM {table_identifier}
+                        WHERE {col_identifier} IS NOT NULL
+                        GROUP BY {col_identifier}
+                        ORDER BY count DESC
+                        LIMIT :limit
+                    """)
+                    freq_res = await conn.execute(freq_query, {"limit": fetch_limit})
+                    fetched_values = freq_res.fetchall()  # Removed await
 
-                     for value, count in fetched_values:
-                         display_value = str(value.isoformat()) if is_date and hasattr(value, 'isoformat') else str(value)
-                         if len(display_value) > 100: 
-                             display_value = display_value[:97] + "..." # Allow longer values here
-                         value_freqs["values"].append({
-                             "value": display_value,
-                             "count": count,
-                             "percentage": round((count / non_null_count) * 100, 2) if non_null_count else 0
-                         })
+                    for value, count in fetched_values:
+                        display_value = str(value.isoformat()) if is_date and hasattr(value, 'isoformat') else str(value)
+                        if len(display_value) > 100: 
+                            display_value = display_value[:97] + "..."  # Allow longer values here
+                        value_freqs["values"].append({
+                            "value": display_value,
+                            "count": count,
+                            "percentage": round((count / non_null_count) * 100, 2) if non_null_count else 0
+                        })
 
-                     value_freqs["truncated"] = unique_count > fetch_limit
-                     value_freqs["total_unique_in_table"] = unique_count
-                     result["value_frequencies"] = value_freqs
+                    value_freqs["truncated"] = unique_count > fetch_limit
+                    value_freqs["total_unique_in_table"] = unique_count
+                    result["value_frequencies"] = value_freqs
 
-                 except Exception as e:
-                     logger.warning(f"Value frequency calculation failed for {table_name}.{column_name}: {e}")
-                     result["value_frequencies"] = {"error": f"Failed to get value frequencies: {e}"}
+                except Exception as e:
+                    logger.warning(f"Value frequency calculation failed for {table_name}.{column_name}: {e}")
+                    result["value_frequencies"] = {"error": f"Failed to get value frequencies: {e}"}
             elif include_unique_values:
-                 result["value_frequencies"] = {"notes": "Skipped due to zero non-null values or unknown unique count."}
-
+                result["value_frequencies"] = {"notes": "Skipped due to zero non-null values or unknown unique count."}
 
             logger.info(
                 f"Successfully analyzed statistics for column '{column_name}' in table '{table_name}'",
@@ -2365,21 +2427,21 @@ async def analyze_column_statistics(
     except OperationalError as e:
         error_message = f"Database connection error analyzing column stats: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, column_name=column_name, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e
     except ProgrammingError as e:
         error_message = f"Syntax error or invalid identifier analyzing column stats '{table_name}.{column_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, column_name=column_name, exc_info=True)
-        raise ToolError(status_code=400, detail=error_message) from e # Bad request due to likely syntax error
+        raise ToolError(message=error_message, http_status_code=400) from e
     except SQLAlchemyError as e:
         error_message = f"Error analyzing column statistics for '{table_name}.{column_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, column_name=column_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e
     except Exception as e:
         error_message = f"Unexpected error analyzing column statistics for '{table_name}.{column_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, column_name=column_name, exc_info=True)
         # Log potentially complex intermediate results using json.dumps
         logger.debug(f"Intermediate state on error: {json.dumps(result, default=str)}")
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e
 
 
 @with_tool_metrics
@@ -2484,7 +2546,7 @@ async def execute_query(
 
                 logger.info(
                     f"Successfully executed query on connection {connection_id}",
-                    emoji_key=TaskType.DATABASE.value,
+                    emoji_key="tool",
                     connection_id=connection_id,
                     row_count_returned=len(processed_rows),
                     truncated=truncated,
@@ -2506,7 +2568,7 @@ async def execute_query(
 
                 logger.info(
                     f"Successfully executed non-row-returning query on connection {connection_id}",
-                    emoji_key=TaskType.DATABASE.value,
+                    emoji_key="tool",
                     connection_id=connection_id,
                     affected_rows=affected_rows,
                     time=execution_time
@@ -2524,19 +2586,19 @@ async def execute_query(
     except ProgrammingError as e:
         error_message = f"Syntax error or access violation executing query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, exc_info=True)
-        raise ToolError(status_code=400, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=400) from e # Use message and http_status_code
     except OperationalError as e:
         error_message = f"Database operational error executing query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error executing query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error executing query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -2649,7 +2711,7 @@ async def execute_parameterized_query(
 
                 logger.info(
                     f"Successfully executed parameterized query on connection {connection_id}",
-                    emoji_key=TaskType.DATABASE.value,
+                    emoji_key="tool",
                     connection_id=connection_id,
                     row_count_returned=len(processed_rows),
                     truncated=truncated,
@@ -2671,7 +2733,7 @@ async def execute_parameterized_query(
 
                 logger.info(
                     f"Successfully executed non-row-returning parameterized query on connection {connection_id}",
-                    emoji_key=TaskType.DATABASE.value,
+                    emoji_key="tool",
                     connection_id=connection_id,
                     affected_rows=affected_rows,
                     time=execution_time
@@ -2690,19 +2752,19 @@ async def execute_parameterized_query(
         # Could be bad syntax OR issues with parameters/binding
         error_message = f"Syntax error or parameter binding issue executing query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
-        raise ToolError(status_code=400, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=400) from e # Use message and http_status_code
     except OperationalError as e:
         error_message = f"Database operational error executing parameterized query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e: # Catch other SQLAlchemy errors like IntegrityError etc.
         error_message = f"Error executing parameterized query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error executing parameterized query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -2817,7 +2879,7 @@ async def create_database_view(
 
         logger.info(
             f"Successfully created{' or replaced' if replace_if_exists else ''} view '{view_name}'",
-            emoji_key=TaskType.DATABASE.value,
+            emoji_key="tool",
             connection_id=connection_id,
             view_name=view_name,
             schema_name=schema_name
@@ -2845,19 +2907,19 @@ async def create_database_view(
                 param_name="view_name", provided_value=view_name
             ) from e
         else:
-             raise ToolError(status_code=400, detail=error_message) from e # Likely syntax error
+             raise ToolError(message=error_message, http_status_code=400) from e # Likely syntax error # Use message and http_status_code
     except OperationalError as e:
         error_message = f"Database operational error creating view '{view_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, view_name=view_name, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error creating view '{view_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, view_name=view_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error creating view '{view_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, view_name=view_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -3011,27 +3073,27 @@ async def create_database_index(
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, index_name=index_name, exc_info=True)
         # Provide more specific feedback if possible
         if "already exists" in str(e).lower():
-            raise ToolError(status_code=409, detail=f"Index '{index_name}' already exists.") from e # Conflict
+            raise ToolError(message=f"Index '{index_name}' already exists.", http_status_code=409) from e # Conflict # Use message and http_status_code
         elif "does not exist" in str(e).lower():
              raise ToolInputError(f"Table or column specified for index '{index_name}' does not exist.", param_name="table/columns") from e
         else:
-            raise ToolError(status_code=400, detail=error_message) from e # Bad Request (syntax, permissions etc)
+            raise ToolError(message=error_message, http_status_code=400) from e # Bad Request (syntax, permissions etc) # Use message and http_status_code
     except OperationalError as e:
         error_message = f"Database operational error creating index '{index_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, index_name=index_name, exc_info=True)
-        raise ToolError(status_code=503, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=503) from e # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Error creating index '{index_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, index_name=index_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error creating index '{index_name}': {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, table_name=table_name, index_name=index_name, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 @with_tool_metrics
 @with_error_handling
-@with_retry(max_retries=2, delay=0.5, exceptions=(OperationalError,)) # Use max_retries instead of attempts
+@with_retry(max_retries=2, retry_delay=0.5, retry_exceptions=(OperationalError,)) # Use max_retries instead of attempts
 async def test_connection(connection_id: str) -> Dict[str, Any]:
     """Tests the database connection by executing a simple query.
 
@@ -3076,13 +3138,13 @@ async def test_connection(connection_id: str) -> Dict[str, Any]:
 
             await conn.execute(test_query) # Execute simple query first
             version_result = await conn.execute(version_query) # Then get version
-            version = await version_result.scalar()
+            version = version_result.scalar()
 
         response_time = time.time() - start_time
 
         logger.info(
             f"Connection test successful for {connection_id}",
-            emoji_key=TaskType.DATABASE.value,
+            emoji_key="tool",
             connection_id=connection_id,
             response_time=response_time
         )
@@ -3099,15 +3161,15 @@ async def test_connection(connection_id: str) -> Dict[str, Any]:
         error_message = f"Connection test failed for {connection_id}: Database operational error - {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id)
         # Don't remove connection here, allow retry or explicit disconnect
-        raise ToolError(status_code=503, detail=error_message) from e # Service Unavailable
+        raise ToolError(message=error_message, http_status_code=503) from e # Service Unavailable # Use message and http_status_code
     except SQLAlchemyError as e:
         error_message = f"Connection test failed for {connection_id}: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
     except Exception as e:
         error_message = f"Unexpected error during connection test for {connection_id}: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -3205,13 +3267,20 @@ async def execute_transaction(
         for i, query in enumerate(queries):
             is_safe, reason = _is_query_safe(query)
             if not is_safe:
-                raise ToolInputError(
-                    f"Unsafe query denied in transaction at position {i}: {reason}",
-                    param_name=f"queries[{i}]",
-                    provided_value=query
-                )
+                # Check if the reason is INSERT/UPDATE and read_only is False
+                is_write_op = re.search(r"^\s*(INSERT|UPDATE)\s", query.strip().upper(), re.IGNORECASE)
+                if is_write_op and not read_only:
+                    # Allow INSERT/UPDATE if explicitly not read-only
+                    pass # Continue to the next query
+                else:
+                    # Otherwise, raise the error (either prohibited op, or write op in read_only mode)
+                    raise ToolInputError(
+                        f"Unsafe query denied in transaction at position {i}: {reason}",
+                        param_name=f"queries[{i}]",
+                        provided_value=query
+                    )
 
-            # Additional check for read-only mode
+            # Additional check for read-only mode (redundant if _is_query_safe blocks writes, but kept for clarity)
             if read_only:
                 normalized_query = query.strip().upper()
                 if not (normalized_query.startswith('SELECT') or
@@ -3269,7 +3338,7 @@ async def execute_transaction(
 
         logger.info(
             f"Successfully executed transaction with {len(queries)} queries",
-            emoji_key=TaskType.DATABASE.value,
+            emoji_key="tool",
             connection_id=connection_id,
             query_count=len(queries),
             time=execution_time
@@ -3301,7 +3370,7 @@ async def execute_transaction(
 
         # Determine appropriate status code
         status_code = 400 if isinstance(e, ProgrammingError) else (503 if isinstance(e, OperationalError) else 500)
-        raise ToolError(status_code=status_code, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=status_code) from e # Use message and http_status_code
     except Exception as e: # Catch unexpected errors outside SQLAlchemy
         error_message = f"Unexpected error during transaction execution: {str(e)}"
         logger.error(
@@ -3310,7 +3379,7 @@ async def execute_transaction(
             connection_id=connection_id,
             exc_info=True
         )
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=500) from e # Use message and http_status_code
 
 
 @with_tool_metrics
@@ -3413,7 +3482,7 @@ async def execute_query_with_pagination(
                 # Note: `timeout()` is not directly supported by execute. Need external mechanism if required.
                 # Consider alternative estimation for very large tables if this is too slow.
                 count_result = await conn.execute(count_stmt, query_parameters)
-                total_rows = await count_result.scalar()
+                total_rows = count_result.scalar()
                 if total_rows is None: 
                     total_rows = 0 # Ensure it's an int
             except (OperationalError, ProgrammingError, SQLAlchemyError) as count_e:
@@ -3471,7 +3540,7 @@ async def execute_query_with_pagination(
 
             logger.info(
                 f"Successfully executed paginated query on connection {connection_id}",
-                emoji_key=TaskType.DATABASE.value,
+                emoji_key="tool",
                 connection_id=connection_id,
                 page=page_number,
                 page_size=page_size,
@@ -3500,7 +3569,7 @@ async def execute_query_with_pagination(
     except ProgrammingError as e:
         error_message = f"Syntax error or parameter binding issue executing paginated query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
-        raise ToolError(status_code=400, detail=error_message) from e
+        raise ToolError(message=error_message, http_status_code=400) from e # Use message and http_status_code
     except OperationalError as e:
         error_message = f"Database operational error executing paginated query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
@@ -3508,10 +3577,10 @@ async def execute_query_with_pagination(
     except SQLAlchemyError as e:
         error_message = f"Error executing paginated query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(http_status_code=500, message=error_message) from e # Corrected param name, Use message
     except Exception as e:
         error_message = f"Unexpected error executing paginated query: {str(e)}"
         logger.error(error_message, emoji_key="error", connection_id=connection_id, query=query, params=parameters, exc_info=True)
         # Log potentially complex intermediate results using json.dumps
         logger.debug(f"Paginated query state on error: query={query}, params={json.dumps(parameters, default=str)}")
-        raise ToolError(status_code=500, detail=error_message) from e
+        raise ToolError(http_status_code=500, message=error_message) from e # Corrected param name, Use message

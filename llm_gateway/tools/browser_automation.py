@@ -2322,19 +2322,17 @@ async def browser_download_file(
         # Initiate download
         if url:
             # Direct URL download
-            logger.info(f"Navigating to download URL: {url}", emoji_key="download")
+            logger.info(f"Navigating to download URL: {url}", emoji_key=TaskType.DOWNLOAD.value)
             await page.goto(url)
+        elif selector:
+            logger.info(f"Clicking element to initiate download: {selector}", emoji_key=TaskType.DOWNLOAD.value)
+            await page.click(selector, timeout=timeout) # Use timeout for click as well
         else:
-            # Click selector to initiate download
-            logger.info(f"Clicking element to initiate download: {selector}", emoji_key="download")
-            element = await page.query_selector(selector)
-            if not element:
-                raise ToolInputError(
-                    f"No element found matching selector: {selector}",
-                    param_name="selector",
-                    provided_value=selector
-                )
-            await element.click()
+            raise ToolInputError(
+                "No URL or selector provided for download",
+                param_name="url/selector",
+                provided_value={"url": url, "selector": selector}
+            )
         
         # Wait for download to start
         download = await download_promise
@@ -2364,7 +2362,7 @@ async def browser_download_file(
         
         logger.info(
             f"Downloading file: {final_filename}",
-            emoji_key="download",
+            emoji_key=TaskType.DOWNLOAD.value,
             path=str(file_path)
         )
         
@@ -2406,7 +2404,7 @@ async def browser_download_file(
             
         logger.success(
             f"File download {'completed' if wait_for_download else 'initiated'}: {file_path.name}",
-            emoji_key=TaskType.BROWSER.value,
+            emoji_key=TaskType.DOWNLOAD.value,
             time=download_time,
             file_size=file_size
         )
@@ -2591,8 +2589,9 @@ async def browser_upload_file(
             
         logger.success(
             f"Successfully uploaded {len(file_paths_list)} file(s) to {element_desc}",
-            emoji_key=TaskType.BROWSER.value,
-            time=processing_time
+            emoji_key=TaskType.UPLOAD.value,
+            selector=selector,
+            files=file_paths_list
         )
         
         return result

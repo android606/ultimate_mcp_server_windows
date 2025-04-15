@@ -57,7 +57,7 @@ def run_server(
     effective_log_level = log_level or getattr(cfg, 'log_level', 'info')
     
     # Print server info
-    console.print(f"[bold blue]Starting LLM Gateway server[/bold blue]")
+    console.print("[bold blue]Starting LLM Gateway server[/bold blue]")
     console.print(f"Host: [cyan]{cfg.server.host}[/cyan]")
     console.print(f"Port: [cyan]{cfg.server.port}[/cyan]")
     console.print(f"Workers: [cyan]{cfg.server.workers}[/cyan]")

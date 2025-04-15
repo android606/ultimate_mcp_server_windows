@@ -202,3 +202,4 @@ logs
 *.db-wal
 cache/disk_cache/cache.db-shm
 cache/disk_cache/cache.db-wal
+demo_database.db

@@ -539,7 +539,7 @@ class DBConnection:
                 # Initialize schema if needed
                 # Check if tables exist before running the full script
                 cursor = await self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='workflows'")
-                table_exists = await cursor.fetchone()
+                table_exists = cursor.fetchone()
                 if not table_exists:
                     logger.info("Database schema not found. Initializing...", emoji_key="gear")
                     await self.conn.executescript(SCHEMA_SQL)
@@ -743,7 +743,7 @@ class MemoryUtils:
         """
         sql = f"SELECT MAX(sequence_number) FROM {table} WHERE {parent_col} = ?"
         async with conn.execute(sql, (parent_id,)) as cursor:
-            row = await cursor.fetchone()
+            row = cursor.fetchone()
             # If no rows exist (row is None) or MAX is NULL, start at 1. Otherwise, increment max.
             max_sequence = row[0] if row and row[0] is not None else 0
             return max_sequence + 1
@@ -784,7 +784,7 @@ class MemoryUtils:
             )
             # Retrieve the tag_id (whether newly inserted or existing)
             async with conn.execute("SELECT tag_id FROM tags WHERE name = ?", (tag_name,)) as cursor:
-                row = await cursor.fetchone()
+                row = cursor.fetchone()
                 if row:
                     tag_ids_to_link.append(row["tag_id"])
                 else:
@@ -1153,7 +1153,7 @@ async def create_workflow(
             # Check parent workflow existence if provided
             if parent_workflow_id:
                 async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (parent_workflow_id,)) as cursor:
-                    if not await cursor.fetchone():
+                    if not cursor.fetchone():
                         raise ToolInputError(f"Parent workflow not found: {parent_workflow_id}", param_name="parent_workflow_id")
 
             # Serialize metadata
@@ -1246,7 +1246,7 @@ async def update_workflow_status(
         async with DBConnection(db_path) as conn:
              # Check existence first
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not await cursor.fetchone():
+                if not cursor.fetchone():
                     raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
 
             update_params = [status_enum.value, now_iso, now_unix, workflow_id]
@@ -1264,7 +1264,7 @@ async def update_workflow_status(
             # Add completion message as thought
             if completion_message:
                  async with conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,)) as cursor:
-                    row = await cursor.fetchone()
+                    row = cursor.fetchone()
                     if row:
                         thought_chain_id = row["thought_chain_id"]
                         seq_no = await MemoryUtils.get_next_sequence_number(conn, thought_chain_id, "thoughts", "thought_chain_id")
@@ -1359,17 +1359,17 @@ async def record_action_start(
         async with DBConnection(db_path) as conn:
             # --- Existence Checks (Workflow, Parent Action, Related Thought) ---
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not await cursor.fetchone():
+                if not cursor.fetchone():
                     raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
 
             if parent_action_id:
                 async with conn.execute("SELECT 1 FROM actions WHERE action_id = ? AND workflow_id = ?", (parent_action_id, workflow_id)) as cursor:
-                    if not await cursor.fetchone():
+                    if not cursor.fetchone():
                         raise ToolInputError(f"Parent action '{parent_action_id}' not found or does not belong to workflow '{workflow_id}'.", param_name="parent_action_id")
 
             if related_thought_id:
                  async with conn.execute("SELECT 1 FROM thoughts t JOIN thought_chains tc ON t.thought_chain_id = tc.thought_chain_id WHERE t.thought_id = ? AND tc.workflow_id = ?", (related_thought_id, workflow_id)) as cursor:
-                      if not await cursor.fetchone():
+                      if not cursor.fetchone():
                            raise ToolInputError(f"Related thought '{related_thought_id}' not found or does not belong to workflow '{workflow_id}'.", param_name="related_thought_id")
 
             # --- Determine Action Title ---
@@ -1529,7 +1529,7 @@ async def record_action_completion(
             # --- 1. Verify Action and Get Workflow ID ---
             # Fetch workflow_id and current status to prevent re-completing
             async with conn.execute("SELECT workflow_id, status FROM actions WHERE action_id = ?", (action_id,)) as cursor:
-                action_row = await cursor.fetchone()
+                action_row = cursor.fetchone()
                 if not action_row:
                     raise ToolInputError(f"Action not found: {action_id}", param_name="action_id")
                 workflow_id = action_row["workflow_id"]
@@ -1563,7 +1563,7 @@ async def record_action_completion(
             if conclusion_thought and thought_type_enum:
                 # Find the primary thought chain for the workflow
                 async with conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,)) as cursor:
-                    chain_row = await cursor.fetchone()
+                    chain_row = cursor.fetchone()
                     if chain_row:
                         thought_chain_id = chain_row["thought_chain_id"]
                         # Get next sequence number within the chain
@@ -1585,7 +1585,7 @@ async def record_action_completion(
             # --- 5. Update Linked Episodic Memory ---
             # Find the 'action_log' memory created when the action started
             async with conn.execute("SELECT memory_id, content FROM memories WHERE action_id = ? AND memory_type = ?", (action_id, MemoryType.ACTION_LOG.value)) as cursor:
-                 memory_row = await cursor.fetchone()
+                 memory_row = cursor.fetchone()
                  if memory_row:
                     memory_id = memory_row["memory_id"]
                     original_content = memory_row["content"]
@@ -2045,13 +2045,13 @@ async def add_action_dependency(
             source_workflow_id = None
             target_workflow_id = None
             async with conn.execute("SELECT workflow_id FROM actions WHERE action_id = ?", (source_action_id,)) as cursor:
-                 source_row = await cursor.fetchone()
+                 source_row = cursor.fetchone()
                  if not source_row:
                      raise ToolInputError(f"Source action {source_action_id} not found.", param_name="source_action_id")
                  source_workflow_id = source_row["workflow_id"]
 
             async with conn.execute("SELECT workflow_id FROM actions WHERE action_id = ?", (target_action_id,)) as cursor:
-                 target_row = await cursor.fetchone()
+                 target_row = cursor.fetchone()
                  if not target_row:
                      raise ToolInputError(f"Target action {target_action_id} not found.", param_name="target_action_id")
                  target_workflow_id = target_row["workflow_id"]
@@ -2185,7 +2185,7 @@ async def get_action_dependencies(
         async with DBConnection(db_path) as conn:
             # --- Validate Action Exists ---
             async with conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (action_id,)) as cursor:
-                 if not await cursor.fetchone():
+                 if not cursor.fetchone():
                      raise ToolInputError(f"Action {action_id} not found.", param_name="action_id")
 
             # --- Build Query based on Direction ---
@@ -2320,12 +2320,12 @@ async def record_artifact(
             # --- Existence Checks ---
             # Check workflow
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not await cursor.fetchone():
+                if not cursor.fetchone():
                     raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
             # Check action (if provided)
             if action_id:
                 async with conn.execute("SELECT 1 FROM actions WHERE action_id = ? AND workflow_id = ?", (action_id, workflow_id)) as cursor:
-                    if not await cursor.fetchone():
+                    if not cursor.fetchone():
                         raise ToolInputError(f"Action {action_id} not found or does not belong to workflow {workflow_id}", param_name="action_id")
 
             # --- Prepare Data ---
@@ -2476,31 +2476,31 @@ async def record_thought(
 
             # Check workflow exists
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not await cursor.fetchone():
+                if not cursor.fetchone():
                     raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
 
             # Check parent thought exists (if provided)
             if parent_thought_id:
                  async with conn.execute("SELECT 1 FROM thoughts WHERE thought_id = ?", (parent_thought_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Parent thought not found: {parent_thought_id}", param_name="parent_thought_id")
 
             # Check relevant action exists (if provided)
             if relevant_action_id:
                  async with conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (relevant_action_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Relevant action not found: {relevant_action_id}", param_name="relevant_action_id")
 
             # Check relevant artifact exists (if provided)
             if relevant_artifact_id:
                  async with conn.execute("SELECT 1 FROM artifacts WHERE artifact_id = ?", (relevant_artifact_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Relevant artifact not found: {relevant_artifact_id}", param_name="relevant_artifact_id")
 
             # Check relevant memory exists (if provided)
             if relevant_memory_id:
                  async with conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (relevant_memory_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Relevant memory not found: {relevant_memory_id}", param_name="relevant_memory_id")
 
             # --- Determine Target Thought Chain ---
@@ -2508,7 +2508,7 @@ async def record_thought(
             if not target_thought_chain_id:
                 # Find the primary (first created) thought chain for the workflow
                 async with conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,)) as cursor:
-                    row = await cursor.fetchone()
+                    row = cursor.fetchone()
                     if not row:
                         # If no chain exists, create the default one
                         target_thought_chain_id = MemoryUtils.generate_id()
@@ -2522,7 +2522,7 @@ async def record_thought(
             else:
                 # Verify the provided thought_chain_id exists and belongs to the workflow
                 async with conn.execute("SELECT 1 FROM thought_chains WHERE thought_chain_id = ? AND workflow_id = ?", (target_thought_chain_id, workflow_id)) as cursor:
-                    if not await cursor.fetchone():
+                    if not cursor.fetchone():
                         raise ToolInputError(f"Provided thought chain {target_thought_chain_id} not found or does not belong to workflow {workflow_id}", param_name="thought_chain_id")
 
             # --- Get Sequence Number ---
@@ -2728,19 +2728,19 @@ async def store_memory(
         async with DBConnection(db_path) as conn:
             # --- 1. Existence checks for foreign keys ---
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not await cursor.fetchone():
+                if not cursor.fetchone():
                     raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
             if action_id:
                  async with conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (action_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Action {action_id} not found", param_name="action_id")
             if thought_id:
                  async with conn.execute("SELECT 1 FROM thoughts WHERE thought_id = ?", (thought_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Thought {thought_id} not found", param_name="thought_id")
             if artifact_id:
                  async with conn.execute("SELECT 1 FROM artifacts WHERE artifact_id = ?", (artifact_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Artifact {artifact_id} not found", param_name="artifact_id")
 
             # --- 2. Insert the main memory record ---
@@ -2920,7 +2920,7 @@ async def get_memory_by_id(
         async with DBConnection(db_path) as conn:
             # --- 1. Fetch Core Memory Data ---
             async with conn.execute("SELECT * FROM memories WHERE memory_id = ?", (memory_id,)) as cursor:
-                row = await cursor.fetchone()
+                row = cursor.fetchone()
                 if not row:
                     raise ToolInputError(f"Memory {memory_id} not found.", param_name="memory_id")
 
@@ -3095,7 +3095,7 @@ async def search_semantic_memories(
             # Verify workflow exists only if a specific one is provided
             if workflow_id:
                  async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                     if not await cursor.fetchone():
+                     if not cursor.fetchone():
                          raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
 
             # --- Step 1: Find similar memory IDs and scores ---
@@ -3508,12 +3508,12 @@ async def create_memory_link(
         async with DBConnection(db_path) as conn:
              # Check memories exist and get workflow_id (use source memory's workflow)
             async with conn.execute("SELECT workflow_id FROM memories WHERE memory_id = ?", (source_memory_id,)) as cursor:
-                source_row = await cursor.fetchone()
+                source_row = cursor.fetchone()
                 if not source_row: 
                     raise ToolInputError(f"Source memory {source_memory_id} not found.", param_name="source_memory_id")
                 workflow_id = source_row["workflow_id"]
             async with conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (target_memory_id,)) as cursor:
-                if not await cursor.fetchone(): 
+                if not cursor.fetchone(): 
                     raise ToolInputError(f"Target memory {target_memory_id} not found.", param_name="target_memory_id")
 
             # Insert or Replace link (handle existing links gracefully)
@@ -3661,7 +3661,7 @@ async def query_memories(
             # Verify workflow exists if provided
             if workflow_id:
                 async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                    if not await cursor.fetchone():
+                    if not cursor.fetchone():
                         raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
 
             # --- Build Query ---
@@ -3727,7 +3727,7 @@ async def query_memories(
 
             # --- Get Total Count ---
             async with conn.execute(count_query, params + fts_params) as cursor:
-                row = await cursor.fetchone()
+                row = cursor.fetchone()
                 total_matching_count = row[0] if row else 0
 
             # --- Apply Sorting ---
@@ -3888,7 +3888,7 @@ async def list_workflows(
 
             # Get total count
             async with conn.execute(full_count_query, params) as cursor:
-                row = await cursor.fetchone()
+                row = cursor.fetchone()
                 total_count = row[0] if row else 0
 
             # Get workflow data
@@ -3958,7 +3958,7 @@ async def get_workflow_details(
         async with DBConnection(db_path) as conn:
             # --- Get Workflow Core Info & Tags ---
             async with conn.execute("SELECT * FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                wf_row = await cursor.fetchone()
+                wf_row = cursor.fetchone()
                 if not wf_row: 
                     raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
                 workflow_details = dict(wf_row)
@@ -4134,7 +4134,7 @@ async def get_recent_actions(
         async with DBConnection(db_path) as conn:
             # --- Check Workflow & Get Title ---
             async with conn.execute("SELECT title FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 wf_row = await cursor.fetchone()
+                 wf_row = cursor.fetchone()
                  if not wf_row:
                      raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
                  workflow_title = wf_row["title"]
@@ -4235,7 +4235,7 @@ async def get_artifacts(
         async with DBConnection(db_path) as conn:
              # Check workflow
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not await cursor.fetchone(): 
+                if not cursor.fetchone(): 
                     raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
 
             # Build query
@@ -4321,7 +4321,7 @@ async def get_artifact_by_id(
              GROUP BY a.artifact_id
              """
              async with conn.execute(query, (artifact_id,)) as cursor:
-                  row = await cursor.fetchone()
+                  row = cursor.fetchone()
                   if not row: 
                       raise ToolInputError(f"Artifact {artifact_id} not found.", param_name="artifact_id")
 
@@ -4382,7 +4382,7 @@ async def create_thought_chain(
         async with DBConnection(db_path) as conn:
              # Check workflow
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 if not await cursor.fetchone(): 
+                 if not cursor.fetchone(): 
                      raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
 
             # Insert chain
@@ -4443,7 +4443,7 @@ async def get_thought_chain(
         async with DBConnection(db_path) as conn:
              # Get chain info
             async with conn.execute("SELECT * FROM thought_chains WHERE thought_chain_id = ?", (thought_chain_id,)) as cursor:
-                chain_row = await cursor.fetchone()
+                chain_row = cursor.fetchone()
                 if not chain_row: 
                     raise ToolInputError(f"Thought chain {thought_chain_id} not found.", param_name="thought_chain_id")
                 thought_chain_details = dict(chain_row)
@@ -4485,7 +4485,7 @@ async def _add_to_active_memories(conn: aiosqlite.Connection, context_id: str, m
     try:
         # Get current active memories and workflow_id
         async with conn.execute("SELECT workflow_id, active_memories FROM cognitive_states WHERE id = ?", (context_id,)) as cursor:
-            row = await cursor.fetchone()
+            row = cursor.fetchone()
             if not row:
                  logger.warning(f"Context {context_id} not found while trying to add memory {memory_id}.")
                  return False # Context must exist
@@ -4497,7 +4497,7 @@ async def _add_to_active_memories(conn: aiosqlite.Connection, context_id: str, m
 
         # Check if memory exists before adding
         async with conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (memory_id,)) as cursor:
-            if not await cursor.fetchone():
+            if not cursor.fetchone():
                  logger.warning(f"Memory {memory_id} not found, cannot add to active context {context_id}.")
                  return False
 
@@ -4611,7 +4611,7 @@ async def get_working_memory(
         async with DBConnection(db_path) as conn:
             # --- 1. Get Cognitive State & Active Memory IDs ---
             async with conn.execute("SELECT * FROM cognitive_states WHERE id = ?", (context_id,)) as cursor:
-                state_row = await cursor.fetchone()
+                state_row = cursor.fetchone()
                 if not state_row:
                     # Return empty if context doesn't exist yet
                     logger.warning(f"Cognitive state for context {context_id} not found. Returning empty working memory.")
@@ -4762,7 +4762,7 @@ async def focus_memory(
         async with DBConnection(db_path) as conn:
             # Check memory exists and get its workflow_id
             async with conn.execute("SELECT workflow_id FROM memories WHERE memory_id = ?", (memory_id,)) as cursor:
-                 mem_row = await cursor.fetchone()
+                 mem_row = cursor.fetchone()
                  if not mem_row: 
                      raise ToolInputError(f"Memory {memory_id} not found.", param_name="memory_id")
                  mem_workflow_id = mem_row["workflow_id"]
@@ -4770,7 +4770,7 @@ async def focus_memory(
             # Check context exists and belongs to the same workflow (or create if missing?)
             # Let's assume context must exist for focus. Agent should manage context creation.
             async with conn.execute("SELECT workflow_id FROM cognitive_states WHERE id = ?", (context_id,)) as cursor:
-                 state_row = await cursor.fetchone()
+                 state_row = cursor.fetchone()
                  if not state_row: 
                      raise ToolInputError(f"Context {context_id} not found.", param_name="context_id")
                  # Optional: Check if context workflow matches memory workflow
@@ -5070,7 +5070,7 @@ async def save_cognitive_state(
             # --- Validation Step ---
             # 1. Check workflow exists
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not await cursor.fetchone():
+                if not cursor.fetchone():
                     raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
 
             # 2. Validate Memory IDs belong to this workflow
@@ -5208,7 +5208,7 @@ async def load_cognitive_state(
         async with DBConnection(db_path) as conn:
              # Check workflow exists
             async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 if not await cursor.fetchone(): 
+                 if not cursor.fetchone(): 
                      raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
 
             # Build query
@@ -5222,7 +5222,7 @@ async def load_cognitive_state(
 
             # Fetch state
             async with conn.execute(query, params) as cursor:
-                 row = await cursor.fetchone()
+                 row = cursor.fetchone()
                  if not row:
                       err_msg = f"State {state_id} not found." if state_id else f"No states found for workflow {workflow_id}."
                       raise ToolInputError(err_msg, param_name="state_id" if state_id else "workflow_id")
@@ -5308,7 +5308,7 @@ async def get_workflow_context(
         async with DBConnection(db_path) as conn:
             # 1. Get basic workflow info
             async with conn.execute("SELECT title, goal, status FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 wf_row = await cursor.fetchone()
+                 wf_row = cursor.fetchone()
                  if not wf_row: 
                      raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
                  context = {
@@ -5367,7 +5367,7 @@ async def get_workflow_context(
             try:
                 # Find main thought chain
                  async with conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,)) as cursor:
-                      chain_row = await cursor.fetchone()
+                      chain_row = cursor.fetchone()
                       if chain_row:
                           thought_chain_id = chain_row["thought_chain_id"]
                           # Fetch important thought types, most recent first
@@ -5475,7 +5475,7 @@ async def auto_update_focus(
         async with DBConnection(db_path) as conn:
             # --- 1. Get Current Context & Working Memory ---
             async with conn.execute("SELECT workflow_id, focal_memory_id, active_memories FROM cognitive_states WHERE id = ?", (context_id,)) as cursor:
-                state_row = await cursor.fetchone()
+                state_row = cursor.fetchone()
                 if not state_row:
                     raise ToolInputError(f"Context {context_id} not found.", param_name="context_id")
                 workflow_id = state_row["workflow_id"]
@@ -5629,7 +5629,7 @@ async def promote_memory_level(
             async with conn.execute(
                 "SELECT workflow_id, memory_level, memory_type, access_count, confidence, importance FROM memories WHERE memory_id = ?", (memory_id,)
             ) as cursor:
-                mem_row = await cursor.fetchone()
+                mem_row = cursor.fetchone()
                 if not mem_row:
                     raise ToolInputError(f"Memory {memory_id} not found.", param_name="memory_id")
 
@@ -5844,7 +5844,7 @@ async def update_memory(
             needs_embedding_check = regenerate_embedding and ('content' in updated_fields or 'description' in updated_fields)
 
             async with conn.execute("SELECT workflow_id, description, content FROM memories WHERE memory_id = ?", (memory_id,)) as cursor:
-                 mem_row = await cursor.fetchone()
+                 mem_row = cursor.fetchone()
                  if not mem_row: 
                      raise ToolInputError(f"Memory {memory_id} not found.", param_name="memory_id")
                  workflow_id = mem_row["workflow_id"]
@@ -6009,7 +6009,7 @@ async def get_linked_memories(
         async with DBConnection(db_path) as conn:
             # Check if memory exists
             async with conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (memory_id,)) as cursor:
-                if not await cursor.fetchone():
+                if not cursor.fetchone():
                     raise ToolInputError(f"Memory {memory_id} not found", param_name="memory_id")
             
             # Process outgoing links (memory_id is the source)
@@ -6585,7 +6585,7 @@ async def generate_reflection(
         async with DBConnection(db_path) as conn:
             # --- 1. Fetch Workflow Info & Recent Operations ---
             async with conn.execute("SELECT title, description FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 wf_row = await cursor.fetchone()
+                 wf_row = cursor.fetchone()
                  if not wf_row: 
                      raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
                  workflow_name = wf_row["title"]
@@ -6773,7 +6773,7 @@ CONCISE SUMMARY:
             # Validate workflow exists
             async with DBConnection(db_path) as conn:
                 async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                    if not await cursor.fetchone():
+                    if not cursor.fetchone():
                         raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
                 
                 # Create new memory entry for the summary
@@ -6902,7 +6902,7 @@ async def compute_memory_statistics(
 
             # Total Memories
             async with conn.execute(f"SELECT COUNT(*) FROM memories {where_clause}", params) as cursor:
-                 stats["total_memories"] = (await cursor.fetchone())[0]
+                 stats["total_memories"] = (cursor.fetchone())[0]
 
             if stats["total_memories"] == 0:
                  stats.update({"success": True, "processing_time": time.time() - start_time})
@@ -6918,13 +6918,13 @@ async def compute_memory_statistics(
 
             # Confidence & Importance Aggregates
             async with conn.execute(f"SELECT AVG(confidence), AVG(importance) FROM memories {where_clause}", params) as cursor:
-                 row = await cursor.fetchone()
+                 row = cursor.fetchone()
                  stats["confidence_avg"] = round(row[0], 3) if row[0] is not None else None
                  stats["importance_avg"] = round(row[1], 2) if row[1] is not None else None
 
             # Temporal Stats
             async with conn.execute(f"SELECT MAX(created_at), MIN(created_at) FROM memories {where_clause}", params) as cursor:
-                 row = await cursor.fetchone()
+                 row = cursor.fetchone()
                  stats["newest_memory_unix"] = row[0]
                  stats["oldest_memory_unix"] = row[1]
 
@@ -6932,7 +6932,7 @@ async def compute_memory_statistics(
             link_where = "WHERE m.workflow_id = ?" if workflow_id else ""
             link_params = params # Reuse params
             async with conn.execute(f"SELECT COUNT(*) FROM memory_links ml JOIN memories m ON ml.source_memory_id = m.memory_id {link_where}", link_params) as cursor:
-                 stats["total_links"] = (await cursor.fetchone())[0]
+                 stats["total_links"] = (cursor.fetchone())[0]
             async with conn.execute(f"SELECT ml.link_type, COUNT(*) FROM memory_links ml JOIN memories m ON ml.source_memory_id = m.memory_id {link_where} GROUP BY ml.link_type", link_params) as cursor:
                  stats["links_by_type"] = {row["link_type"]: row[1] for row in await cursor.fetchall()}
 
@@ -7881,7 +7881,7 @@ async def visualize_memory_network(
             if center_memory_id:
                 # Fetch center memory to get its workflow_id if not provided
                 async with conn.execute("SELECT workflow_id FROM memories WHERE memory_id = ?", (center_memory_id,)) as cursor:
-                    center_row = await cursor.fetchone()
+                    center_row = cursor.fetchone()
                     if not center_row:
                          raise ToolInputError(f"Center memory {center_memory_id} not found.", param_name="center_memory_id")
                     if not target_workflow_id:

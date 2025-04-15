@@ -24,7 +24,6 @@ from .filesystem import (
     read_multiple_files,
     search_files,
     write_file,
-    # ProtectionTriggeredError is imported by demo directly from filesystem
 )
 
 # Import new standalone functions from extraction.py
@@ -79,7 +78,6 @@ from llm_gateway.tools.base import (
     with_tool_metrics,
 )
 
-# Update __all__ - remove classes/functions that are no longer relevant or defined
 __all__ = [
     # Base decorators/classes
     "BaseTool",
@@ -235,42 +233,10 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
         else:
             logger.warning(f"Item {getattr(tool_func, '__name__', repr(tool_func))} in STANDALONE_TOOL_FUNCTIONS is not a callable async function.")
 
-    # --- Register Class-Based Tools (Refactoring Needed Here) ---
-    # This section should ideally do nothing now if all tools are refactored.
-    # Keeping the discovery logic commented out or removed might be cleaner.
     class_based_modules_to_skip = ["meta", "document", "extraction", "rag", "tournament", "optimization", "filesystem"] # Added filesystem
-    # No need to iterate if CLASS_BASED_TOOL_REGISTRY is empty and all modules are skipped.
-    # class_based_modules = []
-    # package = importlib.import_module(__name__.split('.')[0] + ".tools")
-    
-    # for _, name, ispkg in pkgutil.iter_modules(package.__path__, package.__name__ + "."):
-    #     if not ispkg and not name.endswith(".base"):
-    #         module_short_name = name.split('.')[-1]
-    #         if module_short_name not in class_based_modules_to_skip:
-    #              try:
-    #                 module = importlib.import_module(name)
-    #                 for attribute_name in dir(module):
-    #                     attribute = getattr(module, attribute_name)
-    #                     # Check if it's a class inheriting from BaseTool (but not BaseTool itself)
-    #                     if inspect.isclass(attribute) and issubclass(attribute, BaseTool) and attribute is not BaseTool:
-    #                         try:
-    #                             logger.warning(f"Found unrefactored class-based tool: {attribute_name} in {module_short_name}. Skipping initialization.", emoji_key="⚠️")
-    #                             # tool_instance = attribute(mcp_server=mcp_server)  # noqa: F841
-    #                             # class_based_modules.append(module_short_name)
-    #                         except Exception as e:
-    #                             logger.error(f"Error processing potential class {attribute_name} in {name}: {e}", exc_info=True)
-    #              except ImportError as e:
-    #                  logger.error(f"Failed to import potential tool module {name}: {e}", exc_info=True)
-
-    # Update summary log
     logger.info(
         f"Completed tool registration. Registered {standalone_count} standalone functions.", 
         emoji_key="✅"
-        # No class-based modules should be initialized now
     )
-    
     # Return info about standalone tools
     return registered_tools
-
-# Removed get_tool_instance function
-# Removed get_all_tools function

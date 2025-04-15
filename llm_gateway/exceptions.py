@@ -6,7 +6,7 @@ from typing import Any, Dict
 class ToolError(Exception):
     """Base exception for all tool-related errors."""
 
-    def __init__(self, message, error_code=None, details=None, context=None):
+    def __init__(self, message, error_code=None, details=None, context=None, http_status_code: int | None = None):
         """Initialize the tool error.
 
         Args:
@@ -14,8 +14,10 @@ class ToolError(Exception):
             error_code: Error code (for categorization)
             details: Additional error details dictionary
             context: Context dictionary (will be merged into details and stored)
+            http_status_code: Optional HTTP status code associated with the error.
         """
         self.error_code = error_code or "TOOL_ERROR"
+        self.http_status_code = http_status_code
 
         # Combine details and context, giving precedence to context if keys overlap
         combined_details = details.copy() if details else {} # Start with a copy of details or empty dict

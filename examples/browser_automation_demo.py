@@ -60,6 +60,9 @@ DEMO_SITES = {
 
 SAVE_DIR = Path("./browser_demo_outputs")
 
+# Import TaskType
+from llm_gateway.constants import TaskType
+
 # Add a class to track demo session information for reporting
 class DemoSession:
     """Track information about demo session for reporting."""
@@ -1552,27 +1555,15 @@ async def demo_network_monitoring():
 
 
 async def demo_file_upload():
-    """Demonstrate file upload capabilities with various file types."""
+    """Demonstrate file upload capabilities."""
     console.print(Rule("[bold blue]File Upload Demo[/bold blue]"))
-    logger.info("Demonstrating file upload capabilities", emoji_key="upload")
+    logger.info("Demonstrating file upload capabilities", emoji_key=TaskType.UPLOAD.value)
     
-    # Navigate to a file upload demo page
-    result = await browser_navigate(
-        url="https://the-internet.herokuapp.com/upload",
-        wait_until="load"
-    )
-    
-    display_result("Navigated to File Upload Test Site", result)
-    
-    # Create some temporary files for upload
-    temp_files = []
-    
-    # Create a text file
-    with tempfile.NamedTemporaryFile(suffix='.txt', delete=False) as temp_txt:
-        temp_txt.write(b"This is a test file created by LLM Gateway Browser Automation.\n")
-        temp_txt.write(b"This file demonstrates uploading a simple text file.\n")
-        temp_txt_path = temp_txt.name
-        temp_files.append(temp_txt_path)
+    # Create a dummy file for uploading
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt") as temp_file:
+        temp_file.write("This is a test file created by LLM Gateway Browser Automation.\n")
+        temp_file.write("This file demonstrates uploading a simple text file.\n")
+        temp_file_path = temp_file.name
     
     # Create a small CSV file
     with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as temp_csv:
@@ -1581,14 +1572,12 @@ async def demo_file_upload():
         temp_csv.write(b"Admin User,admin@example.com,Administrator\n")
         temp_csv.write(b"Guest User,guest@example.com,Guest\n")
         temp_csv_path = temp_csv.name
-        temp_files.append(temp_csv_path)
     
     # Create a simple HTML file
     with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as temp_html:
         temp_html.write(b"<!DOCTYPE html>\n<html>\n<head>\n<title>Test HTML File</title>\n</head>\n")
         temp_html.write(b"<body>\n<h1>Test HTML File</h1>\n<p>This file was created by the LLM Gateway Browser Automation demo.</p>\n</body>\n</html>\n")
         temp_html_path = temp_html.name
-        temp_files.append(temp_html_path)
     
     # Show the temporary files we've created for upload
     files_table = Table(title="Files Prepared for Upload", box=box.ROUNDED)
@@ -1596,7 +1585,7 @@ async def demo_file_upload():
     files_table.add_column("Type", style="green")
     files_table.add_column("Size", style="yellow")
     
-    for file_path in temp_files:
+    for file_path in [temp_file_path, temp_csv_path, temp_html_path]:
         file_size = os.path.getsize(file_path)
         file_type = file_path.split('.')[-1].upper()
         files_table.add_row(
@@ -1627,7 +1616,7 @@ async def demo_file_upload():
             logger.error(f"Failed to save pre-upload screenshot: {e}", emoji_key="error")
     
     # Upload each file one by one and show results
-    for i, file_path in enumerate(temp_files):
+    for i, file_path in enumerate([temp_file_path, temp_csv_path, temp_html_path]):
         file_name = os.path.basename(file_path)
         file_type = file_path.split('.')[-1].upper()
         
@@ -1682,14 +1671,14 @@ async def demo_file_upload():
         display_result(f"Uploaded File {i+1} Info", uploaded_file_info)
         
         # Go back to upload page for the next file
-        if i < len(temp_files) - 1:
+        if i < 2:
             await browser_navigate(
                 url="https://the-internet.herokuapp.com/upload",
                 wait_until="load"
             )
     
     # Clean up temporary files
-    for file_path in temp_files:
+    for file_path in [temp_file_path, temp_csv_path, temp_html_path]:
         try:
             os.unlink(file_path)
             logger.info(f"Deleted temporary file: {file_path}", emoji_key="cleanup")
@@ -1699,9 +1688,9 @@ async def demo_file_upload():
     console.print("\n[bold green]File Upload Demo Complete[/bold green]")
     
     return {
-        "files_uploaded": len(temp_files),
-        "temp_files_created": len(temp_files),
-        "temp_files_cleaned": len(temp_files)
+        "files_uploaded": 3,
+        "temp_files_created": 3,
+        "temp_files_cleaned": 3
     }
 
 
