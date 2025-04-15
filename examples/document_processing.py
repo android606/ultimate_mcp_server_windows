@@ -13,13 +13,21 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from llm_gateway.constants import Provider
-from llm_gateway.tools.document import DocumentTools
+from llm_gateway.services.cache import get_cache_service
+
+# Remove the old import
+# from llm_gateway.tools.document import DocumentTools
+# Add imports for the actual tool functions used
+from llm_gateway.tools.document import (
+    chunk_document,
+    extract_entities,
+    generate_qa_pairs,
+    summarize_document,
+)
 from llm_gateway.utils import get_logger
 
 # --- Import display utilities ---
 from llm_gateway.utils.display import display_text_content_result
-
-# --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
 
 # ----------------------
@@ -30,15 +38,47 @@ logger = get_logger("example.document_processing")
 # Initialize FastMCP server
 mcp = FastMCP("Document Processing Demo")
 
-# Create document tools instance and register tools
-# Assuming DocumentTools registers its methods on the passed MCP instance
-document_tools = DocumentTools(mcp) 
+# Manually register the imported tool functions with the MCP instance
+mcp.tool()(chunk_document)
+mcp.tool()(summarize_document)
+mcp.tool()(extract_entities)
+mcp.tool()(generate_qa_pairs)
+
+# Remove the instantiation of the old class
+# document_tools = DocumentTools(mcp)
+
+async def safe_tool_call(tool_name: str, args: dict) -> dict:
+    try:
+        result = await mcp.call_tool(tool_name, args)
+        
+        # Basic type checking and error handling
+        if isinstance(result, dict) and result.get("error"):
+            logger.error(f"Tool {tool_name} returned error: {result['error']}", emoji_key="error")
+            return {"success": False, "error": result["error"]}
+        
+        # If successful, assume dict or potentially list (like chunks)
+        return {"success": True, "result": result}
+        
+    except Exception as e:
+        logger.error(f"Exception calling {tool_name}: {e}", emoji_key="error", exc_info=True)
+        return {"success": False, "error": str(e)}
 
 async def demonstrate_document_processing():
     """Demonstrate document processing capabilities using Rich."""
     console.print(Rule("[bold blue]Document Processing Demonstration[/bold blue]"))
     logger.info("Starting document processing demonstration", emoji_key="start")
     
+    # --- Clear Cache --- 
+    try:
+        logger.info("Clearing cache before demonstration...", emoji_key="cache")
+        cache_service = get_cache_service()
+        cache_service.clear()
+        logger.success("Cache cleared successfully.", emoji_key="success")
+    except Exception as e:
+         logger.warning(f"Could not clear cache: {e}", emoji_key="warning")
+    
+    console.print()
+
     sample_document = """
     # Artificial Intelligence: An Overview
     
@@ -112,23 +152,6 @@ async def demonstrate_document_processing():
     """
     console.print(Panel(escape(sample_document[:500] + "..."), title="[cyan]Input Document Snippet[/cyan]", border_style="dim blue"))
     console.print()
-
-    # Helper function to safely call a tool and return a structured response
-    async def safe_tool_call(tool_name, args):
-        try:
-            result = await mcp.call_tool(tool_name, args)
-            
-            # Basic type checking and error handling
-            if isinstance(result, dict) and result.get("error"):
-                logger.error(f"Tool {tool_name} returned error: {result['error']}", emoji_key="error")
-                return {"success": False, "error": result["error"]}
-            
-            # If successful, assume dict or potentially list (like chunks)
-            return {"success": True, "result": result}
-            
-        except Exception as e:
-            logger.error(f"Exception calling {tool_name}: {e}", emoji_key="error", exc_info=True)
-            return {"success": False, "error": str(e)}
 
     # --- Demonstrate Chunking --- 
     console.print(Rule("[cyan]Document Chunking[/cyan]"))
@@ -205,9 +228,9 @@ async def demonstrate_document_processing():
     logger.info("Demonstrating entity extraction...", emoji_key="processing")
     entity_args = {
         "document": sample_document,
-        "entity_types": ["person", "organization", "location"], # Standard entity types
+        "entity_types": ["field", "industry", "concept"], # Types more likely present
         "provider": Provider.OPENAI.value,
-        "model": "gpt-4.1" # Use a more capable model for potentially better extraction
+        "model": "gpt-4.1-mini"
     }
     entity_response = await safe_tool_call("extract_entities", entity_args)
 

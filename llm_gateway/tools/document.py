@@ -22,7 +22,7 @@ except ImportError:
     _tiktoken_available = False
 
 from llm_gateway.constants import Provider, TaskType
-from llm_gateway.core.providers.base import get_provider
+from llm_gateway.core.providers.base import get_provider, ModelResponse
 from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError
 from llm_gateway.services.cache import with_cache
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
@@ -618,7 +618,7 @@ async def chunk_document(
         else:
             return []
 
-@with_cache(ttl=24 * 60 * 60) # Cache summaries for 24 hours
+@with_cache(ttl=24 * 60 * 60)
 @with_tool_metrics
 @with_error_handling
 async def summarize_document(
@@ -678,49 +678,65 @@ async def summarize_document(
     prompt += f"\n\nText:\n{document}"
 
     try:
-        # Use chat completion for better instruction following
-        from .completion import chat_completion # Import dynamically
-        
-        result = await chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            provider=provider,
+        # Get provider instance directly
+        provider_instance = await get_provider(provider)
+        if not provider_instance:
+             raise ProviderError(f"Failed to get provider instance for {provider}")
+
+        # Determine max_tokens based on max_length (approximate)
+        # This is a rough estimate, might need refinement. Assume 1 word ~ 1.5 tokens
+        max_tokens_limit = int(max_length * 1.5) if max_length else None 
+
+        # Call provider's generate_completion directly, ADDING prompt positional arg
+        result_raw: ModelResponse = await provider_instance.generate_completion(
+            prompt, # Pass the constructed prompt string positionally
+            messages=[{"role": "user", "content": prompt}], # Keep messages kwarg
             model=model,
             temperature=0.3, # Lower temperature for factual summary
-            max_tokens=max_length * 2 if max_length else None # Give ample room
+            max_tokens=max_tokens_limit # Pass calculated max_tokens
         )
         
         processing_time = time.time() - start_time
         
-        if result.get("success"):
-            summary_text = result["message"]["content"]
-            logger.success(
-                f"Document summarized successfully with {provider}/{result.get('model', 'unknown')}",
-                emoji_key=TaskType.SUMMARIZATION.value,
-                cost=result.get("cost", 0.0),
-                time=processing_time
-            )
-            return {
-                "summary": summary_text,
-                "model": result.get("model"),
-                "provider": provider,
-                "tokens": result.get("tokens"),
-                "cost": result.get("cost", 0.0),
-                "processing_time": processing_time,
-                "cached_result": result.get("cached_result", False),
-                "success": True
-            }
-        else:
-            raise ProviderError(f"Chat completion for summarization failed: {result.get('error')}", provider=provider, model=model)
+        summary_text = result_raw.text
+        if not summary_text:
+             raise ToolError(status_code=500, detail="LLM response for summary was empty.")
+
+        logger.success(
+            f"Document summarized successfully with {provider}/{result_raw.model}",
+            emoji_key=TaskType.SUMMARIZATION.value,
+            cost=result_raw.cost,
+            time=processing_time
+        )
+        return {
+            "summary": summary_text,
+            "model": f"{provider}/{result_raw.model}",
+            "provider": provider,
+            "tokens": {
+                "input": result_raw.input_tokens,
+                "output": result_raw.output_tokens,
+                "total": result_raw.total_tokens,
+            },
+            "cost": result_raw.cost,
+            "processing_time": processing_time,
+            # "cached_result": False, # Let cache decorator handle this
+            "success": True
+        }
             
     except Exception as e:
-         error_model = model or f"{provider}/default"
-         if isinstance(e, ProviderError):
-             raise # Re-raise if it's already the correct type
+         error_model_detail = model or "default"
+         if isinstance(e, ProviderError) and hasattr(e, 'model') and e.model:
+             error_model_detail = e.model
+         final_error_model = f"{provider}/{error_model_detail}"
+         
+         if isinstance(e, (ProviderError, ToolError, ToolInputError)):
+             if isinstance(e, ProviderError) and not hasattr(e, 'model'): e.model = final_error_model
+             raise 
          else:
              raise ProviderError(
-                 f"Summarization failed for model '{error_model}': {str(e)}", 
+                 f"Summarization failed for model '{final_error_model}': {str(e)}", 
                  provider=provider, 
-                 model=error_model,
+                 model=final_error_model,
                  cause=e
              ) from e
 
@@ -732,7 +748,7 @@ async def extract_entities(
     entity_types: List[str],
     provider: str = Provider.OPENAI.value,
     model: Optional[str] = None,
-    output_format: str = "list"
+    output_format: str = "json"
 ) -> Dict[str, Any]:
     """Extracts specific types of named entities (e.g., names, places, dates) from text using an LLM.
 
@@ -750,7 +766,7 @@ async def extract_entities(
         output_format: (Optional) Desired format for the results ("list" or "json").
                        - "list": Returns entities grouped by type: `{"Person Name": ["Alice", "Bob"], ...}`
                        - "json": Attempts to return a structured JSON string (model dependent).
-                       Defaults to "list".
+                       Defaults to "json".
 
     Returns:
         A dictionary containing the extracted entities and metadata:
@@ -776,99 +792,123 @@ async def extract_entities(
     
     logger.info(f"Extracting entities ({', '.join(entity_types)}) from document (length: {len(document)}) with {provider}/{model or 'default'}")
     
-    # Construct prompt
+    # --- Improved Prompt Construction --- 
     entities_str = ", ".join(entity_types)
-    prompt = f"Extract the following types of entities from the text below: {entities_str}.\n"
-    if output_format == "json":
-        prompt += "Format the output as a JSON object where keys are the entity types and values are lists of the extracted entities found in the text.\n"
-    else: # Default to list/dict format
-        prompt += "List the extracted entities grouped by their type. If no entities of a type are found, omit the type or provide an empty list.\n"
-    prompt += f"\nText:\n{document}"
+    # Create a dynamic example based on the first 2-3 requested types
+    example_entities = {}
+    if "person" in entity_types:
+         example_entities["person"] = ["Alice", "Dr. Smith"]
+    if "organization" in entity_types:
+         example_entities["organization"] = ["Example Corp"]
+    if "location" in entity_types and "person" not in example_entities:
+         # Add location only if we don't have person/org already for a concise example
+         example_entities["location"] = ["Paris", "Main Street"]
+    
+    # Ensure at least one example type if possible
+    if not example_entities and entity_types:
+         example_entities[entity_types[0]] = ["Value1", "Value2"]
+         
+    example_json = json.dumps(example_entities, indent=2)
+
+    prompt = f"""You are an expert entity extraction system.
+Extract the following types of entities from the provided text: {entities_str}.
+Respond ONLY with a valid JSON object. The keys in the JSON object MUST be the requested entity types ({entities_str}). The value for each key MUST be a list of strings, where each string is an extracted entity of that type found in the text.
+Only include keys for entity types that were actually found in the text. If no entities of any of the requested types are found, respond ONLY with an empty JSON object: {{}}.
+
+Example Output Format:
+```json
+{example_json}
+```
+
+Text to analyze:
+{document}
+
+JSON Output:""" # Added priming token
+    # --- End Improved Prompt Construction --- 
 
     try:
-        from .completion import chat_completion # Import dynamically
-        result = await chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            provider=provider,
+        # Get provider instance directly
+        provider_instance = await get_provider(provider)
+        if not provider_instance:
+             raise ProviderError(f"Failed to get provider instance for {provider}")
+
+        # Call provider's generate_completion directly
+        result_raw: ModelResponse = await provider_instance.generate_completion(
+            prompt, 
+            messages=[{"role": "user", "content": prompt}], 
             model=model,
-            temperature=0.1 # Low temperature for factual extraction
+            temperature=0.1 # Keep temperature low for factual task
         )
         
         processing_time = time.time() - start_time
         
-        if result.get("success"):
-            extracted_text = result["message"]["content"]
-            entities_data = extracted_text # Default to raw text if parsing fails
-            
-            # Attempt to parse based on requested format
-            try:
-                if output_format == "json":
-                    # Remove potential markdown code fences
-                    extracted_text = re.sub(r"^```json\n?|\n?```$", "", extracted_text.strip())
-                    entities_data = json.loads(extracted_text)
-                else:
-                    # Basic parsing for list format (assumes Type: item1, item2...)
-                    parsed_entities = {}
-                    lines = [line.strip() for line in extracted_text.split('\n') if line.strip()]
-                    current_type = None
-                    for line in lines:
-                        match = re.match(r"^(.*?):(.*)", line)
-                        if match:
-                            current_type = match.group(1).strip()
-                            items_str = match.group(2).strip()
-                            if current_type not in parsed_entities:
-                                 parsed_entities[current_type] = []
-                            if items_str: 
-                                parsed_entities[current_type].extend([item.strip() for item in items_str.split(',') if item.strip()])
-                        elif current_type and line.startswith(('-', '*')):
-                             # Handle bullet points under a type
-                             item = line[1:].strip()
-                             if item:
-                                 parsed_entities[current_type].append(item)
-                        elif current_type:
-                             # Assume continuation of the last type if not formatted clearly
-                             items_str = line.strip()
-                             if items_str:
-                                  parsed_entities[current_type].extend([item.strip() for item in items_str.split(',') if item.strip()])
-                                  
-                    # Filter based on originally requested types for safety
-                    entities_data = {k: v for k, v in parsed_entities.items() if k in entity_types}
-                    
-            except json.JSONDecodeError:
-                logger.warning(f"Failed to parse LLM output as JSON for entity extraction. Returning raw text.")
-                entities_data = {"raw_output": extracted_text} # Return raw if JSON fails
-            except Exception as parse_err:
-                 logger.warning(f"Failed to parse LLM output for entity extraction ({output_format}): {parse_err}. Returning raw text.")
-                 entities_data = {"raw_output": extracted_text}
+        extracted_text = result_raw.text
+        logger.info(f"Raw LLM output for entity extraction:\n{extracted_text}") 
+        
+        if not extracted_text:
+             raise ToolError(status_code=500, detail="LLM response for entity extraction was empty.")
 
-            logger.success(
-                f"Entities extracted successfully with {provider}/{result.get('model', 'unknown')}",
-                emoji_key=TaskType.EXTRACTION.value,
-                cost=result.get("cost", 0.0),
-                time=processing_time
-            )
-            return {
-                "entities": entities_data,
-                "model": result.get("model"),
-                "provider": provider,
-                "tokens": result.get("tokens"),
-                "cost": result.get("cost", 0.0),
-                "processing_time": processing_time,
-                "cached_result": result.get("cached_result", False),
-                "success": True
-            }
-        else:
-            raise ProviderError(f"Chat completion for entity extraction failed: {result.get('error')}", provider=provider, model=model)
+        entities_data = {} # Initialize as empty dict
+        
+        # Attempt to parse based on requested format (defaulting to JSON)
+        try:
+            extracted_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", extracted_text.strip())
+            parsed_data = json.loads(extracted_text_cleaned)
+            
+            logger.info(f"Parsed entity data (before filtering): {parsed_data}")
+            
+            # Ensure it's a dict
+            if not isinstance(parsed_data, dict):
+                 raise ValueError("LLM did not return a JSON object.")
+                 
+            # --- RE-ENABLE FILTERING --- 
+            entities_data = {k: v for k, v in parsed_data.items() if k in entity_types and v}
+            # --- END RE-ENABLE --- 
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse LLM output as JSON for entity extraction: {e}. Raw text: {extracted_text}")
+            raise ToolError(message=f"Failed to parse LLM output as JSON: {e}. Output: {extracted_text}", error_code="PARSING_ERROR")
+        except Exception as parse_err:
+             logger.warning(f"Failed to parse LLM output for entity extraction ({output_format}): {parse_err}. Raw text: {extracted_text}")
+             raise ToolError(message=f"Failed to parse LLM output ({output_format}): {parse_err}. Output: {extracted_text}", error_code="PARSING_ERROR")
+
+        logger.info(f"Final entities data (after filtering): {entities_data}")
+        
+        logger.success(
+            f"Entities extracted successfully with {provider}/{result_raw.model}",
+            emoji_key=TaskType.EXTRACTION.value,
+            cost=result_raw.cost,
+            time=processing_time
+        )
+        return {
+            "entities": entities_data,
+            "model": f"{provider}/{result_raw.model}",
+            "provider": provider,
+            "tokens": {
+                 "input": result_raw.input_tokens,
+                 "output": result_raw.output_tokens,
+                 "total": result_raw.total_tokens,
+            },
+            "cost": result_raw.cost,
+            "processing_time": processing_time,
+            # "cached_result": False, # Let cache decorator handle this
+            "success": True
+        }
             
     except Exception as e:
-        error_model = model or f"{provider}/default"
-        if isinstance(e, ProviderError):
-             raise # Re-raise if it's already the correct type
+        error_model_detail = model or "default"
+        if isinstance(e, ProviderError) and hasattr(e, 'model') and e.model:
+             error_model_detail = e.model
+        final_error_model = f"{provider}/{error_model_detail}"
+         
+        if isinstance(e, (ProviderError, ToolError, ToolInputError)):
+             if isinstance(e, ProviderError) and not hasattr(e, 'model'): e.model = final_error_model
+             raise 
         else:
              raise ProviderError(
-                 f"Entity extraction failed for model '{error_model}': {str(e)}", 
+                 f"Entity extraction failed for model '{final_error_model}': {str(e)}", 
                  provider=provider, 
-                 model=error_model,
+                 model=final_error_model,
                  cause=e
              ) from e
 
@@ -878,7 +918,8 @@ async def generate_qa_pairs(
     document: str,
     num_pairs: int = 5,
     provider: str = Provider.OPENAI.value,
-    model: Optional[str] = None
+    model: Optional[str] = None,
+    temperature: float = 0.5 # Keep temperature as param
 ) -> Dict[str, Any]:
     """Generates question-answer pairs based on the provided text content using an LLM.
 
@@ -890,6 +931,7 @@ async def generate_qa_pairs(
         num_pairs: The desired number of question-answer pairs to generate. Default 5.
         provider: The name of the LLM provider. Defaults to "openai".
         model: The specific model ID. Uses provider default if None.
+        temperature: The temperature for generating the response. Default 0.5.
 
     Returns:
         A dictionary containing the generated Q&A pairs and metadata:
@@ -916,70 +958,93 @@ async def generate_qa_pairs(
     
     # Construct prompt
     prompt = f"Generate exactly {num_pairs} question and answer pairs based on the following text. " \
-             f"Format the output as a JSON list of objects, where each object has a 'question' key and an 'answer' key. " \
-             f"Ensure the questions are relevant to the main topics and the answers are accurate according to the text.\n\n" \
-             f"Text:\n{document}"
+             f"Format the output STRICTLY as a JSON list of objects, where each object has a 'question' key and an 'answer' key. " \
+             f"Ensure the questions are relevant to the main topics and the answers are accurate according to the text.\\n\\n" \
+             f"Text:\\n{document}"
 
     try:
-        from .completion import chat_completion # Import dynamically
-        result = await chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            provider=provider,
+        # Get provider instance directly
+        provider_instance = await get_provider(provider)
+        if not provider_instance:
+             raise ProviderError(f"Failed to get provider instance for {provider}")
+
+        # Call provider's generate_completion directly, ADDING prompt positional arg
+        result_raw: ModelResponse = await provider_instance.generate_completion(
+            prompt, # Pass the constructed prompt string positionally
+            messages=[{"role": "user", "content": prompt}], # Keep messages kwarg
             model=model,
-            temperature=0.5 # Moderate temperature for some creativity in questions
+            temperature=temperature # Use passed temperature
         )
         
         processing_time = time.time() - start_time
         
-        if result.get("success"):
-            qa_text = result["message"]["content"]
-            qa_pairs_data = []
-            try:
-                # Attempt to parse the JSON list
-                # Remove potential markdown code fences
-                qa_text = re.sub(r"^```json\n?|\n?```$", "", qa_text.strip())
-                qa_pairs_data = json.loads(qa_text)
-                if not isinstance(qa_pairs_data, list):
-                    raise ValueError("LLM did not return a JSON list.")
-                # Basic validation of list items
-                for item in qa_pairs_data:
-                     if not isinstance(item, dict) or 'question' not in item or 'answer' not in item:
-                          raise ValueError("List items are not valid Q&A objects (missing keys).")
+        qa_text = result_raw.text
+        if not qa_text:
+             raise ToolError(detail="LLM response for Q&A generation was empty.") # Use detail kwarg for message
+             
+        qa_pairs_data = []
+        try:
+            # IMPROVED Regex to handle optional whitespace around fences
+            qa_text = re.sub(r"^\s*```json\n?|\n?```\s*$", "", qa_text.strip())
+            qa_pairs_data = json.loads(qa_text)
+            if not isinstance(qa_pairs_data, list):
+                raise ValueError("LLM did not return a JSON list.")
+            # Basic validation of list items
+            validated_pairs = []
+            for item in qa_pairs_data:
+                 if isinstance(item, dict) and 'question' in item and 'answer' in item:
+                      validated_pairs.append({
+                           "question": str(item['question']).strip(), 
+                           "answer": str(item['answer']).strip()
+                      })
+                 else:
+                      logger.warning(f"Skipping invalid Q&A item format: {item}")
+            
+            if not validated_pairs:
+                 raise ValueError("No valid Q&A objects found in the list.")
+                 
+            qa_pairs_data = validated_pairs # Use only validated pairs
                           
-            except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse Q&A pairs from LLM output: {e}. Raw output:\n{qa_text}")
-                # Raise a ToolError as the tool failed its primary function
-                raise ToolError(status_code=500, detail=f"Failed to parse generated Q&A pairs from the LLM response: {e}")
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"Failed to parse Q&A pairs from LLM output: {e}. Raw output:\\n{qa_text}")
+            raise ToolError(message=f"Failed to parse generated Q&A pairs from the LLM response: {e}. Output: {qa_text}", error_code="PARSING_ERROR")
 
-            logger.success(
-                f"Q&A pairs generated successfully with {provider}/{result.get('model', 'unknown')}",
-                emoji_key=TaskType.QUESTION_ANSWERING.value,
-                cost=result.get("cost", 0.0),
-                time=processing_time,
-                pairs_generated=len(qa_pairs_data)
-            )
-            return {
-                "qa_pairs": qa_pairs_data,
-                "model": result.get("model"),
-                "provider": provider,
-                "tokens": result.get("tokens"),
-                "cost": result.get("cost", 0.0),
-                "processing_time": processing_time,
-                # "cached_result": result.get("cached_result", False), # Cache not enabled by default
-                "success": True
-            }
-        else:
-             raise ProviderError(f"Chat completion for Q&A generation failed: {result.get('error')}", provider=provider, model=model)
+        logger.success(
+            f"Q&A pairs generated successfully with {provider}/{result_raw.model}",
+            emoji_key=TaskType.QA.value,
+            cost=result_raw.cost,
+            time=processing_time,
+            pairs_generated=len(qa_pairs_data)
+        )
+        return {
+            "qa_pairs": qa_pairs_data,
+            "model": f"{provider}/{result_raw.model}",
+            "provider": provider,
+            "tokens": {
+                "input": result_raw.input_tokens,
+                "output": result_raw.output_tokens,
+                "total": result_raw.total_tokens,
+            },
+            "cost": result_raw.cost,
+            "processing_time": processing_time,
+            # "cached_result": False, # Let cache decorator handle this
+            "success": True
+        }
 
     except Exception as e:
-        error_model = model or f"{provider}/default"
-        if isinstance(e, (ProviderError, ToolError)):
-             raise # Re-raise if it's already the correct type
+        error_model_detail = model or "default"
+        if isinstance(e, ProviderError) and hasattr(e, 'model') and e.model:
+             error_model_detail = e.model
+        final_error_model = f"{provider}/{error_model_detail}"
+
+        if isinstance(e, (ProviderError, ToolError, ToolInputError)):
+             if isinstance(e, ProviderError) and not hasattr(e, 'model'): e.model = final_error_model
+             raise 
         else:
              raise ProviderError(
-                 f"Q&A generation failed for model '{error_model}': {str(e)}", 
+                 f"Q&A generation failed for model '{final_error_model}': {str(e)}", 
                  provider=provider, 
-                 model=error_model,
+                 model=final_error_model,
                  cause=e
              ) from e
 

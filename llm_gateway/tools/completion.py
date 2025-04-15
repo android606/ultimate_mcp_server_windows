@@ -405,7 +405,7 @@ async def chat_completion(
     additional_params = additional_params or {}
 
     try:
-        result = await provider_instance.generate_chat_completion(
+        result = await provider_instance.generate_completion(
             messages=processed_messages,
             model=model,
             max_tokens=max_tokens,
@@ -443,10 +443,14 @@ async def chat_completion(
 
     except Exception as e:
         error_model = model or f"{provider}/default"
+        # Check if the exception has the model attribute, otherwise use the determined error_model
+        error_model_from_exception = getattr(e, 'model', None)
+        final_error_model = error_model_from_exception or error_model
+
         raise ProviderError(
-            f"Chat completion generation failed for model '{error_model}': {str(e)}",
+            f"Chat completion generation failed for model '{final_error_model}': {str(e)}",
             provider=provider,
-            model=error_model,
+            model=final_error_model,
             cause=e
         ) from e
 
