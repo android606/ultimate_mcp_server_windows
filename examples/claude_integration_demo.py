@@ -23,7 +23,7 @@ from llm_gateway.utils import get_logger  # noqa: E402
 from llm_gateway.utils.logging.console import console  # noqa: E402
 
 # Initialize logger
-logger = get_logger("example.claude_integration")
+logger = get_logger("example.claude_integration_demo")
 
 
 async def compare_claude_models():

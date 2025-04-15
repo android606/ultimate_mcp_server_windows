@@ -1,0 +1,23 @@
+BUG REPORT:
+The export to PDF feature is completely broken in version 3.2.1. When I click the export button, the application freezes for about 30 seconds, then crashes with error code 0x8007EE7. This happens consistently on every attempt. I've tried reinstalling the software and clearing the cache as suggested in the knowledge base, but the issue persists. This is blocking our team from delivering reports to clients. System specs: Windows 11 Pro, 16GB RAM, Intel i7-12700K.
+
+FEATURE REQUEST:
+It would be extremely helpful if you could add a bulk editing option for tags in the content management system. Currently, we have to edit tags one by one, which is very time-consuming when managing hundreds of articles. Ideally, we should be able to select multiple content pieces and apply or remove tags from all of them at once. This would save our editorial team hours of work each week and reduce the chance of tagging inconsistencies.
+
+ACCOUNT ISSUE:
+I'm unable to access my premium account despite having an active subscription. When I log in, the system still shows I have a free account with limited features. I can see in my bank statement that the $14.99 monthly charge went through three days ago. I've tried logging out and back in, clearing cookies, and using a different browser, but the problem remains. My account email is janedoe@example.com and my customer ID is CUST-58924.
+
+BILLING QUESTION:
+I noticed an unexpected charge of $29.99 on my credit card statement from your company dated June 15th. I was under the impression that my subscription was $19.99/month. Was there a price increase that I missed notification about? Or is this an error? Please clarify what this charge covers and if there's been a change to my subscription terms. My account is registered under mark.johnson@example.net.
+
+TECHNICAL QUESTION:
+Is it possible to integrate your API with Zapier? We're trying to automate our workflow between your platform and our CRM system. I've looked through the documentation but couldn't find specific information about Zapier integrations. If this is supported, could you point me to relevant documentation or examples? If not, do you have any recommendations for alternative integration methods that wouldn't require custom development?
+
+BUG REPORT:
+There appears to be a security vulnerability in the user permission system. I discovered that standard users can access administrative reports by directly navigating to the URL pattern /admin/reports/custom/[report-id] even without admin privileges. I've verified this with two different standard user accounts. This potentially exposes sensitive company data to unauthorized personnel. Please address this urgently as it represents a significant security concern for our organization.
+
+FEATURE REQUEST:
+Could you please consider adding dark mode to both the web and mobile applications? Working with the current bright interface during evening hours is causing eye strain for many of our team members. Ideally, the dark mode would be automatically triggered based on system settings but with the option to manually override. This has become a standard feature in most professional applications, and would greatly improve the user experience for those of us who work long hours.
+
+ACCOUNT ISSUE:
+Our team admin left the company last week, and we need to transfer administrative privileges to another team member. The admin account was under robert.chen@example.org. We need to assign admin rights to lisa.wong@example.org as soon as possible, as we're currently unable to add new team members or modify subscription settings. Our business account number is BIZ-4452-T. Please advise on the process for this transfer. 

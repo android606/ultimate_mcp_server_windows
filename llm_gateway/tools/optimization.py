@@ -8,7 +8,8 @@ import math
 import os
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+import networkx as nx
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from llm_gateway.constants import COST_PER_MILLION_TOKENS
 from llm_gateway.exceptions import ToolInputError, ToolError
@@ -16,6 +17,7 @@ from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 
 from llm_gateway.tools.completion import chat_completion
 from llm_gateway.tools.document import chunk_document, summarize_document
+from llm_gateway.tools.entity_relation_graph import extract_entity_graph
 from llm_gateway.tools.extraction import extract_json
 from llm_gateway.tools.rag import (
     add_documents,
@@ -23,6 +25,14 @@ from llm_gateway.tools.rag import (
     generate_with_rag,
     retrieve_context,
 )
+from llm_gateway.tools.ocr_tools import (
+    extract_text_from_pdf,
+    process_image_ocr,
+    enhance_ocr_text,
+    analyze_pdf_structure,
+    batch_process_documents,
+)
+from llm_gateway.tools.text_classification import text_classification
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.text import count_tokens
 
@@ -732,32 +742,6 @@ async def execute_optimized_workflow(
     if not workflow or not isinstance(workflow, list):
         raise ToolInputError("'workflow' must be a non-empty list of stage dictionaries.")
 
-    # --- Basic Workflow Validation --- (Could be expanded significantly)
-    stage_ids = set()
-    for i, stage in enumerate(workflow):
-        if not all(k in stage for k in ["stage_id", "tool_name", "params"]):
-            raise ToolInputError(f"Workflow stage {i} missing required keys (stage_id, tool_name, params).")
-        if not isinstance(stage["params"], dict):
-             raise ToolInputError(f"Stage '{stage['stage_id']}' params must be a dictionary.")
-        if stage["stage_id"] in stage_ids:
-            raise ToolInputError(f"Duplicate stage_id found: '{stage['stage_id']}'.")
-        stage_ids.add(stage["stage_id"])
-        depends_on = stage.get("depends_on", [])
-        if not isinstance(depends_on, list):
-            raise ToolInputError(f"Stage '{stage['stage_id']}' depends_on must be a list.")
-        # Basic check for dependencies existing (won't catch circular deps here)
-        # for dep_id in depends_on:
-        #     if dep_id not in stage_ids: # This check is flawed as stages are processed linearly here
-        #         pass # A full graph check is needed for proper validation
-    # --- End Validation --- 
-
-    # Dictionary to store results of each stage
-    stage_results: Dict[str, Any] = {}
-    # Set to keep track of completed stages
-    completed_stages = set()
-    # Dictionary to hold active asyncio tasks
-    active_tasks: Dict[str, asyncio.Task] = {}
-
     # --- Tool Mapping --- (Dynamically import or map tool names to functions)
     # Ensure all tools listed in workflows are mapped here correctly.
     tool_functions = {
@@ -768,130 +752,237 @@ async def execute_optimized_workflow(
         "chunk_document": chunk_document,
         "summarize_document": summarize_document,
         "extract_json": extract_json,
+        "extract_entity_graph": extract_entity_graph,
         # RAG Tools
         "create_knowledge_base": create_knowledge_base,
         "add_documents": add_documents,
         "retrieve_context": retrieve_context,
         "generate_with_rag": generate_with_rag,
+        # Classification tools
+        "text_classification": text_classification,
+        # OCR tools
+        "extract_text_from_pdf": extract_text_from_pdf,
+        "process_image_ocr": process_image_ocr,
+        "enhance_ocr_text": enhance_ocr_text, 
+        "analyze_pdf_structure": analyze_pdf_structure,
+        "batch_process_documents": batch_process_documents,
         # Add other tools as needed...
     }
 
-    # --- Workflow Execution Logic --- 
-    # This is a simplified execution loop. A robust implementation would use
-    # a proper task graph/scheduler (e.g., using libraries like Prefect, Dagster,
-    # or custom asyncio scheduling) to handle complex dependencies, retries, 
-    # concurrency limits, and iteration correctly.
-
-    stages_to_process = list(workflow) # Copy the list
+    # --- Advanced Workflow Validation Using NetworkX ---
+    # Build directed graph from workflow
+    dag = nx.DiGraph()
     
-    while stages_to_process or active_tasks:
-        # Launch new tasks that are ready
-        runnable_stages = []
-        remaining_stages = []
-        for stage in stages_to_process:
-            stage_id = stage["stage_id"]
-            dependencies = stage.get("depends_on", [])
-            if all(dep in completed_stages for dep in dependencies):
-                runnable_stages.append(stage)
-            else:
-                remaining_stages.append(stage)
-        stages_to_process = remaining_stages
-
-        for stage in runnable_stages:
-            if len(active_tasks) >= max_concurrency:
-                 stages_to_process.append(stage) # Re-queue if concurrency limit hit
-                 continue # Check again later
-                 
-            stage_id = stage["stage_id"]
+    # Add all stages as nodes
+    for i, stage in enumerate(workflow):
+        # Validate required keys
+        if not all(k in stage for k in ["stage_id", "tool_name", "params"]):
+            raise ToolInputError(f"Workflow stage {i} missing required keys (stage_id, tool_name, params).")
+        
+        stage_id = stage["stage_id"]
+        
+        # Validate params is a dictionary
+        if not isinstance(stage["params"], dict):
+            raise ToolInputError(f"Stage '{stage_id}' params must be a dictionary.")
+        
+        # Check for duplicate stage IDs
+        if stage_id in dag:
+            raise ToolInputError(f"Duplicate stage_id found: '{stage_id}'.")
+        
+        # Validate tool exists
+        tool_name = stage["tool_name"]
+        if tool_name not in tool_functions:
+            raise ToolInputError(f"Unknown tool '{tool_name}' specified in stage '{stage_id}'.")
+        
+        # Validate depends_on is a list
+        depends_on = stage.get("depends_on", [])
+        if not isinstance(depends_on, list):
+            raise ToolInputError(f"Stage '{stage_id}' depends_on must be a list.")
+        
+        # Add node with full stage data
+        dag.add_node(stage_id, stage=stage)
+    
+    # Add dependency edges
+    for stage in workflow:
+        stage_id = stage["stage_id"]
+        depends_on = stage.get("depends_on", [])
+        
+        for dep_id in depends_on:
+            if dep_id not in dag:
+                raise ToolInputError(f"Stage '{stage_id}' depends on non-existent stage '{dep_id}'.")
+            dag.add_edge(dep_id, stage_id)
+    
+    # Detect circular dependencies
+    try:
+        cycles = list(nx.simple_cycles(dag))
+        if cycles:
+            cycle_str = " -> ".join(cycles[0]) + " -> " + cycles[0][0]
+            raise ToolInputError(f"Circular dependency detected in workflow: {cycle_str}")
+    except nx.NetworkXNoCycle:
+        # No cycles found, this is good
+        pass
+    
+    # Dictionary to store results of each stage
+    stage_results: Dict[str, Any] = {}
+    # Set to keep track of completed stages
+    completed_stages: Set[str] = set()
+    # Dictionary to hold active tasks
+    active_tasks: Dict[str, asyncio.Task] = {}
+    # Semaphore to control concurrency
+    concurrency_semaphore = asyncio.Semaphore(max_concurrency)
+    
+    # --- Workflow Execution Logic with NetworkX ---
+    async def execute_stage(stage_id: str) -> None:
+        """Execute a single workflow stage."""
+        async with concurrency_semaphore:
+            # Get stage definition
+            stage = dag.nodes[stage_id]["stage"]
             tool_name = stage["tool_name"]
             params = stage["params"]
             iterate_on_ref = stage.get("iterate_on")
-
-            if tool_name not in tool_functions:
-                 # Handle error: Tool not found
-                 error_msg = f"Workflow failed at stage '{stage_id}': Tool '{tool_name}' not found."
-                 logger.error(error_msg)
-                 # Need to cancel running tasks properly here
-                 return { "success": False, "results": stage_results, "status": f"Workflow failed at stage '{stage_id}'.", "error": error_msg, "total_processing_time": time.time() - start_time }
-
+            
+            logger.info(f"Starting workflow stage '{stage_id}' (Tool: {tool_name})")
+            
             tool_func = tool_functions[tool_name]
             
-            # Resolve parameters, handle iteration
             try:
-                # Parameter resolution logic needs to be robust
-                resolved_params, is_iteration, iteration_list = _resolve_params(stage_id, params, iterate_on_ref, stage_results, documents)
-            except ValueError as e:
-                 error_msg = f"Workflow failed at stage '{stage_id}': Parameter resolution error: {e}"
-                 logger.error(error_msg)
-                 return { "success": False, "results": stage_results, "status": f"Workflow failed at stage '{stage_id}'.", "error": error_msg, "total_processing_time": time.time() - start_time }
-
-            # Create task(s)
-            if is_iteration:
-                # Create multiple tasks for iteration
-                sub_tasks = []
-                for i, item in enumerate(iteration_list):
-                     # Inject the iterated item into parameters correctly
-                     iter_params = _inject_iteration_item(resolved_params, item)
-                     task_id = f"{stage_id}_iter_{i}" 
-                     # Note: Concurrency limit needs careful handling with iteration
-                     task = asyncio.create_task(tool_func(**iter_params), name=task_id)
-                     sub_tasks.append(task)
-                # Wrap sub-tasks in a single task representing the stage completion
-                stage_task = asyncio.create_task(_gather_iteration_results(stage_id, sub_tasks), name=stage_id)
-            else:
-                # Single task for the stage
-                stage_task = asyncio.create_task(tool_func(**resolved_params), name=stage_id)
+                # Resolve parameters and handle iteration
+                resolved_params, is_iteration, iteration_list = _resolve_params(
+                    stage_id, params, iterate_on_ref, stage_results, documents
+                )
+                
+                # Execute tool function(s)
+                if is_iteration:
+                    # Handle iteration case
+                    iteration_tasks = []
+                    
+                    for i, item in enumerate(iteration_list):
+                        # Create a new semaphore release for each iteration to allow other stages to run
+                        # while keeping track of total concurrency
+                        async def run_iteration(item_idx, item_value):
+                            async with concurrency_semaphore:
+                                iter_params = _inject_iteration_item(resolved_params, item_value)
+                                try:
+                                    result = await tool_func(**iter_params)
+                                    return result
+                                except Exception as e:
+                                    # Capture exception details for individual iteration
+                                    error_msg = f"Iteration {item_idx} failed: {type(e).__name__}: {str(e)}"
+                                    logger.error(error_msg, exc_info=True)
+                                    raise  # Re-raise to be caught by gather
+                        
+                        task = asyncio.create_task(run_iteration(i, item))
+                        iteration_tasks.append(task)
+                    
+                    # Gather all iteration results (may raise if any iteration fails)
+                    results = await asyncio.gather(*iteration_tasks)
+                    stage_results[stage_id] = {"output": results}
+                else:
+                    # Single execution case
+                    result = await tool_func(**resolved_params)
+                    stage_results[stage_id] = {"output": result}
+                
+                # Mark stage as completed
+                completed_stages.add(stage_id)
+                logger.info(f"Workflow stage '{stage_id}' completed successfully")
+                
+            except Exception as e:
+                error_msg = f"Workflow failed at stage '{stage_id}'. Error: {type(e).__name__}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                stage_results[stage_id] = {
+                    "error": error_msg,
+                    "traceback": traceback.format_exc()
+                }
+                # Re-raise to signal failure to main execution loop
+                raise
+    
+    async def execute_dag() -> Dict[str, Any]:
+        """Execute the entire workflow DAG with proper dependency handling."""
+        try:
+            # Start with a topological sort to get execution order respecting dependencies
+            try:
+                execution_order = list(nx.topological_sort(dag))
+                logger.debug(f"Workflow execution order (respecting dependencies): {execution_order}")
+            except nx.NetworkXUnfeasible:
+                # Should never happen as we already checked for cycles
+                raise ToolInputError("Workflow contains circular dependencies that were not detected earlier.")
             
-            active_tasks[stage_id] = stage_task
-            logger.info(f"Launched workflow stage '{stage_id}' (Tool: {tool_name}). Active tasks: {len(active_tasks)}")
-
-        # Await completion of any task
-        if not active_tasks:
-             if stages_to_process: # Should not happen with correct dependency logic, but safety check
-                 logger.warning("No active tasks, but stages remain. Potential deadlock or dependency issue.")
-                 await asyncio.sleep(0.1) # Avoid busy-waiting
-             continue
-
-        done, pending = await asyncio.wait(active_tasks.values(), return_when=asyncio.FIRST_COMPLETED)
-        
-        for task in done:
-             task_name = task.get_name()
-             try:
-                 result = await task # Get result or raise exception
-                 stage_results[task_name] = {"output": result} # Store successful result
-                 completed_stages.add(task_name)
-                 logger.info(f"Workflow stage '{task_name}' completed successfully.")
-             except Exception as e:
-                 error_msg = f"Workflow failed at stage '{task_name}'. Error: {type(e).__name__}: {str(e)}"
-                 logger.error(error_msg, exc_info=True)
-                 # Optionally log traceback: logger.error(traceback.format_exc())
-                 stage_results[task_name] = {"error": error_msg, "traceback": traceback.format_exc()} # Store error
-                 # Terminate workflow on first error (or implement other strategies)
-                 # Cancel pending tasks
-                 for p_task in pending:
-                     p_task.cancel()
-                 for _a_task_id, a_task in active_tasks.items():
-                      if not a_task.done(): 
-                          a_task.cancel()
-                 return { "success": False, "results": stage_results, "status": f"Workflow failed at stage '{task_name}'.", "error": error_msg, "total_processing_time": time.time() - start_time }
-             finally:
-                 # Remove task from active list regardless of outcome
-                 if task_name in active_tasks:
-                      del active_tasks[task_name]
-        
-        # Small sleep to prevent overly tight loop if no tasks complete immediately
-        if not done:
-             await asyncio.sleep(0.01)
-
-    # If loop finishes, workflow completed successfully
+            # Process stages in waves of parallelizable tasks
+            while len(completed_stages) < len(dag):
+                # Find stages ready to execute (all dependencies satisfied)
+                ready_stages = [
+                    stage_id for stage_id in execution_order
+                    if (stage_id not in completed_stages and 
+                        all(pred in completed_stages for pred in dag.predecessors(stage_id)))
+                ]
+                
+                if not ready_stages:
+                    if len(completed_stages) < len(dag):
+                        # This should never happen with a valid DAG that was topologically sorted
+                        unfinished = set(execution_order) - completed_stages
+                        logger.error(f"Workflow execution stalled. Unfinished stages: {unfinished}")
+                        raise ToolError("Workflow execution stalled due to unresolvable dependencies.")
+                    break
+                
+                # Launch tasks for all ready stages
+                tasks = [execute_stage(stage_id) for stage_id in ready_stages]
+                
+                # Wait for all tasks to complete or for the first error
+                try:
+                    await asyncio.gather(*tasks)
+                except Exception as e:
+                    # Any stage failure will be caught here
+                    # The specific error details are already in stage_results
+                    logger.error(f"Workflow wave execution failed: {str(e)}")
+                    
+                    # Find the first failed stage for error reporting
+                    failed_stage = next(
+                        (s for s in ready_stages if s in stage_results and "error" in stage_results[s]),
+                        ready_stages[0]  # Fallback if we can't identify the specific failed stage
+                    )
+                    
+                    error_info = stage_results.get(failed_stage, {}).get("error", f"Unknown error in stage '{failed_stage}'")
+                    
+                    return {
+                        "success": False,
+                        "results": stage_results,
+                        "status": f"Workflow failed at stage '{failed_stage}'.",
+                        "error": error_info,
+                        "total_processing_time": time.time() - start_time
+                    }
+                
+                # If we reach here, all stages in this wave completed successfully
+            
+            # All stages completed successfully
+            return {
+                "success": True,
+                "results": stage_results,
+                "status": "Workflow completed successfully.",
+                "total_processing_time": time.time() - start_time
+            }
+            
+        except Exception as e:
+            # Catch any unexpected errors in the main execution loop
+            error_msg = f"Unexpected error in workflow execution: {type(e).__name__}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return {
+                "success": False,
+                "results": stage_results,
+                "status": "Workflow failed with an unexpected error.",
+                "error": error_msg,
+                "total_processing_time": time.time() - start_time
+            }
+    
+    # Execute the workflow DAG
+    result = await execute_dag()
+    
     total_time = time.time() - start_time
-    logger.success(f"Workflow completed successfully in {total_time:.2f}s")
-    return {
-        "success": True,
-        "results": stage_results,
-        "status": "Workflow completed successfully.",
-        "total_processing_time": total_time
-    }
+    if result["success"]:
+        logger.info(f"Workflow completed successfully in {total_time:.2f}s")
+    else:
+        logger.error(f"Workflow failed after {total_time:.2f}s: {result.get('error', 'Unknown error')}")
+    
+    return result
 
 # --- Helper functions for workflow execution --- 
 # These need careful implementation for robustness

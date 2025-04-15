@@ -456,3 +456,33 @@ def get_text_stats(text: str) -> Dict[str, Any]:
         "avg_sentence_length": round(avg_sentence_length, 1),
         "estimated_tokens": estimated_tokens,
     }
+
+
+def preprocess_text(text: str) -> str:
+    """Preprocesses text for classification tasks.
+    
+    Args:
+        text: Text to preprocess
+        
+    Returns:
+        Preprocessed text
+    """
+    if not text:
+        return text
+    
+    # Clean up whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Remove control characters
+    text = re.sub(r'[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]', '', text)
+    
+    # Remove excessive punctuation repetition
+    text = re.sub(r'([.!?]){3,}', r'\1\1\1', text)
+    
+    # Truncate if extremely long (preserve beginning and end)
+    max_chars = 100000  # Reasonable limit to prevent token explosion
+    if len(text) > max_chars:
+        half = max_chars // 2
+        text = text[:half] + " [...text truncated...] " + text[-half:]
+        
+    return text

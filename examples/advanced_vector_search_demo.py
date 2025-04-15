@@ -8,8 +8,6 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-
-from decouple import config as decouple_config
 from rich.markup import escape
 from rich.rule import Rule
 
@@ -36,9 +34,6 @@ from llm_gateway.utils.logging.console import console
 # Initialize logger
 logger = get_logger("example.advanced_vector_search")
 
-# Get API key from environment
-openai_api_key = decouple_config('OPENAI_API_KEY', default=None)
-
 # Initialize global gateway
 gateway = None
 vector_service = None
@@ -52,11 +47,7 @@ async def setup_services():
     gateway = Gateway("vector-demo", register_tools=False)
     await gateway._initialize_providers()
     
-    if not openai_api_key:
-         logger.warning("OpenAI API key not found. Embedding and search demos may fail.", emoji_key="warning")
-         # Decide if critical error
-    
-    embedding_service = get_embedding_service(api_key=openai_api_key) # Primarily uses OpenAI for this demo
+    embedding_service = get_embedding_service() # Gateway will provide API keys through provider system
     vector_service = get_vector_db_service()
     
     logger.success("Services initialized.", emoji_key="success")

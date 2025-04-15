@@ -10,6 +10,7 @@ class Provider(str, Enum):
     DEEPSEEK = "deepseek"
     GEMINI = "gemini"
     OPENROUTER = "openrouter"
+    GROK = "grok"
 
 
 class TaskType(str, Enum):
@@ -67,7 +68,13 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     "gemini-2.5-pro-exp-03-25": {"input": 1.25, "output": 10.0},
 
     # OpenRouter models
-    "mistralai/mistral-nemo": {"input": 0.035, "output": 0.08}, 
+    "mistralai/mistral-nemo": {"input": 0.035, "output": 0.08},
+    
+    # Grok models (based on the provided documentation)
+    "grok-3-latest": {"input": 3.0, "output": 15.0},
+    "grok-3-fast-latest": {"input": 5.0, "output": 25.0},
+    "grok-3-mini-latest": {"input": 0.30, "output": 0.50},
+    "grok-3-mini-fast-latest": {"input": 0.60, "output": 4.0},
 }
 
 
@@ -77,7 +84,8 @@ DEFAULT_MODELS = {
     Provider.ANTHROPIC: "claude-3-5-haiku-20241022",
     Provider.DEEPSEEK: "deepseek-chat",
     Provider.GEMINI: "gemini-2.5-pro-exp-03-25",
-    Provider.OPENROUTER: "mistralai/mistral-nemo"
+    Provider.OPENROUTER: "mistralai/mistral-nemo",
+    Provider.GROK: "grok-3-latest"
 }
 
 
@@ -124,12 +132,12 @@ EMOJI_MAP = {
     "document_processing": "📄",
     "translation": "🔄",
     "qa": "❓",
-
     
     # Provider-specific emojis
     Provider.OPENAI: "🟢",
     Provider.ANTHROPIC: "🟣",
     Provider.DEEPSEEK: "🟠", 
     Provider.GEMINI: "🔵",
-    Provider.OPENROUTER: "🌐"
+    Provider.OPENROUTER: "🌐",
+    Provider.GROK: "⚡"
 }

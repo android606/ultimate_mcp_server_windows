@@ -93,6 +93,7 @@ class ProvidersConfig(BaseModel):
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig, description="DeepSeek provider configuration")
     gemini: ProviderConfig = Field(default_factory=ProviderConfig, description="Gemini provider configuration")
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig, description="OpenRouter provider configuration")
+    grok: ProviderConfig = Field(default_factory=ProviderConfig, description="Grok (xAI) provider configuration")
 
 class FilesystemProtectionConfig(BaseModel):
     """Configuration for filesystem protection heuristics."""
@@ -225,6 +226,7 @@ def load_config(
         "deepseek": "DEEPSEEK_API_KEY",
         "gemini": "GEMINI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
+        "grok": "GROK_API_KEY",
     }
     for provider_name, env_var in provider_key_map.items():
         provider_conf = getattr(loaded_config.providers, provider_name, None)
@@ -254,7 +256,7 @@ def load_config(
         config_logger.warning(f"Could not load optional OpenRouter headers from env: {e}")
 
     # Example for generic provider settings like base_url, default_model, organization
-    for provider_name in ["openai", "anthropic", "deepseek", "gemini", "openrouter"]:
+    for provider_name in ["openai", "anthropic", "deepseek", "gemini", "openrouter", "grok"]:
         provider_conf = getattr(loaded_config.providers, provider_name, None)
         if provider_conf:
             p_name_upper = provider_name.upper()

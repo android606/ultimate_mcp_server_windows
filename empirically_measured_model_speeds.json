@@ -1,87 +1,87 @@
 {
     "claude-3-5-haiku-20241022": {
-        "total_time_s": 8.73,
-        "output_tokens": 442,
-        "output_tokens_per_second": 50.63
+        "total_time_s": 8.153,
+        "output_tokens": 449,
+        "output_tokens_per_second": 55.07
     },
     "claude-3-7-sonnet-20250219": {
-        "total_time_s": 8.37,
+        "total_time_s": 8.499,
         "output_tokens": 470,
-        "output_tokens_per_second": 56.15
+        "output_tokens_per_second": 55.3
     },
     "claude-3-opus-20240229": {
-        "total_time_s": 20.717,
-        "output_tokens": 546,
-        "output_tokens_per_second": 26.35
+        "total_time_s": 20.012,
+        "output_tokens": 555,
+        "output_tokens_per_second": 27.73
     },
     "claude-3-sonnet-20240229": {
-        "total_time_s": 9.278,
-        "output_tokens": 527,
-        "output_tokens_per_second": 56.8
+        "total_time_s": 9.85,
+        "output_tokens": 538,
+        "output_tokens_per_second": 54.62
     },
     "deepseek-chat": {
-        "total_time_s": 24.13,
-        "output_tokens": 457,
-        "output_tokens_per_second": 18.94
+        "total_time_s": 24.575,
+        "output_tokens": 427,
+        "output_tokens_per_second": 17.38
     },
     "deepseek-reasoner": {
-        "total_time_s": 56.654,
-        "output_tokens": 1217,
-        "output_tokens_per_second": 21.48
+        "total_time_s": 58.444,
+        "output_tokens": 1141,
+        "output_tokens_per_second": 19.52
     },
     "gemini-2.0-flash": {
-        "total_time_s": 2.502,
-        "output_tokens": 538,
-        "output_tokens_per_second": 214.99
+        "total_time_s": 2.437,
+        "output_tokens": 517,
+        "output_tokens_per_second": 212.18
     },
     "gemini-2.0-flash-lite": {
-        "total_time_s": 2.804,
-        "output_tokens": 494,
-        "output_tokens_per_second": 176.16
+        "total_time_s": 3.034,
+        "output_tokens": 493,
+        "output_tokens_per_second": 162.48
     },
     "gemini-2.0-flash-thinking-exp-01-21": {
-        "total_time_s": 5.162,
-        "output_tokens": 455,
-        "output_tokens_per_second": 88.15
+        "total_time_s": 5.484,
+        "output_tokens": 447,
+        "output_tokens_per_second": 81.51
     },
     "gemini-2.5-pro-exp-03-25": {
-        "total_time_s": 21.617,
-        "output_tokens": 635,
-        "output_tokens_per_second": 29.38
+        "total_time_s": 20.042,
+        "output_tokens": 555,
+        "output_tokens_per_second": 27.69
     },
     "gpt-4.1": {
-        "total_time_s": 4.919,
-        "output_tokens": 467,
-        "output_tokens_per_second": 94.94
+        "total_time_s": 8.749,
+        "output_tokens": 473,
+        "output_tokens_per_second": 54.06
     },
     "gpt-4.1-mini": {
-        "total_time_s": 4.337,
+        "total_time_s": 6.092,
         "output_tokens": 486,
-        "output_tokens_per_second": 112.06
+        "output_tokens_per_second": 79.77
     },
     "gpt-4.1-nano": {
-        "total_time_s": 1.859,
-        "output_tokens": 388,
-        "output_tokens_per_second": 208.77
+        "total_time_s": 1.403,
+        "output_tokens": 393,
+        "output_tokens_per_second": 280.09
     },
     "gpt-4o": {
-        "total_time_s": 10.283,
-        "output_tokens": 435,
-        "output_tokens_per_second": 42.3
+        "total_time_s": 10.336,
+        "output_tokens": 413,
+        "output_tokens_per_second": 39.96
     },
     "gpt-4o-mini": {
-        "total_time_s": 6.66,
-        "output_tokens": 433,
-        "output_tokens_per_second": 65.01
+        "total_time_s": 9.946,
+        "output_tokens": 427,
+        "output_tokens_per_second": 42.93
     },
     "o1-preview": {
-        "total_time_s": 7.263,
-        "output_tokens": 757,
-        "output_tokens_per_second": 104.23
+        "total_time_s": 8.358,
+        "output_tokens": 713,
+        "output_tokens_per_second": 85.31
     },
     "o3-mini": {
-        "total_time_s": 5.13,
-        "output_tokens": 504,
-        "output_tokens_per_second": 98.25
+        "total_time_s": 4.569,
+        "output_tokens": 509,
+        "output_tokens_per_second": 111.4
     }
 }

@@ -1,0 +1,121 @@
+MERGER AND ACQUISITION AGREEMENT
+
+This MERGER AND ACQUISITION AGREEMENT (the "Agreement") is made and entered into as of June 15, 2025 (the "Effective Date"), by and among:
+
+TECH INNOVATIONS INC., a Delaware corporation with its principal place of business at 1234 Innovation Way, Palo Alto, CA 94301 ("Acquirer"),
+
+QUANTUM SOLUTIONS LLC, a California limited liability company with its principal place of business at 5678 Quantum Drive, San Jose, CA 95113 ("Target Company"),
+
+and
+
+THE STOCKHOLDERS OF TARGET COMPANY identified in Exhibit A attached hereto (collectively, the "Stockholders").
+
+RECITALS
+
+WHEREAS, Acquirer is a public technology company specializing in artificial intelligence software solutions;
+
+WHEREAS, Target Company is a private technology company focused on quantum computing hardware development;
+
+WHEREAS, Dr. James Wilson serves as the Chief Executive Officer of Target Company and owns 45% of the outstanding shares;
+
+WHEREAS, Venture Capital Fund Alpha Partners LP, represented by Managing Partner David Chen, owns 30% of the outstanding shares of Target Company;
+
+WHEREAS, Dr. Elena Rodriguez, Chief Technology Officer of Target Company, owns 15% of the outstanding shares;
+
+WHEREAS, the remaining 10% of shares are owned by various employees and angel investors as detailed in Exhibit A;
+
+WHEREAS, Acquirer desires to acquire 100% of the issued and outstanding capital stock of Target Company (the "Acquisition") in exchange for a combination of cash and Acquirer common stock valued at $750,000,000 USD (the "Transaction Value");
+
+WHEREAS, following the Acquisition, Target Company will become a wholly-owned subsidiary of Acquirer, with Dr. Wilson appointed as Acquirer's Chief Quantum Officer and Dr. Rodriguez continuing to lead the quantum computing division;
+
+WHEREAS, the Board of Directors of Acquirer, led by Chairperson Sarah Johnson, approved the Acquisition on June 1, 2025;
+
+WHEREAS, the Board of Managers of Target Company approved the Acquisition on June 3, 2025;
+
+WHEREAS, the Stockholders desire to sell their shares to Acquirer on the terms and conditions set forth herein;
+
+NOW, THEREFORE, in consideration of the mutual covenants, agreements, representations, and warranties contained in this Agreement, and for other good and valuable consideration, the receipt and sufficiency of which are hereby acknowledged, the parties agree as follows:
+
+ARTICLE I
+THE ACQUISITION
+
+1.1 The Acquisition. Subject to the terms and conditions of this Agreement, at the Closing (as defined in Section 1.5), Acquirer shall acquire from the Stockholders, and the Stockholders shall sell, transfer, assign, convey and deliver to Acquirer, all issued and outstanding shares of Target Company.
+
+1.2 Consideration. The total consideration for the Acquisition shall be:
+   (a) Cash payment of $500,000,000 USD (the "Cash Consideration"); and
+   (b) 1,000,000 shares of Acquirer common stock valued at $250,000,000 USD (the "Stock Consideration").
+
+1.3 Allocation of Consideration. The Cash Consideration and Stock Consideration shall be allocated among the Stockholders in proportion to their ownership percentages as set forth in Exhibit A.
+
+1.4 Escrow. Ten percent (10%) of both the Cash Consideration and Stock Consideration shall be placed in escrow with First National Trust Company (the "Escrow Agent") for a period of eighteen (18) months following the Closing Date to secure indemnification obligations of the Stockholders.
+
+1.5 Closing. The closing of the Acquisition (the "Closing") shall take place at the offices of Legal Partners LLP at 800 Corporate Drive, San Francisco, CA, on July 30, 2025 (the "Closing Date"), or at such other time, date, and location as the parties may mutually agree in writing.
+
+ARTICLE II
+REPRESENTATIONS AND WARRANTIES
+
+2.1 Representations and Warranties of Target Company and Stockholders. Target Company and each Stockholder, jointly and severally, represent and warrant to Acquirer as set forth in Exhibit B.
+
+2.2 Representations and Warranties of Acquirer. Acquirer represents and warrants to Target Company and the Stockholders as set forth in Exhibit C.
+
+ARTICLE III
+COVENANTS
+
+3.1 Operation of Business. From the Effective Date until the Closing Date, Target Company shall continue to operate its business in the ordinary course, consistent with past practice.
+
+3.2 Regulatory Approvals. The parties shall cooperate to obtain all necessary regulatory approvals, including filing required notifications with the Federal Trade Commission and the Department of Justice under the Hart-Scott-Rodino Antitrust Improvements Act of 1976.
+
+3.3 Non-Competition. For a period of three (3) years following the Closing Date, Dr. Wilson and Dr. Rodriguez agree not to engage in any business that directly competes with the quantum computing business of Acquirer.
+
+ARTICLE IV
+CONDITIONS TO CLOSING
+
+4.1 Conditions to Obligations of All Parties. The obligations of each party to consummate the Acquisition shall be subject to the satisfaction of the following conditions:
+   (a) No governmental authority shall have enacted any law or order prohibiting the consummation of the Acquisition;
+   (b) All required regulatory approvals shall have been obtained; and
+   (c) No litigation shall be pending or threatened seeking to enjoin the Acquisition.
+
+ARTICLE V
+INDEMNIFICATION
+
+5.1 Indemnification by Stockholders. The Stockholders shall indemnify Acquirer against any losses arising from breaches of representations, warranties, or covenants by Target Company or the Stockholders.
+
+5.2 Limitation on Liability. The maximum aggregate liability of the Stockholders for indemnification claims shall not exceed the amount held in escrow, except for claims arising from fraud or intentional misrepresentation.
+
+ARTICLE VI
+MISCELLANEOUS
+
+6.1 Governing Law. This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without giving effect to any choice of law principles.
+
+6.2 Dispute Resolution. Any disputes arising out of or relating to this Agreement shall be resolved through arbitration administered by the American Arbitration Association in San Francisco, California.
+
+6.3 Notices. All notices required under this Agreement shall be in writing and sent to the addresses listed in Exhibit D.
+
+6.4 Entire Agreement. This Agreement, including all exhibits and schedules hereto, constitutes the entire agreement among the parties with respect to the subject matter hereof.
+
+IN WITNESS WHEREOF, the parties have executed this Agreement as of the Effective Date.
+
+TECH INNOVATIONS INC.
+
+By: ____________________________
+Name: Michael Thompson
+Title: Chief Executive Officer
+
+QUANTUM SOLUTIONS LLC
+
+By: ____________________________
+Name: Dr. James Wilson
+Title: Chief Executive Officer
+
+STOCKHOLDERS:
+
+____________________________
+Dr. James Wilson
+
+____________________________
+For: Venture Capital Fund Alpha Partners LP
+By: David Chen
+Title: Managing Partner
+
+____________________________
+Dr. Elena Rodriguez 

@@ -6,8 +6,6 @@ that were previously defined in example scripts but are now part of the library.
 
 import hashlib
 
-from decouple import config as decouple_config
-
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.cache import get_cache_service
@@ -39,29 +37,13 @@ async def run_completion_with_cache(
         max_tokens: Maximum tokens to generate (optional)
         use_cache: Whether to use cache (default: True)
         ttl: Cache TTL in seconds (default: 3600/1 hour)
-        api_key: Provider API key (optional, falls back to env vars)
+        api_key: Provider API key (optional, falls back to internal provider system)
         
     Returns:
         Completion result with additional processing_time attribute
     """
-    # Get provider with API key from parameter or env
-    if not api_key:
-        # Simplify key retrieval
-        key_map = {
-            Provider.OPENAI.value: "OPENAI_API_KEY",
-            Provider.ANTHROPIC.value: "ANTHROPIC_API_KEY",
-            Provider.GEMINI.value: "GEMINI_API_KEY",
-            Provider.DEEPSEEK.value: "DEEPSEEK_API_KEY"
-        }
-        api_key_name = key_map.get(provider_name)
-        if api_key_name:
-            api_key = decouple_config(api_key_name, default=None)
-    
-    if not api_key:
-        # Log warning but allow fallback if provider supports keyless (unlikely for these)
-        logger.warning(f"API key for {provider_name} not found. Request may fail.", emoji_key="warning")
-
     try:
+        # Let the provider system handle API keys if none provided
         provider = await get_provider(provider_name, api_key=api_key)
         await provider.initialize()
     except Exception as e:

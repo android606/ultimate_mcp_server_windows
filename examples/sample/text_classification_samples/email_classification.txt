@@ -1,0 +1,121 @@
+SPAM EMAIL:
+CONGRATULATIONS! You have been selected as the LUCKY WINNER of our INTERNATIONAL LOTTERY! Your email was randomly chosen from our database and you have won $5,000,000.00 USD (FIVE MILLION UNITED STATES DOLLARS). To claim your prize, please contact our claims agent immediately at claim-agent@lottery-intl-winners.com with your full name, address, phone number, and a copy of your ID. A processing fee of $199 is required to release your funds. DO NOT DELAY! This offer expires in 48 HOURS!
+
+URGENT EMAIL:
+Subject: Critical Security Breach - Immediate Action Required
+
+Dear IT Team,
+
+Our monitoring systems have detected an unauthorized access attempt to our main customer database at 3:42 AM EST. The attempt originated from an IP address in Eastern Europe and appears to have successfully extracted approximately 25,000 customer records including names, email addresses, and hashed passwords. Our security team has temporarily shut down external access to the affected systems.
+
+Please implement the emergency response protocol immediately:
+1. Activate the incident response team
+2. Reset all administrative credentials
+3. Deploy the prepared statement to affected customers
+4. Begin forensic analysis of the breach vector
+
+This is classified as a Severity 1 incident requiring immediate attention.
+
+David Chen
+Chief Information Security Officer
+
+PROMOTIONAL EMAIL:
+Subject: Summer Sale - 48 Hours Only! Up to 70% Off Everything
+
+Beat the heat with sizzling savings! 🔥
+
+Our biggest sale of the season is HERE! For just 48 hours, enjoy:
+• Up to 70% off ALL clothing and accessories
+• Buy one, get one 50% off on summer essentials
+• Free shipping on orders over $50
+• Extra 15% off with code: SUMMER24
+
+Plus, the first 500 orders receive a FREE beach tote (valued at $45)!
+
+Don't miss out - sale ends Sunday at midnight.
+
+Shop now: https://www.fashionretailer.com/summer-sale
+
+INFORMATIONAL EMAIL:
+Subject: Upcoming System Maintenance - May 15th
+
+Dear Valued Customer,
+
+Please be informed that we will be conducting scheduled maintenance on our systems to improve performance and reliability. During this time, our services will be temporarily unavailable.
+
+Maintenance details:
+• Date: Tuesday, May 15th, 2024
+• Time: 2:00 AM - 5:00 AM EDT (UTC-4)
+• Affected services: Online banking portal, mobile app, and automated phone system
+
+No action is required on your part. All services will resume automatically once maintenance is complete. We recommend completing any urgent transactions before the maintenance window begins.
+
+We apologize for any inconvenience this may cause and appreciate your understanding as we work to enhance your experience.
+
+Sincerely,
+Customer Support Team
+First National Bank
+
+PHISHING EMAIL:
+Subject: Your Amazon Account Has Been Suspended
+
+Dear Valued Customer,
+
+We regret to inform you that your Amazon account has been temporarily suspended due to unusual activity. Our security system has detected multiple failed login attempts from unrecognized devices.
+
+To verify your identity and restore your account access, please update your payment information by clicking the link below:
+
+>> Restore Account Access Now <<
+
+If you do not verify your account within 24 hours, your account will be permanently deactivated and all pending orders will be canceled.
+
+Thank you for your immediate attention to this matter.
+
+Amazon Customer Service Team
+
+PERSONAL EMAIL:
+Subject: Vacation Plans for Next Month
+
+Hi Sarah,
+
+How are you doing? I hope everything's going well with the new job! I've been thinking about our conversation last month about taking a short vacation together, and I wanted to follow up.
+
+I checked some options for that beach town we talked about, and there are some great deals for the weekend of the 15th. I found a cute rental cottage about two blocks from the beach for $180/night, which seems reasonable if we split it. The weather should be perfect that time of year too.
+
+Let me know if you're still interested and if those dates work for you. I could book it this week to secure the place before summer rates kick in.
+
+Can't wait to catch up properly!
+
+Talk soon,
+Michael
+
+TRANSACTIONAL EMAIL:
+Subject: Order #78291 Confirmation - Your Purchase from TechGadgets
+
+Dear Alex Rodriguez,
+
+Thank you for your recent purchase from TechGadgets. We're processing your order and will ship it soon.
+
+Order Details:
+• Order Number: #78291
+• Order Date: April 3, 2024
+• Payment Method: Visa ending in 4872
+• Shipping Method: Standard (3-5 business days)
+
+Items Purchased:
+1. Wireless Earbuds Pro - Black (1) - $129.99
+2. Fast Charging Cable 6ft (2) - $19.99 each
+3. Screen Protector Ultra (1) - $24.99
+
+Subtotal: $194.96
+Shipping: $5.99
+Tax: $16.57
+Total: $217.52
+
+You will receive a shipping confirmation email with tracking information once your order ships. You can also check your order status anytime by logging into your account.
+
+If you have any questions about your order, please contact our customer service team at support@techgadgets.com or call 1-800-555-1234.
+
+Thank you for shopping with us!
+
+The TechGadgets Team 

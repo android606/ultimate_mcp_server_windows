@@ -73,6 +73,15 @@ dependencies = [
     "pytest-playwright", # For web browser automation
     "sqlalchemy", # For SQL database interactions
     "aiosqlite", # Async SQLite database access
+    "pyvis", # Graph visualization
+    "python-docx", # MS Word DOCX support
+    "opencv-python", # For OCR tools
+    "pillow", # For OCR
+    "pytesseract", # For OCR
+    "pdf2image", # For OCR
+    "pdfplumber", # For OCR
+    "fitz", # For OCR
+    "pymupdf", # For OCR
 ]
 
 [project.optional-dependencies]
@@ -87,6 +96,11 @@ advanced = [
     "flash-attn",
     "accelerate",       # For optimized model inference
 ]
+
+#excel_automation = [
+#    "win32com", # Excel automation,
+#    "win32com",
+#]
 
 # Development and testing
 dev = [

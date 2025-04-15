@@ -219,6 +219,73 @@ Process large documents efficiently:
   - Includes functions for cleaning, formatting, and basic analysis
   - Useful for pre-processing text before sending to LLMs or post-processing results
 
+## OCR Tools
+
+The LLM Gateway includes powerful OCR (Optical Character Recognition) tools that leverage LLMs to improve text extraction from PDFs and images:
+
+- **Extract Text from PDF**: Extract and enhance text from PDF documents using direct extraction or OCR.
+- **Process Image OCR**: Extract and enhance text from images with preprocessing options.
+- **Enhance OCR Text**: Improve existing OCR text using LLM-based correction and formatting.
+- **Analyze PDF Structure**: Get information about a PDF's structure without full text extraction.
+- **Batch Process Documents**: Process multiple documents with concurrent execution.
+
+### OCR Installation
+
+OCR tools require additional dependencies. Install them with:
+
+```bash
+pip install 'llm-gateway[ocr]'
+```
+
+### OCR Usage Examples
+
+```python
+# Extract text from a PDF file with LLM correction
+result = await client.tools.extract_text_from_pdf(
+    file_path="document.pdf",
+    extraction_method="hybrid",  # Try direct text extraction first, fall back to OCR if needed
+    max_pages=5,
+    reformat_as_markdown=True
+)
+
+# Process an image file with custom preprocessing
+result = await client.tools.process_image_ocr(
+    image_path="scan.jpg",
+    preprocessing_options={
+        "denoise": True,
+        "threshold": "adaptive",
+        "deskew": True
+    },
+    ocr_language="eng+fra"  # Multi-language support
+)
+
+# Workflow with OCR and summarization
+workflow = [
+    {
+        "stage_id": "extract_text",
+        "tool_name": "extract_text_from_pdf",
+        "params": {
+            "file_path": "/path/to/document.pdf",
+            "reformat_as_markdown": True
+        }
+    },
+    {
+        "stage_id": "summarize",
+        "tool_name": "summarize_document",
+        "params": {
+            "document": "${extract_text.text}",
+            "provider": "anthropic",
+            "model": "claude-3-5-sonnet-20241022"
+        },
+        "depends_on": ["extract_text"]
+    }
+]
+
+workflow_result = await client.tools.execute_optimized_workflow(
+    workflow=workflow
+)
+```
+
 ## Usage Examples
 
 ### Claude Using LLM Gateway for Document Analysis

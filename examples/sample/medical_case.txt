@@ -1,0 +1,138 @@
+PATIENT MEDICAL RECORD
+Memorial Hospital Medical Center
+123 Medical Center Blvd, Boston, MA 02118
+
+CONFIDENTIAL - FOR MEDICAL PERSONNEL ONLY
+
+Patient ID: MH-459872
+Date of Admission: April 10, 2025
+Attending Physician: Dr. Elizabeth Chen, MD (Cardiology)
+Consulting Physicians: Dr. Robert Martinez, MD (Neurology), Dr. Sarah Williams, MD (Endocrinology)
+
+PATIENT INFORMATION
+Name: John Anderson
+DOB: 05/22/1968 (57 years old)
+Gender: Male
+Address: 45 Maple Street, Apt 3B, Cambridge, MA 02139
+Contact: (617) 555-3829
+Emergency Contact: Mary Anderson (Wife) - (617) 555-4912
+Insurance: BlueCross BlueShield, Policy #BCB-88765432
+
+CHIEF COMPLAINT
+Patient presented to the Emergency Department with acute chest pain, shortness of breath, and left arm numbness beginning approximately 2 hours prior to arrival.
+
+CURRENT MEDICATIONS
+1. Metformin 1000mg twice daily (for Type 2 Diabetes, prescribed by Dr. Williams in 2019)
+2. Atorvastatin 40mg daily (for Hypercholesterolemia, prescribed by Dr. Chen in 2022)
+3. Lisinopril 20mg daily (for Hypertension, prescribed by Dr. Chen in 2022)
+4. Aspirin 81mg daily (for cardiovascular health, prescribed by Dr. Chen in 2022)
+5. Sertraline 50mg daily (for Depression, prescribed by Dr. Thomas Gordon in 2023)
+
+ALLERGIES
+1. Penicillin (Severe - Hives, Difficulty Breathing)
+2. Shellfish (Moderate - Gastrointestinal distress)
+
+PAST MEDICAL HISTORY
+1. Type 2 Diabetes Mellitus (Diagnosed 2019 by Dr. Williams)
+2. Hypertension (Diagnosed 2020 by Dr. Chen)
+3. Hypercholesterolemia (Diagnosed 2020 by Dr. Chen)
+4. Depression (Diagnosed 2023 by Dr. Gordon)
+5. Left knee arthroscopy (2015, Boston Orthopedic Center, Dr. James Miller)
+
+FAMILY HISTORY
+- Father: Deceased at age 68 from myocardial infarction, had hypertension, type 2 diabetes
+- Mother: Living, age 82, has hypertension, osteoarthritis
+- Brother: Age 60, has type 2 diabetes, hypercholesterolemia
+- Sister: Age 55, no known medical conditions
+
+SOCIAL HISTORY
+Occupation: High school mathematics teacher
+Tobacco: Former smoker, quit in 2018 (25 pack-year history)
+Alcohol: Occasional (1-2 drinks per week)
+Exercise: Walks 20 minutes, 3 times per week
+Diet: Reports following a "mostly" diabetic diet with occasional non-compliance
+
+PHYSICAL EXAMINATION
+Vital Signs:
+- BP: 165/95 mmHg
+- HR: 95 bpm
+- RR: 22 breaths/min
+- Temp: 98.6°F (37°C)
+- O2 Saturation: 94% on room air
+
+General: Patient is alert but anxious, in moderate distress
+Cardiovascular: Irregular rhythm, tachycardia, S3 gallop present, no murmurs
+Respiratory: Bibasilar crackles, decreased breath sounds at bases bilaterally
+Neurological: Left arm weakness (4/5 strength), otherwise grossly intact
+Extremities: No edema, normal peripheral pulses
+
+DIAGNOSTIC STUDIES
+Laboratory:
+- Troponin I: 2.3 ng/mL (elevated)
+- CK-MB: 12.5 ng/mL (elevated)
+- BNP: 450 pg/mL (elevated)
+- Complete Blood Count: WBC 12,000/μL, Hgb 13.5 g/dL, Plt 230,000/μL
+- Complete Metabolic Panel: Glucose 185 mg/dL, Cr 1.1 mg/dL, BUN 22 mg/dL
+- Lipid Panel: Total Chol 210 mg/dL, LDL 130 mg/dL, HDL 35 mg/dL, TG 190 mg/dL
+- HbA1c: 7.8%
+
+Imaging and Other Studies:
+- ECG: ST-segment elevation in leads II, III, aVF; reciprocal changes in I, aVL
+- Chest X-ray: Mild pulmonary edema, cardiomegaly
+- Echocardiogram: EF 40%, inferior wall hypokinesis, moderate mitral regurgitation
+- Cardiac Catheterization: 90% occlusion of right coronary artery, 70% occlusion of left circumflex artery
+
+DIAGNOSIS
+1. Acute ST-elevation Myocardial Infarction (STEMI), inferior wall
+2. Coronary Artery Disease, multivessel
+3. Congestive Heart Failure, acute onset (NYHA Class III)
+4. Type 2 Diabetes Mellitus, inadequately controlled
+5. Essential Hypertension, inadequately controlled
+6. Hyperlipidemia
+
+TREATMENT
+Procedures:
+1. Emergency Percutaneous Coronary Intervention (PCI) with drug-eluting stent placement in right coronary artery by Dr. Michael Wilson on April 10, 2025
+2. Scheduled PCI for left circumflex artery by Dr. Wilson on April 13, 2025
+
+Medications:
+1. Aspirin 325mg daily
+2. Clopidogrel 75mg daily
+3. Metoprolol succinate 50mg daily
+4. Lisinopril 40mg daily (increased from 20mg)
+5. Atorvastatin 80mg daily (increased from 40mg)
+6. Furosemide 40mg twice daily
+7. Metformin continued at 1000mg twice daily
+8. Insulin glargine 20 units at bedtime (new)
+9. Sertraline continued at 50mg daily
+
+HOSPITAL COURSE
+Patient was admitted through the Emergency Department and taken emergently to the cardiac catheterization lab where he underwent successful PCI with stent placement to the right coronary artery. Post-procedure, the patient was transferred to the Cardiac Care Unit (CCU) for close monitoring. Patient experienced a brief episode of ventricular fibrillation on the first night, which was successfully treated with defibrillation. Cardiology and endocrinology were consulted for management of heart failure and diabetes. Follow-up echocardiogram on April 12 showed improvement in EF to 45%. Patient underwent scheduled PCI of the left circumflex artery on April 13 without complications.
+
+DISCHARGE PLAN
+Discharge Date: April 16, 2025
+Discharge Disposition: Home with scheduled home health visits from Memorial Home Health Services
+
+Follow-up Appointments:
+1. Dr. Elizabeth Chen (Cardiology) - April 23, 2025 at 10:00 AM
+2. Dr. Sarah Williams (Endocrinology) - April 25, 2025 at 2:30 PM
+3. Cardiac Rehabilitation evaluation - April 30, 2025 at 1:00 PM
+
+Patient Education:
+1. STEMI and coronary artery disease management
+2. Diabetes self-management and glucometer use
+3. Heart-healthy diet (consultation with nutritionist completed)
+4. Medication management and adherence
+5. Warning signs requiring immediate medical attention
+
+PROGNOSIS
+Guarded. Patient has significant coronary artery disease with reduced ejection fraction. Long-term prognosis will depend on medication adherence, lifestyle modifications, and management of comorbidities.
+
+ATTESTATION
+I have personally examined the patient and reviewed all diagnostic studies. This documentation is complete and accurate to the best of my knowledge.
+
+Electronically signed by:
+Elizabeth Chen, MD
+Cardiology
+Memorial Hospital Medical Center
+Date: April 16, 2025 | Time: 14:35 

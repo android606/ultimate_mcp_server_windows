@@ -26,6 +26,24 @@ RUN pip install --upgrade pip && \
     # Install the project and its dependencies defined in pyproject.toml
     pip install .
 
+# Install system dependencies for OCR
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    libtesseract-dev \
+    poppler-utils \
+    libgl1-mesa-glx \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install language packs for tesseract (optional)
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr-eng \
+    tesseract-ocr-fra \
+    tesseract-ocr-deu \
+    tesseract-ocr-spa \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create a lightweight runtime image
 FROM python:3.13-slim
 

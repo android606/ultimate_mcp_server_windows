@@ -7,7 +7,6 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from decouple import config as decouple_config
 from mcp.server.fastmcp import FastMCP
 from rich import box
 from rich.markup import escape
@@ -72,6 +71,62 @@ def unpack_tool_result(result):
     
     # Return the original result if we can't unpack
     return result
+
+# Modified to use provider system directly
+async def _execute_with_recommended_model(balanced_rec, prompt, estimated_output_tokens):
+    """Execute completion with the recommended model using provider system."""
+    if not balanced_rec:
+        logger.error("No recommended model provided", emoji_key="error")
+        return
+        
+    provider_name = _get_provider_for_model(balanced_rec)
+    if not provider_name:
+        logger.error(f"Could not determine provider for recommended model {balanced_rec}", emoji_key="error")
+        return
+    
+    try:
+        # Get the provider without explicitly passing an API key (let the provider system handle it)
+        provider = await get_provider(provider_name)
+        await provider.initialize()
+        
+        # Generate the completion and get accurate token counts from the response
+        result = await provider.generate_completion(
+            prompt=prompt,
+            model=balanced_rec,
+            temperature=0.7,
+            max_tokens=estimated_output_tokens
+        )
+        
+        # Display result information using actual token counts from the API response
+        logger.success(f"Completion with {balanced_rec} successful", emoji_key="success")
+        logger.info(f"Actual input tokens: {result.input_tokens}, output tokens: {result.output_tokens}", emoji_key="token")
+        logger.info(f"Cost based on actual usage: ${result.cost:.6f}", emoji_key="cost")
+        
+        console.print(Panel(
+            escape(result.text.strip()),
+            title=f"[bold green]Response from {escape(balanced_rec)}[/bold green]",
+            border_style="green"
+        ))
+        
+        # Display Stats using display utility
+        parse_and_display_result(
+            f"Execution Stats for {balanced_rec}",
+            None,
+            {
+                "model": balanced_rec,
+                "provider": provider_name,
+                "cost": result.cost,
+                "tokens": {
+                    "input": result.input_tokens,
+                    "output": result.output_tokens,
+                    "total": result.input_tokens + result.output_tokens
+                },
+                "processing_time": result.processing_time
+            }
+        )
+        
+    except Exception as e:
+         logger.error(f"Error running completion with {balanced_rec}: {e}", emoji_key="error", exc_info=True)
 
 async def demonstrate_cost_optimization():
     """Demonstrate cost optimization features using Rich."""
@@ -276,59 +331,8 @@ async def demonstrate_cost_optimization():
         console.print(Rule(f"[cyan]Executing with Recommended Model ({escape(balanced_rec)})[/cyan]"))
         logger.info(f"Running completion with balanced recommendation: {balanced_rec}", emoji_key="processing")
         
-        provider_name = _get_provider_for_model(balanced_rec)
-        if not provider_name:
-            logger.error(f"Could not determine provider for recommended model {balanced_rec}", emoji_key="error")
-            return
-        
-        api_key = decouple_config(f"{provider_name.upper()}_API_KEY", default=None)
-        if not api_key:
-            logger.warning(f"API key for {provider_name} not found. Cannot run completion.", emoji_key="warning")
-            return
-        
-        try:
-            # Await the get_provider coroutine
-            provider = await get_provider(provider_name, api_key=api_key)
-            await provider.initialize()
-            
-            # Generate the completion and get accurate token counts from the response
-            result = await provider.generate_completion(
-                prompt=prompt,
-                model=balanced_rec,
-                temperature=0.7,
-                max_tokens=estimated_output_tokens
-            )
-            
-            # Display result information using actual token counts from the API response
-            logger.success(f"Completion with {balanced_rec} successful", emoji_key="success")
-            logger.info(f"Actual input tokens: {result.input_tokens}, output tokens: {result.output_tokens}", emoji_key="token")
-            logger.info(f"Cost based on actual usage: ${result.cost:.6f}", emoji_key="cost")
-            
-            console.print(Panel(
-                escape(result.text.strip()),
-                title=f"[bold green]Response from {escape(balanced_rec)}[/bold green]",
-                border_style="green"
-            ))
-            
-            # Display Stats using display utility
-            parse_and_display_result(
-                f"Execution Stats for {balanced_rec}",
-                None,
-                {
-                    "model": balanced_rec,
-                    "provider": provider_name,
-                    "cost": result.cost,
-                    "tokens": {
-                        "input": result.input_tokens,
-                        "output": result.output_tokens,
-                        "total": result.input_tokens + result.output_tokens
-                    },
-                    "processing_time": result.processing_time
-                }
-            )
-            
-        except Exception as e:
-             logger.error(f"Error running completion with {balanced_rec}: {e}", emoji_key="error", exc_info=True)
+        # Use the new helper function instead of direct API key handling
+        await _execute_with_recommended_model(balanced_rec, prompt, estimated_output_tokens)
     else:
         logger.info("Could not get a balanced recommendation to execute.", emoji_key="info")
 

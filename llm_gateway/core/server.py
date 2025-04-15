@@ -17,13 +17,13 @@ import llm_gateway
 
 # Import core specifically to set the global instance
 import llm_gateway.core
-from llm_gateway.config import get_config
+from llm_gateway.config import get_config, load_config
 from llm_gateway.constants import Provider
 
 # --- Import the trigger function ---
 from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
+from llm_gateway.utils import get_logger
 from llm_gateway.utils.logging import logger
-from llm_gateway.utils.logging.logger import get_logger
 
 # --- Define Logging Configuration Dictionary ---
 
@@ -136,40 +136,43 @@ class ProviderStatus:
 class Gateway:
     """Main LLM Gateway implementation."""
     
-    def __init__(self, name: Optional[str] = None, register_tools: bool = True):
-        """Initialize the gateway.
+    def __init__(
+        self, 
+        name: str = "main", 
+        register_tools: bool = True,
+        provider_exclusions: List[str] = None
+    ):
+        """Initialize Gateway.
         
         Args:
-            name: Name for the MCP server
-            register_tools: Whether to register all tools (False for demo scripts)
+            name: Server name
+            register_tools: Whether to register tools with the server
+            provider_exclusions: List of provider names to exclude from initialization
         """
-        # Force configuration loading to ensure API keys are available
-        # This is crucial for example scripts that run outside the main CLI
-        from llm_gateway.config import config_logger, get_config
-        config_logger.info("Initializing Gateway: Loading configuration...")
+        self.name = name
+        self.providers = {}
+        self.provider_status = {}
+        self.logger = get_logger(f"llm_gateway.{name}")
+        self.event_handlers = {}
+        self.provider_exclusions = provider_exclusions or []
         
-        # Get the current config
-        cfg = get_config()
-        
-        # Set up name
-        self.name = name or cfg.server.name
+        # Load configuration if not already loaded
+        if get_config() is None:
+            self.logger.info("Initializing Gateway: Loading configuration...")
+            load_config()
         
         # Initialize logger
-        self.logger = logger
-        
         self.logger.info(f"Initializing {self.name}...")
         
         # Initialize provider tracking
-        self.providers = {}
-        self.provider_status = {}
         self.marqo_available = False # Initialize state
         
         # Create MCP server with host and port settings
         self.mcp = FastMCP(
             self.name,
             lifespan=self._server_lifespan,
-            host=cfg.server.host,
-            port=cfg.server.port,
+            host=get_config().server.host,
+            port=get_config().server.port,
             instructions=self.system_instructions,
             timeout=300,
             debug=True
@@ -295,6 +298,11 @@ class Gateway:
 
         # Determine which providers to initialize based SOLELY on the loaded config
         for provider_name in [p.value for p in Provider]:
+            # Skip providers that are in the exclusion list
+            if provider_name in self.provider_exclusions:
+                self.logger.debug(f"Skipping provider {provider_name} (excluded)")
+                continue
+                
             provider_config = getattr(cfg.providers, provider_name, None)
             # Check if the provider is enabled AND has an API key configured in the loaded settings
             if provider_config and provider_config.enabled and provider_config.api_key:
@@ -364,6 +372,7 @@ class Gateway:
             from llm_gateway.core.providers.anthropic import AnthropicProvider
             from llm_gateway.core.providers.deepseek import DeepSeekProvider
             from llm_gateway.core.providers.gemini import GeminiProvider
+            from llm_gateway.core.providers.grok import GrokProvider
             from llm_gateway.core.providers.openai import OpenAIProvider
             from llm_gateway.core.providers.openrouter import OpenRouterProvider
 
@@ -373,6 +382,7 @@ class Gateway:
                 Provider.DEEPSEEK.value: DeepSeekProvider,
                 Provider.GEMINI.value: GeminiProvider,
                 Provider.OPENROUTER.value: OpenRouterProvider,
+                Provider.GROK.value: GrokProvider,
             }
 
             provider_class = providers.get(provider_name)

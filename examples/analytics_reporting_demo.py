@@ -8,7 +8,6 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from decouple import config as decouple_config
 from rich import box
 from rich.live import Live
 from rich.markup import escape

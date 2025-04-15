@@ -43,41 +43,69 @@ class OpenRouterProvider(BaseProvider):
         # Get additional headers from config's additional_params
         self.http_referer = config.additional_params.get("http_referer") or kwargs.get("http_referer")
         self.x_title = config.additional_params.get("x_title") or kwargs.get("x_title")
-
-        # Additional initialization for headers, client etc.
-        self._initialize_client(**kwargs)
-        self.available_models = self.fetch_available_models()
-
-        logger.info(f"OpenRouter provider initialized. Base URL: {self.base_url}, Default Model: {self.default_model}")
-
-    def _initialize_client(self, **kwargs):
-        """Initialize the OpenAI async client with OpenRouter specifics."""
-        if not self.api_key:
-            logger.warning(f"{self.name} API key not found in configuration. Some operations might fail.")
-            # Proceed without client if no key, some methods like list_models might still work partially
-            self.client = None
-            return
-
-        headers = {}
-        if self.http_referer:
-            headers["HTTP-Referer"] = self.http_referer
-        if self.x_title:
-            headers["X-Title"] = self.x_title
         
-        config = get_config().providers.openrouter # Get timeout from config
-        timeout = config.timeout or kwargs.get("timeout", 30.0) # Default timeout 30s
-
+        # We'll create the client in initialize() instead
+        self.client = None
+        self.available_models = []
+    
+    async def initialize(self) -> bool:
+        """Initialize the OpenRouter client.
+        
+        Returns:
+            bool: True if initialization was successful
+        """
         try:
+            # Create headers dictionary
+            headers = {}
+            if self.http_referer:
+                headers["HTTP-Referer"] = self.http_referer
+            if self.x_title:
+                headers["X-Title"] = self.x_title
+            
+            # Get timeout from config
+            config = get_config().providers.openrouter
+            timeout = config.timeout or 30.0  # Default timeout 30s
+            
+            # Check if API key is available
+            if not self.api_key:
+                logger.warning(f"{self.name} API key not found in configuration. Provider will be unavailable.")
+                return False
+                
+            # Create the client
             self.client = AsyncOpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key,
                 default_headers=headers,
                 timeout=timeout
             )
-            logger.debug("AsyncOpenAI client initialized for OpenRouter.")
+            
+            # Pre-fetch available models
+            try:
+                self.available_models = await self.list_models()
+                logger.info(f"Loaded {len(self.available_models)} models from OpenRouter")
+            except Exception as model_err:
+                logger.warning(f"Failed to fetch models from OpenRouter: {str(model_err)}")
+                # Use hardcoded fallback models
+                self.available_models = self._get_fallback_models()
+            
+            logger.success(
+                "OpenRouter provider initialized successfully", 
+                emoji_key="provider"
+            )
+            return True
+            
         except Exception as e:
-            logger.error(f"Failed to initialize AsyncOpenAI client for OpenRouter: {e}", exc_info=True)
-            self.client = None # Ensure client is None if init fails
+            logger.error(
+                f"Failed to initialize OpenRouter provider: {str(e)}", 
+                emoji_key="error"
+            )
+            return False
+
+    def _initialize_client(self, **kwargs):
+        """Initialize the OpenAI async client with OpenRouter specifics."""
+        # This method is now deprecated - use initialize() instead
+        logger.warning("_initialize_client() is deprecated, use initialize() instead")
+        return False
 
     async def generate_completion(
         self,
@@ -298,50 +326,8 @@ class OpenRouterProvider(BaseProvider):
         if self.available_models:
             return self.available_models
 
-        models = [
-            {
-                "id": "openai/gpt-4.1-mini",
-                "provider": self.provider_name,
-                "description": "OpenAI: Fast, balances cost and performance.",
-            },
-            {
-                "id": "openai/gpt-4o",
-                "provider": self.provider_name,
-                "description": "OpenAI: Most capable model.",
-            },
-            {
-                "id": "anthropic/claude-3.5-sonnet", # Check exact ID on OpenRouter
-                "provider": self.provider_name,
-                "description": "Anthropic: Strong general reasoning (check exact ID).",
-            },
-             {
-                "id": "anthropic/claude-3-haiku", # Check exact ID on OpenRouter
-                "provider": self.provider_name,
-                "description": "Anthropic: Fast and affordable (check exact ID).",
-            },
-            {
-                "id": "google/gemini-pro-1.5", # Check exact ID on OpenRouter
-                "provider": self.provider_name,
-                "description": "Google: Large context window (check exact ID).",
-            },
-            {
-                "id": "google/gemini-flash-1.5", # Check exact ID on OpenRouter
-                "provider": self.provider_name,
-                "description": "Google: Fast and cost-effective (check exact ID).",
-            },
-            {
-                "id": "mistralai/mistral-large", # Check exact ID on OpenRouter
-                "provider": self.provider_name,
-                "description": "Mistral: Strong open-weight model (check exact ID).",
-            },
-            {
-                 "id": "meta-llama/llama-3-70b-instruct", # Check exact ID on OpenRouter
-                 "provider": self.provider_name,
-                 "description": "Meta: Powerful open-source instruction-tuned model (check exact ID).",
-            }
-        ]
+        models = self._get_fallback_models()
 
-        self.available_models = models
         logger.warning(f"{self.provider_name} model list is illustrative. Check OpenRouter for full details.", emoji_key="warning")
         return models
 
@@ -380,81 +366,30 @@ class OpenRouterProvider(BaseProvider):
             logger.warning(f"API key check failed for {self.provider_name}: {str(e)}", emoji_key="warning")
             return False
 
-    def fetch_available_models(self) -> Dict[str, Dict[str, Any]]:
-        """Fetch available models and their details from the OpenRouter API."""
-        # OpenRouter uses the standard OpenAI /models endpoint
-        if not self.client:
-            logger.warning("Cannot fetch models; OpenRouter client not initialized (likely missing API key).")
-            return {}
-
-        try:
-            logger.debug("Fetching available models from OpenRouter...")
-            # This call uses the standard client, which includes the API key
-            # Note: httpx might handle the async call internally
-            response = self.client.models.list() # Synchronous call within method, check if client handles async
-
-            models_data = {}
-            if isinstance(response, BaseModel):
-                 # Handle Pydantic model response (common with newer OpenAI lib versions)
-                 if hasattr(response, 'data') and isinstance(response.data, list):
-                      model_list = response.data
-                 else:
-                      logger.warning("Unexpected response structure from models endpoint (Pydantic).")
-                      model_list = []
-            elif isinstance(response, dict):
-                 # Handle dictionary response (older versions or direct httpx use)
-                 model_list = response.get('data', [])
-            else:
-                 logger.warning(f"Unexpected response type from models endpoint: {type(response)}")
-                 model_list = []
-
-            for model_info_raw in model_list:
-                 # Adapt based on actual response structure (OpenAI vs OpenRouter specifics)
-                 if isinstance(model_info_raw, BaseModel):
-                      # Access attributes if it's a Pydantic model
-                      model_id = getattr(model_info_raw, 'id', None)
-                      # Extract other relevant fields if needed (e.g., context_length from OpenRouter docs)
-                      # Note: Standard OpenAI response might not have all OpenRouter fields directly
-                 elif isinstance(model_info_raw, dict):
-                      # Access keys if it's a dictionary
-                      model_id = model_info_raw.get('id')
-                 else:
-                      model_id = None
-
-                 if model_id:
-                      # Store basic info for now; enhance with OpenRouter specifics if possible
-                      models_data[model_id] = {'id': model_id} # Add more fields later
-
-            logger.info(f"Found {len(models_data)} models available via OpenRouter.")
-            # Optional: Fetch detailed pricing/context from OpenRouter site/docs if needed
-            # and merge into models_data
-            return models_data
-
-        except Exception as e:
-            logger.error(f"Failed to fetch available models from OpenRouter: {e}", exc_info=True)
-            return {}
-
     def get_available_models(self) -> List[str]:
         """Return a list of available model names."""
-        return list(self.available_models.keys())
+        return [model["id"] for model in self.available_models]
 
     def is_model_available(self, model_name: str) -> bool:
         """Check if a specific model is available."""
-        return model_name in self.available_models
+        available_model_ids = [model["id"] for model in self.available_models]
+        return model_name in available_model_ids
 
     async def create_completion(self, model: str, messages: List[Dict[str, str]], stream: bool = False, **kwargs) -> Union[str, AsyncGenerator[str, None]]:
         """Create a completion using the specified model."""
         if not self.client:
             raise RuntimeError("OpenRouter client not initialized (likely missing API key).")
+            
+        # Check if model is available
         if not self.is_model_available(model):
             # Fallback to default if provided model isn't listed? Or raise error?
             # Let's try the default model if the requested one isn't confirmed available.
             if self.default_model and self.is_model_available(self.default_model):
-                 logger.warning(f"Model '{model}' not found in available list. Falling back to default '{self.default_model}'.")
-                 model = self.default_model
+                logger.warning(f"Model '{model}' not found in available list. Falling back to default '{self.default_model}'.")
+                model = self.default_model
             else:
-                 # If even the default isn't available or set, raise error
-                 raise ValueError(f"Model '{model}' is not available via OpenRouter according to fetched list, and no valid default model is set.")
+                # If even the default isn't available or set, raise error
+                raise ValueError(f"Model '{model}' is not available via OpenRouter according to fetched list, and no valid default model is set.")
 
         merged_kwargs = {**kwargs}
         # OpenRouter uses standard OpenAI params like max_tokens, temperature, etc.
@@ -549,6 +484,51 @@ class OpenRouterProvider(BaseProvider):
         """Use standard list of dictionaries format for OpenRouter (like OpenAI)."""
         # OpenRouter generally uses the same format as OpenAI
         return messages
+
+    def _get_fallback_models(self) -> List[Dict[str, Any]]:
+        """Return a list of fallback models when API is not accessible."""
+        return [
+            {
+                "id": "openai/gpt-4.1-mini",
+                "provider": self.provider_name,
+                "description": "OpenAI: Fast, balances cost and performance.",
+            },
+            {
+                "id": "openai/gpt-4o",
+                "provider": self.provider_name,
+                "description": "OpenAI: Most capable model.",
+            },
+            {
+                "id": "anthropic/claude-3.5-sonnet",
+                "provider": self.provider_name,
+                "description": "Anthropic: Strong general reasoning.",
+            },
+            {
+                "id": "anthropic/claude-3-haiku",
+                "provider": self.provider_name,
+                "description": "Anthropic: Fast and affordable.",
+            },
+            {
+                "id": "google/gemini-pro-1.5",
+                "provider": self.provider_name,
+                "description": "Google: Large context window.",
+            },
+            {
+                "id": "google/gemini-flash-1.5",
+                "provider": self.provider_name,
+                "description": "Google: Fast and cost-effective.",
+            },
+            {
+                "id": "mistralai/mistral-large",
+                "provider": self.provider_name,
+                "description": "Mistral: Strong open-weight model.",
+            },
+            {
+                "id": "meta-llama/llama-3-70b-instruct",
+                "provider": self.provider_name,
+                "description": "Meta: Powerful open-source instruction-tuned model.",
+            }
+        ]
 
 # Make available via discovery
 __all__ = ["OpenRouterProvider"]

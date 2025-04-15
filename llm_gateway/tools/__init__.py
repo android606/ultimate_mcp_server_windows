@@ -12,6 +12,7 @@ from .document import (
     process_document_batch,
     summarize_document,
 )
+from .entity_relation_graph import extract_entity_graph
 from .filesystem import (
     create_directory,
     directory_tree,
@@ -38,6 +39,15 @@ from .meta import (
     get_llm_instructions,
     get_tool_info,
     get_tool_recommendations,
+)
+
+# Import OCR tools from ocr_tools.py
+from .ocr_tools import (
+    extract_text_from_pdf,
+    process_image_ocr,
+    enhance_ocr_text,
+    analyze_pdf_structure,
+    batch_process_documents,
 )
 
 # Import standalone functions from optimization.py
@@ -67,6 +77,9 @@ from .tournament import (
     get_tournament_status,
     list_tournaments,
 )
+
+# Import text classification function
+from .text_classification import text_classification
 
 from llm_gateway.utils import get_logger
 
@@ -105,12 +118,14 @@ __all__ = [
     "extract_table",
     "extract_key_value_pairs",
     "extract_semantic_schema",
+    "extract_entity_graph",
     "create_knowledge_base",
     "list_knowledge_bases",
     "delete_knowledge_base",
     "add_documents",
     "retrieve_context",
     "generate_with_rag",
+    "text_classification",
     "create_tournament",
     "get_tournament_status",
     "list_tournaments",
@@ -133,6 +148,13 @@ __all__ = [
     "search_files",
     "get_file_info",
     "list_allowed_directories",
+    
+    # OCR tools
+    "extract_text_from_pdf",
+    "process_image_ocr",
+    "enhance_ocr_text",
+    "analyze_pdf_structure",
+    "batch_process_documents",
     
     # Other tool classes (to be refactored) - Should be empty now
     # Removed: "OptimizationTools",
@@ -167,12 +189,14 @@ STANDALONE_TOOL_FUNCTIONS = [
     extract_table,
     extract_key_value_pairs,
     extract_semantic_schema,
+    extract_entity_graph,
     create_knowledge_base,
     list_knowledge_bases,
     delete_knowledge_base,
     add_documents,
     retrieve_context,
     generate_with_rag,
+    text_classification,
     create_tournament,
     get_tournament_status,
     list_tournaments,
@@ -195,6 +219,13 @@ STANDALONE_TOOL_FUNCTIONS = [
     search_files,
     get_file_info,
     list_allowed_directories,
+    
+    # OCR tools
+    extract_text_from_pdf,
+    process_image_ocr,
+    enhance_ocr_text,
+    analyze_pdf_structure,
+    batch_process_documents,
 ]
 
 # Registry of tool classes (for tools still using the class pattern) - Should be empty

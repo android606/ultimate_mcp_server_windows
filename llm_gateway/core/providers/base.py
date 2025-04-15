@@ -265,12 +265,16 @@ async def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     from llm_gateway.core.providers.deepseek import DeepSeekProvider
     from llm_gateway.core.providers.gemini import GeminiProvider
     from llm_gateway.core.providers.openai import OpenAIProvider
+    from llm_gateway.core.providers.openrouter import OpenRouterProvider
+    from llm_gateway.core.providers.grok import GrokProvider
     
     providers = {
-        Provider.OPENAI.value: OpenAIProvider,
-        Provider.ANTHROPIC.value: AnthropicProvider,
-        Provider.DEEPSEEK.value: DeepSeekProvider,
-        Provider.GEMINI.value: GeminiProvider,
+        Provider.OPENAI: OpenAIProvider,
+        Provider.ANTHROPIC: AnthropicProvider,
+        Provider.DEEPSEEK: DeepSeekProvider,
+        Provider.GEMINI: GeminiProvider,
+        Provider.OPENROUTER: OpenRouterProvider,
+        Provider.GROK: GrokProvider,
     }
     
     if provider_name not in providers:

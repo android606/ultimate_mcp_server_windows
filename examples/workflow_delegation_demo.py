@@ -47,19 +47,30 @@ mcp = FastMCP("Workflow Delegation Demo")
 # Mock provider initialization function (replace with actual if needed)
 async def initialize_providers():
     logger.info("Initializing required providers...", emoji_key="provider")
-    required_keys = ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"]
-    from decouple import config as decouple_config
-    all_keys_present = True
-    for key in required_keys:
-        if not decouple_config(key, default=None):
-            logger.warning(f"API key {key} not found. Some demos might fail.", emoji_key="warning")
-            console.print(f"[yellow]Warning:[/yellow] API key {key} not found.")
-            all_keys_present = False
-    # Actual initialization would happen inside the tools or a setup function
-    if all_keys_present:
-        logger.info("All required API keys seem to be present.", emoji_key="success")
+    
+    # Initialize gateway to let it handle provider initialization
+    gateway = Gateway("workflow-delegation-demo", register_tools=False)
+    await gateway._initialize_providers()
+    
+    # Check if we have the necessary providers initialized
+    required_providers = ["openai", "anthropic", "gemini"]
+    missing_providers = []
+    
+    for provider_name in required_providers:
+        try:
+            provider = await get_provider(provider_name)
+            if provider:
+                logger.info(f"Provider {provider_name} is available", emoji_key="success")
+            else:
+                missing_providers.append(provider_name)
+        except Exception:
+            missing_providers.append(provider_name)
+    
+    if missing_providers:
+        logger.warning(f"Missing providers: {', '.join(missing_providers)}. Some demos might fail.", emoji_key="warning")
+        console.print(f"[yellow]Warning:[/yellow] Missing providers: {', '.join(missing_providers)}")
     else:
-         logger.warning("Some API keys missing, functionality may be limited.", emoji_key="warning")
+        logger.info("All required providers are available", emoji_key="success")
 
 # Keep execute_workflow as a locally defined tool demonstrating the concept
 @mcp.tool()
