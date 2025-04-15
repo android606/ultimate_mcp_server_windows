@@ -661,14 +661,49 @@ CACHE_TTL=86400
 ### Running the Server
 
 ```bash
-# Start the MCP server
+# Start the MCP server with all tools
 python -m llm_gateway.cli.main run
+
+# Start the server with specific tools only
+python -m llm_gateway.cli.main run --include-tools generate_completion read_file write_file
+
+# Start the server excluding specific tools
+python -m llm_gateway.cli.main run --exclude-tools browser_automation
 
 # Or with Docker
 docker compose up
 ```
 
 Once running, the server will be available at `http://localhost:8013`.
+
+## CLI Commands
+
+LLM Gateway comes with a command-line interface for server management and tool interaction:
+
+```bash
+# Show available commands
+llm-gateway --help
+
+# Start the server
+llm-gateway run [options]
+
+# List available providers
+llm-gateway providers
+
+# List available tools
+llm-gateway tools [--category CATEGORY]
+
+# Test a provider
+llm-gateway test openai --model gpt-4.1-mini
+
+# Generate a completion
+llm-gateway complete --provider anthropic --prompt "Hello, world!"
+
+# Check cache status
+llm-gateway cache --status
+```
+
+Each command has additional options that can be viewed with `llm-gateway COMMAND --help`.
 
 ## Advanced Configuration
 
@@ -679,6 +714,29 @@ While the `.env` file is convenient for basic setup, the LLM Gateway offers more
 - `SERVER_HOST`: (Default: `127.0.0.1`) The network interface the server listens on. Use `0.0.0.0` to listen on all interfaces (necessary for Docker or external access).
 - `SERVER_PORT`: (Default: `8013`) The port the server listens on.
 - `API_PREFIX`: (Default: `/`) The URL prefix for the API endpoints.
+
+### Tool Filtering
+
+The LLM Gateway allows selectively choosing which MCP tools to register, helping manage complexity or reduce resource usage:
+
+```bash
+# List all available tools
+llm-gateway tools
+
+# List tools in a specific category
+llm-gateway tools --category filesystem
+
+# Start the server with only specific tools
+llm-gateway run --include-tools read_file write_file generate_completion
+
+# Start the server excluding specific tools
+llm-gateway run --exclude-tools browser_automation marqo_fused_search
+```
+
+This feature is particularly useful when:
+- You need a lightweight version of the gateway for a specific purpose
+- Some tools are causing conflicts or excessive resource usage
+- You want to restrict what capabilities are available to agents
 
 ### Logging Configuration
 

@@ -26,6 +26,7 @@ from llm_gateway.core.providers.base import get_provider, ModelResponse
 from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError
 from llm_gateway.services.cache import with_cache
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
+from llm_gateway.tools.completion import generate_completion
 from llm_gateway.utils import get_logger
 
 logger = get_logger("llm_gateway.tools.document")
@@ -678,46 +679,46 @@ async def summarize_document(
     prompt += f"\n\nText:\n{document}"
 
     try:
-        # Get provider instance directly
-        provider_instance = await get_provider(provider)
-        if not provider_instance:
-             raise ProviderError(f"Failed to get provider instance for {provider}")
-
         # Determine max_tokens based on max_length (approximate)
         # This is a rough estimate, might need refinement. Assume 1 word ~ 1.5 tokens
         max_tokens_limit = int(max_length * 1.5) if max_length else None 
 
-        # Call provider's generate_completion directly, ADDING prompt positional arg
-        result_raw: ModelResponse = await provider_instance.generate_completion(
-            prompt, # Pass the constructed prompt string positionally
-            messages=[{"role": "user", "content": prompt}], # Keep messages kwarg
+        # Use the standardized generate_completion tool
+        completion_result = await generate_completion(
+            prompt=prompt,
             model=model,
+            provider=provider,
             temperature=0.3, # Lower temperature for factual summary
             max_tokens=max_tokens_limit # Pass calculated max_tokens
         )
         
         processing_time = time.time() - start_time
         
-        summary_text = result_raw.text
+        # Check if completion was successful
+        if not completion_result.get("success", False):
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Document summarization failed: {error_message}", 
+                provider=provider,
+                model=model or "default"
+            )
+        
+        summary_text = completion_result["text"]
         if not summary_text:
-             raise ToolError(status_code=500, detail="LLM response for summary was empty.")
+             raise ToolError(message="LLM response for summary was empty.")
 
         logger.success(
-            f"Document summarized successfully with {provider}/{result_raw.model}",
+            f"Document summarized successfully with {provider}/{completion_result['model']}",
             emoji_key=TaskType.SUMMARIZATION.value,
-            cost=result_raw.cost,
+            cost=completion_result["cost"],
             time=processing_time
         )
         return {
             "summary": summary_text,
-            "model": f"{provider}/{result_raw.model}",
+            "model": completion_result["model"],
             "provider": provider,
-            "tokens": {
-                "input": result_raw.input_tokens,
-                "output": result_raw.output_tokens,
-                "total": result_raw.total_tokens,
-            },
-            "cost": result_raw.cost,
+            "tokens": completion_result["tokens"],
+            "cost": completion_result["cost"],
             "processing_time": processing_time,
             # "cached_result": False, # Let cache decorator handle this
             "success": True
@@ -827,26 +828,33 @@ JSON Output:""" # Added priming token
     # --- End Improved Prompt Construction --- 
 
     try:
-        # Get provider instance directly
-        provider_instance = await get_provider(provider)
-        if not provider_instance:
-             raise ProviderError(f"Failed to get provider instance for {provider}")
-
-        # Call provider's generate_completion directly
-        result_raw: ModelResponse = await provider_instance.generate_completion(
-            prompt, 
-            messages=[{"role": "user", "content": prompt}], 
+        # Use the standardized generate_completion tool
+        completion_result = await generate_completion(
+            prompt=prompt,
             model=model,
-            temperature=0.1 # Keep temperature low for factual task
+            provider=provider,
+            temperature=0.1, # Keep temperature low for factual task
+            additional_params={
+                "response_format": {"type": "json_object"} if provider == Provider.OPENAI.value else None
+            }
         )
         
         processing_time = time.time() - start_time
         
-        extracted_text = result_raw.text
+        # Check if completion was successful
+        if not completion_result.get("success", False):
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Entity extraction failed: {error_message}", 
+                provider=provider,
+                model=model or "default"
+            )
+        
+        extracted_text = completion_result["text"]
         logger.info(f"Raw LLM output for entity extraction:\n{extracted_text}") 
         
         if not extracted_text:
-             raise ToolError(status_code=500, detail="LLM response for entity extraction was empty.")
+             raise ToolError(message="LLM response for entity extraction was empty.")
 
         entities_data = {} # Initialize as empty dict
         
@@ -875,21 +883,17 @@ JSON Output:""" # Added priming token
         logger.info(f"Final entities data (after filtering): {entities_data}")
         
         logger.success(
-            f"Entities extracted successfully with {provider}/{result_raw.model}",
+            f"Entities extracted successfully with {provider}/{completion_result['model']}",
             emoji_key=TaskType.EXTRACTION.value,
-            cost=result_raw.cost,
+            cost=completion_result["cost"],
             time=processing_time
         )
         return {
             "entities": entities_data,
-            "model": f"{provider}/{result_raw.model}",
+            "model": completion_result["model"],
             "provider": provider,
-            "tokens": {
-                 "input": result_raw.input_tokens,
-                 "output": result_raw.output_tokens,
-                 "total": result_raw.total_tokens,
-            },
-            "cost": result_raw.cost,
+            "tokens": completion_result["tokens"],
+            "cost": completion_result["cost"],
             "processing_time": processing_time,
             # "cached_result": False, # Let cache decorator handle this
             "success": True
@@ -963,24 +967,28 @@ async def generate_qa_pairs(
              f"Text:\\n{document}"
 
     try:
-        # Get provider instance directly
-        provider_instance = await get_provider(provider)
-        if not provider_instance:
-             raise ProviderError(f"Failed to get provider instance for {provider}")
-
-        # Call provider's generate_completion directly, ADDING prompt positional arg
-        result_raw: ModelResponse = await provider_instance.generate_completion(
-            prompt, # Pass the constructed prompt string positionally
-            messages=[{"role": "user", "content": prompt}], # Keep messages kwarg
+        # Use the standardized generate_completion tool
+        completion_result = await generate_completion(
+            prompt=prompt,
             model=model,
+            provider=provider,
             temperature=temperature # Use passed temperature
         )
         
         processing_time = time.time() - start_time
         
-        qa_text = result_raw.text
+        # Check if completion was successful
+        if not completion_result.get("success", False):
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"QA generation failed: {error_message}", 
+                provider=provider,
+                model=model or "default"
+            )
+        
+        qa_text = completion_result["text"]
         if not qa_text:
-             raise ToolError(detail="LLM response for Q&A generation was empty.") # Use detail kwarg for message
+             raise ToolError(message="LLM response for Q&A generation was empty.") # Use message kwarg
              
         qa_pairs_data = []
         try:
@@ -1006,28 +1014,23 @@ async def generate_qa_pairs(
             qa_pairs_data = validated_pairs # Use only validated pairs
                           
         except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to parse Q&A pairs from LLM output: {e}. Raw output:\\n{qa_text}")
+            logger.error(f"Failed to parse Q&A pairs from LLM output: {e}. Raw output:\n{qa_text}")
             raise ToolError(message=f"Failed to parse generated Q&A pairs from the LLM response: {e}. Output: {qa_text}", error_code="PARSING_ERROR")
 
         logger.success(
-            f"Q&A pairs generated successfully with {provider}/{result_raw.model}",
+            f"Q&A pairs generated successfully with {provider}/{completion_result['model']}",
             emoji_key=TaskType.QA.value,
-            cost=result_raw.cost,
+            cost=completion_result["cost"],
             time=processing_time,
             pairs_generated=len(qa_pairs_data)
         )
         return {
             "qa_pairs": qa_pairs_data,
-            "model": f"{provider}/{result_raw.model}",
+            "model": completion_result["model"],
             "provider": provider,
-            "tokens": {
-                "input": result_raw.input_tokens,
-                "output": result_raw.output_tokens,
-                "total": result_raw.total_tokens,
-            },
-            "cost": result_raw.cost,
+            "tokens": completion_result["tokens"],
+            "cost": completion_result["cost"],
             "processing_time": processing_time,
-            # "cached_result": False, # Let cache decorator handle this
             "success": True
         }
 

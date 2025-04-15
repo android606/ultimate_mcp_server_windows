@@ -8,18 +8,22 @@ standardized API compatible with LLM Gateway.
 import asyncio
 import base64
 import json
+import csv
+import io
 import os
 import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast, Callable
 
 import aiofiles
 from playwright.async_api import (
     Browser,
     BrowserContext,
     ElementHandle,
+    Locator,
     Page,
     Playwright,
     Response,
@@ -29,7 +33,10 @@ from playwright.async_api import (
 from llm_gateway.constants import TaskType
 from llm_gateway.exceptions import ToolError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
+from llm_gateway.tools.completion import chat_completion 
+from llm_gateway.tools.filesystem import create_directory
 from llm_gateway.utils import get_logger
+from llm_gateway.config import get_config
 
 logger = get_logger("llm_gateway.tools.playwright")
 
@@ -416,6 +423,993 @@ async def browser_install(
         
         raise ToolError(status_code=500, detail=error_msg) from e
 
+async def _get_simplified_page_state_for_llm(max_elements: int = 75) -> Dict[str, Any]:
+    """
+    Retrieves a simplified representation of the current page state for LLM prompts.
+    Focuses on extracting interactable elements like links and buttons, assigning simple IDs.
+    Internal helper function.
+    """
+    script = f"""
+    () => {{
+        const MAX_ELEMENTS = {max_elements}; // Limit the number of elements extracted
+        const MAX_TEXT_LEN = 100; // Limit text length per element
+        const elements = [];
+        let element_counter = 0;
+
+        // Prioritize potentially relevant elements
+        const selectors = [
+            'a[href*="pdf"]', // PDF links first
+            'a[href*="present"]', 'a[href*="event"]', 'a[href*="quarter"]', 'a[href*="investor"]', // Keywords
+            'button', 'input[type="button"]', 'input[type="submit"]', // Buttons
+            'a[href]' // All other links
+        ];
+
+        const seenElements = new Set(); // Avoid duplicates
+
+        selectors.forEach(selector => {{
+            document.querySelectorAll(selector).forEach((el) => {{
+                if (element_counter >= MAX_ELEMENTS) return;
+                if (seenElements.has(el)) return; // Skip if already processed
+
+                // Basic visibility check (getBoundingClientRect is generally reliable)
+                const rect = el.getBoundingClientRect();
+                const isVisible = rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.left >= 0 && rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) && rect.right <= (window.innerWidth || document.documentElement.clientWidth);
+                // More complex check using computed style (can be slower)
+                // const style = window.getComputedStyle(el);
+                // const isVisible = style.display !== 'none' && style.visibility !== 'hidden' && el.offsetParent !== null;
+                if (!isVisible) return;
+
+                let description = el.textContent?.trim() ||
+                                  el.getAttribute('aria-label') ||
+                                  el.title ||
+                                  el.value ||
+                                  el.alt ||
+                                  el.id ||
+                                  el.className.split(' ').filter(c=>c.length > 2)[0] || // First meaningful class name
+                                  el.tagName;
+
+                if (description.length > MAX_TEXT_LEN) {{
+                    description = description.substring(0, MAX_TEXT_LEN - 3) + '...';
+                }}
+
+                const elementId = `el_${{element_counter++}}`; // Simple ID for LLM reference
+                const elementInfo = {{
+                    id: elementId, // ID for LLM to refer to
+                    tag: el.tagName.toLowerCase(),
+                    text: description || '<no text>', // Ensure text is never empty
+                }};
+
+                // Add href for links, classify them
+                if (el.href) {{
+                    const href = el.href;
+                    // Use a simpler regex check for PDF extension, case-insensitive
+                    if (/\\.pdf$/i.test(href)) {{
+                        elementInfo.type = 'pdf_link';
+                        elementInfo.href = href;
+                    }} else if (href.startsWith('http') || href.startsWith('/')) {{
+                         elementInfo.type = 'nav_link';
+                         // Avoid sending excessively long URLs to the LLM
+                         elementInfo.href = href.length > 250 ? href.substring(0, 250) + '...' : href;
+                    }} else {{
+                         // Exclude non-nav/pdf links like mailto:, javascript: for cleaner LLM context
+                         return; // Skip adding 'other_link' types
+                    }}
+                }} else {{
+                     elementInfo.type = el.tagName.toLowerCase(); // button, input
+                }}
+
+                elements.push(elementInfo);
+                seenElements.add(el); // Mark as seen
+            }});
+        }});
+
+        // Limit total text summary to avoid huge prompts
+        let bodyText = document.body.innerText || "";
+        let textSummary = bodyText.substring(0, 2000); // Increased summary length slightly
+        if (bodyText.length > 2000) textSummary += "... [text truncated]";
+
+        return {{
+            url: window.location.href,
+            title: document.title || "No Title", // Ensure title is always a string
+            elements: elements,
+            text_summary: textSummary // Provide a text summary
+        }};
+    }}
+    """
+    try:
+        page_id, page = await _ensure_page() # Ensure page exists
+        # Use the existing low-level tool to execute JS
+        result = await browser_execute_javascript(script=script)
+        if result.get("success") and isinstance(result.get("result"), dict):
+            page_state = result["result"]
+            # Ensure title is always present, fallback to URL if empty
+            if not page_state.get("title"):
+                page_state["title"] = page_state.get("url", "Unknown URL")
+            return page_state
+        else:
+            error_msg = result.get('error', 'Unknown JS execution error') if isinstance(result, dict) else "Invalid JS result"
+            logger.error(f"Failed to get page state via JS for page {page_id}: {error_msg}")
+            # Fallback using other tools
+            fallback_url_res = await browser_execute_javascript("() => window.location.href")
+            fallback_title_res = await browser_execute_javascript("() => document.title")
+            fallback_text_res = await browser_get_text(selector="body")
+            fallback_text = (fallback_text_res.get("text") or "")[:2000] + "... [fallback text truncated]" if fallback_text_res.get("success") else "Could not get body text."
+            return {
+                "url": fallback_url_res.get("result", "unknown_url"),
+                "title": fallback_title_res.get("result") or "Unknown Title",
+                "error": f"Failed to get detailed page state via JS ({error_msg}). Using fallback.",
+                "elements": [],
+                "text_summary": fallback_text
+            }
+    except Exception as e:
+        logger.error(f"Exception getting simplified page state: {e}", exc_info=True)
+        # Attempt graceful fallback even on exception
+        try:
+            page_id, page = await _ensure_page()
+            page_url = page.url if page and not page.is_closed() else "unknown_url"
+            page_title = await page.title() if page and not page.is_closed() else "Unknown Title"
+            return {
+                "url": page_url,
+                "title": page_title,
+                "error": f"Exception getting page state: {type(e).__name__}",
+                "elements": [],
+                "text_summary": "Failed to get page state due to exception."
+            }
+        except Exception as fallback_e:
+             logger.critical(f"Critical failure getting page state fallback: {fallback_e}", exc_info=True)
+             return {"url": "critical_error", "title": "critical_error", "error": "Critical failure getting page state.", "elements": []}
+        
+async def _call_browser_llm(
+    messages: List[Dict[str, str]],
+    model: str,
+    task_description: str,
+    expected_json: bool = True
+) -> Optional[Dict[str, Any]]:
+    """Internal helper to call the LLM for browser guidance and parse JSON response."""
+    logger.debug(f"Sending prompt to LLM ({model}) for {task_description}")
+    if not messages:
+        logger.error(f"LLM call attempted with empty messages list for {task_description}.")
+        return {"action": "error", "error": "Internal error: Empty messages list."}
+
+    try:
+        # Extract provider/model name
+        provider_name = model.split('/')[0] if '/' in model else "openai" # Default provider assumption
+        model_name = model.split('/')[-1]
+
+        completion_params = {
+            "provider": provider_name,
+            "model": model_name,
+            "messages": messages,
+            "temperature": 0.1, # Low temperature for focused tasks
+        }
+        if expected_json:
+             # Request JSON output if the LLM/provider supports it
+             completion_params["additional_params"] = {"response_format": {"type": "json_object"}}
+
+        # Call the chat_completion tool (which is already decorated with error handling etc.)
+        response = await chat_completion(**completion_params)
+
+        # chat_completion already returns a dict with success/error, use that structure
+        if response.get("success"):
+            llm_message = response.get("message", {})
+            llm_output_text = llm_message.get("content", "")
+            if not llm_output_text:
+                 logger.warning(f"LLM returned empty content for {task_description}")
+                 if expected_json:
+                     return {"action": "error", "error": "LLM returned empty content when JSON was expected."}
+                 else:
+                      return {"text": ""} # Return empty text if JSON wasn't required
+
+            logger.debug(f"LLM Raw Response for {task_description}: {llm_output_text}")
+
+            if expected_json:
+                # Attempt to parse JSON, with robust cleaning
+                try:
+                    # Try direct parse first
+                    try:
+                        action_data = json.loads(llm_output_text)
+                    except json.JSONDecodeError:
+                        # If direct parse fails, try cleaning markdown fences
+                        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", llm_output_text)
+                        if match:
+                            cleaned_output = match.group(1).strip()
+                        else:
+                            # Assume it might be plain JSON without fences but with surrounding text
+                            cleaned_output = llm_output_text.strip()
+                            # Attempt to extract first valid JSON object literal
+                            brace_match = re.search(r'\{.*\}', cleaned_output, re.DOTALL)
+                            if brace_match:
+                                cleaned_output = brace_match.group(0)
+                            else:
+                                 # If no object found, maybe it's just not JSON
+                                 raise json.JSONDecodeError("No JSON object found", cleaned_output, 0)
+
+
+                        if not cleaned_output:
+                            logger.error(f"LLM returned empty JSON string after cleaning for {task_description}")
+                            raise json.JSONDecodeError("Empty string after cleaning", cleaned_output, 0)
+
+                        action_data = json.loads(cleaned_output)
+
+                    if not isinstance(action_data, dict):
+                        logger.error(f"LLM JSON response is not a dictionary for {task_description}: {type(action_data)}")
+                        return {"action": "error", "error": f"LLM response was JSON but not a dictionary (type: {type(action_data)})."}
+
+                    logger.debug(f"LLM parsed action for {task_description}: {action_data}")
+                    return action_data
+
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"LLM response for {task_description} not valid JSON: {json_err}\nRaw text: '''{llm_output_text}'''")
+                    return {"action": "error", "error": f"LLM response was not valid JSON: {json_err}"}
+                except Exception as parse_err:
+                    logger.error(f"Error parsing LLM action JSON for {task_description}: {parse_err}\nRaw text: '''{llm_output_text}'''")
+                    return {"action": "error", "error": f"Error parsing LLM JSON: {parse_err}"}
+            else:
+                 # Return raw text if JSON wasn't expected
+                 return {"text": llm_output_text}
+        else:
+            # Use error details from the chat_completion response
+            error_detail = response.get("error", "Unknown LLM call error")
+            error_code = response.get("error_code", "LLM_CALL_FAILED")
+            logger.error(f"LLM call failed for {task_description}: {error_code} - {error_detail}")
+            # Include details if available in the response error
+            details = response.get("details", {})
+            return {"action": "error", "error": f"LLM call failed ({error_code}): {error_detail}", "details": details}
+
+    except Exception as e:
+        # Catch errors in setting up the call or unexpected issues
+        logger.error(f"Exception preparing or processing LLM call for {task_description}: {e}", exc_info=True)
+        return {"action": "error", "error": f"Exception during LLM interaction: {type(e).__name__}: {e}"}
+
+def _sanitize_filename(name: str) -> str:
+    """Internal helper to remove or replace characters invalid for filenames."""
+    if not isinstance(name, str): name = str(name) # Ensure string
+    name = name.strip()
+    # Replace sequences of whitespace (including newline, tab etc) with a single underscore
+    name = re.sub(r'\s+', '_', name)
+    # Remove or replace characters typically invalid or problematic in filenames across OS
+    # Removed: .,;: -- allow periods for extensions, maybe allow others if needed
+    name = re.sub(r'[\\/*?"<>|()\'\[\]!@#$%^&={}]', '', name) # Be more aggressive in removal
+    # Replace multiple consecutive underscores with a single one
+    name = re.sub(r'_+', '_', name)
+    # Remove leading/trailing underscores that might result
+    name = name.strip('_')
+    # Handle case where name becomes empty after sanitization
+    if not name:
+        name = "sanitized_empty_name_" + str(uuid.uuid4())[:4] # Add unique suffix
+    return name[:150] # Limit length for safety
+
+async def _perform_web_search(
+    query: str,
+    engine: str = "google",
+    num_results: int = 10 # Fetch more results initially for filtering
+) -> List[Dict[str, str]]:
+    """
+    Performs a web search using the browser and extracts basic result info.
+    Internal helper. Returns list of {"url": ..., "title": ..., "snippet": ...}.
+    """
+    logger.info(f"Performing web search on {engine} for: '{query}' (requesting top {num_results})")
+    search_results = []
+    try:
+        # Define engine specifics (copied/adapted from multi_engine_search_summary)
+        search_urls = {"google": "https://www.google.com", "bing": "https://www.bing.com", "duckduckgo": "https://duckduckgo.com"}
+        search_selectors = {"google": "textarea[name='q']", "bing": "input[name='q']", "duckduckgo": "input[name='q']"}
+        results_selectors = {"google": "div.g", "bing": "li.b_algo", "duckduckgo": "article.result"}
+        link_selectors = {"google": "a[href]", "bing": "h2 > a", "duckduckgo": "a.result__a"}
+        title_selectors = {"google": "h3", "bing": "h2", "duckduckgo": "h2 > a.result__a"}
+        snippet_selectors = {"google": "div[data-sncf~='1'], .VwiC3b", "bing": ".b_caption p", "duckduckgo": ".result__snippet"}
+
+        engine_key = engine.lower()
+        search_url = search_urls.get(engine_key, search_urls["google"])
+        search_selector = search_selectors.get(engine_key, search_selectors["google"])
+        results_selector = results_selectors.get(engine_key, results_selectors["google"])
+        link_selector = link_selectors.get(engine_key, link_selectors["google"])
+        title_selector = title_selectors.get(engine_key, title_selectors["google"])
+        snippet_selector = snippet_selectors.get(engine_key, snippet_selectors["google"])
+
+        # Execute search using low-level tools
+        await browser_navigate(url=search_url, wait_until="domcontentloaded", capture_snapshot=False)
+        await browser_type(selector=search_selector, text=query, press_enter=True, capture_snapshot=False)
+        await browser_wait(wait_type="selector", value=results_selector, timeout=15000, capture_snapshot=False)
+        await asyncio.sleep(2.0) # Let results settle
+
+        # Extract results via JS
+        script = f"""
+        () => {{
+            const results = [];
+            const resultElements = document.querySelectorAll('{results_selector}');
+            const numToExtract = {num_results}; // Get requested number
+            console.log(`Found ${{resultElements.length}} potential results for '{results_selector}' on {engine_key}`);
+            for (let i = 0; i < resultElements.length && results.length < numToExtract; i++) {{
+                const el = resultElements[i];
+                try {{
+                    const linkEl = el.querySelector('{link_selector}');
+                    const titleEl = el.querySelector('{title_selector}');
+                    const snippetEl = el.querySelector('{snippet_selector}');
+                    const url = linkEl?.href;
+                    let title = titleEl?.innerText?.trim() || linkEl?.innerText?.trim();
+                    let snippet = snippetEl?.innerText?.trim();
+                    if (url && url.startsWith('http') && title && !url.includes('/search?q=') && !url.includes('google.com/url?q=')) {{
+                        title = title.replace(/^Cached - /i, '').trim();
+                        snippet = snippet ? snippet.substring(0, 500) + (snippet.length > 500 ? '...' : '') : '';
+                        results.push({{ url: url, title: title, snippet: snippet || '' }});
+                    }}
+                }} catch (e) {{ console.error('Error processing search result element:', e); }}
+            }}
+            return results;
+        }}"""
+        extract_res = await browser_execute_javascript(script=script)
+        if extract_res.get("success") and isinstance(extract_res.get("result"), list):
+            search_results = extract_res["result"]
+            logger.info(f"Successfully extracted {len(search_results)} results from {engine}.")
+        else:
+            logger.warning(f"Failed to extract results via JS from {engine}: {extract_res.get('error')}")
+
+    except (ToolError, ToolInputError, Exception) as search_err:
+        logger.error(f"Error performing search on {engine} for '{query}': {type(search_err).__name__}: {search_err}", exc_info=False)
+        # Don't raise, just return empty list or partial results if any were collected before error
+    return search_results
+
+async def _select_relevant_urls_llm(
+    search_results: List[Dict[str, str]],
+    selection_prompt: str,
+    topic: str,
+    max_urls: int,
+    llm_model: str
+) -> List[str]:
+    """Uses LLM to filter/select relevant URLs from search results."""
+    if not search_results:
+        return []
+
+    logger.info(f"Asking LLM ({llm_model}) to select up to {max_urls} relevant URLs for topic '{topic}'...")
+
+    # Format search results for the prompt
+    results_context = f"Topic: {topic}\n\nSearch Results:\n"
+    for i, res in enumerate(search_results):
+        results_context += f"{i+1}. URL: {res.get('url', 'N/A')}\n   Title: {res.get('title', 'N/A')}\n   Snippet: {res.get('snippet', 'N/A')}\n\n"
+
+    system_prompt = "You are an AI assistant evaluating search results to select the most relevant sources for a research topic based on user criteria. Respond ONLY with a valid JSON object like {\"selected_urls\": [\"url1\", \"url2\", ...]}."
+    user_prompt = selection_prompt.format(topic=topic, search_results_context=results_context, max_urls=max_urls) # Pass context and max_urls to prompt template
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+    llm_response = await _call_browser_llm(messages, llm_model, f"selecting relevant URLs for {topic}", expected_json=True)
+
+    selected_urls = []
+    if llm_response and llm_response.get("action") != "error" and isinstance(llm_response.get("selected_urls"), list):
+        selected_urls = [url for url in llm_response["selected_urls"] if isinstance(url, str) and url.startswith("http")]
+        logger.info(f"LLM selected {len(selected_urls)} URLs based on criteria.")
+        # Ensure we don't exceed max_urls requested by user
+        selected_urls = selected_urls[:max_urls]
+    else:
+        logger.warning(f"LLM failed to select relevant URLs or returned invalid format. Error: {llm_response.get('error', 'Invalid response')}")
+
+    return selected_urls
+
+
+async def _extract_info_from_url_llm(
+    url: str,
+    extraction_prompt_or_schema: Union[str, Dict],
+    topic: str, # Add topic for context
+    llm_model: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Navigates to URL, gets content, uses LLM to extract data.
+    Returns extracted data dict or None on failure. Internal helper.
+    """
+    logger.debug(f"Extracting information from URL: {url} related to topic '{topic}'")
+    page_content_context = f"Failed to retrieve content for {url}." # Default
+    extracted_data = None
+    try:
+        # Navigate & Get Content State
+        nav_res = await browser_navigate(url=url, wait_until="load", timeout=30000, capture_snapshot=False)
+        if not nav_res.get("success"): raise ToolError(f"Navigation failed: {nav_res.get('error')}")
+        await asyncio.sleep(1.5)
+        page_state = await _get_simplified_page_state_for_llm()
+        if page_state.get("error"):
+             body_text_res = await browser_get_text(selector="body")
+             page_content_context = body_text_res.get("text", f"Failed extraction: {page_state['error']}")[:10000]
+        else:
+             page_content_context = f"URL: {page_state.get('url')}\nTitle: {page_state.get('title')}\n"
+             page_content_context += f"Text Summary:\n{page_state.get('text_summary', '')[:8000]}\n" # Limit context more aggressively
+
+        # Prepare LLM Prompt for Extraction
+        system_prompt = "You are an AI assistant extracting specific information or data points from web page content based on user instructions or a schema. Respond ONLY with a valid JSON object containing the extracted data."
+        if isinstance(extraction_prompt_or_schema, dict): # JSON Schema approach
+            user_prompt = f"Extract data matching the following JSON schema from the web page content provided below. The content relates to the topic '{topic}'. Respond ONLY with the valid JSON data object.\n\nSchema:\n```json\n{json.dumps(extraction_prompt_or_schema, indent=2)}\n```\n\nWeb Page Content Context:\n---\n{page_content_context}\n---\n\nExtracted JSON Data:"
+        else: # Natural Language Prompt approach
+            user_prompt = f"{extraction_prompt_or_schema}\n\nUse the web page content context below, related to the topic '{topic}', to perform the extraction. Respond ONLY with a valid JSON data object containing the requested information.\n\nWeb Page Content Context:\n---\n{page_content_context}\n---\n\nExtracted JSON Data:"
+
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+        # Call LLM for extraction
+        extraction_result = await _call_browser_llm(messages, llm_model, f"extracting info from {url} for '{topic}'", expected_json=True)
+
+        if extraction_result and extraction_result.get("action") != "error" and isinstance(extraction_result, dict):
+            extracted_data = extraction_result # The result *is* the data dict
+            logger.info(f"Successfully extracted info from {url}")
+        else:
+            raise ToolError(f"LLM data extraction failed: {extraction_result.get('error', 'No valid JSON returned')}")
+
+        return extracted_data # Return the dictionary extracted by the LLM
+
+    except (ToolError, ToolInputError) as e:
+        logger.warning(f"Failed to extract info from {url}: {type(e).__name__}: {e}")
+        return {"_extraction_error": str(e), "_url": url} # Return error marker
+    except Exception as e:
+        logger.error(f"Unexpected error extracting info from {url}: {e}", exc_info=True)
+        return {"_extraction_error": f"Unexpected error: {type(e).__name__}", "_url": url} # Return error marker
+
+
+async def _synthesize_report_llm(
+    extracted_snippets: List[Dict[str, Any]],
+    synthesis_prompt: str,
+    topic: str,
+    report_format: str,
+    llm_model: str
+) -> str:
+    """Uses LLM to synthesize a report from extracted data snippets."""
+    if not extracted_snippets:
+        return "No information was successfully extracted from the sources to synthesize a report."
+
+    logger.info(f"Synthesizing report for topic '{topic}' from {len(extracted_snippets)} snippets using LLM {llm_model}")
+
+    # Format snippets for the prompt context
+    context = f"Research Topic: {topic}\n\nExtracted Information Snippets:\n"
+    snippet_limit = 15000 // len(extracted_snippets) if extracted_snippets else 500 # Dynamically limit snippet length based on count
+
+    for i, snippet_data in enumerate(extracted_snippets):
+        # Include URL if available, exclude error markers
+        source_url = snippet_data.get("_url", "Unknown Source")
+        actual_data = {k: v for k, v in snippet_data.items() if not k.startswith("_")}
+        snippet_str = json.dumps(actual_data, indent=2, default=str) # Pretty print snippet data
+        if len(snippet_str) > snippet_limit: snippet_str = snippet_str[:snippet_limit] + "... [truncated]"
+        context += f"\n--- Snippet {i+1} from {source_url} ---\n{snippet_str}\n"
+
+    # Prepare Synthesis Prompt
+    system_prompt = f"You are an AI assistant synthesizing a research report based on provided information snippets. The desired report format is: {report_format}."
+    user_prompt = synthesis_prompt.format(topic=topic, extracted_information_context=context) # Pass snippets to the prompt template
+    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+    # Call LLM for Synthesis
+    # Expecting text output here, not necessarily JSON
+    llm_response = await _call_browser_llm(messages, llm_model, f"synthesizing report for {topic}", expected_json=False)
+
+    if llm_response and llm_response.get("action") != "error" and isinstance(llm_response.get("text"), str):
+        report_content = llm_response["text"].strip()
+        logger.success(f"Successfully synthesized report for topic '{topic}'.")
+        return report_content
+    else:
+        error_msg = f"LLM report synthesis failed: {llm_response.get('error', 'No text returned')}" if llm_response else "LLM call failed unexpectedly."
+        logger.error(error_msg)
+        return f"Error: Failed to synthesize report. {error_msg}"
+    
+async def _extract_single_data_point(
+    page: Page, # Pass the Page object directly
+    url: str,
+    data_point_def: Dict[str, Any],
+    llm_model: str
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Extracts a single data point from the current page based on its definition.
+    Handles both selector-based and LLM-based extraction.
+    Internal helper for monitor_web_data_points.
+
+    Args:
+        page: The active Playwright Page object.
+        url: The URL of the page (for context).
+        data_point_def: Dictionary defining the data point ('name', 'identifier', 'extraction_method').
+        llm_model: The LLM model identifier to use if method is 'llm'.
+
+    Returns:
+        Tuple (extracted_value: Optional[str], error_message: Optional[str])
+    """
+    name = data_point_def.get("name", "Unnamed Data Point")
+    identifier = data_point_def.get("identifier")
+    method = data_point_def.get("extraction_method", "selector").lower()
+    attribute = data_point_def.get("attribute") # Optional attribute for selector method
+
+    if not identifier:
+        return None, f"Missing 'identifier' for data point '{name}'"
+
+    logger.debug(f"Extracting data point '{name}' from {url} using method '{method}' (Identifier: '{identifier[:50]}...')")
+
+    extracted_value = None
+    error_message = None
+
+    try:
+        if method == "selector":
+            if not isinstance(identifier, str):
+                return None, f"'identifier' must be a CSS selector string for method 'selector' (data point '{name}')"
+
+            # Use low-level tools for extraction
+            if attribute:
+                # Extract an attribute value
+                attr_res = await browser_get_attributes(selector=identifier, attributes=[attribute])
+                if attr_res.get("success"):
+                    extracted_value = attr_res.get("attributes", {}).get(attribute) # Can be None if attribute doesn't exist
+                    if extracted_value is None:
+                         logger.warning(f"Attribute '{attribute}' not found for selector '{identifier}' on {url}")
+                         # Return None, let condition check handle it, or report as error? Let's return None.
+                else:
+                    error_message = f"Failed to get attribute '{attribute}' for selector '{identifier}': {attr_res.get('error', 'Unknown error')}"
+            else:
+                # Extract text content
+                text_res = await browser_get_text(selector=identifier, trim=True)
+                if text_res.get("success"):
+                    extracted_value = text_res.get("text")
+                else:
+                    error_message = f"Failed to get text for selector '{identifier}': {text_res.get('error', 'Unknown error')}"
+
+        elif method == "llm":
+            if not isinstance(identifier, str):
+                return None, f"'identifier' must be a natural language prompt/description for method 'llm' (data point '{name}')"
+
+            # Get page context for the LLM
+            page_state = await _get_simplified_page_state_for_llm() # Use existing helper
+            page_context = f"URL: {page_state.get('url', url)}\nTitle: {page_state.get('title', 'N/A')}\n"
+            page_context += f"Text Summary:\n{page_state.get('text_summary', 'N/A')[:4000]}\n\n" # Limit context
+            # Maybe add relevant elements? Could make prompt too long. Stick to text summary for now.
+
+            system_prompt = "You are an AI assistant extracting specific data points from web page content based on user instructions. Respond ONLY with the extracted value as a plain string. If the value cannot be found or extracted, respond with the exact string 'VALUE_NOT_FOUND'."
+            user_prompt = "Extract the following data point based on the provided page content:\n'{identifier}'\n\nWeb Page Content Context:\n---\n{page_content_context}\n---\n\nExtracted Value:"
+
+            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+            llm_response = await _call_browser_llm(messages, llm_model, f"extracting '{name}' from {url}", expected_json=False) # Expect text
+
+            if llm_response and llm_response.get("action") != "error" and isinstance(llm_response.get("text"), str):
+                value = llm_response["text"].strip()
+                if value == "VALUE_NOT_FOUND":
+                    extracted_value = None # Explicitly not found by LLM
+                    logger.info(f"LLM indicated value not found for data point '{name}' on {url}")
+                else:
+                    extracted_value = value
+            else:
+                error_message = f"LLM extraction failed for '{name}': {llm_response.get('error', 'No text returned')}"
+
+        else:
+            error_message = f"Invalid 'extraction_method' ('{method}') for data point '{name}'. Use 'selector' or 'llm'."
+
+        # Ensure extracted value is string or None
+        if extracted_value is not None and not isinstance(extracted_value, str):
+             extracted_value = str(extracted_value)
+
+        return extracted_value, error_message
+
+    except (ToolError, ToolInputError) as e:
+        # Errors from underlying browser tools
+        logger.warning(f"Browser tool error extracting '{name}' from {url}: {e}")
+        return None, f"Browser tool error: {str(e)}"
+    except Exception as e:
+        logger.error(f"Unexpected error extracting data point '{name}' from {url}: {e}", exc_info=True)
+        return None, f"Unexpected error: {type(e).__name__}"
+
+
+async def _evaluate_data_point_condition(
+    data_point_name: str,
+    current_value: Optional[str],
+    condition_def: Dict[str, Any],
+    previous_value: Optional[str],
+    llm_model: str
+) -> Tuple[bool, str, Optional[str]]:
+    """
+    Evaluates a condition against the extracted data point value.
+    Internal helper for monitor_web_data_points.
+
+    Args:
+        data_point_name: Name of the data point (for logging).
+        current_value: The recently extracted value (string or None).
+        condition_def: Dictionary defining the condition ('condition', 'condition_value', 'llm_condition_prompt').
+        previous_value: The value from the previous run (Optional[str]).
+        llm_model: LLM model identifier for 'llm_eval' condition.
+
+    Returns:
+        Tuple (condition_met: bool, status_description: str, error_message: Optional[str])
+    """
+    condition_type = condition_def.get("condition", "changed").lower()
+    condition_value_param = condition_def.get("condition_value") # Can be string, number, pattern
+    llm_prompt = condition_def.get("llm_condition_prompt")
+
+    condition_met = False
+    status_desc = f"Condition '{condition_type}' evaluated." # Default
+    error_msg = None
+
+    # Handle case where extraction failed (current_value is None)
+    if current_value is None:
+        status_desc = "Condition check skipped: Current value could not be extracted."
+        # Should condition_met be false or null/error? Let's say false.
+        condition_met = False
+        error_msg = "Value extraction failed"
+        return condition_met, status_desc, error_msg
+
+    try:
+        if condition_type == "changed":
+            # Check if previous value exists and is different from current
+            if previous_value is None:
+                status_desc = "Condition 'changed': No previous value to compare."
+                condition_met = True # Treat first run as 'changed'
+            else:
+                condition_met = (current_value != previous_value)
+                status_desc = f"Condition 'changed': {'Detected' if condition_met else 'Not detected'} (Current: '{current_value[:30]}...', Previous: '{previous_value[:30]}...')"
+
+        elif condition_type == "equals":
+            expected_value = str(condition_value_param) if condition_value_param is not None else ""
+            condition_met = (current_value == expected_value)
+            status_desc = f"Condition 'equals': {'Met' if condition_met else 'Not met'} (Current: '{current_value}', Expected: '{expected_value}')"
+
+        elif condition_type == "contains":
+            substring = str(condition_value_param) if condition_value_param is not None else ""
+            if not substring: raise ValueError("condition_value (substring) required for 'contains'")
+            condition_met = (substring in current_value)
+            status_desc = f"Condition 'contains': {'Met' if condition_met else 'Not met'} (Current: '{current_value[:50]}...', Substring: '{substring}')"
+
+        elif condition_type in ["greater_than", "less_than", "ge", "le"]:
+            # Attempt numeric comparison
+            try:
+                current_num = float(current_value)
+                expected_num = float(condition_value_param)
+                op_map = { "greater_than": lambda a, b: a > b, "less_than": lambda a, b: a < b, "ge": lambda a, b: a >= b, "le": lambda a, b: a <= b }
+                if condition_type not in op_map: raise ValueError(f"Unknown numeric comparison {condition_type}") # Should not happen
+                condition_met = op_map[condition_type](current_num, expected_num)
+                op_symbol = { "greater_than": ">", "less_than": "<", "ge": ">=", "le": "<=" }[condition_type]
+                status_desc = f"Condition '{condition_type}': {'Met' if condition_met else 'Not met'} (Current: {current_num} {op_symbol} Expected: {expected_num})"
+            except (ValueError, TypeError) as num_err:
+                error_msg = f"Numeric conversion failed for condition '{condition_type}': Current='{current_value}', Expected='{condition_value_param}' ({num_err})"
+                status_desc = f"Condition '{condition_type}': Failed ({error_msg})"
+                condition_met = False
+
+        elif condition_type == "regex_match":
+            pattern = str(condition_value_param) if condition_value_param else ""
+            if not pattern: raise ValueError("condition_value (regex pattern) required for 'regex_match'")
+            try:
+                condition_met = bool(re.search(pattern, current_value))
+                status_desc = f"Condition 'regex_match': {'Met' if condition_met else 'Not met'} (Current: '{current_value[:50]}...', Pattern: '{pattern}')"
+            except re.error as regex_err:
+                error_msg = f"Invalid regex pattern '{pattern}': {regex_err}"
+                status_desc = f"Condition 'regex_match': Failed ({error_msg})"
+                condition_met = False
+
+        elif condition_type == "llm_eval":
+            if not llm_prompt: raise ValueError("llm_condition_prompt required for 'llm_eval'")
+            # Prepare context for LLM evaluation
+            eval_context = f"Current Value: {current_value}\n"
+            if previous_value is not None: eval_context += f"Previous Value: {previous_value}\n"
+            if condition_value_param is not None: eval_context += f"Reference Value/Criteria: {condition_value_param}\n"
+
+            system_prompt = "You are an AI assistant evaluating a condition based on provided data and criteria. Respond ONLY with a valid JSON object: {\"condition_met\": true} or {\"condition_met\": false}."
+            user_prompt = f"{llm_prompt}\n\nContext:\n---\n{eval_context}---\n\nJSON Response:"
+            messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+            llm_response = await _call_browser_llm(messages, llm_model, f"evaluating condition for '{data_point_name}'", expected_json=True)
+
+            if llm_response and llm_response.get("action") != "error" and isinstance(llm_response.get("condition_met"), bool):
+                condition_met = llm_response["condition_met"]
+                status_desc = f"Condition 'llm_eval': {'Met' if condition_met else 'Not met'} (Evaluated by LLM)"
+            else:
+                error_msg = f"LLM condition evaluation failed: {llm_response.get('error', 'Invalid response format - expected {{\"condition_met\": bool}}')}"
+                status_desc = f"Condition 'llm_eval': Failed ({error_msg})"
+                condition_met = False
+
+        else:
+            error_msg = f"Unsupported condition type: '{condition_type}'"
+            status_desc = f"Condition check skipped: {error_msg}"
+            condition_met = False
+
+    except Exception as e:
+        logger.error(f"Unexpected error evaluating condition '{condition_type}' for '{data_point_name}': {e}", exc_info=True)
+        error_msg = f"Unexpected evaluation error: {type(e).__name__}"
+        status_desc = f"Condition '{condition_type}': Failed ({error_msg})"
+        condition_met = False
+
+    logger.debug(f"Condition evaluation for '{data_point_name}': Type='{condition_type}', Met={condition_met}, Desc='{status_desc}', Error='{error_msg}'")
+    return condition_met, status_desc, error_msg
+
+async def _find_element_locator_for_workflow(
+    page: Page,
+    element_id: str,
+    page_state_elements: List[Dict[str, Any]]
+) -> Optional[Locator]:
+    """
+    Attempts to find a reliable Playwright Locator based on the element_id
+    provided by the LLM, using the context from the captured page state.
+    Internal helper for execute_web_workflow.
+
+    Args:
+        page: The current Playwright Page object.
+        element_id: The 'el_N' identifier chosen by the LLM.
+        page_state_elements: The list of elements captured by _get_simplified_page_state_for_llm
+                             *at the time the LLM made its decision*.
+
+    Returns:
+        A Playwright Locator object if found, otherwise None.
+    """
+    target_element_info = next((el for el in page_state_elements if el.get("id") == element_id), None)
+
+    if not target_element_info:
+        logger.warning(f"Could not find element info in page state for ID: {element_id}")
+        return None
+
+    tag = target_element_info.get("tag", "*") # Default to any tag if missing
+    text = target_element_info.get("text")
+    el_type = target_element_info.get("type") # e.g., 'nav_link', 'pdf_link', 'button'
+
+    logger.debug(f"Attempting to locate element {element_id}: tag={tag}, text='{text}', type={el_type}")
+
+    locator = None
+    try:
+        # Strategy 1: Use text if available and reasonably specific
+        if text and text != '<no text>' and len(text) > 2:
+            try:
+                # Try finding by text first (often robust for buttons, links)
+                # Use exact=False for flexibility, filter by tag potentially
+                locator = page.locator(f'{tag}:text-matches("{re.escape(text)}", "i")').first
+                # Verify quickly if it exists
+                await locator.count()
+                if await locator.count() > 0:
+                    logger.debug(f"Located {element_id} by text: '{text}'")
+                    return locator
+                else:
+                     logger.debug(f"Locator by text '{text}' found 0 elements.")
+                     locator = None # Reset if count is 0
+            except Exception as text_loc_err:
+                logger.warning(f"Locating {element_id} by text '{text}' failed: {text_loc_err}. Trying other methods.")
+                locator = None # Reset locator
+
+        # Strategy 2: Fallback using CSS selector derived from index (Less Reliable)
+        # This assumes the element order from JS snapshot matches nth-of-type, which is fragile.
+        # Only use as a last resort.
+        if locator is None:
+            match = re.match(r"el_(\d+)", element_id)
+            if match:
+                element_index = int(match.group(1))
+                # Construct a potential nth-of-type selector based on common interactive tags
+                fallback_selector = f":is(a[href], button, input[type='button'], input[type='submit'], input[type='text'], textarea, select)[{element_index}]"
+                # Alternative: Use Playwright's nth() - might be slightly better
+                # fallback_locator = page.locator(":is(a[href], button, input[type='button'], input[type='submit'], input[type='text'], textarea, select)").nth(element_index)
+
+                try:
+                    logger.debug(f"Falling back to index-based selector for {element_id}: index {element_index}")
+                    locator = page.locator(":is(a[href], button, input[type='button'], input[type='submit'], input[type='text'], textarea, select)").nth(element_index)
+                    await locator.count() # Check if it exists
+                    if await locator.count() > 0:
+                         logger.warning(f"Located {element_id} using less reliable index-based method.")
+                         return locator
+                    else:
+                         logger.warning(f"Index-based locator for {element_id} found 0 elements.")
+                         return None
+                except Exception as idx_loc_err:
+                    logger.error(f"Fallback index-based locator failed for {element_id}: {idx_loc_err}")
+                    return None
+            else:
+                logger.error(f"Invalid element_id format for fallback: {element_id}")
+                return None
+
+    except Exception as e:
+        logger.error(f"Unexpected error finding locator for {element_id}: {e}", exc_info=True)
+        return None
+
+    return None # Should have returned earlier if successful
+
+async def _summarize_single_url(url: str, query: str, llm_model: str, url_info: Dict) -> Dict:
+    """Internal helper to navigate, extract text, and summarize a single URL."""
+    logger.debug(f"Summarizing URL: {url}")
+    page_text = "Content extraction failed."
+    summary = "Summary generation failed."
+    error = None
+    try:
+        # Use existing low-level tools within the helper
+        nav_res = await browser_navigate(url=url, wait_until="load", timeout=25000)
+        if not nav_res.get("success"): raise ToolError(f"Navigation failed: {nav_res.get('error')}")
+        await asyncio.sleep(1.5)
+
+        text_res = await browser_get_text(selector="body")
+        if text_res.get("success"):
+             page_text = (text_res.get("text") or "")[:10000] # Limit context
+        else:
+             logger.warning(f"browser_get_text failed for {url}: {text_res.get('error')}")
+             page_text = url_info.get("snippet", "Content extraction failed.") # Fallback to snippet
+
+        if not page_text.strip():
+             page_text = url_info.get("snippet", "No content available.")
+             logger.warning(f"No text content found on {url}, using snippet: '{page_text[:100]}...'")
+
+        system_prompt_sum = "You are an AI assistant that concisely summarizes web page text relevant to a user query."
+        user_prompt_sum = f"Concisely summarize the key information from the following web page content, focusing on its relevance to the search query '{query}'. Output a brief 2-3 sentence summary only.\n\nPage Content:\n---\n{page_text}\n---\n\nConcise Summary:"
+        messages_sum = [{"role": "system", "content": system_prompt_sum}, {"role": "user", "content": user_prompt_sum}]
+
+        summary_res = await _call_browser_llm(messages_sum, llm_model, f"summarizing {url}", expected_json=False)
+
+        if summary_res and summary_res.get("action") != "error" and isinstance(summary_res.get("text"), str):
+            summary = summary_res["text"].strip() or "Summary generation returned empty."
+        else:
+            error_detail = summary_res.get('error', 'LLM did not return text.') if summary_res else 'LLM call failed.'
+            summary = f"Summary generation failed: {error_detail}"
+            error = summary # Assign error if summary failed
+
+    except Exception as page_err:
+        logger.error(f"Failed processing page {url} for summary: {type(page_err).__name__}: {page_err}", exc_info=False) # Keep log less noisy
+        error = f"{type(page_err).__name__}: {str(page_err)}"
+        summary = f"Failed to process page: {error}"
+
+    # Return structured result including potential error
+    return {
+        "url": url,
+        "title": url_info.get("title", "Title N/A"),
+        "summary": summary,
+        "source_engine": url_info.get("source_engines", []),
+        "error": error # Will be None if successful
+    }
+
+async def _find_urls_dynamically(
+    instructions: Dict[str, Any],
+    max_urls: int = 100 # Safety limit
+) -> List[str]:
+    """
+    Navigates listing pages to dynamically find URLs based on instructions.
+    Internal helper for extract_structured_data_from_pages.
+    """
+    start_url = instructions.get("start_url")
+    list_item_selector = instructions.get("list_item_selector") # Selector for the link element itself
+    next_page_selector = instructions.get("next_page_selector") # Selector for the 'next page' button/link
+    max_pages_to_crawl = instructions.get("max_pages_to_crawl", 5) # Limit pagination
+
+    if not start_url or not list_item_selector:
+        raise ToolInputError("Dynamic URL finding requires 'start_url' and 'list_item_selector' in instructions.")
+
+    found_urls = set()
+    current_crawl_url = start_url
+    visited_crawl_urls = {start_url}
+
+    logger.info(f"Starting dynamic URL discovery from: {start_url}")
+
+    for page_num in range(max_pages_to_crawl):
+        logger.info(f"Crawling page {page_num + 1}/{max_pages_to_crawl}: {current_crawl_url}")
+        try:
+            await browser_navigate(url=current_crawl_url, wait_until="domcontentloaded", capture_snapshot=False)
+            await asyncio.sleep(1.5) # Wait for potential JS rendering
+
+            # Extract links matching the item selector on the current page
+            link_extraction_script = f"""
+            () => {{
+                const links = new Set(); // Use a Set to automatically handle duplicates on the page
+                document.querySelectorAll('{list_item_selector}').forEach(el => {{
+                    if (el.href && el.href.startsWith('http')) {{ // Ensure it's an absolute URL
+                        links.add(el.href);
+                    }}
+                }});
+                return Array.from(links);
+            }}
+            """
+            extract_res = await browser_execute_javascript(script=link_extraction_script)
+            page_links = extract_res.get("result", []) if extract_res.get("success") and isinstance(extract_res.get("result"), list) else []
+
+            newly_found = 0
+            for link in page_links:
+                if link not in found_urls:
+                    found_urls.add(link)
+                    newly_found += 1
+                    if len(found_urls) >= max_urls:
+                         logger.info(f"Reached maximum URL limit ({max_urls}). Stopping discovery.")
+                         return list(found_urls) # Stop early if max limit reached
+
+            logger.info(f"Found {newly_found} new URLs on this page. Total unique URLs: {len(found_urls)}")
+
+            # Find and click the next page element, if specified
+            if next_page_selector:
+                next_page_element_exists = await browser_execute_javascript(f"() => !!document.querySelector('{next_page_selector}')")
+                if next_page_element_exists.get("result"):
+                    logger.debug(f"Attempting to click next page selector: {next_page_selector}")
+                    click_res = await browser_click(selector=next_page_selector, capture_snapshot=False)
+                    if not click_res.get("success"):
+                        logger.warning(f"Could not click next page selector ('{next_page_selector}'): {click_res.get('error')}. Stopping crawl.")
+                        break # Stop if next click fails
+
+                    await asyncio.sleep(2.5) # Wait for next page to load
+
+                    # Get new URL and check if we've visited it before to detect loops
+                    current_url_res = await browser_execute_javascript("() => window.location.href")
+                    current_crawl_url = current_url_res.get("result")
+                    if not current_crawl_url or current_crawl_url in visited_crawl_urls:
+                         logger.warning(f"Next page navigation led to a visited URL ({current_crawl_url}) or failed. Stopping crawl.")
+                         break
+                    visited_crawl_urls.add(current_crawl_url)
+                else:
+                    logger.info("Next page selector not found. Assuming end of list.")
+                    break # No next page found
+            else:
+                logger.info("No next_page_selector provided. Stopping crawl after one page.")
+                break # Only crawl the first page if no next selector
+
+        except (ToolError, ToolInputError, Exception) as crawl_err:
+            logger.error(f"Error during URL discovery on page {page_num + 1} ({current_crawl_url}): {crawl_err}", exc_info=True)
+            # Decide whether to stop or continue? Let's stop on error.
+            raise ToolError(f"Failed during dynamic URL discovery: {crawl_err}") from crawl_err
+
+    logger.info(f"Dynamic URL discovery finished. Found {len(found_urls)} unique URLs.")
+    return list(found_urls)
+
+async def _extract_data_from_single_page(
+    url: str,
+    extraction_schema_or_prompt: Union[str, Dict],
+    llm_model: str,
+    page_state_func: callable = _get_simplified_page_state_for_llm # Allow injecting state func if needed
+) -> Dict[str, Any]:
+    """
+    Navigates to a URL, gets content, uses LLM to extract structured data.
+    Internal helper for extract_structured_data_from_pages.
+    Returns {"data": {...}} on success, {"error": "...", "url": url} on failure.
+    """
+    logger.debug(f"Extracting data from URL: {url}")
+    page_content_context = "Could not retrieve page content." # Default context
+    extraction_result = None
+    try:
+        # 1. Navigate
+        nav_res = await browser_navigate(url=url, wait_until="load", timeout=30000, capture_snapshot=False)
+        if not nav_res.get("success"):
+            raise ToolError(f"Navigation failed: {nav_res.get('error', 'Unknown navigation error')}")
+        await asyncio.sleep(1.5) # Wait for dynamic content
+
+        # 2. Get Page State/Content
+        page_state = await page_state_func() # Use the provided state function
+        if page_state.get("error"):
+             logger.warning(f"Using fallback content for {url} due to state extraction error: {page_state['error']}")
+             # Try simple body text as a last resort
+             body_text_res = await browser_get_text(selector="body")
+             page_content_context = body_text_res.get("text", "Failed to get any page content.")[:10000] # Limit fallback context
+        else:
+             # Construct context from the simplified state
+             page_content_context = f"URL: {page_state.get('url')}\nTitle: {page_state.get('title')}\n"
+             page_content_context += f"Text Summary:\n{page_state.get('text_summary', '')[:4000]}\n\n" # Limit summary length
+             page_content_context += f"Relevant Elements:\n"
+             for el in page_state.get('elements', [])[:30]: # Limit elements in context
+                 page_content_context += f"- {el.get('id')}: {el.get('tag')} '{el.get('text')}'\n"
+
+        # 3. Prepare LLM Prompt
+        system_prompt = "You are an AI assistant that extracts structured data from web page content based on user instructions or a schema. Respond ONLY with the valid JSON object containing the extracted data."
+        if isinstance(extraction_schema_or_prompt, dict):
+            # Assume it's a JSON schema
+            user_prompt = f"Extract data matching the following JSON schema from the provided web page content. Respond ONLY with the valid JSON data object.\n\nSchema:\n```json\n{json.dumps(extraction_schema_or_prompt, indent=2)}\n```\n\nWeb Page Content Context:\n---\n{page_content_context}\n---\n\nExtracted JSON Data:"
+        else:
+            # Assume it's a natural language prompt
+            user_prompt = f"{extraction_schema_or_prompt}\n\nUse the following web page content context to perform the extraction. Respond ONLY with the valid JSON data object.\n\nWeb Page Content Context:\n---\n{page_content_context}\n---\n\nExtracted JSON Data:"
+
+        messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+
+        # 4. Call LLM
+        extraction_result = await _call_browser_llm(messages, llm_model, f"extracting data from {url}", expected_json=True)
+
+        # 5. Validate Result
+        if not extraction_result or extraction_result.get("action") == "error":
+            raise ToolError(f"LLM data extraction failed: {extraction_result.get('error', 'No valid JSON returned')}")
+        if not isinstance(extraction_result, dict):
+             # Should be caught by _call_browser_llm, but double check
+             raise ToolError(f"LLM extraction returned non-dictionary result: {type(extraction_result)}")
+
+        # Successfully extracted data
+        return {"data": extraction_result, "url": url}
+
+    except Exception as e:
+        logger.error(f"Failed to extract data from {url}: {type(e).__name__}: {e}", exc_info=False) # Log less verbosely for individual failures
+        return {"error": f"{type(e).__name__}: {str(e)}", "url": url}
+
+def _format_output_data(aggregated_data: List[Dict], output_format: str) -> Union[List[Dict], str]:
+    """Formats the aggregated list of extracted data dictionaries."""
+    if output_format == "csv_string":
+        if not aggregated_data:
+            return "" # Empty CSV for no data
+
+        # Use the keys from the first item as headers
+        # Ensure consistent order - use keys() which is ordered in Python 3.7+
+        headers = list(aggregated_data[0].keys())
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=headers, quoting=csv.QUOTE_MINIMAL)
+
+        writer.writeheader()
+        writer.writerows(aggregated_data)
+
+        return output.getvalue()
+    else: # Default to "json_list"
+        return aggregated_data
+    
 @with_tool_metrics
 @with_error_handling
 async def browser_get_console_logs() -> Dict[str, Any]:
@@ -532,55 +1526,6 @@ async def browser_get_console_logs() -> Dict[str, Any]:
         
         raise ToolError(status_code=500, detail=error_msg) from e
 
-# Register all tools in LLM Gateway
-def register_playwright_tools(mcp_server) -> None:
-    """Register all Playwright browser automation tools with the MCP server."""
-    
-    tools = [
-        # Browser management
-        browser_init,
-        browser_close,
-        browser_install,
-        
-        # Navigation
-        browser_navigate,
-        browser_back,
-        browser_forward,
-        browser_reload,
-        browser_wait,
-        
-        # Tab management
-        browser_tab_new,
-        browser_tab_close,
-        browser_tab_list,
-        browser_tab_select,
-        
-        # Interaction
-        browser_click,
-        browser_type,
-        browser_select,
-        browser_checkbox,
-        
-        # Content extraction
-        browser_get_text,
-        browser_get_attributes,
-        browser_get_console_logs,
-        
-        # Visual and file operations
-        browser_screenshot,
-        browser_pdf,
-        browser_download_file,
-        browser_upload_file,
-        
-        # Advanced
-        browser_execute_javascript
-    ]
-    
-    for tool in tools:
-        mcp_server.tool(name=tool.__name__)(tool)
-        logger.info(f"Registered Playwright tool: {tool.__name__}", emoji_key="⚙️")
-    
-    logger.success(f"Registered {len(tools)} Playwright browser automation tools", emoji_key="✅")
 
 # --- Browser Control Tools ---
 
@@ -3575,3 +4520,1362 @@ async def browser_wait(
             ) from e
         
         raise ToolError(status_code=500, detail=error_msg) from e
+    
+
+# --- High-Level Abstract Tools ---
+
+@with_tool_metrics
+@with_error_handling
+async def execute_web_workflow(
+    instructions: Dict[str, Any],
+    input_data: Optional[Dict[str, Any]] = None,
+    llm_model: str = "openai/gpt-4.1-mini",
+    max_steps: int = 15, # Default steps for a workflow
+    browser_options: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Executes a sequence of browser interactions guided by an LLM to achieve a specific goal.
+
+    Uses LLM decisions based on page state and instructions to perform actions like
+    clicking, typing (using provided input_data), reading values, and determining completion.
+
+    Args:
+        instructions: Dictionary defining the workflow:
+            start_url: (str) Initial URL.
+            workflow_goal_prompt: (str) High-level objective for the LLM.
+            input_data_mapping: (Optional[Dict[str, str]]) Maps abstract names (e.g., "user_email") used in prompts/actions to keys in the `input_data` parameter.
+            element_finding_hints: (Optional[List[str]]) Keywords/descriptions of important elements to help LLM identify targets.
+            available_actions: (List[str]) Explicit list of actions the LLM can request (e.g., ["click", "type", "read_value", "finish_success", "finish_failure"]).
+            success_condition_prompt: (Optional[str]) LLM prompt to evaluate if goal is met based on page state (requests {"goal_met": true/false}).
+            max_steps: (Optional[int]) Workflow-specific step limit (overrides main arg).
+        input_data: (Optional[Dict[str, Any]]) Dictionary containing concrete values (like username, password, search terms) referenced by `input_data_mapping`.
+        llm_model: (Optional) LLM model for guidance. Default "openai/gpt-4.1-mini".
+        max_steps: (Optional) Overall maximum LLM-guided interaction steps. Default 15.
+        browser_options: (Optional) Options for browser_init (e.g., {"headless": True}).
+
+    Returns:
+        Dictionary summarizing the outcome:
+        {
+            "success": true/false,
+            "final_status": "Goal achieved: Order status 'Shipped' extracted." | "Max steps reached." | "Failed: Login incorrect.",
+            "steps_taken": int,
+            "extracted_data": { "key": "value", ... }, # Data extracted by 'read_value' actions
+            "error": Optional[str],
+            "message": "Workflow summary message."
+        }
+    """
+    start_time = time.monotonic()
+    logger.info(f"Starting web workflow execution with LLM {llm_model}")
+
+    # --- Validate Instructions & Inputs ---
+    if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
+    if not isinstance(instructions.get('start_url'), str) or not instructions['start_url']: raise ToolInputError("instructions['start_url'] (string) is required.")
+    if not isinstance(instructions.get('workflow_goal_prompt'), str) or not instructions['workflow_goal_prompt']: raise ToolInputError("instructions['workflow_goal_prompt'] (string) is required.")
+    if not isinstance(instructions.get('available_actions'), list) or not instructions['available_actions']: raise ToolInputError("instructions['available_actions'] (list) is required.")
+    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("llm_model must be 'provider/model_name'.")
+    input_data_map = instructions.get("input_data_mapping", {})
+    if not isinstance(input_data_map, dict): raise ToolInputError("instructions['input_data_mapping'] must be a dictionary.")
+    input_values = input_data if isinstance(input_data, dict) else {} # Ensure input_data is a dict
+
+    # --- Setup ---
+    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
+    workflow_max_steps = instructions.get("max_steps", max_steps) # Allow override
+    start_url = instructions['start_url']
+    goal_prompt = instructions['workflow_goal_prompt']
+    available_actions = instructions['available_actions']
+    hints = instructions.get("element_finding_hints", [])
+    success_condition_prompt = instructions.get("success_condition_prompt")
+
+    steps_taken = 0
+    final_status = "Not started"
+    action_history = []
+    workflow_results = {} # To store data read by "read_value"
+    browser_was_initialized_by_tool = False
+
+    try:
+        # 1. Initialize Browser (if needed)
+        global _browser_instance
+        if not _browser_instance or not _browser_instance.is_connected():
+             init_res = await browser_init(**browser_init_options)
+             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             browser_was_initialized_by_tool = True
+
+        # 2. Navigate to Start URL
+        logger.info(f"Navigating to start URL: {start_url}")
+        await browser_navigate(url=start_url, wait_until="load", timeout=45000, capture_snapshot=False)
+        await asyncio.sleep(2.0) # Wait for page settle
+
+        # --- 3. Main Interaction Loop ---
+        system_prompt = f"""You are an AI assistant controlling a web browser to achieve a specific goal.
+Goal: {goal_prompt}
+Available Actions: {available_actions}
+
+You will receive the current page state (URL, title, text summary, interactive elements with IDs like 'el_N').
+Analyze the state and the goal. Decide the *single best next action* to take.
+If typing, use the 'text_ref' parameter mapped to available `input_data_keys`.
+If reading a value, specify `store_as` key for the result.
+If finishing, specify `result_ref` pointing to a stored key if needed.
+
+Respond ONLY with a valid JSON object for your chosen action. Example:
+{{"action": "type", "params": {{"element_id": "el_12", "text_ref": "user_email"}}}}
+{{"action": "click", "params": {{"element_id": "el_5"}}}}
+{{"action": "read_value", "params": {{"element_id": "el_45", "store_as": "order_status"}}}}
+{{"action": "finish_success", "params": {{"reason": "Found status", "result_ref": "order_status"}}}}"""
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        for step in range(workflow_max_steps):
+            steps_taken = step + 1
+            page_id, current_page = await _ensure_page()
+            current_url = current_page.url
+            logger.info(f"Workflow Step {steps_taken}/{workflow_max_steps}. PageID: {page_id}, URL: {current_url}")
+            action_history.append({"step": steps_taken, "url": current_url})
+
+            page_state = await _get_simplified_page_state_for_llm()
+            action_history[-1]['page_elements_count'] = len(page_state.get('elements', []))
+            if page_state.get("error"):
+                final_status = f"Error getting page state: {page_state['error']}. Aborting."; logger.error(final_status); break
+
+            # Construct LLM User Prompt
+            prompt_context = f"Current URL: {page_state['url']}\nTitle: {page_state['title']}\nSummary:\n{page_state['text_summary']}\n"
+            prompt_context += f"\nWorkflow Goal: {goal_prompt}\n"
+            if workflow_results: prompt_context += f"Data collected so far: {json.dumps(workflow_results)}\n"
+            if input_values: prompt_context += f"Available input data keys: {list(input_values.keys())}\n"
+            if hints: prompt_context += f"Element Hints: {hints}\n"
+
+            prompt_context += "\nVisible Elements:\n"
+            elements = page_state.get('elements', [])
+            if not elements: prompt_context += "- None found.\n"
+            else:
+                 for el in elements: prompt_context += f"- {el.get('id')}: {el.get('tag')} (Type:{el.get('type')}) Text:'{el.get('text')}'\n" # Simplified element list
+
+            # Add summarized history (optional, can get complex)
+            # summary_history = [f"Step {h['step']}: {h.get('llm_action','?')} on {h['url'][:50]}" for h in action_history[-3:]] # Last 3 steps
+            # if summary_history: prompt_context += f"\nRecent Actions: {'; '.join(summary_history)}\n"
+
+            prompt_context += "\nWhat is the single best JSON action to take next based on the goal and current state?"
+            messages.append({"role": "user", "content": prompt_context})
+            if len(messages) > 12: messages = [messages[0]] + messages[-11:] # Limit context history
+
+            # Get LLM Action Decision
+            llm_action = await _call_browser_llm(messages, llm_model, f"workflow step {steps_taken} for '{goal_prompt[:30]}...'")
+            if not llm_action or llm_action.get("action") == "error":
+                final_status = f"LLM guidance failed: {llm_action.get('error', 'No action')}. Aborting."; logger.error(final_status); break
+            messages.append({"role": "assistant", "content": json.dumps(llm_action)}) # Store LLM response
+
+            action_name = llm_action.get("action")
+            action_params = llm_action.get("params", {})
+            action_history[-1]["llm_action"] = action_name; logger.info(f"LLM action: {action_name} {action_params}")
+
+            # --- Execute Action ---
+            try:
+                if action_name not in available_actions:
+                     raise ValueError(f"LLM chose an unavailable action: '{action_name}'. Allowed: {available_actions}")
+
+                if action_name == "click":
+                    element_id = action_params.get("element_id")
+                    if not element_id: raise ValueError("Missing 'element_id' for click")
+                    locator = await _find_element_locator_for_workflow(current_page, element_id, elements)
+                    if not locator: raise ToolError(f"Could not reliably locate element {element_id} chosen by LLM.")
+                    logger.info(f"Executing click on element identified as {element_id}")
+                    await locator.click(timeout=15000) # Use locator's click
+                    await asyncio.sleep(3.0) # Wait generously after click
+
+                elif action_name == "type":
+                    element_id = action_params.get("element_id")
+                    text_ref = action_params.get("text_ref") # Key from input_data to type
+                    literal_text = action_params.get("text") # Allow literal text too
+                    if not element_id: raise ValueError("Missing 'element_id' for type")
+                    if not text_ref and literal_text is None: raise ValueError("Missing 'text_ref' or 'text' for type")
+                    if text_ref and literal_text is not None: raise ValueError("Provide either 'text_ref' or 'text', not both")
+
+                    text_to_type = ""
+                    if literal_text is not None:
+                         text_to_type = str(literal_text) # Ensure string
+                    elif text_ref:
+                         mapped_key = input_data_map.get(text_ref, text_ref) # Use mapping if available
+                         if mapped_key not in input_values: raise ValueError(f"Input data key '{mapped_key}' (from ref '{text_ref}') not found in provided input_data.")
+                         text_to_type = str(input_values[mapped_key]) # Get value from input_data
+
+                    locator = await _find_element_locator_for_workflow(current_page, element_id, elements)
+                    if not locator: raise ToolError(f"Could not reliably locate element {element_id} for typing.")
+                    logger.info(f"Executing type into element {element_id} (text ref: '{text_ref or 'literal'}')")
+                    await locator.fill("") # Clear first
+                    await locator.type(text_to_type, delay=50) # Add small delay
+                    action_history[-1]['typed_ref'] = text_ref or 'literal'
+
+                elif action_name == "read_value":
+                    element_id = action_params.get("element_id")
+                    store_as = action_params.get("store_as") # Key to store the result under
+                    if not element_id: raise ValueError("Missing 'element_id' for read_value")
+                    if not store_as: raise ValueError("Missing 'store_as' for read_value")
+
+                    locator = await _find_element_locator_for_workflow(current_page, element_id, elements)
+                    if not locator: raise ToolError(f"Could not reliably locate element {element_id} for reading.")
+                    logger.info(f"Executing read_value from element {element_id}, storing as '{store_as}'")
+                    # Try reading different ways: text content, value attribute
+                    value_read = await locator.input_value(timeout=5000) if await locator.evaluate("el => el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'", timeout=5000) else await locator.text_content(timeout=5000)
+                    value_read = value_read.strip() if value_read else ""
+                    workflow_results[store_as] = value_read
+                    action_history[-1]['read_result'] = {store_as: value_read}
+                    logger.info(f"Stored '{store_as}': '{value_read[:50]}...'")
+
+                elif action_name == "scroll": # Simple scroll added
+                     direction = action_params.get("direction", "down")
+                     scroll_amount = 600 if direction == "down" else -600
+                     logger.info(f"Scrolling {direction}")
+                     await browser_execute_javascript(f"window.scrollBy(0, {scroll_amount})")
+                     await asyncio.sleep(1.5)
+
+                elif action_name == "finish_success":
+                    reason = action_params.get('reason', 'Goal achieved')
+                    result_ref = action_params.get('result_ref') # Optional key to return from workflow_results
+                    final_result_value = workflow_results.get(result_ref) if result_ref else workflow_results # Return specific key or all results
+                    final_status = f"Goal achieved: {reason}"
+                    logger.success(final_status)
+                    # Package result and return
+                    processing_time = time.monotonic() - start_time
+                    return {
+                        "success": True, "final_status": final_status, "steps_taken": steps_taken,
+                        "extracted_data": final_result_value, "error": None,
+                        "message": f"Workflow completed successfully in {steps_taken} steps. {reason}",
+                        "processing_time": processing_time
+                    } # Successful exit
+
+                elif action_name == "finish_failure":
+                    reason = action_params.get('reason', 'Goal could not be met')
+                    final_status = f"Goal impossible: {reason}"
+                    logger.warning(final_status)
+                    processing_time = time.monotonic() - start_time
+                    return { # Failure exit
+                        "success": False, "final_status": final_status, "steps_taken": steps_taken,
+                        "extracted_data": workflow_results, "error": reason,
+                        "message": f"Workflow failed after {steps_taken} steps. Reason: {reason}",
+                        "processing_time": processing_time
+                    } # Failure exit
+
+                else:
+                    # Should be caught by initial check against available_actions
+                    raise ValueError(f"Internal error: Unsupported action '{action_name}' attempted.")
+
+            except (ToolError, ValueError, Exception) as exec_err:
+                 final_status = f"Action '{action_name}' failed: {type(exec_err).__name__}: {exec_err}. Aborting."; logger.error(final_status, exc_info=True)
+                 action_history[-1]["error"] = str(exec_err); break # Exit loop on error
+
+        # Loop finished without explicit success/failure action from LLM
+        if steps_taken == workflow_max_steps: final_status = f"Max steps ({workflow_max_steps}) reached."; logger.warning(final_status)
+        else: final_status = final_status if final_status != "Not started" else "Workflow ended without explicit finish action."
+
+        # Return failure if max steps reached or loop ended unexpectedly
+        processing_time = time.monotonic() - start_time
+        return {
+            "success": False, "final_status": final_status, "steps_taken": steps_taken,
+            "extracted_data": workflow_results, "error": final_status,
+            "message": f"Workflow stopped after {steps_taken} steps. Status: {final_status}",
+            "processing_time": processing_time
+        }
+
+    except (ToolInputError, ToolError) as e:
+         logger.error(f"Error during web workflow setup or critical failure: {type(e).__name__}: {e}", exc_info=True)
+         final_status = final_status if final_status != "Not started" else f"Setup Failed: {e}"
+         return { # Return error structure
+             "success": False, "final_status": final_status, "steps_taken": steps_taken,
+             "extracted_data": workflow_results, "error": str(e),
+             "message": f"Workflow failed during setup or critical step: {e}",
+             "processing_time": time.monotonic() - start_time
+         }
+    except Exception as e:
+         logger.critical(f"Unexpected critical error during web workflow: {type(e).__name__}: {e}", exc_info=True)
+         final_status = f"Critical Error: {type(e).__name__}"
+         return {
+             "success": False, "final_status": final_status, "steps_taken": steps_taken,
+             "extracted_data": workflow_results, "error": f"Unexpected critical error: {str(e)}",
+             "message": f"Workflow failed critically: {type(e).__name__}",
+             "processing_time": time.monotonic() - start_time
+         }
+    finally:
+        # Close browser ONLY if this tool instance initialized it
+        if browser_was_initialized_by_tool:
+            logger.info("Closing browser instance initialized by execute_web_workflow tool.")
+            await browser_close()
+
+@with_tool_metrics
+@with_error_handling
+async def extract_structured_data_from_pages(
+    instructions: Dict[str, Any],
+    llm_model: str = "openai/gpt-4.1-mini",
+    browser_options: Optional[Dict[str, Any]] = None,
+    max_concurrent_pages: int = 5 # Concurrency limit for processing pages
+) -> Dict[str, Any]:
+    """
+    Visits multiple web pages (provided directly or found dynamically) and extracts
+    structured data from each using LLM guidance based on provided instructions.
+
+    Args:
+        instructions: Dictionary controlling the process:
+            source_urls: (Optional[List[str]]) List of URLs to process directly.
+            url_finding_instructions: (Optional[Dict]) Instructions for dynamic URL discovery:
+                start_url: (str) URL of the listing page.
+                list_item_selector: (str) CSS selector for links to target pages.
+                next_page_selector: (Optional[str]) CSS selector for the 'next page' element.
+                max_pages_to_crawl: (Optional[int]) Max pagination steps (default 5).
+            extraction_schema_or_prompt: (Union[str, Dict]) LLM prompt describing fields to extract or a JSON schema. Must instruct LLM to output ONLY JSON.
+            output_format: (Optional[str]) "json_list" (default) or "csv_string".
+            error_handling: (Optional[str]) "skip" (default) or "include_error". How to handle page-level errors.
+        llm_model: (Optional) LLM model for extraction. Default "openai/gpt-4.1-mini".
+        browser_options: (Optional) Options for browser_init (e.g., {"headless": True}).
+        max_concurrent_pages: (Optional) Max number of pages to process in parallel. Default 5.
+
+    Returns:
+        Dictionary with results:
+        {
+            "success": true,
+            "extracted_data": List[Dict] or str, # Depends on output_format
+            "processed_urls_count": int,
+            "successful_extractions_count": int,
+            "errors": Dict[str, str], # url -> error message
+            "message": "Summary message."
+        }
+
+    Raises:
+        ToolInputError: For invalid instructions or parameters.
+        ToolError: For critical errors (e.g., browser init, initial URL finding).
+    """
+    start_time = time.monotonic()
+    logger.info(f"Starting structured data extraction with LLM: {llm_model}")
+
+    # --- Validate Instructions ---
+    if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
+    source_urls = instructions.get("source_urls")
+    url_finding_instr = instructions.get("url_finding_instructions")
+    extraction_schema_or_prompt = instructions.get("extraction_schema_or_prompt")
+    output_format = instructions.get("output_format", "json_list").lower()
+    error_handling = instructions.get("error_handling", "skip").lower()
+
+    if not (source_urls or url_finding_instr): raise ToolInputError("Either 'source_urls' or 'url_finding_instructions' must be provided.")
+    if source_urls and url_finding_instr: raise ToolInputError("Provide either 'source_urls' or 'url_finding_instructions', not both.")
+    if not extraction_schema_or_prompt: raise ToolInputError("'extraction_schema_or_prompt' is required.")
+    if output_format not in ["json_list", "csv_string"]: raise ToolInputError("output_format must be 'json_list' or 'csv_string'.")
+    if error_handling not in ["skip", "include_error"]: raise ToolInputError("error_handling must be 'skip' or 'include_error'.")
+
+    # --- Setup ---
+    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
+    browser_was_initialized_by_tool = False
+    all_extracted_data = []
+    errors_dict = {}
+    target_urls = []
+
+    try:
+        # Initialize Browser (if needed)
+        global _browser_instance
+        if not _browser_instance or not _browser_instance.is_connected():
+             init_res = await browser_init(**browser_init_options)
+             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             browser_was_initialized_by_tool = True
+
+        # --- 1. Determine Target URLs ---
+        if source_urls:
+            if not isinstance(source_urls, list) or not all(isinstance(u, str) for u in source_urls):
+                 raise ToolInputError("'source_urls' must be a list of strings.")
+            target_urls = source_urls
+            logger.info(f"Processing {len(target_urls)} URLs provided directly.")
+        else: # Find URLs dynamically
+             # url_finding_instr is guaranteed to be a dict here by initial validation
+             target_urls = await _find_urls_dynamically(url_finding_instr)
+             if not target_urls:
+                  logger.warning("Dynamic URL finding returned no URLs.")
+                  # Return success with empty data if no URLs found? Or error? Let's return success.
+
+        # --- 2. Process URLs Concurrently ---
+        if target_urls:
+            logger.info(f"Extracting data from {len(target_urls)} URLs concurrently (max: {max_concurrent_pages})...")
+            semaphore = asyncio.Semaphore(max_concurrent_pages)
+            tasks = []
+
+            async def task_wrapper(url):
+                async with semaphore:
+                    return await _extract_data_from_single_page(url, extraction_schema_or_prompt, llm_model)
+
+            tasks = [task_wrapper(url) for url in target_urls]
+            results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results from concurrent tasks
+            for i, result_or_exc in enumerate(results_from_gather):
+                processed_url = target_urls[i] # URL corresponding to this result/exception
+                if isinstance(result_or_exc, Exception):
+                    err_msg = f"Task for {processed_url} raised exception: {type(result_or_exc).__name__}: {str(result_or_exc)}"
+                    logger.error(err_msg, exc_info=False) # Log exception but maybe not full trace always
+                    if error_handling == "include_error": errors_dict[processed_url] = str(result_or_exc)
+                    # Consider adding error entry to all_extracted_data if format requires it? Sticking to errors_dict.
+                elif isinstance(result_or_exc, dict):
+                    if "data" in result_or_exc:
+                        all_extracted_data.append(result_or_exc["data"])
+                    elif "error" in result_or_exc:
+                        err_msg = result_or_exc["error"]
+                        logger.warning(f"Extraction failed for {processed_url}: {err_msg}")
+                        if error_handling == "include_error": errors_dict[processed_url] = err_msg
+                    else:
+                        # Should not happen if helper follows contract
+                        err_msg = f"Unexpected result dictionary format for {processed_url}: {result_or_exc}"
+                        logger.error(err_msg)
+                        if error_handling == "include_error": errors_dict[processed_url] = "Unknown error structure."
+                else:
+                     # Should not happen
+                     err_msg = f"Unexpected result type ({type(result_or_exc)}) for {processed_url}"
+                     logger.error(err_msg)
+                     if error_handling == "include_error": errors_dict[processed_url] = "Internal error: Unexpected task result."
+
+        # --- 3. Format Output ---
+        formatted_output = _format_output_data(all_extracted_data, output_format)
+
+    except (ToolInputError, ToolError) as e:
+        # Catch errors from validation, URL finding, browser init
+        logger.error(f"Error during structured data extraction setup: {type(e).__name__}: {e}", exc_info=True)
+        raise # Re-raise ToolInputError/ToolError
+    except Exception as e:
+        # Catch unexpected errors
+        logger.critical(f"Unexpected critical error during structured data extraction: {type(e).__name__}: {e}", exc_info=True)
+        raise ToolError(f"Unexpected critical error: {e}") from e
+    finally:
+        # Close browser ONLY if this tool initialized it
+        if browser_was_initialized_by_tool:
+            logger.info("Closing browser instance initialized by extract_structured_data_from_pages tool.")
+            await browser_close()
+
+    processing_time = time.monotonic() - start_time
+    success_count = len(all_extracted_data)
+    error_count = len(errors_dict)
+    msg = f"Processed {len(target_urls)} URLs. Successfully extracted data from {success_count}. Encountered {error_count} errors."
+    logger.success(msg, time=processing_time)
+
+    return {
+        "success": True,
+        "extracted_data": formatted_output, # List or CSV string
+        "processed_urls_count": len(target_urls),
+        "successful_extractions_count": success_count,
+        "errors": errors_dict, # URL -> error message map
+        "message": msg,
+        "processing_time": processing_time
+    }
+
+@with_tool_metrics
+@with_error_handling
+async def find_and_download_pdfs(
+    topic: str, # The core subject, e.g., "AAPL", "Quantum Computing Research"
+    instructions: Dict[str, Any], # Detailed instructions controlling behavior
+    output_directory: str,
+    llm_model: str = "openai/gpt-4.1-mini",
+    max_exploration_steps: int = 20, # Default exploration steps
+    browser_options: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """
+    Finds and downloads PDF files related to a topic by navigating websites using LLM guidance.
+
+    This tool is highly configurable via the `instructions` parameter to adapt to
+    different search strategies, site structures, PDF identification criteria, and
+    download/naming conventions.
+
+    Args:
+        topic: The primary subject or entity for the search (e.g., stock ticker, research area).
+        instructions: A dictionary defining the workflow:
+            search_phase: (dict) Controls the initial search.
+                search_query_template: (str) Python f-string template for the search query (e.g., "{topic} investor relations").
+                target_site_identification_prompt: (str) LLM prompt to identify the main target site URL from search results. Must request JSON like {"target_url": "..."}.
+                search_engine: (str) E.g., "google", "bing". Default: "google".
+            exploration_phase: (dict) Controls site exploration.
+                exploration_goal_prompt: (str) High-level goal for the LLM during exploration (can use {topic}).
+                navigation_keywords: (List[str]) Keywords to prioritize in links/buttons for navigation.
+                pdf_keywords: (List[str]) Keywords likely found near relevant PDF links.
+                pdf_url_patterns: (List[str]) Regex patterns to identify potential PDF URLs. Default: [r'\\.pdf$'].
+                max_steps: (int) Max exploration steps on the target site (overrides main arg if set).
+            download_phase: (dict) Controls PDF download and naming.
+                metadata_extraction_prompt: (str) LLM prompt to extract date and event type from PDF link context (must use {context}). Must request JSON like {"date": "YYYY-MM-DD", "event_type": "..."}.
+                filename_template: (str) Python f-string template for the filename (e.g., "{date}_{topic}_{event_type}"). Requires 'date', 'topic', 'event_type'.
+                required_metadata: (List[str]) Metadata keys that *must* be extracted for download (e.g., ["date", "event_type"]). Default: ["date", "event_type"].
+        output_directory: Base directory to save downloaded PDFs. A subdirectory for the topic may be created.
+        llm_model: (Optional) LLM model identifier for guidance. Default "openai/gpt-4.1-mini".
+        max_exploration_steps: (Optional) Overall maximum LLM-guided exploration steps. Default 20.
+        browser_options: (Optional) Dictionary of options for browser_init (e.g., {"headless": True}).
+
+    Returns:
+        Dictionary summarizing the outcome, found target site, downloaded files, status, etc.
+    """
+    start_time = time.monotonic()
+    logger.info(f"Starting generic PDF search for topic: '{topic}' with model {llm_model}")
+
+    # --- Validate Inputs ---
+    if not topic or not isinstance(topic, str): raise ToolInputError("Topic must be non-empty string.", param_name="topic")
+    if not output_directory or not isinstance(output_directory, str): raise ToolInputError("Output directory must be non-empty string.", param_name="output_directory")
+    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("llm_model must be 'provider/model_name'.", param_name="llm_model")
+    if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.", param_name="instructions")
+    # Detailed structure validation
+    if not isinstance(instructions.get('search_phase'), dict) or \
+       not isinstance(instructions.get('exploration_phase'), dict) or \
+       not isinstance(instructions.get('download_phase'), dict):
+        raise ToolInputError("Instructions must contain 'search_phase', 'exploration_phase', and 'download_phase' dictionaries.")
+    search_phase = instructions['search_phase']
+    explore_phase = instructions['exploration_phase']
+    download_phase = instructions['download_phase']
+    if not isinstance(search_phase.get('search_query_template'), str) or \
+       not isinstance(search_phase.get('target_site_identification_prompt'), str):
+        raise ToolInputError("search_phase instructions missing 'search_query_template' or 'target_site_identification_prompt' (string).")
+    if not isinstance(explore_phase.get('exploration_goal_prompt'), str):
+         raise ToolInputError("exploration_phase instructions missing 'exploration_goal_prompt' (string).")
+    if not isinstance(download_phase.get('metadata_extraction_prompt'), str) or \
+       not isinstance(download_phase.get('filename_template'), str):
+        raise ToolInputError("download_phase instructions missing 'metadata_extraction_prompt' or 'filename_template' (string).")
+    required_metadata = download_phase.get("required_metadata", ["date", "event_type"])
+    if not isinstance(required_metadata, list) or not all(isinstance(x, str) for x in required_metadata):
+         raise ToolInputError("download_phase 'required_metadata' must be a list of strings.")
+
+    # --- Setup ---
+    topic_sanitized = _sanitize_filename(topic)
+    base_output_dir = Path(output_directory).resolve() # Resolve path early
+    topic_output_dir = base_output_dir / topic_sanitized
+    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True} # Ensure dict or default
+    max_steps = explore_phase.get("max_steps", max_exploration_steps) # Allow override
+
+    downloaded_files_list = []
+    target_site_url_found = None
+    steps_taken = 0
+    final_status = "Not started"
+    action_history = []
+    visited_urls = set()
+    browser_was_initialized_by_tool = False
+
+    try:
+        # 1. Create Output Directory (using Filesystem tool)
+        try:
+            # Use await directly on the tool function
+            dir_result = await create_directory(path=str(topic_output_dir))
+            if not dir_result.get("success"):
+                raise ToolError(f"Failed to create output dir '{topic_output_dir}': {dir_result.get('error')}")
+            logger.info(f"Output directory ensured: {topic_output_dir}")
+        except Exception as fs_err:
+            # Catch errors from the filesystem tool call itself
+            raise ToolError(f"Filesystem tool error creating directory '{topic_output_dir}': {type(fs_err).__name__}: {fs_err}") from fs_err
+
+        # 2. Initialize Browser (if not already running)
+        global _browser_instance # Need global to check instance
+        if not _browser_instance or not _browser_instance.is_connected():
+             init_res = await browser_init(**browser_init_options) # Use low-level tool
+             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             browser_was_initialized_by_tool = True
+
+        # --- 3. Search Phase ---
+        search_engine = search_phase.get("search_engine", "google").lower()
+        try:
+             search_query = search_phase["search_query_template"].format(topic=topic)
+        except KeyError:
+             raise ToolInputError("search_query_template must contain {topic} placeholder.")
+        logger.info(f"Search Phase: Engine='{search_engine}', Query='{search_query}'")
+
+        search_urls = {"google": "https://www.google.com", "bing": "https://www.bing.com", "duckduckgo": "https://duckduckgo.com"}
+        search_selectors = {"google": "textarea[name='q']", "bing": "input[name='q']", "duckduckgo": "input[name='q']"}
+        wait_selectors = {"google": "#search", "bing": "#b_results", "duckduckgo": "#links"}
+        search_url = search_urls.get(search_engine, search_urls["google"])
+        search_selector = search_selectors.get(search_engine, search_selectors["google"])
+        wait_selector = wait_selectors.get(search_engine, wait_selectors["google"])
+
+        # Use low-level browser tools
+        await browser_navigate(url=search_url, wait_until="domcontentloaded")
+        await browser_type(selector=search_selector, text=search_query, press_enter=True, capture_snapshot=False)
+        await browser_wait(wait_type="selector", value=wait_selector, timeout=15000)
+        await asyncio.sleep(1.5) # Allow results to potentially render
+
+        # --- 4. Target Site Identification ---
+        logger.info("Extracting search results for Target Site ID LLM analysis...")
+        page_state_search = await _get_simplified_page_state_for_llm()
+        if page_state_search.get("error"): logger.warning(f"Error getting search page state: {page_state_search['error']}")
+        # Construct context robustly even if state fetch had issues
+        search_results_context = f"Search Page URL: {page_state_search.get('url', 'N/A')}\nTitle: {page_state_search.get('title', 'N/A')}\n"
+        search_results_context += f"Text Summary:\n{page_state_search.get('text_summary', 'N/A')}\n\nVisible Elements:\n"
+        for el in page_state_search.get('elements', [])[:20]: # Limit context
+            search_results_context += f"- ID:{el.get('id')} Tag:{el.get('tag')} Type:{el.get('type')} Text:'{el.get('text')}' Href:{el.get('href')}\n"
+
+        # Prepare prompts using templates from instructions
+        system_prompt_target = "You are an AI assistant analyzing search results to find a specific target website URL based on user instructions."
+        user_prompt_target = search_phase["target_site_identification_prompt"].format(
+            search_term=search_query, search_results_summary=search_results_context
+        )
+        messages_target = [{"role": "system", "content": system_prompt_target}, {"role": "user", "content": user_prompt_target}]
+
+        # Call LLM helper
+        llm_target_result = await _call_browser_llm(messages_target, llm_model, f"finding target site for {topic}")
+
+        # Process LLM response for target URL
+        target_site_url_found = llm_target_result.get("target_url") if llm_target_result else None
+        if not target_site_url_found or llm_target_result.get("action") == "error" or not isinstance(target_site_url_found, str):
+            raise ToolError(f"LLM failed to identify target site URL. Error: {llm_target_result.get('error', 'Invalid or missing target_url in response')}")
+        logger.info(f"LLM identified target site URL: {target_site_url_found}")
+
+        # --- 5. Navigate to Target Site ---
+        logger.info(f"Navigating to target site: {target_site_url_found}")
+        nav_res_target = await browser_navigate(url=target_site_url_found, wait_until="load", timeout=45000)
+        if not nav_res_target.get("success"): raise ToolError(f"Failed to navigate to target site {target_site_url_found}: {nav_res_target.get('error')}")
+        current_url = nav_res_target.get('url', target_site_url_found) # Get final URL after redirects
+        visited_urls.add(current_url)
+        await asyncio.sleep(2.5) # Longer wait for complex sites
+
+        # --- 6. Exploration Phase ---
+        logger.info(f"Starting Exploration Phase on {current_url}")
+        nav_keywords = explore_phase.get('navigation_keywords', [])
+        pdf_keywords = explore_phase.get('pdf_keywords', [])
+        pdf_url_patterns = explore_phase.get('pdf_url_patterns', [r'\.pdf$']) # Default regex
+        pdf_url_regexes = [re.compile(p, re.IGNORECASE) for p in pdf_url_patterns]
+
+        # Construct exploration system prompt dynamically
+        system_prompt_explore = explore_phase['exploration_goal_prompt'].format(topic=topic) + "\n\n" + \
+            f"Prioritize clicking links/buttons containing keywords: {nav_keywords}\n" + \
+            f"Look for PDF download links (element type 'pdf_link' or href matching patterns like {pdf_url_patterns}) near keywords: {pdf_keywords}\n\n" + \
+            """Available Actions (Respond ONLY with JSON):
+{"action": "click", "params": {"element_id": "el_N"}} /* Click element by ID from list */
+{"action": "scroll", "params": {"direction": "down" | "up"}} /* Scroll page */
+{"action": "download_pdf", "params": {"url": "<pdf_url_from_page_elements>"}} /* Provide direct PDF URL found */
+{"action": "go_back", "params": {}} /* Navigate back */
+{"action": "goal_achieved", "params": {"reason": "<brief_reason_for_stopping>"}}
+{"action": "goal_impossible", "params": {"reason": "<brief_reason_for_stopping>"}}"""
+        messages_explore = [{"role": "system", "content": system_prompt_explore}]
+
+        for step in range(max_steps):
+            steps_taken = step + 1
+            page_id, current_page_obj = await _ensure_page() # Get current page object
+            current_url = current_page_obj.url # Update current URL from actual page state
+            logger.info(f"Exploration Step {steps_taken}/{max_steps} for {topic}. PageID: {page_id}, URL: {current_url}")
+            action_history.append({"step": steps_taken, "url": current_url})
+
+            page_state = await _get_simplified_page_state_for_llm()
+            if page_state.get("error"):
+                final_status = f"Error getting page state: {page_state['error']}. Aborting exploration."; logger.error(final_status); break
+
+            # Prepare context, limit size
+            prompt_context = f"Current URL: {page_state['url']}\nTitle: {page_state['title']}\nSummary:\n{page_state.get('text_summary', '')[:1500]}\n\nElements:\n"
+            elements = page_state.get('elements', [])
+            if not elements: prompt_context += "- None found.\n"
+            else:
+                 # Provide element info clearly
+                 for el in elements: prompt_context += f"- {el.get('id')}: {el.get('tag')} (Type: {el.get('type', 'N/A')}) Text:'{el.get('text', '')}'{', Href:' + el.get('href', 'N/A') if el.get('href') else ''}\n"
+            prompt_context += "\nBased on goal/instructions, what action JSON next?"
+
+            # Add user message, manage history length
+            messages_explore.append({"role": "user", "content": prompt_context})
+            if len(messages_explore) > 12: messages_explore = [messages_explore[0]] + messages_explore[-11:] # Keep system + last 5 pairs
+
+            # Get LLM guidance
+            llm_action = await _call_browser_llm(messages_explore, llm_model, f"exploring {topic} (step {steps_taken})")
+            if not llm_action or llm_action.get("action") == "error":
+                final_status = f"LLM guidance failed: {llm_action.get('error', 'No action')}. Aborting."; logger.error(final_status); break
+            messages_explore.append({"role": "assistant", "content": json.dumps(llm_action)}) # Add LLM response
+
+            action_name = llm_action.get("action")
+            action_params = llm_action.get("params", {})
+            action_history[-1]["llm_action"] = action_name; logger.info(f"LLM action: {action_name} {action_params}")
+
+            # --- Execute Action ---
+            try:
+                if action_name == "click":
+                    element_id = action_params.get("element_id")
+                    if not element_id: raise ValueError("Missing 'element_id'")
+                    element_to_click = next((el for el in elements if el.get("id") == element_id), None)
+                    if not element_to_click: raise ToolError(f"LLM chose non-existent element ID '{element_id}'")
+
+                    # Attempt robust click using Playwright's locators based on text/attributes
+                    click_selector = ""
+                    element_text = element_to_click.get('text')
+                    if element_text and element_text != '<no text>':
+                         # Try clicking by text first
+                         try:
+                             logger.info(f"Attempting click (ID: {element_id}) using text: '{element_text}'")
+                             # Use get_by_text with exact match option? Or default fuzzy? Default is often better.
+                             await current_page_obj.get_by_text(element_text, exact=False).first.click(timeout=10000)
+                             await asyncio.sleep(3) # Wait after click
+                         except Exception as text_click_err:
+                              logger.warning(f"Click by text failed for '{element_text}': {text_click_err}. Falling back to ID/selector guess.")
+                              # Fallback selector (less reliable)
+                              click_selector = f"#{element_id}" # Or the nth-of-type guess from previous version
+                              await browser_click(selector=click_selector, capture_snapshot=False)
+                              await asyncio.sleep(3)
+                    else:
+                         # If no text, fallback selector is needed
+                         raise ToolError(f"Cannot click element ID '{element_id}' - no reliable text found for selector.")
+
+                    # Update current URL after potential navigation
+                    current_url_res = await browser_execute_javascript("() => window.location.href")
+                    new_url = current_url_res.get("result", current_page_obj.url)
+                    if new_url != current_url:
+                        if new_url in visited_urls: logger.warning(f"Loop detected: Visited {new_url} again.")
+                        else: current_url = new_url; visited_urls.add(current_url)
+
+                elif action_name == "scroll":
+                    direction = action_params.get("direction", "down")
+                    scroll_amount = 600 if direction == "down" else -600
+                    logger.info(f"Scrolling {direction}"); await browser_execute_javascript(f"window.scrollBy(0, {scroll_amount})"); await asyncio.sleep(1.5)
+
+                elif action_name == "download_pdf":
+                    pdf_url = action_params.get("url")
+                    if not pdf_url or not isinstance(pdf_url, str): raise ValueError("'url' missing or invalid for download_pdf")
+
+                    # Ensure URL seems valid and matches patterns if provided
+                    if not any(regex.search(pdf_url) for regex in pdf_url_regexes):
+                         logger.warning(f"LLM requested download of URL '{pdf_url}' which doesn't match expected PDF patterns {pdf_url_patterns}. Attempting anyway.")
+                         # Could potentially skip download here if pattern match is strict requirement
+
+                    logger.info(f"Asking LLM for metadata for PDF: {pdf_url}")
+                    metadata_context = f"PDF URL: {pdf_url}\nFound on page: {current_url} ('{page_state['title']}')\nContext near link (if available from history):\n{messages_explore[-2]['content'][-1500:]}"
+                    system_prompt_meta = "Extract metadata (date YYYY-MM-DD, event_type string) for PDF based on context. Respond ONLY with JSON: {\"date\": \"...\", \"event_type\": \"...\"} or defaults."
+                    user_prompt_meta = download_phase["metadata_extraction_prompt"].format(context=metadata_context)
+                    messages_meta = [{"role": "system", "content": system_prompt_meta}, {"role": "user", "content": user_prompt_meta}]
+                    llm_meta_result = await _call_browser_llm(messages_meta, llm_model, f"extracting metadata for {topic}")
+
+                    pdf_date_str = datetime.now().strftime('%Y-%m-%d')
+                    pdf_event = "Unknown_Event"
+                    # Check if metadata extraction was successful before using results
+                    if llm_meta_result and llm_meta_result.get("action") != "error":
+                         pdf_date_str_llm = llm_meta_result.get("date")
+                         pdf_event_llm = llm_meta_result.get("event_type")
+                         # Basic validation of returned values
+                         if isinstance(pdf_date_str_llm, str) and len(pdf_date_str_llm) > 5: pdf_date_str = pdf_date_str_llm # Basic length check
+                         if isinstance(pdf_event_llm, str) and pdf_event_llm: pdf_event = pdf_event_llm # Ensure not empty
+
+                    try: pdf_date_iso = datetime.strptime(pdf_date_str, '%Y-%m-%d').strftime('%Y-%m-%d')
+                    except ValueError: pdf_date_iso = datetime.now().strftime('%Y-%m-%d'); logger.warning(f"Invalid date '{pdf_date_str}', using {pdf_date_iso}")
+
+                    # Construct filename using template from instructions
+                    try:
+                         filename_base = _sanitize_filename(
+                             download_phase["filename_template"].format(date=pdf_date_iso, topic=topic_sanitized, event_type=_sanitize_filename(pdf_event))
+                         )
+                         filename = f"{filename_base}.pdf"
+                    except KeyError as fmt_err:
+                         raise ToolInputError(f"Filename template needs keys: {fmt_err}. Available: date, topic, event_type.")
+
+                    logger.info(f"Attempting download: '{pdf_event}' ({pdf_date_iso}) from {pdf_url} as {filename}")
+                    dl_result = await browser_download_file(url=pdf_url, save_path=str(topic_output_dir), filename=filename, overwrite=False, timeout=120000) # Longer timeout for downloads
+                    if not dl_result.get("success"): raise ToolError(f"Download failed: {dl_result.get('error')}")
+
+                    final_filename = dl_result.get("file_name")
+                    logger.info(f"Download successful: {final_filename}")
+                    downloaded_files_list.append({"filename": final_filename, "url": pdf_url, "event_type": pdf_event, "date": pdf_date_iso})
+                    action_history[-1]["downloaded"] = final_filename
+
+                elif action_name == "go_back":
+                     logger.info("Navigating back"); back_res = await browser_back(capture_snapshot=False)
+                     if not back_res.get("success"): raise ToolError(f"Go back failed: {back_res.get('error')}")
+                     current_url = back_res.get('url', current_page_obj.url); await asyncio.sleep(1.5)
+
+                elif action_name == "goal_achieved" or action_name == "goal_impossible":
+                    final_status = f"{action_name.replace('_', ' ').title()}: {action_params.get('reason', 'N/A')}"
+                    logger.info(f"LLM indicated exploration end: {final_status}"); break
+                else:
+                    final_status = f"Unknown action '{action_name}' from LLM. Aborting."; logger.error(final_status); break
+
+            except (ToolError, ValueError, Exception) as exec_err:
+                 final_status = f"Action '{action_name}' failed: {type(exec_err).__name__}: {exec_err}. Aborting."; logger.error(final_status, exc_info=True)
+                 action_history[-1]["error"] = str(exec_err); break # Exit loop on error
+
+        # End of loop check
+        if steps_taken == max_steps: final_status = f"Max exploration steps ({max_steps}) reached."; logger.warning(final_status)
+
+    except (ToolError, ToolInputError, Exception) as e:
+         logger.error(f"Error during generic PDF search for '{topic}': {type(e).__name__}: {e}", exc_info=True)
+         final_status = final_status if final_status != "Not started" else f"Failed with error: {type(e).__name__}"
+         # Ensure we return the error structure
+         return {
+             "success": False, "topic": topic, "error": f"{type(e).__name__}: {str(e)}",
+             "target_site_url": target_site_url_found, "output_directory": str(topic_output_dir),
+             "downloaded_files": downloaded_files_list, "steps_taken": steps_taken,
+             "final_status": final_status, "message": f"Failed PDF search for '{topic}'."
+         }
+    finally:
+        # Close browser ONLY if this tool initialized it
+        if browser_was_initialized_by_tool:
+            logger.info("Closing browser instance initialized by find_and_download_pdfs tool.")
+            await browser_close() # Use the tool to ensure proper cleanup
+
+    processing_time = time.monotonic() - start_time
+    logger.info(f"Finished PDF search for '{topic}' in {processing_time:.2f}s. Found {len(downloaded_files_list)} PDFs.")
+
+    return {
+        "success": True, "topic": topic, "output_directory": str(topic_output_dir),
+        "target_site_url": target_site_url_found, "downloaded_files": downloaded_files_list,
+        "steps_taken": steps_taken, "final_status": final_status or "Reached max steps",
+        "message": f"Successfully downloaded {len(downloaded_files_list)} PDF(s) for '{topic}'."
+    }
+
+
+@with_tool_metrics
+@with_error_handling
+async def multi_engine_search_summary(
+    query: str,
+    num_results_per_engine: int = 3,
+    engines: List[str] = ["google", "duckduckgo"], # Default engines
+    llm_model: str = "openai/gpt-4.1-mini",
+    browser_options: Optional[Dict[str, Any]] = None,
+    max_concurrent_summaries: int = 3 # Limit concurrent page processing
+) -> Dict[str, Any]:
+    """
+    Performs a search query on multiple search engines, extracts top results,
+    visits each result page, and generates an LLM summary for each.
+
+    Args:
+        query: The search query string.
+        num_results_per_engine: Number of top results to process from each engine. Default 3.
+        engines: List of search engines ("google", "bing", "duckduckgo"). Default ["google", "duckduckgo"].
+        llm_model: LLM model identifier for summarizing result pages. Default "openai/gpt-4.1-mini".
+        browser_options: Dictionary of options for browser_init (e.g., {"headless": True}).
+        max_concurrent_summaries: Max number of URL summaries to process in parallel. Default 3.
+
+
+    Returns:
+        Dictionary containing summarized results and any errors encountered.
+    """
+    start_time = time.monotonic()
+    logger.info(f"Starting multi-engine search summary for query: '{query}' using engines: {engines}")
+
+    # --- Validate Inputs ---
+    if not query or not isinstance(query, str): raise ToolInputError("Query must be non-empty string.")
+    if not isinstance(num_results_per_engine, int) or num_results_per_engine < 1: raise ToolInputError("num_results_per_engine must be positive integer.")
+    if not isinstance(engines, list) or not engines: raise ToolInputError("Engines must be non-empty list.")
+    valid_engines = {"google", "bing", "duckduckgo"}; invalid_engines = [e for e in engines if e.lower() not in valid_engines]
+    if invalid_engines: raise ToolInputError(f"Invalid engine(s): {invalid_engines}. Supported: {valid_engines}")
+    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("llm_model must be 'provider/model_name'.")
+
+    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
+    all_results_map: Dict[str, Dict[str, Any]] = {} # url -> {title, snippet, source_engines}
+    errors_dict: Dict[str, str] = {} # engine/url -> error message
+    browser_was_initialized_by_tool = False
+    summarized_results = [] # Initialize outside try
+
+    try:
+        # --- Initialize Browser ---
+        global _browser_instance
+        if not _browser_instance or not _browser_instance.is_connected():
+             init_res = await browser_init(**browser_init_options)
+             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             browser_was_initialized_by_tool = True
+
+        # --- 1. Search on Each Engine ---
+        search_urls = {"google": "https://www.google.com", "bing": "https://www.bing.com", "duckduckgo": "https://duckduckgo.com"}
+        search_selectors = {"google": "textarea[name='q']", "bing": "input[name='q']", "duckduckgo": "input[name='q']"}
+        results_selectors = {"google": "div.g", "bing": "li.b_algo", "duckduckgo": "article.result"}
+        link_selectors = {"google": "a[href]", "bing": "h2 > a", "duckduckgo": "a.result__a"}
+        title_selectors = {"google": "h3", "bing": "h2", "duckduckgo": "h2 > a.result__a"}
+        snippet_selectors = {"google": "div[data-sncf~='1'], .VwiC3b", "bing": ".b_caption p", "duckduckgo": ".result__snippet"}
+
+        for engine in engines:
+            engine = engine.lower()
+            logger.info(f"Searching on {engine} for '{query}'...")
+            try:
+                await browser_navigate(url=search_urls[engine], wait_until="domcontentloaded", capture_snapshot=False)
+                await browser_type(selector=search_selectors[engine], text=query, press_enter=True, capture_snapshot=False)
+                try:
+                    await browser_wait(wait_type="selector", value=results_selectors[engine], timeout=15000, capture_snapshot=False)
+                except ToolError:
+                    logger.warning(f"Primary results selector not found quickly for {engine}, waiting for network idle.")
+                    await browser_wait(wait_type="load_state", value="networkidle", timeout=15000, capture_snapshot=False)
+                await asyncio.sleep(2.0) # Pause
+
+                script = f"""
+                () => {{
+                    const results = [];
+                    const resultElements = document.querySelectorAll('{results_selectors[engine]}');
+                    const numToExtract = {num_results_per_engine};
+                    console.log(`Found ${{resultElements.length}} results for {engine}`);
+                    for (let i = 0; i < resultElements.length && results.length < numToExtract; i++) {{
+                        const el = resultElements[i];
+                        try {{
+                            const linkEl = el.querySelector('{link_selectors[engine]}');
+                            const titleEl = el.querySelector('{title_selectors[engine]}');
+                            const snippetEl = el.querySelector('{snippet_selectors[engine]}');
+                            const url = linkEl?.href;
+                            let title = titleEl?.innerText?.trim() || linkEl?.innerText?.trim();
+                            let snippet = snippetEl?.innerText?.trim();
+                            if (url && url.startsWith('http') && title && !url.includes('/search?q=') && !url.includes('google.com/url?q=')) {{
+                                title = title.replace(/^Cached - /i, '').trim();
+                                snippet = snippet ? snippet.substring(0, 500) + (snippet.length > 500 ? '...' : '') : '';
+                                results.push({{ url: url, title: title, snippet: snippet }});
+                            }}
+                        }} catch (e) {{ console.error('Error processing result element:', e); }}
+                    }}
+                    return results;
+                }}"""
+                extract_res = await browser_execute_javascript(script=script)
+                engine_results = extract_res.get("result", []) if extract_res.get("success") and isinstance(extract_res.get("result"), list) else []
+                if not extract_res.get("success"): logger.warning(f"JS extraction failed on {engine}: {extract_res.get('error')}")
+
+                logger.info(f"Extracted {len(engine_results)} valid results from {engine}.")
+                for res in engine_results:
+                    url = res['url']
+                    if url not in all_results_map:
+                        all_results_map[url] = {"title": res['title'], "snippet": res['snippet'], "source_engines": [engine]}
+                    elif engine not in all_results_map[url]["source_engines"]:
+                        all_results_map[url]["source_engines"].append(engine)
+                        # Update title/snippet if current one is better
+                        if len(res.get('title','')) > len(all_results_map[url].get('title','')): all_results_map[url]['title'] = res['title']
+                        if len(res.get('snippet','')) > len(all_results_map[url].get('snippet','')): all_results_map[url]['snippet'] = res['snippet']
+
+            except Exception as search_err:
+                 logger.error(f"Failed searching on {engine}: {type(search_err).__name__}: {search_err}", exc_info=True)
+                 errors_dict[engine] = f"{type(search_err).__name__}: {str(search_err)}"
+
+        # --- 2. Visit and Summarize Unique URLs Concurrently ---
+        urls_to_process = list(all_results_map.keys())
+        if not urls_to_process:
+            logger.warning("No unique URLs found across search engines.")
+        else:
+            logger.info(f"Found {len(urls_to_process)} unique URLs. Summarizing concurrently (max: {max_concurrent_summaries})...")
+            semaphore = asyncio.Semaphore(max_concurrent_summaries)
+            tasks = []
+            url_map_for_gather = {} # Map task index back to URL
+            task_counter = 0
+
+            async def task_wrapper(url):
+                async with semaphore:
+                    # Pass the relevant entry from all_results_map to the helper
+                    return await _summarize_single_url(url, query, llm_model, all_results_map[url])
+
+            for url in urls_to_process:
+                tasks.append(asyncio.create_task(task_wrapper(url)))
+                url_map_for_gather[task_counter] = url
+                task_counter += 1
+
+            summary_results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Process results
+            for i, result_or_exc in enumerate(summary_results_from_gather):
+                processed_url = url_map_for_gather[i]
+                if isinstance(result_or_exc, Exception):
+                    err_msg = f"Task for {processed_url} raised exception: {type(result_or_exc).__name__}: {str(result_or_exc)}"
+                    logger.error(err_msg, exc_info=False) # Log less verbosely here
+                    errors_dict[processed_url] = str(result_or_exc)
+                    summarized_results.append({"url": processed_url, "title": all_results_map[processed_url].get("title", "N/A"), "summary": f"Failed: {type(result_or_exc).__name__}", "source_engine": all_results_map[processed_url].get("source_engines", []), "error": str(result_or_exc)})
+                elif isinstance(result_or_exc, dict):
+                    if result_or_exc.get("error"): errors_dict[processed_url] = result_or_exc["error"]
+                    summarized_results.append(result_or_exc) # Append success or error dict from helper
+                else:
+                    err_msg = f"Unexpected result type ({type(result_or_exc)}) for {processed_url}"; logger.error(err_msg); errors_dict[processed_url] = err_msg
+
+    except (ToolInputError, ToolError) as e:
+         logger.error(f"Error during multi-engine search setup or execution: {type(e).__name__}: {e}", exc_info=True)
+         # Return the error structure expected by the caller
+         return {"success": False, "query": query, "results": summarized_results, "errors": errors_dict, "message": f"Search failed: {str(e)}"}
+    except Exception as e:
+         logger.critical(f"Unexpected critical error during multi-engine search: {type(e).__name__}: {e}", exc_info=True)
+         return {"success": False, "query": query, "results": summarized_results, "errors": errors_dict, "message": f"Multi-engine search failed critically: {type(e).__name__}: {e}"}
+    finally:
+        # Close browser ONLY if this tool initialized it
+        if browser_was_initialized_by_tool:
+            logger.info("Closing browser instance initialized by multi_engine_search_summary tool.")
+            await browser_close()
+
+    processing_time = time.monotonic() - start_time
+    successful_summaries = len([r for r in summarized_results if not r.get("error")])
+    msg = f"Summarized {successful_summaries} of {len(urls_to_process)} unique results for query '{query}'."
+    if errors_dict: msg += f" Encountered {len(errors_dict)} errors."
+    logger.success(msg, time=processing_time)
+
+    return {
+        "success": True, "query": query, "results": summarized_results,
+        "errors": errors_dict, "message": msg, "processing_time": processing_time
+    }
+
+
+@with_tool_metrics
+@with_error_handling
+async def monitor_web_data_points(
+    monitoring_targets: List[Dict[str, Any]],
+    previous_values: Optional[Dict[str, str]] = None, # Key format: "{url}::{data_point_name}"
+    llm_model: str = "openai/gpt-4.1-mini",
+    browser_options: Optional[Dict[str, Any]] = None,
+    max_concurrent_pages: int = 3 # Limit concurrency for monitoring
+) -> Dict[str, Any]:
+    """
+    Monitors specific data points across multiple web pages, extracts values,
+    and checks conditions or changes.
+
+    Args:
+        monitoring_targets: List of targets to monitor. Each target dict must contain:
+            url: (str) The URL of the page to visit.
+            data_points: (List[Dict]) List of data points to check on this page.
+                Each data_point dict requires:
+                name: (str) Unique name for this data point (used in results/previous_values).
+                identifier: (str) CSS selector OR natural language prompt for LLM extraction.
+                extraction_method: (str) 'selector' or 'llm'.
+                attribute: (Optional[str]) If method='selector', specific HTML attribute to get (e.g., 'href', 'data-price'). If omitted, gets text content.
+                condition: (Optional[str]) Type of check: 'changed' (vs previous_value), 'equals', 'contains', 'greater_than', 'less_than', 'ge', 'le', 'regex_match', 'llm_eval'. Default: 'changed'.
+                condition_value: (Optional[Any]) Value/pattern to use for comparison in conditions like 'equals', 'contains', numeric checks, 'regex_match'.
+                llm_condition_prompt: (Optional[str]) Prompt for LLM if condition='llm_eval'. Context (current/previous values) will be added automatically.
+        previous_values: (Optional[Dict[str, str]]) Dictionary holding the *last known* values for data points, keyed as "{url}::{data_point_name}". Used for 'changed' condition.
+        llm_model: (Optional) LLM model for 'llm' extraction or 'llm_eval' condition. Default "openai/gpt-4.1-mini".
+        browser_options: (Optional) Options for browser_init (e.g., {"headless": True}).
+        max_concurrent_pages: (Optional) Max number of URLs to process in parallel. Default 3.
+
+    Returns:
+        Dictionary with monitoring results:
+        {
+            "success": true,
+            "results": {
+                "https://example.com": { # Results keyed by URL
+                    "data_point_1_name": {
+                        "current_value": "123.45",
+                        "condition_met": false,
+                        "status": "Condition 'changed': Not detected (...)",
+                        "error": null
+                    },
+                    "data_point_2_name": { ... }
+                },
+                "https://anothersite.org": { ... }
+            },
+            "errors": List[str], # List of page-level processing errors
+            "message": "Monitoring complete. Processed X targets."
+        }
+    """
+    start_time = time.monotonic()
+    logger.info(f"Starting web data point monitoring for {len(monitoring_targets)} targets.")
+
+    # --- Validate Inputs ---
+    if not isinstance(monitoring_targets, list) or not monitoring_targets: raise ToolInputError("'monitoring_targets' must be a non-empty list.")
+    if previous_values and not isinstance(previous_values, dict): raise ToolInputError("'previous_values' must be a dictionary if provided.")
+    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("llm_model must be 'provider/model_name'.")
+    # Deeper validation of target/data_point structure could be added here
+
+    # --- Setup ---
+    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
+    browser_was_initialized_by_tool = False
+    previous_values_map = previous_values or {}
+    monitoring_results = {} # url -> { data_point_name -> result }
+    page_level_errors = []
+
+    try:
+        # Initialize Browser (if needed)
+        global _browser_instance
+        if not _browser_instance or not _browser_instance.is_connected():
+             init_res = await browser_init(**browser_init_options)
+             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             browser_was_initialized_by_tool = True
+
+        # --- Process Targets Concurrently ---
+        semaphore = asyncio.Semaphore(max_concurrent_pages)
+        tasks = []
+
+        async def process_target_url(target_def: Dict):
+            """Task to process one target URL and its data points."""
+            url = target_def.get("url")
+            data_points = target_def.get("data_points", [])
+            if not url or not isinstance(url, str) or not isinstance(data_points, list):
+                logger.error(f"Invalid target definition skipped: {target_def}")
+                page_level_errors.append(f"Invalid target definition for URL (or missing URL/data_points): {str(target_def)[:100]}...")
+                return None # Skip invalid target
+
+            target_results = {}
+            page_error_msg = None
+            page_obj_for_target: Optional[Page] = None # Keep page open for all data points on it
+
+            try:
+                 # --- Navigate ---
+                 # Use try-except for navigation to handle page-level errors
+                 try:
+                      page_id, page_obj_for_target = await _ensure_page() # Get a page (could be reused or new)
+                      logger.debug(f"Navigating to target URL for monitoring: {url} (using page {page_id})")
+                      # Use low-level navigation tool directly
+                      nav_res = await browser_navigate(url=url, wait_until="load", timeout=30000, capture_snapshot=False)
+                      if not nav_res.get("success"):
+                           raise ToolError(f"Navigation failed: {nav_res.get('error', 'Unknown error')}")
+                      await asyncio.sleep(1.5) # Wait for potential JS loading
+                 except (ToolError, ToolInputError, Exception) as nav_err:
+                      page_error_msg = f"Failed to navigate to {url}: {type(nav_err).__name__}: {str(nav_err)}"
+                      logger.error(page_error_msg)
+                      page_level_errors.append(page_error_msg)
+                      # Do not proceed with data point extraction if navigation failed
+                      return {url: {"page_error": page_error_msg}} # Return page-level error
+
+                 # --- Extract and Evaluate Data Points for this URL ---
+                 if not page_obj_for_target:
+                       raise ToolError("Internal error: Page object became unavailable after navigation.")
+
+                 for dp_def in data_points:
+                     dp_name = dp_def.get("name")
+                     if not dp_name:
+                          logger.warning(f"Data point definition missing 'name' in target {url}, skipping: {dp_def}")
+                          continue
+
+                     dp_result = {"current_value": None, "condition_met": None, "status": "Not evaluated", "error": None}
+
+                     # Extract value
+                     current_value, extract_err = await _extract_single_data_point(page_obj_for_target, url, dp_def, llm_model)
+                     dp_result["current_value"] = current_value
+                     if extract_err:
+                          dp_result["error"] = f"Extraction failed: {extract_err}"
+                          dp_result["status"] = "Extraction failed"
+                     else:
+                          # Evaluate condition if extraction succeeded
+                          condition_def = {k: v for k, v in dp_def.items() if k in ['condition', 'condition_value', 'llm_condition_prompt']}
+                          previous_val_key = f"{url}::{dp_name}"
+                          prev_val = previous_values_map.get(previous_val_key)
+                          cond_met, cond_status, eval_err = await _evaluate_data_point_condition(dp_name, current_value, condition_def, prev_val, llm_model)
+                          dp_result["condition_met"] = cond_met
+                          dp_result["status"] = cond_status
+                          if eval_err:
+                              dp_result["error"] = f"Evaluation failed: {eval_err}"
+
+                     target_results[dp_name] = dp_result
+
+                 # Return results for this URL
+                 return {url: target_results}
+
+            except Exception as target_proc_err:
+                 # Catch unexpected errors during the processing of a single target URL
+                 err_msg = f"Unexpected error processing target {url}: {type(target_proc_err).__name__}: {str(target_proc_err)}"
+                 logger.error(err_msg, exc_info=True)
+                 page_level_errors.append(err_msg)
+                 return {url: {"page_error": err_msg}} # Return page-level error
+
+        # Create and gather tasks
+        async def task_wrapper(target_def):
+            async with semaphore:
+                return await process_target_url(target_def)
+
+        tasks = [task_wrapper(target) for target in monitoring_targets]
+        results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Consolidate results
+        for res_or_exc in results_from_gather:
+            if isinstance(res_or_exc, Exception):
+                # Should generally be caught within process_target_url, but handle here too
+                err_msg = f"Task processing failed unexpectedly: {type(res_or_exc).__name__}: {str(res_or_exc)}"
+                logger.error(err_msg, exc_info=True)
+                page_level_errors.append(err_msg)
+            elif isinstance(res_or_exc, dict):
+                monitoring_results.update(res_or_exc) # Merge results for each URL
+            else:
+                 # Should not happen
+                 err_msg = f"Unexpected result type from monitoring task: {type(res_or_exc)}"
+                 logger.error(err_msg)
+                 page_level_errors.append(err_msg)
+
+    except (ToolInputError, ToolError) as e:
+         logger.error(f"Error during monitoring setup: {type(e).__name__}: {e}", exc_info=True)
+         raise # Re-raise critical setup errors
+    except Exception as e:
+         logger.critical(f"Unexpected critical error during monitoring execution: {type(e).__name__}: {e}", exc_info=True)
+         raise ToolError(f"Unexpected critical error: {e}") from e
+    finally:
+        # Close browser ONLY if this tool initialized it
+        if browser_was_initialized_by_tool:
+            logger.info("Closing browser instance initialized by monitor_web_data_points tool.")
+            await browser_close()
+
+    processing_time = time.monotonic() - start_time
+    processed_count = len(monitoring_results)
+    error_count = len(page_level_errors) + sum(1 for url_res in monitoring_results.values() if url_res.get("page_error"))
+    msg = f"Monitoring complete. Processed {processed_count} of {len(monitoring_targets)} targets."
+    if error_count > 0: msg += f" Encountered {error_count} page-level errors."
+    logger.success(msg, time=processing_time)
+
+    return {
+        "success": True,
+        "results": monitoring_results, # {url: {dp_name: {current_value, condition_met, status, error}}}
+        "errors": page_level_errors, # List of page-level errors
+        "message": msg,
+        "processing_time": processing_time
+    }
+
+
+@with_tool_metrics
+@with_error_handling
+async def research_and_synthesize_report(
+    topic: str,
+    instructions: Dict[str, Any],
+    llm_model: str = "openai/gpt-4.1-mini",
+    browser_options: Optional[Dict[str, Any]] = None,
+    max_concurrent_extractions: int = 3 # Limit concurrent page processing
+) -> Dict[str, Any]:
+    """
+    Performs web research on a topic, extracts key info from selected pages using an LLM,
+    and synthesizes the findings into a report according to provided instructions.
+
+    Args:
+        topic: The research topic.
+        instructions: Dictionary defining the workflow:
+            research_goal_prompt: (str) Overall objective of the research.
+            search_queries: (List[str]) List of search query templates (use "{topic}").
+            site_selection_prompt: (str) LLM prompt to select relevant URLs from search results (should request JSON {"selected_urls": [...]}).
+            max_sites_to_visit: (int) Max number of selected sites to extract info from.
+            information_extraction_prompt_or_schema: (Union[str, Dict]) LLM prompt or JSON schema to extract data from each visited page (should request JSON output).
+            synthesis_prompt: (str) LLM prompt for generating the final report using extracted snippets (use "{topic}" and "{extracted_information_context}").
+            report_format: (str) Description of the desired output format (e.g., "markdown summary", "json list of key findings").
+            search_engine: (Optional[str]) "google", "bing", etc. Default "google".
+            num_search_results_per_query: (Optional[int]) How many results to fetch per query initially. Default 10.
+        llm_model: (Optional) LLM model identifier for guidance/extraction/synthesis. Default "openai/gpt-4.1-mini".
+        browser_options: (Optional) Options for browser_init.
+        max_concurrent_extractions: (Optional) Max number of site extractions to run in parallel. Default 3.
+
+
+    Returns:
+        Dictionary with the final report and process summary:
+        {
+            "success": true,
+            "topic": "...",
+            "report": "Synthesized report content...",
+            "processed_urls": ["url1", ...],
+            "errors": Dict[str, str], # url/stage -> error message
+            "message": "Research and synthesis complete."
+        }
+    """
+    start_time = time.monotonic()
+    logger.info(f"Starting research and synthesis report for topic: '{topic}'")
+
+    # --- Validate Instructions ---
+    if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
+    required_keys = [
+        "research_goal_prompt", "search_queries", "site_selection_prompt",
+        "max_sites_to_visit", "information_extraction_prompt_or_schema",
+        "synthesis_prompt", "report_format"
+    ]
+    if not all(k in instructions for k in required_keys): raise ToolInputError(f"Instructions missing one or more required keys: {required_keys}")
+    if not isinstance(instructions["search_queries"], list) or not instructions["search_queries"]: raise ToolInputError("'search_queries' must be a non-empty list.")
+    if not isinstance(instructions["max_sites_to_visit"], int) or instructions["max_sites_to_visit"] < 1: raise ToolInputError("'max_sites_to_visit' must be a positive integer.")
+    # Further validation...
+
+    # --- Setup ---
+    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
+    browser_was_initialized_by_tool = False
+    all_search_results: List[Dict[str, str]] = []
+    selected_urls_to_visit: List[str] = []
+    extracted_snippets: List[Dict[str, Any]] = []
+    errors_dict: Dict[str, str] = {} # stage/url -> error
+
+    try:
+        # --- Initialize Browser (if needed) ---
+        global _browser_instance
+        if not _browser_instance or not _browser_instance.is_connected():
+             init_res = await browser_init(**browser_init_options)
+             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             browser_was_initialized_by_tool = True
+
+        # --- 1. Search Phase ---
+        search_engine = instructions.get("search_engine", "google")
+        num_results = instructions.get("num_search_results_per_query", 10)
+        seen_urls = set()
+
+        for query_template in instructions["search_queries"]:
+            query = query_template.format(topic=topic)
+            try:
+                results = await _perform_web_search(query, engine=search_engine, num_results=num_results)
+                # Add unique results
+                for res in results:
+                    if res['url'] not in seen_urls:
+                        all_search_results.append(res)
+                        seen_urls.add(res['url'])
+            except Exception as search_err:
+                logger.error(f"Search failed for query '{query}': {search_err}")
+                errors_dict[f"Search: {query}"] = str(search_err)
+
+        if not all_search_results:
+            raise ToolError("Web search phase yielded no results.")
+        logger.info(f"Collected {len(all_search_results)} unique search results across {len(instructions['search_queries'])} queries.")
+
+        # --- 2. Site Selection Phase ---
+        max_sites = instructions["max_sites_to_visit"]
+        selection_prompt = instructions["site_selection_prompt"]
+        try:
+            selected_urls_to_visit = await _select_relevant_urls_llm(
+                all_search_results, selection_prompt, topic, max_sites, llm_model
+            )
+            if not selected_urls_to_visit:
+                raise ToolError("LLM failed to select any relevant URLs for extraction.")
+            logger.info(f"LLM selected {len(selected_urls_to_visit)} URLs for information extraction.")
+        except Exception as select_err:
+             logger.error(f"Site selection phase failed: {select_err}")
+             errors_dict["Site Selection"] = str(select_err)
+             raise ToolError(f"Site selection failed: {select_err}") from select_err # Stop if selection fails
+
+        # --- 3. Information Extraction Phase ---
+        extraction_prompt_or_schema = instructions["information_extraction_prompt_or_schema"]
+        logger.info(f"Starting information extraction from {len(selected_urls_to_visit)} selected URLs (max concurrency: {max_concurrent_extractions})...")
+
+        semaphore = asyncio.Semaphore(max_concurrent_extractions)
+        tasks = []
+
+        async def extraction_task_wrapper(url):
+            async with semaphore:
+                return await _extract_info_from_url_llm(url, extraction_prompt_or_schema, topic, llm_model)
+
+        tasks = [extraction_task_wrapper(url) for url in selected_urls_to_visit]
+        extraction_results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process extraction results
+        for i, result_or_exc in enumerate(extraction_results_from_gather):
+            processed_url = selected_urls_to_visit[i]
+            if isinstance(result_or_exc, Exception):
+                err_msg = f"Extraction task for {processed_url} failed: {type(result_or_exc).__name__}: {str(result_or_exc)}"
+                logger.error(err_msg, exc_info=False)
+                errors_dict[processed_url] = str(result_or_exc)
+            elif isinstance(result_or_exc, dict):
+                # Check for extraction errors reported by the helper
+                extract_err = result_or_exc.get("_extraction_error")
+                if extract_err:
+                    logger.warning(f"Extraction failed for {processed_url}: {extract_err}")
+                    errors_dict[processed_url] = extract_err
+                else:
+                    # Successful extraction, add URL for context
+                    result_or_exc["_url"] = processed_url
+                    extracted_snippets.append(result_or_exc)
+            else:
+                err_msg = f"Unexpected result type ({type(result_or_exc)}) from extraction task for {processed_url}"
+                logger.error(err_msg); errors_dict[processed_url] = err_msg
+
+        if not extracted_snippets:
+             # If *all* extractions failed, we can't synthesize
+             raise ToolError("Information extraction phase failed for all selected URLs.")
+
+        logger.info(f"Successfully extracted information from {len(extracted_snippets)} URLs.")
+
+        # --- 4. Synthesis Phase ---
+        synthesis_prompt = instructions["synthesis_prompt"]
+        report_format = instructions["report_format"]
+        logger.info(f"Synthesizing final report (Format: {report_format})...")
+
+        try:
+            final_report = await _synthesize_report_llm(extracted_snippets, synthesis_prompt, topic, report_format, llm_model)
+        except Exception as synth_err:
+             logger.error(f"Report synthesis phase failed: {synth_err}", exc_info=True)
+             errors_dict["Synthesis"] = str(synth_err)
+             raise ToolError(f"Report synthesis failed: {synth_err}") from synth_err # Fail the tool if synthesis errors
+
+
+    except (ToolInputError, ToolError) as e:
+         logger.error(f"Error during research & synthesis for '{topic}': {type(e).__name__}: {e}", exc_info=True)
+         return { # Return error structure
+             "success": False, "topic": topic, "error": str(e),
+             "report": None, "processed_urls": selected_urls_to_visit, "errors": errors_dict,
+             "message": f"Research process failed: {e}"
+         }
+    except Exception as e:
+         logger.critical(f"Unexpected critical error during research & synthesis for '{topic}': {type(e).__name__}: {e}", exc_info=True)
+         return {
+             "success": False, "topic": topic, "error": f"Unexpected critical error: {str(e)}",
+             "report": None, "processed_urls": selected_urls_to_visit, "errors": errors_dict,
+             "message": f"Research process failed critically: {type(e).__name__}"
+         }
+    finally:
+        # Close browser ONLY if this tool initialized it
+        if browser_was_initialized_by_tool:
+            logger.info("Closing browser instance initialized by research_and_synthesize_report tool.")
+            await browser_close()
+
+    processing_time = time.monotonic() - start_time
+    msg = f"Research and synthesis for '{topic}' complete. Processed {len(selected_urls_to_visit)} URLs, extracted {len(extracted_snippets)} snippets."
+    if errors_dict: msg += f" Encountered {len(errors_dict)} errors."
+    logger.success(msg, time=processing_time)
+
+    return {
+        "success": True,
+        "topic": topic,
+        "report": final_report,
+        "processed_urls": selected_urls_to_visit, # URLs from which info was attempted
+        "successful_extractions": len(extracted_snippets),
+        "errors": errors_dict, # Any errors during search, selection, extraction, synthesis
+        "message": msg,
+        "processing_time": processing_time
+    }

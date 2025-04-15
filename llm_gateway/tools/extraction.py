@@ -8,7 +8,7 @@ import asyncio
 import json
 import re  # Added for code extraction
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import jsonschema
 
@@ -20,8 +20,105 @@ from llm_gateway.exceptions import ProviderError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
 from llm_gateway.tools.base import BaseTool
+# Import the standardized completion tool
+from llm_gateway.tools.completion import generate_completion
 
 logger = get_logger("llm_gateway.tools.extraction")
+
+def _extract_and_parse_json(text: str) -> Tuple[Any, bool, Optional[str]]:
+    """
+    Robust utility to extract and parse JSON from text, handling various formats and edge cases.
+    
+    Args:
+        text: The text that may contain JSON.
+        
+    Returns:
+        Tuple of (parsed_data, success_flag, error_message)
+    """
+    # Start with a clean slate
+    text = text.strip()
+    error_message = None
+    
+    # Try a series of increasingly aggressive extraction techniques
+    extraction_methods = [
+        # Method 1: Direct parsing if it's already valid JSON
+        lambda t: json.loads(t),
+        
+        # Method 2: Extract JSON using regex for common patterns
+        lambda t: json.loads(re.search(r'(?s)(?:```(?:json)?\s*)?({[\s\S]*?}|\[[\s\S]*?\])(?:\s*```)?', t).group(1).strip()),
+        
+        # Method 3: Remove markdown fences and try again
+        lambda t: json.loads(re.sub(r'```(?:json)?\s*|\s*```', '', t).strip()),
+        
+        # Method 4: Fix common JSON syntax errors and try again
+        lambda t: json.loads(_fix_common_json_errors(t)),
+        
+        # Method 5: Use ast.literal_eval as a fallback for Python literals
+        lambda t: _safe_literal_eval(t)
+    ]
+    
+    # Try each method in sequence until one works
+    for i, method in enumerate(extraction_methods):
+        try:
+            result = method(text)
+            logger.debug(f"Successfully parsed JSON using method {i+1}")
+            return result, True, None
+        except Exception as e:
+            # Continue to next method on failure
+            if i == len(extraction_methods) - 1:  # Last method
+                error_message = f"All JSON parsing methods failed. Last error: {str(e)}"
+    
+    return None, False, error_message
+
+def _fix_common_json_errors(json_str: str) -> str:
+    """
+    Fix common JSON syntax errors found in LLM outputs.
+    
+    Args:
+        json_str: The JSON string to fix
+        
+    Returns:
+        Corrected JSON string
+    """
+    # Remove any text before the first '{' or '['
+    json_str = re.sub(r'^.*?([{\[])', r'\1', json_str, flags=re.DOTALL)
+    
+    # Remove any text after the last '}' or ']'
+    json_str = re.sub(r'([}\]])[^}\]]*$', r'\1', json_str, flags=re.DOTALL)
+    
+    # Fix missing quotes around keys
+    json_str = re.sub(r'(\s*)(\w+)(\s*):', r'\1"\2"\3:', json_str)
+    
+    # Fix trailing commas in arrays
+    json_str = re.sub(r',(\s*[\]}])', r'\1', json_str)
+    
+    # Fix missing commas between elements
+    json_str = re.sub(r'(["}\]])(\s*)(["{\[])', r'\1,\2\3', json_str)
+    
+    return json_str
+
+def _safe_literal_eval(text: str) -> Any:
+    """
+    Safely evaluate a string containing a Python literal.
+    
+    Args:
+        text: The text containing a Python literal
+        
+    Returns:
+        The evaluated Python object
+        
+    Raises:
+        SyntaxError: If the text cannot be parsed as a Python literal
+    """
+    import ast
+    
+    # Remove any text before the first '{' or '['
+    text = re.sub(r'^.*?([{\[])', r'\1', text, flags=re.DOTALL)
+    
+    # Remove any text after the last '}' or ']'
+    text = re.sub(r'([}\]])[^}\]]*$', r'\1', text, flags=re.DOTALL)
+    
+    return ast.literal_eval(text)
 
 @with_tool_metrics
 @with_error_handling
@@ -77,10 +174,30 @@ async def extract_json(
         raise ToolInputError("Input 'text' must be a non-empty string.", param_name="text", provided_value=text)
         
     try:
-        provider_instance = await get_provider(provider)
+        # Check if there's already valid JSON in the input text
+        extracted_data, success, error_message = _extract_and_parse_json(text)
+        
+        # If we found valid JSON in the input, return it right away
+        if success:
+            logger.info(f"Found and extracted valid JSON directly from input text")
+            return {
+                "data": extracted_data,
+                "validation_result": None,  # No validation done for direct extraction
+                "raw_text": None,
+                "model": "direct-extraction", # No model used
+                "provider": "direct-extraction", # No provider used
+                "tokens": {"input": len(text), "output": 0, "total": len(text)},
+                "cost": 0.0,  # No cost for direct extraction
+                "processing_time": time.time() - start_time,
+                "success": True,
+                "error": None
+            }
+        
+        # Prepare model ID based on provider format
+        effective_model = model
         # Ensure model ID includes provider prefix if not already present
         if model and provider not in model:
-             model = f"{provider}/{model}" 
+             effective_model = f"{provider}/{model}"
         
         schema_description = f"The extracted JSON should conform to this JSON schema:\n```json\n{json.dumps(json_schema, indent=2)}\n```\n" if json_schema else ""
         # Improved prompt asking the LLM to identify and extract the JSON
@@ -89,74 +206,61 @@ async def extract_json(
                  f"Text:\n```\n{text}\n```\nExtracted JSON:"
         
         # Use JSON mode if supported by the provider (e.g., OpenAI)
-        response_format_param = {"type": "json_object"} if provider == Provider.OPENAI.value else None
+        additional_params = {}
+        if provider == Provider.OPENAI.value:
+            additional_params["response_format"] = {"type": "json_object"}
         
-        result = await provider_instance.generate_completion(
+        # Use the standardized completion tool instead of direct provider call
+        completion_result = await generate_completion(
             prompt=prompt, 
-            model=model, 
+            model=effective_model,
+            provider=provider,
             temperature=0.0, # Low temp for precise extraction
             max_tokens=4000, # Allow for large JSON objects
-            response_format=response_format_param 
+            additional_params=additional_params
         )
         
-        processing_time = time.time() - start_time
-        actual_model_used = result.model # Get actual model used
+        # Extract data from the standardized result format
+        processing_time = completion_result.get("processing_time", time.time() - start_time)
+        actual_model_used = completion_result.get("model", effective_model) 
+        raw_text_output = completion_result.get("text", "").strip()
+        token_info = completion_result.get("tokens", {})
+        cost = completion_result.get("cost", 0.0)
+        tool_success = completion_result.get("success", False)
         
-        extracted_data = None
+        # If the tool call failed, propagate the error
+        if not tool_success:
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"JSON extraction failed: {error_message}", 
+                provider=provider, 
+                model=actual_model_used
+            )
+        
+        # Use our robust parsing function
+        extracted_data, success, error_message = _extract_and_parse_json(raw_text_output)
         validation_result = None
-        raw_text_output = result.text.strip()
-        error_message = None
-        success = False
-
-        try:
-            # Attempt to clean and parse the response as JSON
-            json_str = raw_text_output
-            # Simple regex to find JSON object or array within potential fences or text
-            match = re.search(r"^.*?(\{.*?\}|\s*\[.*?\])\s*.*?$", json_str, re.DOTALL)
-            if match:
-                json_str = match.group(1).strip()
-            else:
-                # Fallback: Remove common markdown fences if no clear structure found
-                if json_str.startswith("```json"): 
-                    json_str = json_str[7:]
-                if json_str.startswith("```"): 
-                    json_str = json_str[3:]
-                if json_str.endswith("```"): 
-                    json_str = json_str[:-3]
-                json_str = json_str.strip()
-
-            extracted_data = json.loads(json_str)
-            logger.debug("Successfully parsed JSON from model output.")
-            success = True # Parsing successful
-            
-            if json_schema and validate_output:
-                validation_result = {"valid": True, "errors": []}
-                try: 
-                    jsonschema.validate(instance=extracted_data, schema=json_schema)
-                    logger.debug("JSON validated successfully against schema.")
-                except jsonschema.exceptions.ValidationError as e:
-                    validation_result = {"valid": False, "errors": [str(e)]}
-                    logger.warning(f"JSON validation failed: {e}")
-                    # Keep success=True as extraction worked, but validation failed
-            
-        except json.JSONDecodeError as e:
-            error_message = f"Failed to parse JSON from LLM response: {str(e)}"
-            logger.error(f"{error_message}. Raw text: {raw_text_output[:200]}...")
-            success = False
-        except Exception as e: # Catch other potential errors during parsing/validation
-             error_message = f"Error processing LLM response: {str(e)}"
-             logger.error(error_message, exc_info=True)
-             success = False
+        
+        # Validate against schema if requested and extraction succeeded
+        if success and json_schema and validate_output:
+            validation_result = {"valid": True, "errors": []}
+            try: 
+                jsonschema.validate(instance=extracted_data, schema=json_schema)
+                logger.debug("JSON validated successfully against schema.")
+            except jsonschema.exceptions.ValidationError as e:
+                validation_result = {"valid": False, "errors": [str(e)]}
+                logger.warning(f"JSON validation failed: {e}")
+                # Keep success=True as extraction worked, but validation failed
 
         logger.info(f"JSON extraction attempt complete. Success: {success}, Validated: {validation_result.get('valid') if validation_result else 'N/A'}. Time: {processing_time:.2f}s")
         return {
             "data": extracted_data,
             "validation_result": validation_result,
-            "raw_text": raw_text_output if error_message and not extracted_data else None, # Include raw only on parse failure
+            "raw_text": raw_text_output if not success else None, # Include raw only on parse failure
             "model": actual_model_used,
             "provider": provider,
-            "tokens": {"input": result.input_tokens, "output": result.output_tokens, "total": result.total_tokens},
-            "cost": result.cost,
+            "tokens": token_info,
+            "cost": cost,
             "processing_time": processing_time,
             "success": success,
             "error": error_message
@@ -224,9 +328,11 @@ async def extract_table(
         raise ToolInputError("Input 'text' must be a non-empty string.", param_name="text", provided_value=text)
         
     try:
-        provider_instance = await get_provider(provider)
+        # Prepare model ID based on provider format
+        effective_model = model
+        # Ensure model ID includes provider prefix if not already present
         if model and provider not in model:
-            model = f"{provider}/{model}" 
+            effective_model = f"{provider}/{model}" 
         
         headers_guidance = f"The table likely has headers similar to: {', '.join(headers)}.\n" if headers else "Attempt to identify table headers automatically.\n"
         metadata_guidance = "Also extract any surrounding metadata like a table title, caption, or source notes.\n" if extract_metadata else ""
@@ -238,72 +344,61 @@ async def extract_table(
                  f"Format the output as a single JSON object containing keys for each requested format ({', '.join(return_formats)}) " \
                  f"and optionally a 'metadata' key if requested. Ensure the values are the table represented in that format." \
                  f"\n\nText:\n```\n{text}\n```\nResult JSON:"
-            
-        result = await provider_instance.generate_completion(
+        
+        # Use JSON mode if supported by the provider
+        additional_params = {}
+        if provider == Provider.OPENAI.value:
+            additional_params["response_format"] = {"type": "json_object"}
+        
+        # Use the standardized completion tool instead of direct provider call
+        completion_result = await generate_completion(
             prompt=prompt, 
-            model=model, 
+            model=effective_model,
+            provider=provider,
             temperature=0.0, # Low temp for precise extraction
             max_tokens=4000, 
-            response_format={"type": "json_object"} if provider == Provider.OPENAI.value else None
+            additional_params=additional_params
         )
         
-        processing_time = time.time() - start_time
-        actual_model_used = result.model
+        # Extract data from the standardized result format
+        processing_time = completion_result.get("processing_time", time.time() - start_time)
+        actual_model_used = completion_result.get("model", effective_model)
+        raw_text_output = completion_result.get("text", "").strip()
+        token_info = completion_result.get("tokens", {})
+        cost = completion_result.get("cost", 0.0)
+        tool_success = completion_result.get("success", False)
         
-        extraction_result = None
-        error_message = None
-        success = False
-        raw_text_output = result.text.strip()
-
-        try:
-            # Clean and parse JSON response
-            json_str = raw_text_output
-            match = re.search(r"^.*?(\{.*?\})\s*.*?$", json_str, re.DOTALL)
-            if match:
-                json_str = match.group(1).strip()
-            else:
-                if json_str.startswith("```json"): 
-                    json_str = json_str[7:]
-                if json_str.startswith("```"): 
-                    json_str = json_str[3:]
-                if json_str.endswith("```"): 
-                    json_str = json_str[:-3]
-                json_str = json_str.strip()
-
-            extraction_result = json.loads(json_str)
+        # If the tool call failed, propagate the error
+        if not tool_success:
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Table extraction failed: {error_message}", 
+                provider=provider, 
+                model=actual_model_used
+            )
+        
+        # Use our robust parsing function
+        extraction_result, success, error_message = _extract_and_parse_json(raw_text_output)
             
-            # Basic validation: is it a dict and does it contain *at least one* requested format?
-            if not isinstance(extraction_result, dict) or not any(fmt in extraction_result for fmt in return_formats):
-                 logger.warning(f"Table extraction JSON result missing expected structure or formats ({return_formats}). Result: {extraction_result}")
-                 # Allow partial success if it's a dict, but log warning
-                 if isinstance(extraction_result, dict):
-                     success = True
-                     error_message = f"Warning: LLM output did not contain all requested formats ({return_formats})."
-                 else:
-                     raise json.JSONDecodeError("Expected a JSON object with format keys", json_str, 0)
+        # Basic validation if extraction succeeded
+        if success and (not isinstance(extraction_result, dict) or not any(fmt in extraction_result for fmt in return_formats)):
+            logger.warning(f"Table extraction JSON result missing expected structure or formats ({return_formats}). Result: {extraction_result}")
+            # Allow partial success if it's a dict, but log warning
+            if isinstance(extraction_result, dict):
+                error_message = f"Warning: LLM output did not contain all requested formats ({return_formats})."
             else:
-                success = True
-                logger.debug("Successfully parsed table extraction response.")
-
-        except json.JSONDecodeError as e:
-            error_message = f"Failed to parse JSON response for table extraction: {str(e)}"
-            logger.error(f"{error_message}. Raw text: {raw_text_output[:200]}...")
-            success = False
-            extraction_result = None # Ensure data is None on parse failure
-        except Exception as e: # Catch other potential errors
-             error_message = f"Error processing LLM response for table extraction: {str(e)}"
-             logger.error(error_message, exc_info=True)
-             success = False
-             extraction_result = None
-             
+                error_message = "Expected a JSON object with format keys"
+                success = False
+                extraction_result = None
+        
         logger.info(f"Table extraction attempt complete. Success: {success}. Time: {processing_time:.2f}s")
         return {
             "data": extraction_result, 
-            "raw_text": raw_text_output if not success and raw_text_output else None, # Include raw only on parse failure
+            "raw_text": raw_text_output if not success else None, # Include raw only on parse failure
             "model": actual_model_used, 
             "provider": provider,
-            "tokens": {"input": result.input_tokens, "output": result.output_tokens, "total": result.total_tokens},
-            "cost": result.cost, 
+            "tokens": token_info,
+            "cost": cost, 
             "processing_time": processing_time, 
             "success": success,
             "error": error_message
@@ -364,9 +459,11 @@ async def extract_key_value_pairs(
         raise ToolInputError("Input 'text' must be a non-empty string.", param_name="text", provided_value=text)
         
     try:
-        provider_instance = await get_provider(provider)
+        # Prepare model ID based on provider format
+        effective_model = model
+        # Ensure model ID includes provider prefix if not already present
         if model and provider not in model:
-            model = f"{provider}/{model}" 
+            effective_model = f"{provider}/{model}"
         
         keys_guidance = f"Extract the values for these specific keys: {', '.join(keys)}.\n" if keys else "Identify and extract all distinct key-value pairs present in the text.\n"
         prompt = f"Analyze the following text and extract key-value pairs. {keys_guidance}" \
@@ -374,63 +471,56 @@ async def extract_key_value_pairs(
                  f"Infer the value associated with each key from the text context. Ignore keys not present in the text.\n\n" \
                  f"Text:\n```\n{text}\n```\nResult JSON object:"
         
-        result = await provider_instance.generate_completion(
+        # Use JSON mode if supported by the provider
+        additional_params = {}
+        if provider == Provider.OPENAI.value:
+            additional_params["response_format"] = {"type": "json_object"}
+        
+        # Use the standardized completion tool instead of direct provider call
+        completion_result = await generate_completion(
             prompt=prompt, 
-            model=model, 
+            model=effective_model,
+            provider=provider,
             temperature=0.0, # Low temp for precise extraction
             max_tokens=2000,
-            response_format={"type": "json_object"} if provider == Provider.OPENAI.value else None
+            additional_params=additional_params
         )
         
-        processing_time = time.time() - start_time
-        actual_model_used = result.model
-
-        kv_data = None
-        error_message = None
-        success = False
-        raw_text_output = result.text.strip()
+        # Extract data from the standardized result format
+        processing_time = completion_result.get("processing_time", time.time() - start_time)
+        actual_model_used = completion_result.get("model", effective_model)
+        raw_text_output = completion_result.get("text", "").strip()
+        token_info = completion_result.get("tokens", {})
+        cost = completion_result.get("cost", 0.0)
+        tool_success = completion_result.get("success", False)
         
-        try:
-            # Clean and parse JSON response
-            json_str = raw_text_output
-            match = re.search(r"^.*?(\{.*?\})\s*.*?$", json_str, re.DOTALL)
-            if match:
-                json_str = match.group(1).strip()
-            else:
-                 if json_str.startswith("```json"): 
-                     json_str = json_str[7:]
-                 if json_str.startswith("```"): 
-                     json_str = json_str[3:]
-                 if json_str.endswith("```"): 
-                     json_str = json_str[:-3]
-                 json_str = json_str.strip()
+        # If the tool call failed, propagate the error
+        if not tool_success:
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Key-value pair extraction failed: {error_message}", 
+                provider=provider, 
+                model=actual_model_used
+            )
 
-            kv_data = json.loads(json_str)
-            if not isinstance(kv_data, dict):
-                 raise json.JSONDecodeError("LLM did not return a JSON object (dictionary)", json_str, 0)
-                 
-            success = True
-            logger.debug(f"Successfully parsed Key-Value JSON: Found keys {list(kv_data.keys())}")
-                 
-        except json.JSONDecodeError as e:
-            error_message = f"Failed to parse JSON object for key-value pairs: {str(e)}"
-            logger.error(f"{error_message}. Raw text: {raw_text_output[:200]}...")
+        # Use our robust parsing function
+        kv_data, success, error_message = _extract_and_parse_json(raw_text_output)
+        
+        # Validate it's a dictionary if extraction succeeded
+        if success and not isinstance(kv_data, dict):
+            error_message = "Extracted data is not a valid key-value dictionary"
+            logger.warning(error_message)
             success = False
             kv_data = None
-        except Exception as e:
-             error_message = f"Error processing LLM response for key-value pairs: {str(e)}"
-             logger.error(error_message, exc_info=True)
-             success = False
-             kv_data = None
-             
+                 
         logger.info(f"Key-Value pair extraction attempt complete. Success: {success}. Time: {processing_time:.2f}s")
         return {
             "data": kv_data, 
-            "raw_text": raw_text_output if not success and raw_text_output else None,
+            "raw_text": raw_text_output if not success else None,
             "model": actual_model_used, 
             "provider": provider,
-            "tokens": {"input": result.input_tokens, "output": result.output_tokens, "total": result.total_tokens},
-            "cost": result.cost, 
+            "tokens": token_info,
+            "cost": cost, 
             "processing_time": processing_time, 
             "success": success,
             "error": error_message
@@ -494,9 +584,11 @@ async def extract_semantic_schema(
         raise ToolInputError("Input 'semantic_schema' must be a non-empty dictionary representing a JSON schema.", param_name="semantic_schema", provided_value=semantic_schema)
 
     try:
-        provider_instance = await get_provider(provider)
+        # Prepare model ID based on provider format
+        effective_model = model
+        # Ensure model ID includes provider prefix if not already present
         if model and provider not in model:
-            model = f"{provider}/{model}" 
+            effective_model = f"{provider}/{model}" 
         
         # Create a clear prompt explaining the task and providing the schema
         schema_str = json.dumps(semantic_schema, indent=2)
@@ -507,68 +599,59 @@ async def extract_semantic_schema(
                  f"JSON Schema:\n```json\n{schema_str}\n```\n\n" \
                  f"Text:\n```\n{text}\n```\nPopulated JSON object:"
 
-        result = await provider_instance.generate_completion(
+        # Use JSON mode if supported by the provider
+        additional_params = {}
+        if provider == Provider.OPENAI.value:
+            additional_params["response_format"] = {"type": "json_object"}
+        
+        # Use the standardized completion tool instead of direct provider call
+        completion_result = await generate_completion(
             prompt=prompt, 
-            model=model, 
+            model=effective_model,
+            provider=provider,
             temperature=0.0, # Low temp for precise extraction
             max_tokens=4000,
-            response_format={"type": "json_object"} if provider == Provider.OPENAI.value else None
+            additional_params=additional_params
         )
         
-        processing_time = time.time() - start_time
-        actual_model_used = result.model
+        # Extract data from the standardized result format
+        processing_time = completion_result.get("processing_time", time.time() - start_time)
+        actual_model_used = completion_result.get("model", effective_model)
+        raw_text_output = completion_result.get("text", "").strip()
+        token_info = completion_result.get("tokens", {})
+        cost = completion_result.get("cost", 0.0)
+        tool_success = completion_result.get("success", False)
         
-        extracted_data = None
-        error_message = None
-        success = False
-        raw_text_output = result.text.strip()
+        # If the tool call failed, propagate the error
+        if not tool_success:
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Semantic schema extraction failed: {error_message}", 
+                provider=provider, 
+                model=actual_model_used
+            )
         
-        try:
-            # Clean and parse JSON response
-            json_str = raw_text_output
-            match = re.search(r"^.*?(\{.*?\})\s*.*?$", json_str, re.DOTALL)
-            if match:
-                json_str = match.group(1).strip()
-            else:
-                 if json_str.startswith("```json"): 
-                     json_str = json_str[7:]
-                 if json_str.startswith("```"): 
-                     json_str = json_str[3:]
-                 if json_str.endswith("```"): 
-                     json_str = json_str[:-3]
-                 json_str = json_str.strip()
-                 
-            extracted_data = json.loads(json_str)
-            
-            # Optional: Validate against the provided schema again (though prompt requested conformance)
+        # Use our robust parsing function
+        extracted_data, success, error_message = _extract_and_parse_json(raw_text_output)
+        
+        # Validate against the provided schema if extraction succeeded
+        if success:
             try:
                 jsonschema.validate(instance=extracted_data, schema=semantic_schema)
-                success = True
                 logger.debug("Successfully parsed and validated semantic schema JSON.")
             except jsonschema.exceptions.ValidationError as e:
                  error_message = f"Warning: LLM output did not strictly conform to schema: {str(e)}"
                  logger.warning(f"{error_message}. Data: {extracted_data}")
-                 success = True # Still consider extraction successful if parsable
-
-        except json.JSONDecodeError as e:
-            error_message = f"Failed to parse JSON object for semantic schema extraction: {str(e)}"
-            logger.error(f"{error_message}. Raw text: {raw_text_output[:200]}...")
-            success = False
-            extracted_data = None
-        except Exception as e:
-             error_message = f"Error processing LLM response for semantic schema: {str(e)}"
-             logger.error(error_message, exc_info=True)
-             success = False
-             extracted_data = None
-
+                 # Still consider extraction successful if parsable
+                 
         logger.info(f"Semantic schema extraction attempt complete. Success: {success}. Time: {processing_time:.2f}s")
         return {
             "data": extracted_data,
-            "raw_text": raw_text_output if not success and raw_text_output else None,
+            "raw_text": raw_text_output if not success else None,
             "model": actual_model_used,
             "provider": provider,
-            "tokens": {"input": result.input_tokens, "output": result.output_tokens, "total": result.total_tokens},
-            "cost": result.cost,
+            "tokens": token_info,
+            "cost": cost,
             "processing_time": processing_time,
             "success": success,
             "error": error_message
@@ -586,7 +669,7 @@ async def extract_semantic_schema(
 # No standard decorators applied.
 async def extract_code_from_response(
     response_text: str, 
-    model: str = "openai:gpt-4.1-mini", 
+    model: str = "openai/gpt-4.1-mini", 
     timeout: int = 15,
     tracker: Optional[Any] = None # Add optional tracker (use Any for now to avoid circular import)
 ) -> str:
@@ -620,40 +703,48 @@ async def extract_code_from_response(
     # If regex fails, use LLM for more robust extraction
     logger.debug("Regex failed, attempting LLM-based code extraction.")
     try:
+        # Parse provider from model string if it contains a slash
         provider_id = model.split('/')[0] if '/' in model else Provider.OPENAI.value
-        model_id = model # Assumes full model ID is passed
-        provider_instance = await get_provider(provider_id)
+        effective_model = model  # Use the full model string as provided
         
         prompt = f"Extract only the main code block from the following text. Return just the code itself, without any explanations or markdown fences.\n\nText:\n```\n{response_text}\n```\n\nCode:"
         
-        completion_task = provider_instance.generate_completion(
+        # Set a timeout using asyncio.wait_for
+        completion_task = generate_completion(
             prompt=prompt,
-            model=model_id,
+            model=effective_model,
+            provider=provider_id,
             temperature=0.0,
             max_tokens=len(response_text) # Allow enough tokens, approx original length
         )
         
-        result = await asyncio.wait_for(completion_task, timeout=timeout)
+        # Use asyncio.wait_for to implement timeout
+        completion_result = await asyncio.wait_for(completion_task, timeout=timeout)
+        
+        # Check if completion succeeded
+        if not completion_result.get("success", False):
+            logger.warning(f"LLM code extraction failed: {completion_result.get('error', 'Unknown error')}. Returning original text.")
+            return response_text
         
         # Track cost if tracker is provided
-        if tracker and hasattr(result, 'cost'):
+        if tracker:
             try:
                 # Use getattr to safely access attributes, provide defaults
                 # Create a temporary object for tracking as CostTracker expects attributes
                 class Trackable: pass
                 trackable = Trackable()
-                trackable.cost = getattr(result, 'cost', 0.0)
-                trackable.input_tokens = getattr(result, 'input_tokens', 0)
-                trackable.output_tokens = getattr(result, 'output_tokens', 0)
-                trackable.provider = getattr(result, 'provider', provider_id)
-                trackable.model = getattr(result, 'model', model_id)
-                trackable.processing_time = getattr(result, 'processing_time', 0.0)
+                trackable.cost = completion_result.get('cost', 0.0)
+                trackable.input_tokens = completion_result.get('tokens', {}).get('input', 0)
+                trackable.output_tokens = completion_result.get('tokens', {}).get('output', 0)
+                trackable.provider = provider_id
+                trackable.model = completion_result.get('model', effective_model)
+                trackable.processing_time = completion_result.get('processing_time', 0.0)
                 tracker.add_call(trackable)
             except Exception as track_err:
                  logger.warning(f"Could not track cost for LLM code extraction: {track_err}", exc_info=False)
 
-        extracted_code = result.text.strip()
-        logger.info(f"Extracted code using LLM ({model}).")
+        extracted_code = completion_result.get("text", "").strip()
+        logger.info(f"Extracted code using LLM ({effective_model}).")
         return extracted_code
         
     except asyncio.TimeoutError:

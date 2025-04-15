@@ -19,6 +19,7 @@ import llm_gateway
 import llm_gateway.core
 from llm_gateway.config import get_config, load_config
 from llm_gateway.constants import Provider
+from llm_gateway.core.state_store import StateStore
 
 # --- Import the trigger function ---
 from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
@@ -175,6 +176,15 @@ class Gateway:
             timeout=300,
             debug=True
         )
+        
+        # Initialize the state store
+        persistence_dir = None
+        if get_config() and hasattr(get_config(), 'state_persistence') and hasattr(get_config().state_persistence, 'dir'):
+            persistence_dir = get_config().state_persistence.dir
+        self.state_store = StateStore(persistence_dir)
+        
+        # Connect state store to MCP server
+        self._init_mcp()
         
         # Register tools if requested
         if register_tools:
@@ -497,6 +507,7 @@ first and be prepared to adapt to available providers.
         """Register MCP tools."""
         # Import here to avoid circular dependency
         from llm_gateway.tools import register_all_tools
+        
         self.logger.info("Registering core tools...")
         # Echo tool
         @self.mcp.tool()
@@ -513,33 +524,9 @@ first and be prepared to adapt to available providers.
             """
             self.logger.info(f"Echo tool called with message: {message}")
             return {"message": message}
-        
-        # Register all standard tools using the register_all_tools function
-        self.logger.info("Calling register_all_tools to register standalone and class-based tools...")
-        register_all_tools(self.mcp)
-        
-        # Register Meta API tools
-        try:
-            from llm_gateway.tools.meta_api_tool import register_api_meta_tools
-            self.logger.info("Registering Meta API tools...")
-            # Store the instance
-            self.api_meta_tool = register_api_meta_tools(self.mcp)
-            self.logger.info("Meta API tools registered successfully.")
-        except ImportError:
-            self.logger.warning("Meta API tools not found (llm_gateway.tools.meta_api_tool). Skipping registration.")
-        except Exception as e:
-            self.logger.error(f"Failed to register Meta API tools: {e}", exc_info=True)
 
-        # Register Playwright Browser tools
-        try:
-            from llm_gateway.tools.browser_automation import register_playwright_tools
-            self.logger.info("Registering Playwright browser tools...")
-            register_playwright_tools(self.mcp) # Call the registration function
-            self.logger.info("Playwright browser tools registered successfully.")
-        except ImportError:
-            self.logger.warning("Playwright browser tools not found (llm_gateway.tools.browser_automation). Skipping registration.")
-        except Exception as e:
-            self.logger.error(f"Failed to register Playwright browser tools: {e}", exc_info=True)
+        self.logger.info("Calling register_all_tools to register all tools...")
+        register_all_tools(self.mcp)
 
     def _register_resources(self):
         """Register MCP resources."""
@@ -1599,6 +1586,15 @@ first and be prepared to adapt to available providers.
                 }
             }
 
+    def _init_mcp(self):
+        # Existing MCP initialization
+        # ...
+        
+        # Attach state store to MCP
+        if hasattr(self, 'mcp') and hasattr(self, 'state_store'):
+            self.mcp.state_store = self.state_store
+            
+        # ... rest of MCP initialization ...
 
 def create_server() -> FastAPI:
     """Create and configure the FastAPI server."""
@@ -1647,6 +1643,8 @@ def start_server(
     log_level: Optional[str] = None,
     reload: bool = False,
     transport_mode: str = "stdio",  # Changed default from "sse" to "stdio"
+    include_tools: Optional[List[str]] = None,
+    exclude_tools: Optional[List[str]] = None,
 ) -> None:
     """Start the LLM Gateway Server using dictConfig for logging.
     
@@ -1657,10 +1655,23 @@ def start_server(
         log_level: Log level (default: from config)
         reload: Whether to reload the server on code changes
         transport_mode: Transport mode to use ("sse" for HTTP or "stdio" for direct process communication)
+        include_tools: List of tool names to include (default: include all)
+        exclude_tools: List of tool names to exclude (takes precedence over include_tools)
     """
     server_host = host or get_config().server.host
     server_port = port or get_config().server.port
     server_workers = workers or get_config().server.workers
+    
+    # Get the current config and update tool registration settings
+    cfg = get_config()
+    if include_tools or exclude_tools:
+        cfg.tool_registration.filter_enabled = True
+        
+    if include_tools:
+        cfg.tool_registration.included_tools = include_tools
+        
+    if exclude_tools:
+        cfg.tool_registration.excluded_tools = exclude_tools
     
     # Validate transport_mode
     if transport_mode not in ["sse", "stdio"]:
@@ -1689,7 +1700,9 @@ def start_server(
     # Initialize the gateway if not already created
     global _gateway_instance
     if not _gateway_instance:
-        _gateway_instance = Gateway()
+        # Create gateway with tool filtering based on config
+        cfg = get_config()
+        _gateway_instance = Gateway(register_tools=True)
     
     # Log startup info to stderr instead of using logging directly
     print("Starting LLM Gateway server", file=sys.stderr)
@@ -1698,6 +1711,13 @@ def start_server(
     print(f"Workers: {server_workers}", file=sys.stderr)
     print(f"Log level: {final_log_level}", file=sys.stderr)
     print(f"Transport mode: {transport_mode}", file=sys.stderr)
+    
+    # Log tool filtering info if enabled
+    if cfg.tool_registration.filter_enabled:
+        if cfg.tool_registration.included_tools:
+            print(f"Including tools: {', '.join(cfg.tool_registration.included_tools)}", file=sys.stderr)
+        if cfg.tool_registration.excluded_tools:
+            print(f"Excluding tools: {', '.join(cfg.tool_registration.excluded_tools)}", file=sys.stderr)
     
     if transport_mode == "sse":
         # Run in SSE mode (HTTP server)

@@ -853,3 +853,44 @@ def _get_json_schema_type(type_annotation):
     
     # Default to object for complex types
     return {"type": "object"}
+
+def with_state_management(namespace: str):
+    """Decorator to provide state management to tool functions.
+    
+    Args:
+        namespace: The namespace to use for state storage
+        
+    Returns:
+        A decorator that injects state management functions into the tool
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            # Get MCP server from context
+            context = kwargs.get('ctx')
+            if not context or not hasattr(context, 'mcp'):
+                raise ValueError("Context with MCP server required")
+            
+            mcp = context.mcp
+            if not hasattr(mcp, 'state_store'):
+                raise ValueError("MCP server does not have a state store")
+            
+            # Add state accessors to kwargs
+            kwargs['get_state'] = lambda key, default=None: mcp.state_store.get(namespace, key, default)
+            kwargs['set_state'] = lambda key, value: mcp.state_store.set(namespace, key, value)
+            kwargs['delete_state'] = lambda key: mcp.state_store.delete(namespace, key)
+            
+            return await func(*args, **kwargs)
+        
+        # Update signature to include context parameter if not already present
+        sig = inspect.signature(func)
+        if 'ctx' not in sig.parameters:
+            wrapped_params = list(sig.parameters.values())
+            wrapped_params.append(
+                inspect.Parameter('ctx', inspect.Parameter.KEYWORD_ONLY, 
+                                 annotation='Optional[Dict[str, Any]]', default=None)
+            )
+            wrapper.__signature__ = sig.replace(parameters=wrapped_params)
+        
+        return wrapper
+    return decorator

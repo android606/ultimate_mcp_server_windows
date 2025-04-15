@@ -82,6 +82,9 @@ dependencies = [
     "pdfplumber", # For OCR
     "fitz", # For OCR
     "pymupdf", # For OCR
+    "beautifulsoup4", # Dealing with HTML
+    "xmldiff", # for redlines
+    "lxml", # XML parser
 ]
 
 [project.optional-dependencies]

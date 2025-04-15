@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+import re
 from pathlib import Path
 
 # Add project root to path for imports when running as script
@@ -691,7 +692,67 @@ async def entity_extraction_demo(provider, tracker: CostTracker):
                 logger.debug(f"Attempting to parse Entity Extraction JSON after cleaning: {text_to_parse[:500]}...")
             if USE_DEBUG_LOGS:
                 logger.debug(f"EXACT STRING PASSED TO json.loads: >>>{text_to_parse}<<<")
-            json_result = json.loads(text_to_parse)
+            
+            try:
+                # First try standard parsing
+                json_result = json.loads(text_to_parse)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Standard JSON parsing failed: {e}. Attempting emergency repair.")
+                
+                # Emergency fallback for malformed JSON due to unterminated strings
+                # 1. Look for the raw JSON structure with markdown removed
+                text_no_markdown = text_to_parse
+                
+                # 2. Manually check for key entity categories, even if JSON is malformed
+                # Create a structured result with categories we expect to find
+                json_result = {
+                    "Organizations": [],
+                    "People": [],
+                    "Locations": [],
+                    "Dates and Times": [],
+                    "Products and Technologies": [],
+                    "Numerical Values": []
+                }
+                
+                # Look for entity categories using regex
+                org_matches = re.findall(r'"name"\s*:\s*"([^"]+)".*?"type"\s*:\s*"([^"]+)"', text_no_markdown)
+                for name, entity_type in org_matches:
+                    # Determine which category this entity belongs to based on type
+                    if any(keyword in entity_type.lower() for keyword in ["company", "corporation", "institution", "exchange"]):
+                        json_result["Organizations"].append({"name": name, "type": entity_type})
+                    elif any(keyword in entity_type.lower() for keyword in ["city", "state", "facility"]):
+                        json_result["Locations"].append({"name": name, "type": entity_type})
+                    elif any(keyword in entity_type.lower() for keyword in ["battery", "app", "system", "technology"]):
+                        json_result["Products and Technologies"].append({"name": name, "type": entity_type})
+                
+                # Look for people - they usually have titles and organizations
+                people_matches = re.findall(r'"name"\s*:\s*"([^"]+)".*?"title"\s*:\s*"([^"]+)".*?"organization"\s*:\s*"([^"]*)"', text_no_markdown)
+                for name, title, org in people_matches:
+                    json_result["People"].append({"name": name, "title": title, "organization": org})
+                
+                # Dates and numerical values are harder to extract generically
+                # but we can look for obvious patterns
+                date_matches = re.findall(r'"date"\s*:\s*"([^"]+)".*?"event"\s*:\s*"([^"]+)"', text_no_markdown)
+                for date, event in date_matches:
+                    json_result["Dates and Times"].append({"date": date, "event": event})
+                
+                # For numerical values, look for values with units
+                value_matches = re.findall(r'"value"\s*:\s*([^,]+).*?"unit"\s*:\s*"([^"]+)"', text_no_markdown)
+                for value, unit in value_matches:
+                    # Clean up the value
+                    clean_value = value.strip('" ')
+                    item = {"value": clean_value, "unit": unit}
+                    
+                    # Look for a description if available
+                    desc_match = re.search(r'"description"\s*:\s*"([^"]+)"', text_no_markdown)
+                    if desc_match:
+                        item["description"] = desc_match.group(1)
+                        
+                    json_result["Numerical Values"].append(item)
+                
+                # Add a note about emergency repair
+                logger.warning("Used emergency JSON repair - results may be incomplete")
+            
             if USE_DEBUG_LOGS:
                 logger.debug(f"Successfully parsed Entity Extraction JSON: {json.dumps(json_result, indent=2)}")
             

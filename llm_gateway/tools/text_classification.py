@@ -9,6 +9,7 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError
 from llm_gateway.tools.base import with_cache, with_error_handling, with_retry, with_tool_metrics
+from llm_gateway.tools.completion import generate_completion
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.text import preprocess_text
 
@@ -276,7 +277,7 @@ async def _perform_standard_classification(
     """Performs classification using a single LLM with standard prompting."""
     # Get provider instance
     try:
-        provider_instance = await get_provider(provider)
+        provider_instance = await get_provider(provider)  # noqa: F841
     except Exception as e:
         raise ProviderError(
             f"Failed to initialize provider '{provider}': {str(e)}",
@@ -416,24 +417,34 @@ Text to classify:
         # Use low temperature for more deterministic results
         temperature = additional_params.pop("temperature", 0.1)
         
-        # Generate classification
-        result = await provider_instance.generate_completion(
+        # Use the standardized completion tool
+        completion_result = await generate_completion(
             prompt=prompt,
             model=model,
-            max_tokens=1000,  # Generous token limit for detailed explanations
+            provider=provider,
             temperature=temperature,
-            **additional_params
+            max_tokens=1000,  # Generous token limit for detailed explanations
+            additional_params=additional_params
         )
+        
+        # Check if completion was successful
+        if not completion_result.get("success", False):
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Text classification failed: {error_message}", 
+                provider=provider,
+                model=model or "default"
+            )
         
         # --- Parse Response Based on Format ---
         classifications = []
         
         if output_format == "json":
-            classifications = _parse_json_response(result.text, confidence_threshold)
+            classifications = _parse_json_response(completion_result["text"], confidence_threshold)
         elif output_format == "markdown":
-            classifications = _parse_markdown_response(result.text, confidence_threshold)
+            classifications = _parse_markdown_response(completion_result["text"], confidence_threshold)
         else:  # text
-            classifications = _parse_text_response(result.text, confidence_threshold)
+            classifications = _parse_text_response(completion_result["text"], confidence_threshold)
         
         # Validate classifications against provided categories
         categories_to_validate = flat_categories if flat_categories is not None else categories
@@ -456,13 +467,9 @@ Text to classify:
         classification_result = {
             "classifications": classifications,
             "provider": provider,
-            "model": result.model,
-            "tokens": {
-                "input": result.input_tokens,
-                "output": result.output_tokens,
-                "total": result.total_tokens,
-            },
-            "cost": result.cost,
+            "model": completion_result["model"],
+            "tokens": completion_result["tokens"],
+            "cost": completion_result["cost"],
             "success": True
         }
         

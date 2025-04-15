@@ -111,7 +111,6 @@ class FilesystemConfig(BaseModel):
     default_encoding: str = Field("utf-8", description="Default encoding for text file operations")
     max_read_size_bytes: int = Field(100 * 1024 * 1024, description="Maximum size for reading files") # 100MB example
 
-# --- NEW Agent Memory Config ---
 class AgentMemoryConfig(BaseModel):
     """Configuration for Cognitive and Agent Memory tool."""
     db_path: str = Field("unified_agent_memory.db", description="Path to the agent memory SQLite database")
@@ -120,6 +119,12 @@ class AgentMemoryConfig(BaseModel):
     importance_boost_factor: float = Field(1.5, description="Multiplier for explicitly marked important memories")
     similarity_threshold: float = Field(0.75, description="Default threshold for semantic similarity search")
 
+class ToolRegistrationConfig(BaseModel):
+    """Configuration for tool registration."""
+    filter_enabled: bool = Field(False, description="Whether to filter which tools are registered")
+    included_tools: List[str] = Field(default_factory=list, description="List of tool names to include (empty means include all)")
+    excluded_tools: List[str] = Field(default_factory=list, description="List of tool names to exclude (takes precedence over included_tools)")
+
 class GatewayConfig(BaseModel): # Inherit from BaseModel now
     """Main LLM Gateway configuration model."""
     server: ServerConfig = Field(default_factory=ServerConfig)
@@ -127,6 +132,7 @@ class GatewayConfig(BaseModel): # Inherit from BaseModel now
     cache: CacheConfig = Field(default_factory=CacheConfig)
     filesystem: FilesystemConfig = Field(default_factory=FilesystemConfig)
     agent_memory: AgentMemoryConfig = Field(default_factory=AgentMemoryConfig) # Added agent memory
+    tool_registration: ToolRegistrationConfig = Field(default_factory=ToolRegistrationConfig) # Added tool registration config
 
     storage_directory: str = Field("./storage", description="Directory for persistent storage")
     log_directory: str = Field("./logs", description="Directory for log files")

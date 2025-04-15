@@ -10,6 +10,7 @@ from llm_gateway.cli.commands import (
     check_cache,
     generate_completion,
     list_providers,
+    list_tools,
     run_server,
     test_provider,
 )
@@ -72,6 +73,19 @@ def create_parser() -> argparse.ArgumentParser:
         choices=["sse", "stdio"],
         default="stdio",
         help="Transport mode to use: 'sse' for HTTP server or 'stdio' for Claude Desktop (default: stdio)"
+    )
+    # Add new tool filtering options
+    server_parser.add_argument(
+        "--include-tools",
+        type=str,
+        nargs="+",
+        help="Only register the specified tools (default: register all tools)"
+    )
+    server_parser.add_argument(
+        "--exclude-tools",
+        type=str,
+        nargs="+",
+        help="Exclude specified tools from registration (takes precedence over --include-tools)"
     )
     
     # List providers command
@@ -191,6 +205,15 @@ def create_parser() -> argparse.ArgumentParser:
         help="Number of runs for each benchmark (default: 3)"
     )
     
+    # Add a new command to list available tools
+    tools_parser = subparsers.add_parser("tools", help="List available tools")
+    tools_parser.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Filter tools by category (e.g., 'filesystem', 'completion')"
+    )
+    
     return parser
 
 
@@ -221,7 +244,9 @@ def main(args: Optional[List[str]] = None) -> int:
                 port=parsed_args.port,
                 workers=parsed_args.workers,
                 log_level=log_level,
-                transport_mode=parsed_args.transport_mode
+                transport_mode=parsed_args.transport_mode,
+                include_tools=parsed_args.include_tools,
+                exclude_tools=parsed_args.exclude_tools
             )
             return 0
             
@@ -277,6 +302,13 @@ def main(args: Optional[List[str]] = None) -> int:
                 models=parsed_args.models,
                 prompt=parsed_args.prompt,
                 runs=parsed_args.runs
+            ))
+            return 0
+            
+        elif parsed_args.command == "tools":
+            # List available tools
+            asyncio.run(list_tools(
+                category=parsed_args.category
             ))
             return 0
             

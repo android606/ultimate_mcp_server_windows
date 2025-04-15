@@ -1,5 +1,6 @@
 """Command implementations for the LLM Gateway CLI."""
 import asyncio
+import inspect
 import sys
 import time
 from typing import List, Optional
@@ -32,6 +33,8 @@ def run_server(
     workers: Optional[int] = None,
     log_level: Optional[str] = None,
     transport_mode: str = "sse",
+    include_tools: Optional[List[str]] = None,
+    exclude_tools: Optional[List[str]] = None,
 ) -> None:
     """Run the LLM Gateway server.
     
@@ -41,6 +44,8 @@ def run_server(
         workers: Number of worker processes (default: from config)
         log_level: Log level (default: from config)
         transport_mode: Transport mode to use ('sse' or 'stdio') (default: sse)
+        include_tools: List of tool names to include (default: include all)
+        exclude_tools: List of tool names to exclude (takes precedence over include_tools)
     """
     # Get the current config
     cfg = get_config()
@@ -53,6 +58,16 @@ def run_server(
     if workers:
         cfg.server.workers = workers
     
+    # Update tool registration config
+    if include_tools or exclude_tools:
+        cfg.tool_registration.filter_enabled = True
+        
+    if include_tools:
+        cfg.tool_registration.included_tools = include_tools
+        
+    if exclude_tools:
+        cfg.tool_registration.excluded_tools = exclude_tools
+    
     # Determine effective log level
     effective_log_level = log_level or getattr(cfg, 'log_level', 'info')
     
@@ -63,6 +78,14 @@ def run_server(
     console.print(f"Workers: [cyan]{cfg.server.workers}[/cyan]")
     console.print(f"Log level: [cyan]{effective_log_level.upper()}[/cyan]")
     console.print(f"Transport mode: [cyan]{transport_mode}[/cyan]")
+    
+    # Print tool filtering info if enabled
+    if cfg.tool_registration.filter_enabled:
+        if cfg.tool_registration.included_tools:
+            console.print(f"Including tools: [cyan]{', '.join(cfg.tool_registration.included_tools)}[/cyan]")
+        if cfg.tool_registration.excluded_tools:
+            console.print(f"Excluding tools: [red]{', '.join(cfg.tool_registration.excluded_tools)}[/red]")
+    
     console.print()
     
     # Start server using the factory pattern 
@@ -72,6 +95,8 @@ def run_server(
         workers=cfg.server.workers,
         log_level=effective_log_level,
         transport_mode=transport_mode,
+        include_tools=cfg.tool_registration.included_tools if cfg.tool_registration.filter_enabled else None,
+        exclude_tools=cfg.tool_registration.excluded_tools if cfg.tool_registration.filter_enabled else None,
     )
 
 
@@ -559,3 +584,78 @@ async def benchmark_providers(
     
     # Print results
     console.print(table)
+
+
+async def list_tools(category: Optional[str] = None) -> None:
+    """List available tools in the LLM Gateway.
+    
+    Args:
+        category: Filter tools by category
+    """
+    # Import tools module to get the list of available tools
+    from llm_gateway.tools import STANDALONE_TOOL_FUNCTIONS
+    
+    # Create tools table
+    table = Table(title="Available LLM Gateway Tools")
+    table.add_column("Tool Name", style="cyan")
+    table.add_column("Category", style="green")
+    table.add_column("Description", style="yellow")
+    
+    # Define tool categories
+    categories = {
+        "completion": ["generate_completion", "stream_completion", "chat_completion", "multi_completion"],
+        "provider": ["get_provider_status", "list_models"],
+        "tournament": ["create_tournament", "get_tournament_status", "list_tournaments", "get_tournament_results", "cancel_tournament"],
+        "document": ["chunk_document", "summarize_document", "extract_entities", "generate_qa_pairs", "process_document_batch"],
+        "extraction": ["extract_json", "extract_table", "extract_key_value_pairs", "extract_semantic_schema", "extract_entity_graph", "extract_code_from_response"],
+        "filesystem": ["read_file", "read_multiple_files", "write_file", "edit_file", "create_directory", "list_directory", "directory_tree", "move_file", "search_files", "get_file_info", "list_allowed_directories"],
+        "rag": ["create_knowledge_base", "list_knowledge_bases", "delete_knowledge_base", "add_documents", "retrieve_context", "generate_with_rag"],
+        "meta": ["get_tool_info", "get_llm_instructions", "get_tool_recommendations", "register_api_meta_tools"],
+        "search": ["marqo_fused_search"],
+        "ocr": ["extract_text_from_pdf", "process_image_ocr", "enhance_ocr_text", "analyze_pdf_structure", "batch_process_documents"],
+        "optimization": ["estimate_cost", "compare_models", "recommend_model", "execute_optimized_workflow"],
+        "database": ["connect_to_database", "disconnect_from_database", "discover_database_schema", "execute_query", "generate_database_documentation", "get_table_details", "find_related_tables", "analyze_column_statistics", "execute_parameterized_query", "create_database_view", "create_database_index", "test_connection", "execute_transaction", "execute_query_with_pagination", "get_database_status"],
+        "audio": ["transcribe_audio", "extract_audio_transcript_key_points", "chat_with_transcript"],
+        "browser": ["browser_init", "browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_close", "browser_select", "browser_checkbox", "browser_get_text", "browser_get_attributes", "browser_execute_javascript", "browser_wait", "execute_web_workflow", "extract_structured_data_from_pages", "find_and_download_pdfs", "multi_engine_search_summary"],
+        "classification": ["text_classification"],
+    }
+    
+    # Find category for each tool
+    tool_categories = {}
+    for cat_name, tools in categories.items():
+        for tool in tools:
+            tool_categories[tool] = cat_name
+    
+    # Add rows to table
+    for tool_func in STANDALONE_TOOL_FUNCTIONS:
+        if callable(tool_func):
+            tool_name = getattr(tool_func, "__name__", str(tool_func))
+            tool_category = tool_categories.get(tool_name, "other")
+            
+            # Skip if category filter is provided and doesn't match
+            if category and category.lower() != tool_category.lower():
+                continue
+                
+            # Get docstring (first line only for description)
+            docstring = inspect.getdoc(tool_func) or ""
+            description = docstring.split("\n")[0] if docstring else ""
+            
+            table.add_row(tool_name, tool_category, description)
+    
+    # Add the special meta tool registrars
+    if not category or category.lower() in ["meta", "other"]:
+        if not category or category.lower() == "meta":
+            table.add_row("register_api_meta_tools", "meta", "Register Meta API tools")
+    
+    # Sort table by category and tool name
+    console.print(table)
+    
+    # Print usage hint
+    console.print("\n[bold]Usage with tool filtering:[/bold]")
+    console.print("To include only specific tools:")
+    console.print("  llm-gateway run --include-tools tool1 tool2 tool3")
+    console.print("\nTo exclude specific tools:")
+    console.print("  llm-gateway run --exclude-tools tool1 tool2 tool3")
+    console.print("\nTo include tools by category:")
+    console.print("  llm-gateway tools --category filesystem  # List filesystem tools")
+    console.print("  llm-gateway run --include-tools read_file write_file edit_file  # Include only these filesystem tools")

@@ -1243,15 +1243,21 @@ async def _execute_comparison_synthesis(
             criteria=criteria
         )
         
-        provider_instance = await get_provider(synth_provider)
-        
         try:
-            result = await provider_instance.generate_completion(
+            # Use standardized generate_completion instead of provider_instance.generate_completion
+            completion_result = await generate_completion(
                 prompt=meta_prompt,
+                provider=synth_provider,
                 model=synth_model,
                 temperature=0.2,
                 max_tokens=4000
             )
+            
+            # Check for errors in completion
+            if not completion_result.success:
+                raise completion_result.error or ValueError("Synthesis completion failed without specific error")
+                
+            result = completion_result
         except Exception as e:
             logger.error(f"Primary synthesis model {synth_provider}/{synth_model} failed: {str(e)}", emoji_key="error")
             # Use a different fallback model
@@ -1264,14 +1270,20 @@ async def _execute_comparison_synthesis(
 
             logger.info(f"Attempting fallback to {fallback_provider}/{fallback_model}", emoji_key="warning")
             
-            fallback_instance = await get_provider(fallback_provider)
-            # await fallback_instance.initialize() # Should be handled by get_provider
-            result = await fallback_instance.generate_completion(
+            # Use standardized generate_completion for fallback
+            fallback_result = await generate_completion(
                 prompt=meta_prompt,
+                provider=fallback_provider,
                 model=fallback_model,
                 temperature=0.2,
                 max_tokens=4000
             )
+            
+            # Check for errors in fallback completion
+            if not fallback_result.success:
+                raise fallback_result.error or ValueError("Fallback synthesis completion failed without specific error")
+                
+            result = fallback_result
             synth_provider = fallback_provider # Update provider if fallback used
         
         synthesis = _parse_synthesis_response(result.text)

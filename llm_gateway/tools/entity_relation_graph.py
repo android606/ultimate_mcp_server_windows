@@ -20,6 +20,7 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError
 from llm_gateway.tools.base import with_cache, with_error_handling, with_retry, with_tool_metrics
+from llm_gateway.tools.completion import generate_completion
 from llm_gateway.tools.document import chunk_document
 from llm_gateway.utils import get_logger
 
@@ -1055,20 +1056,32 @@ Ensure entity IDs are consistent and correctly referenced in relationships.
         # Set temperature low for deterministic extraction
         temperature = additional_params.pop("temperature", 0.1)
         
-        # Generate extraction
-        result = await provider_instance.generate_completion(
+        # Generate extraction using standardized completion tool
+        completion_result = await generate_completion(
             prompt=prompt,
-            system_prompt=sys_prompt if sys_prompt else None,
             model=model,
+            provider=provider_instance.__class__.__name__.lower(), # Extract provider name from instance
             temperature=temperature,
             max_tokens=4000,  # Allow sufficient tokens for complex graphs
-            **additional_params
+            additional_params={
+                "system_prompt": sys_prompt if sys_prompt else None,
+                **additional_params
+            }
         )
+        
+        # Check if completion was successful
+        if not completion_result.get("success", False):
+            error_message = completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Entity graph extraction failed: {error_message}", 
+                provider=provider_instance.__class__.__name__,
+                model=model or "default"
+            )
         
         # Parse response
         try:
             # Extract JSON from the response
-            json_match = re.search(r'(\{.*\})', result.text, re.DOTALL)
+            json_match = re.search(r'(\{.*\})', completion_result["text"], re.DOTALL)
             if not json_match:
                 raise ValueError("No valid JSON found in the response.")
             
@@ -1083,13 +1096,9 @@ Ensure entity IDs are consistent and correctly referenced in relationships.
             )
             
             # Add model metadata to result
-            graph_data["model"] = result.model
-            graph_data["tokens"] = {
-                "input": result.input_tokens,
-                "output": result.output_tokens,
-                "total": result.total_tokens,
-            }
-            graph_data["cost"] = result.cost
+            graph_data["model"] = completion_result["model"]
+            graph_data["tokens"] = completion_result["tokens"]
+            graph_data["cost"] = completion_result["cost"]
             
             return graph_data
             
@@ -1097,11 +1106,14 @@ Ensure entity IDs are consistent and correctly referenced in relationships.
             raise ToolError(
                 f"Failed to parse entity graph extraction: {str(e)}",
                 error_code="PARSING_ERROR",
-                details={"response_text": result.text}
+                details={"response_text": completion_result["text"]}
             ) from e
             
     except Exception as e:
-        # Convert to provider error
+        if isinstance(e, ProviderError):
+            raise # Re-raise provider errors as-is
+            
+        # Convert other exceptions to provider error
         error_model = model or "default"
         raise ProviderError(
             f"Entity graph extraction failed for model '{error_model}': {str(e)}",
@@ -1208,25 +1220,37 @@ Ensure entity IDs are unique and descriptive (e.g., "person_john_smith").
         # Set temperature low for deterministic extraction
         temperature = additional_params.pop("temperature", 0.1)
         
-        # Generate entity extraction
-        entity_result = await provider_instance.generate_completion(
+        # Generate entity extraction using standardized completion tool
+        entity_completion_result = await generate_completion(
             prompt=entity_prompt,
-            system_prompt=entity_sys_prompt if entity_sys_prompt else None,
             model=model,
+            provider=provider_instance.__class__.__name__.lower(),
             temperature=temperature,
             max_tokens=2000,
-            **additional_params
+            additional_params={
+                "system_prompt": entity_sys_prompt if entity_sys_prompt else None,
+                **additional_params
+            }
         )
         
+        # Check if completion was successful
+        if not entity_completion_result.get("success", False):
+            error_message = entity_completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Entity extraction failed: {error_message}", 
+                provider=provider_instance.__class__.__name__,
+                model=model or "default"
+            )
+        
         # Track usage
-        total_input_tokens += entity_result.input_tokens
-        total_output_tokens += entity_result.output_tokens
-        total_cost += entity_result.cost
+        total_input_tokens += entity_completion_result["tokens"]["input"]
+        total_output_tokens += entity_completion_result["tokens"]["output"]
+        total_cost += entity_completion_result["cost"]
         
         # Parse entity response
         try:
             # Extract JSON from the response
-            json_match = re.search(r'(\{.*\})', entity_result.text, re.DOTALL)
+            json_match = re.search(r'(\{.*\})', entity_completion_result["text"], re.DOTALL)
             if not json_match:
                 raise ValueError("No valid JSON found in the entity extraction response.")
             
@@ -1245,7 +1269,7 @@ Ensure entity IDs are unique and descriptive (e.g., "person_john_smith").
             raise ToolError(
                 f"Failed to parse entity extraction: {str(e)}",
                 error_code="PARSING_ERROR",
-                details={"response_text": entity_result.text}
+                details={"response_text": entity_completion_result["text"]}
             ) from e
         
         # --- Stage 2: Relationship Extraction ---
@@ -1321,24 +1345,36 @@ Only use entity IDs from the provided entity list above.
         relationship_sys_prompt = system_prompt or SYSTEM_PROMPTS.get("relationship_detection", "")
         
         # Extract relationships
-        relationship_result = await provider_instance.generate_completion(
+        relationship_completion_result = await generate_completion(
             prompt=relationship_prompt,
-            system_prompt=relationship_sys_prompt if relationship_sys_prompt else None,
             model=model,
+            provider=provider_instance.__class__.__name__.lower(),
             temperature=temperature,
             max_tokens=2000,
-            **additional_params
+            additional_params={
+                "system_prompt": relationship_sys_prompt if relationship_sys_prompt else None,
+                **additional_params
+            }
         )
         
+        # Check if completion was successful
+        if not relationship_completion_result.get("success", False):
+            error_message = relationship_completion_result.get("error", "Unknown error during completion")
+            raise ProviderError(
+                f"Relationship extraction failed: {error_message}", 
+                provider=provider_instance.__class__.__name__,
+                model=model or "default"
+            )
+        
         # Track usage
-        total_input_tokens += relationship_result.input_tokens
-        total_output_tokens += relationship_result.output_tokens
-        total_cost += relationship_result.cost
+        total_input_tokens += relationship_completion_result["tokens"]["input"]
+        total_output_tokens += relationship_completion_result["tokens"]["output"]
+        total_cost += relationship_completion_result["cost"]
         
         # Parse relationship response
         try:
             # Extract JSON from the response
-            json_match = re.search(r'(\{.*\})', relationship_result.text, re.DOTALL)
+            json_match = re.search(r'(\{.*\})', relationship_completion_result["text"], re.DOTALL)
             if not json_match:
                 raise ValueError("No valid JSON found in the relationship extraction response.")
             
@@ -1357,7 +1393,7 @@ Only use entity IDs from the provided entity list above.
             raise ToolError(
                 f"Failed to parse relationship extraction: {str(e)}",
                 error_code="PARSING_ERROR",
-                details={"response_text": relationship_result.text}
+                details={"response_text": relationship_completion_result["text"]}
             ) from e
         
         # --- Stage 3: Coreference Resolution (Optional) ---
@@ -1371,7 +1407,7 @@ Only use entity IDs from the provided entity list above.
         combined_result = {
             "entities": entities,
             "relationships": relationships,
-            "model": entity_result.model,  # Use model from first call
+            "model": entity_completion_result["model"],  # Use model from first call
             "tokens": {
                 "input": total_input_tokens,
                 "output": total_output_tokens,

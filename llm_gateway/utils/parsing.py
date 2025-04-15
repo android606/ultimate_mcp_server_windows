@@ -138,9 +138,47 @@ def _repair_json(text: str, aggressive=False) -> str:
     open_brackets = result.count('[')
     close_brackets = result.count(']')
     
-    # Fix unterminated strings (tricky, look for obvious indicators)
-    # Pattern: "key": "value with no closing quote followed by comma or closing brace
-    result = re.sub(r'"([^"]*?)(?=[,}\]])', r'"\1"', result)
+    # Count quotes to check if we have an odd number (indicating unterminated strings)
+    quote_count = result.count('"')
+    if quote_count % 2 != 0:
+        # We have an odd number of quotes, meaning at least one string is unterminated
+        # This is a much more aggressive approach to fix strings
+        
+        # First, try to find all strings that are properly terminated
+        proper_strings = []
+        pos = 0
+        in_string = False
+        string_start = 0
+        
+        # This helps track properly formed strings and identify problematic ones
+        while pos < len(result):
+            if result[pos] == '"' and (pos == 0 or result[pos-1] != '\\'):
+                if not in_string:
+                    # Start of a string
+                    in_string = True
+                    string_start = pos
+                else:
+                    # End of a string
+                    in_string = False
+                    proper_strings.append((string_start, pos))
+            pos += 1
+        
+        # If we're still in a string at the end, we found an unterminated string
+        if in_string:
+            # Force terminate it at the end
+            result += '"'
+    
+    # Even more aggressive string fixing
+    # This regexp looks for a quote followed by any characters not containing a quote
+    # followed by a comma, closing brace, or bracket, without a quote in between
+    # This indicates an unterminated string
+    result = re.sub(r'"([^"]*?)(?=,|\s*[\]}]|$)', r'"\1"', result)
+    
+    # Fix cases where value might be truncated mid-word just before closing quote
+    # If we find something that looks like it's in the middle of a string, terminate it
+    result = re.sub(r'"([^"]+)(\s*[\]}]|,|$)', lambda m: 
+        f'"{m.group(1)}"{"" if m.group(2).startswith(",") or m.group(2) in "]}," else m.group(2)}', 
+        result)
     
     # Fix dangling quotes at the end of the string - these usually indicate a truncated string
     if result.rstrip().endswith('"'):
@@ -192,7 +230,40 @@ def _repair_json(text: str, aggressive=False) -> str:
                 result += '}'
             elif bracket == '[':
                 result += ']'
+    
+    # As a final safeguard, try to eval the JSON with a permissive parser
+    # This won't fix deep structural issues but catches cases our regexes missed
+    try:
+        import simplejson
+        simplejson.loads(result, parse_constant=lambda x: x)
+    except (ImportError, simplejson.JSONDecodeError):
+        try:
+            # Try one last time with the more permissive custom JSON parser
+            _scan_once = json.scanner.py_make_scanner(json.JSONDecoder())
+            try:
+                _scan_once(result, 0)
+            except StopIteration:
+                # Likely unterminated JSON - do one final pass of common fixups
                 
+                # Check for unterminated strings of various forms one more time
+                if re.search(r'(?<!")"(?:[^"\\]|\\.)*[^"\\](?!")(?=,|\s*[\]}]|$)', result):
+                    # Even more aggressive fixes, replacing with generic values
+                    result = re.sub(r'(?<!")"(?:[^"\\]|\\.)*[^"\\](?!")(?=,|\s*[\]}]|$)', 
+                                    r'"invalid_string"', result)
+                
+                # Ensure valid JSON-like structure
+                if not (result.endswith('}') or result.endswith(']')):
+                    if result.count('{') > result.count('}'):
+                        result += '}'
+                    if result.count('[') > result.count(']'):
+                        result += ']'
+            except Exception:
+                # Something else is wrong, but we've tried our best
+                pass
+        except Exception:
+            # We've done all we reasonably can
+            pass
+    
     return result
 
 def parse_result(result: Any) -> Dict[str, Any]:

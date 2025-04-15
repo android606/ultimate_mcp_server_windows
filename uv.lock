@@ -212,6 +212,19 @@ wheels = [
 ]
 
 [[package]]
+name = "beautifulsoup4"
+version = "4.13.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "soupsieve" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d8/e4/0c4c39e18fd76d6a628d4dd8da40543d136ce2d1752bd6eeeab0791f4d6b/beautifulsoup4-4.13.4.tar.gz", hash = "sha256:dbb3c4e1ceae6aefebdaf2423247260cd062430a410e38c66f2baa50a8437195", size = 621067 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/50/cd/30110dc0ffcf3b131156077b90e9f60ed75711223f306da4db08eff8403b/beautifulsoup4-4.13.4-py3-none-any.whl", hash = "sha256:9bbbb14bfde9d79f38b8cd5f8c7c85f4b8f2523190ebed90e950a8dea4cb1c4b", size = 187285 },
+]
+
+[[package]]
 name = "build"
 version = "1.2.2.post1"
 source = { registry = "https://pypi.org/simple" }
@@ -1163,6 +1176,7 @@ dependencies = [
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "asyncio" },
+    { name = "beautifulsoup4" },
     { name = "chromadb" },
     { name = "colorama" },
     { name = "diskcache" },
@@ -1171,6 +1185,7 @@ dependencies = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "jsonschema" },
+    { name = "lxml" },
     { name = "marqo" },
     { name = "matplotlib" },
     { name = "mcp" },
@@ -1198,6 +1213,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tiktoken" },
     { name = "tqdm" },
+    { name = "xmldiff" },
 ]
 
 [package.optional-dependencies]
@@ -1253,6 +1269,7 @@ requires-dist = [
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "asyncio" },
+    { name = "beautifulsoup4" },
     { name = "chromadb" },
     { name = "colorama" },
     { name = "diskcache" },
@@ -1264,6 +1281,7 @@ requires-dist = [
     { name = "jinja2" },
     { name = "jsonschema" },
     { name = "llm-gateway-mcp-server", extras = ["advanced", "dev", "docs"], marker = "extra == 'all'" },
+    { name = "lxml" },
     { name = "marqo" },
     { name = "matplotlib" },
     { name = "mcp" },
@@ -1306,6 +1324,7 @@ requires-dist = [
     { name = "tqdm" },
     { name = "transformers", marker = "extra == 'advanced'" },
     { name = "types-aiofiles", marker = "extra == 'dev'" },
+    { name = "xmldiff" },
 ]
 
 [[package]]
@@ -2331,7 +2350,7 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "3.24.2"
+version = "3.24.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -2341,9 +2360,9 @@ dependencies = [
     { name = "requests" },
     { name = "six" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/2b/f8af0d4074d4021485b17a83739bd9b9e676bf5d92367430b9331b135d4c/posthog-3.24.2.tar.gz", hash = "sha256:23d881147082e9f13c095a7451357985ad7dea8395bbaa38cebef769fe649665", size = 77021 }
+sdist = { url = "https://files.pythonhosted.org/packages/08/74/e6fc2ac13b3fd91a59497c720dda0dbed9adb0b1f7ce1738e9ebcce1f120/posthog-3.24.3.tar.gz", hash = "sha256:6685f2c6c3ed7a4b990df4c4273e29f7be785256dd259b56968f49454d7645c9", size = 76023 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a5/05/07621dab686fc1f6d03aa0509ad0457d2fdeb449bf9656f9eb730134f119/posthog-3.24.2-py2.py3-none-any.whl", hash = "sha256:9f018fe9d51155bc5124477837bb4a16d044e81a683f9df66a81b87877065cc9", size = 90113 },
+    { url = "https://files.pythonhosted.org/packages/09/39/2c04caf38bac0fac98dccddf8e37358e6880d3dafb2d8d87556f766225d0/posthog-3.24.3-py2.py3-none-any.whl", hash = "sha256:f1659d6513fcf839337f0d4fcb2f080825087036e135a208b26b5c7238f3e3f1", size = 89150 },
 ]
 
 [[package]]
@@ -3169,6 +3188,15 @@ wheels = [
 ]
 
 [[package]]
+name = "soupsieve"
+version = "2.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/ce/fbaeed4f9fb8b2daa961f90591662df6a86c1abf25c548329a86920aedfb/soupsieve-2.6.tar.gz", hash = "sha256:e2e68417777af359ec65daac1057404a3c8a5455bb8abc36f1a9866ab1a51abb", size = 101569 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/c2/fe97d779f3ef3b15f05c94a2f1e3d21732574ed441687474db9d342a7315/soupsieve-2.6-py3-none-any.whl", hash = "sha256:e72c4ff06e4fb6e4b5a9f0f55fe6e81514581fca1515028625d0f299c602ccc9", size = 36186 },
+]
+
+[[package]]
 name = "sqlalchemy"
 version = "2.0.40"
 source = { registry = "https://pypi.org/simple" }
@@ -3667,6 +3695,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/6a/e1/0122853035b40b3f333bbb25f1939fc1045e21dd518f7f0922b60c156f7c/wrapt-1.17.2-cp313-cp313t-win32.whl", hash = "sha256:13e6afb7fe71fe7485a4550a8844cc9ffbe263c0f1a1eea569bc7091d4898555", size = 37986 },
     { url = "https://files.pythonhosted.org/packages/09/5e/1655cf481e079c1f22d0cabdd4e51733679932718dc23bf2db175f329b76/wrapt-1.17.2-cp313-cp313t-win_amd64.whl", hash = "sha256:eaf675418ed6b3b31c7a989fd007fa7c3be66ce14e5c3b27336383604c9da85c", size = 40750 },
     { url = "https://files.pythonhosted.org/packages/2d/82/f56956041adef78f849db6b289b282e72b55ab8045a75abad81898c28d19/wrapt-1.17.2-py3-none-any.whl", hash = "sha256:b18f2d1533a71f069c7f82d524a52599053d4c7166e9dd374ae2136b7f40f7c8", size = 23594 },
+]
+
+[[package]]
+name = "xmldiff"
+version = "2.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "lxml" },
+    { name = "setuptools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/55/d8/b31a4d75bc72d5c3a5adf5012405118169b56d163ebf407e4fc49a575e96/xmldiff-2.7.0.tar.gz", hash = "sha256:c0910b1f800366dd7ec62923e5d06e8b06a1bd9120569a1c27f4f2446b9c68a2", size = 87596 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2d/23/4c026139010faa8a48636fac190e9f8f830f850edca8e85f74123a58ed92/xmldiff-2.7.0-py3-none-any.whl", hash = "sha256:c8020e6aa4aa9fa13c72e5bf0eeafd0be998b0ab55d78b008abc75fbfebaca27", size = 43994 },
 ]
 
 [[package]]
