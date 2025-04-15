@@ -3,21 +3,17 @@
 Provides utilities to help manage LLM usage costs and select appropriate models.
 """
 import asyncio
+import json
+import math
+import os
 import time
 import traceback
 from typing import Any, Dict, List, Optional
 
-# MCP ToolError might be needed if raised directly, keep if necessary
-from mcp.server.fastmcp.exceptions import ToolError
-
 from llm_gateway.constants import COST_PER_MILLION_TOKENS
-
-# Import specific exceptions
-from llm_gateway.exceptions import ToolInputError
+from llm_gateway.exceptions import ToolInputError, ToolError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 
-# Import other tools potentially needed by execute_optimized_workflow
-# Ensure all tools used in workflows are imported here or handled dynamically.
 from llm_gateway.tools.completion import chat_completion
 from llm_gateway.tools.document import chunk_document, summarize_document
 from llm_gateway.tools.extraction import extract_json
@@ -32,13 +28,32 @@ from llm_gateway.utils.text import count_tokens
 
 logger = get_logger("llm_gateway.tools.optimization")
 
-# --- Standalone Tool Functions ---
+# --- Constants for Speed Score Mapping ---
+# Define bins for mapping tokens/second to a 1-5 score (lower is faster)
+# Adjust these thresholds based on observed performance and desired sensitivity
+SPEED_SCORE_BINS = [
+    (200, 1),  # > 200 tokens/s -> Score 1 (Fastest)
+    (100, 2),  # 100-200 tokens/s -> Score 2
+    (50, 3),   # 50-100 tokens/s -> Score 3
+    (20, 4),   # 20-50 tokens/s -> Score 4
+    (0, 5),    # 0-20 tokens/s -> Score 5 (Slowest)
+]
+DEFAULT_SPEED_SCORE = 3 # Fallback score if measurement is missing/invalid or hardcoded value is missing
+
+def _map_tok_per_sec_to_score(tokens_per_sec: float) -> int:
+    """Maps measured tokens/second to a 1-5 speed score (lower is faster)."""
+    if tokens_per_sec is None or not isinstance(tokens_per_sec, (int, float)) or tokens_per_sec < 0:
+        return DEFAULT_SPEED_SCORE # Return default for invalid input
+    for threshold, score in SPEED_SCORE_BINS:
+        if tokens_per_sec >= threshold:
+            return score
+    return SPEED_SCORE_BINS[-1][1] # Should hit the 0 threshold if positive
 
 @with_tool_metrics
 @with_error_handling
 async def estimate_cost(
     prompt: str,
-    model: str, # Expects full model ID like "openai/gpt-4.1-mini"
+    model: str, # Can be full 'provider/model_name' or just 'model_name' if unique
     max_tokens: Optional[int] = None,
     include_output: bool = True
 ) -> Dict[str, Any]:
@@ -49,8 +64,9 @@ async def estimate_cost(
 
     Args:
         prompt: The text prompt that would be sent to the model.
-        model: The full model identifier (e.g., "openai/gpt-4.1-mini", "anthropic/claude-3-5-haiku-20241022").
-               Cost data must be available for this model in `COST_PER_MILLION_TOKENS`.
+        model: The model identifier (e.g., "openai/gpt-4.1-mini", "gpt-4.1-mini",
+               "anthropic/claude-3-5-haiku-20241022", "claude-3-5-haiku-20241022").
+               Cost data must be available for the resolved model name in `COST_PER_MILLION_TOKENS`.
         max_tokens: (Optional) The maximum number of tokens expected in the output. If None,
                       output tokens are estimated as roughly half the input prompt tokens.
         include_output: (Optional) If False, calculates cost based only on input tokens, ignoring
@@ -73,27 +89,47 @@ async def estimate_cost(
                 "input": 0.50,
                 "output": 1.50
             },
-            "model": "openai/gpt-4.1-mini",
+            "model": "gpt-4.1-mini", # Returns the original model string passed as input
+            "resolved_model_key": "gpt-4.1-mini", # The key used for cost lookup
             "is_estimate": true
         }
 
     Raises:
-        ToolError: If the specified `model` is unknown or cost data is missing.
+        ToolInputError: If prompt or model format is invalid.
+        ToolError: If the specified `model` cannot be resolved to cost data.
         ValueError: If token counting fails for the given model and prompt.
     """
-    # Add input validation
+    # Input validation
     if not prompt or not isinstance(prompt, str):
         raise ToolInputError("Prompt must be a non-empty string.")
-    if not model or '/' not in model: # Basic check for format provider/model
-        raise ToolInputError(f"Invalid model format: '{model}'. Expected format 'provider/model_name'.")
+    if not model or not isinstance(model, str):
+        raise ToolInputError("Model must be a non-empty string.")
 
+    # Flexible Cost Data Lookup
+    cost_data = COST_PER_MILLION_TOKENS.get(model)
+    resolved_model_key = model # Assume direct match first
+    model_name_only = model # Use input model for token counting initially
+
+    if not cost_data and '/' in model:
+        # If direct lookup fails and it looks like a prefixed name, try stripping prefix
+        potential_short_key = model.split('/')[-1]
+        cost_data = COST_PER_MILLION_TOKENS.get(potential_short_key)
+        if cost_data:
+            resolved_model_key = potential_short_key
+            model_name_only = potential_short_key # Use short name for token count
+        # If short key also fails, cost_data remains None
+
+    if not cost_data:
+        error_message = f"Unknown model or cost data unavailable for: {model}"
+        raise ToolError(error_message, error_code="MODEL_NOT_FOUND", details={"model": model})
+
+    # Token Counting (use model_name_only derived from successful cost key)
     try:
-        # Use the model name directly if it includes provider prefix
-        input_tokens = count_tokens(prompt, model_name=model)
+        input_tokens = count_tokens(prompt, model=model_name_only)
     except ValueError as e:
-        logger.warning(f"Could not count tokens for model '{model}' using tiktoken: {e}. Using rough estimate.")
-        # Fallback: Estimate based on character count (adjust ratio as needed)
-        input_tokens = len(prompt) // 4
+        # Log warning with the original model input for clarity
+        logger.warning(f"Could not count tokens for model '{model}' (using '{model_name_only}' for tiktoken): {e}. Using rough estimate.")
+        input_tokens = len(prompt) // 4 # Fallback estimate
 
     # Estimate output tokens if needed
     estimated_output_tokens = 0
@@ -101,24 +137,17 @@ async def estimate_cost(
         if max_tokens is not None:
             estimated_output_tokens = max_tokens
         else:
-            # Simple estimation logic (e.g., output is ~50% of input)
             estimated_output_tokens = input_tokens // 2
             logger.debug(f"max_tokens not provided, estimating output tokens as {estimated_output_tokens}")
     else:
-         estimated_output_tokens = 0 # Explicitly zero if output excluded
-
-    # Use the full model ID to get cost data
-    cost_data = COST_PER_MILLION_TOKENS.get(model)
-    if not cost_data:
-        # Use ToolError for clearer API error handling
-        raise ToolError(status_code=400, detail=f"Unknown model or cost data unavailable: {model}")
+         estimated_output_tokens = 0
 
     # Calculate costs
     input_cost = (input_tokens / 1_000_000) * cost_data["input"]
     output_cost = (estimated_output_tokens / 1_000_000) * cost_data["output"]
     total_cost = input_cost + output_cost
 
-    logger.info(f"Estimated cost for model '{model}': ${total_cost:.6f} (In: {input_tokens} tokens, Out: {estimated_output_tokens} tokens)")
+    logger.info(f"Estimated cost for model '{model}' (using key '{resolved_model_key}'): ${total_cost:.6f} (In: {input_tokens} tokens, Out: {estimated_output_tokens} tokens)")
     return {
         "cost": total_cost,
         "breakdown": {
@@ -134,7 +163,8 @@ async def estimate_cost(
             "input": cost_data["input"],
             "output": cost_data["output"]
         },
-        "model": model,
+        "model": model, # Return original input model string
+        "resolved_model_key": resolved_model_key, # Key used for cost lookup
         "is_estimate": True
     }
 
@@ -142,7 +172,7 @@ async def estimate_cost(
 @with_error_handling
 async def compare_models(
     prompt: str,
-    models: List[str], # List of full model IDs like "openai/gpt-4.1-mini"
+    models: List[str], # List of model IDs (can be short or full names)
     max_tokens: Optional[int] = None,
     include_output: bool = True
 ) -> Dict[str, Any]:
@@ -152,7 +182,8 @@ async def compare_models(
 
     Args:
         prompt: The text prompt to use for cost comparison.
-        models: A list of full model identifiers (e.g., ["openai/gpt-4.1-mini", "anthropic/claude-3-5-haiku-20241022"]).
+        models: A list of model identifiers (e.g., ["openai/gpt-4.1-mini", "gpt-4.1-mini", "claude-3-5-haiku-20241022"]).
+                `estimate_cost` will handle resolving these to cost data.
         max_tokens: (Optional) Maximum output tokens to assume for cost estimation across all models.
                       If None, output is estimated individually per model based on input.
         include_output: (Optional) Whether to include estimated output costs in the comparison. Defaults to True.
@@ -161,80 +192,79 @@ async def compare_models(
         A dictionary containing the cost comparison results:
         {
             "models": {
-                "openai/gpt-4.1-mini": {
+                "openai/gpt-4.1-mini": { # Uses the input model name as key
                     "cost": 0.000150,
                     "tokens": { "input": 200, "output": 100, "total": 300 }
                 },
-                "anthropic/claude-3-5-haiku-20241022": {
+                "claude-3-5-haiku-20241022": {
                     "cost": 0.000087,
                     "tokens": { "input": 200, "output": 100, "total": 300 }
                 },
-                "openai/gpt-4o": { # Example of an error during estimation
-                    "error": "Unknown model or cost data unavailable: openai/gpt-4o"
+                "some-unknown-model": { # Example of an error during estimation
+                    "error": "Unknown model or cost data unavailable for: some-unknown-model"
                 }
             },
-            "ranking": [ # List of models ordered by cost (cheapest first), errors excluded
-                "anthropic/claude-3-5-haiku-20241022",
+            "ranking": [ # List of input model names ordered by cost (cheapest first), errors excluded
+                "claude-3-5-haiku-20241022",
                 "openai/gpt-4.1-mini"
             ],
-            "cheapest": "anthropic/claude-3-5-haiku-20241022", # Model with the lowest cost
-            "most_expensive": "openai/gpt-4.1-mini",        # Model with the highest cost (among successful estimates)
-            "prompt_length_chars": 512, # Character length of the input prompt
-            "max_tokens_assumed": 100 # Assumed output tokens (estimated or provided)
+            "cheapest": "claude-3-5-haiku-20241022", # Input model name with the lowest cost
+            "most_expensive": "openai/gpt-4.1-mini", # Input model name with the highest cost
+            "prompt_length_chars": 512,
+            "max_tokens_assumed": 100
         }
 
     Raises:
-        ToolInputError: If the `models` list is empty or contains invalid formats.
+        ToolInputError: If the `models` list is empty.
     """
     if not models or not isinstance(models, list):
         raise ToolInputError("'models' must be a non-empty list of model identifiers.")
-    # Add basic format validation for models in the list
-    if any('/' not in m for m in models):
-         raise ToolInputError("One or more model names in the list are invalid. Expected format 'provider/model_name'.")
+    # Removed the check for '/' in model names - estimate_cost will handle resolution
 
     results = {}
-    estimated_output_for_summary = None # To store one estimate for the summary
+    estimated_output_for_summary = None
 
-    async def get_estimate(model_name):
+    async def get_estimate(model_input_name): # Use a distinct variable name
         nonlocal estimated_output_for_summary
         try:
             estimate = await estimate_cost(
                 prompt=prompt,
-                model=model_name,
+                model=model_input_name, # Pass the potentially short/full name
                 max_tokens=max_tokens,
                 include_output=include_output
             )
-            results[model_name] = {
+            # Use the original input name as the key in results
+            results[model_input_name] = {
                 "cost": estimate["cost"],
                 "tokens": estimate["tokens"],
             }
-            # Store the output token estimate from the first successful call for summary
             if estimated_output_for_summary is None:
                 estimated_output_for_summary = estimate["tokens"]["output"]
         except ToolError as e:
-            logger.warning(f"Could not estimate cost for model {model_name}: {e.detail}")
-            results[model_name] = {"error": e.detail}
+            logger.warning(f"Could not estimate cost for model {model_input_name}: {e.detail}")
+            results[model_input_name] = {"error": e.detail} # Store error under original name
         except Exception as e:
-            logger.error(f"Unexpected error estimating cost for model {model_name}: {e}", exc_info=True)
-            results[model_name] = {"error": f"Unexpected error: {str(e)}"}
+            logger.error(f"Unexpected error estimating cost for model {model_input_name}: {e}", exc_info=True)
+            results[model_input_name] = {"error": f"Unexpected error: {str(e)}"}
 
-    await asyncio.gather(*(get_estimate(model) for model in models))
+    await asyncio.gather(*(get_estimate(model_name) for model_name in models))
 
-    # Filter out errors before sorting
     successful_estimates = {m: r for m, r in results.items() if "error" not in r}
     sorted_models = sorted(successful_estimates.items(), key=lambda item: item[1]["cost"])
 
-    # Use the stored estimated output tokens or the provided max_tokens for summary
     output_tokens_summary = estimated_output_for_summary if max_tokens is None else max_tokens
     if not include_output:
          output_tokens_summary = 0
 
-    logger.info(f"Compared models: {list(results.keys())}. Cheapest: {sorted_models[0][0] if sorted_models else 'N/A'}")
+    cheapest_model = sorted_models[0][0] if sorted_models else None
+    most_expensive_model = sorted_models[-1][0] if sorted_models else None
+    logger.info(f"Compared models: {list(results.keys())}. Cheapest: {cheapest_model or 'N/A'}")
+
     return {
         "models": results,
-        "ranking": [m for m, _ in sorted_models],
-        "cheapest": sorted_models[0][0] if sorted_models else None,
-        "most_expensive": sorted_models[-1][0] if sorted_models else None,
+        "ranking": [m for m, _ in sorted_models], # Ranking uses original input names
+        "cheapest": cheapest_model,
+        "most_expensive": most_expensive_model,
         "prompt_length_chars": len(prompt),
         "max_tokens_assumed": output_tokens_summary,
     }
@@ -252,7 +282,8 @@ async def recommend_model(
     """Recommends suitable LLM models based on task requirements and optimization priority.
 
     Evaluates known models against criteria like task type suitability (inferred),
-    estimated cost (based on expected lengths), required capabilities, speed, and quality metrics.
+    estimated cost (based on expected lengths), required capabilities,
+    measured speed (tokens/sec if available), and quality metrics.
 
     Args:
         task_type: A description of the task (e.g., "summarization", "code generation", "entity extraction",
@@ -270,7 +301,7 @@ async def recommend_model(
                   Options:
                   - "cost": Prioritize the cheapest models.
                   - "quality": Prioritize models with the highest quality score.
-                  - "speed": Prioritize models with the lowest latency score.
+                  - "speed": Prioritize models with the highest measured speed (tokens/sec).
                   - "balanced": (Default) Attempt to find a good mix of cost, quality, and speed.
 
     Returns:
@@ -280,8 +311,8 @@ async def recommend_model(
                 {
                     "model": "anthropic/claude-3-5-haiku-20241022",
                     "estimated_cost": 0.000087,
-                    "quality_score": 6,
-                    "speed_score": 2,
+                    "quality_score": 7,
+                    "measured_speed_tps": 50.63, # Tokens per second
                     "capabilities": ["knowledge", "instruction-following"],
                     "reason": "Good balance of cost and speed, meets requirements."
                 },
@@ -289,9 +320,9 @@ async def recommend_model(
                     "model": "openai/gpt-4.1-mini",
                     "estimated_cost": 0.000150,
                     "quality_score": 7,
-                    "speed_score": 2,
+                    "measured_speed_tps": 112.06,
                     "capabilities": ["reasoning", "coding", ...],
-                    "reason": "Slightly higher cost, but better quality/capabilities."
+                    "reason": "Higher cost, but good quality/speed."
                 }
                 # ... other suitable models
             ],
@@ -319,6 +350,48 @@ async def recommend_model(
     if priority not in ["cost", "quality", "speed", "balanced"]:
         raise ToolInputError(f"Invalid priority: '{priority}'. Must be cost, quality, speed, or balanced.")
 
+    # --- Load Measured Speed Data ---
+    measured_speeds: Dict[str, Any] = {}
+    measured_speeds_file = "empirically_measured_model_speeds.json"
+    project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    filepath = os.path.join(project_root, measured_speeds_file)
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, 'r') as f:
+                measured_speeds = json.load(f)
+            logger.info(f"Successfully loaded measured speed data from {filepath}")
+        except (FileNotFoundError, json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load or parse measured speed data from {filepath}: {e}. Speed data will be 0.", exc_info=True)
+            measured_speeds = {}
+    else:
+        logger.info(f"Measured speed file not found at {filepath}. Speed data will be 0.")
+    # --- End Load Measured Speed Data ---
+
+    # Helper function to find the prefixed name for a cost key
+    _prefixed_name_cache = {}
+    def _get_prefixed_name_for_cost_key(cost_key: str) -> Optional[str]:
+        if cost_key in _prefixed_name_cache:
+            return _prefixed_name_cache[cost_key]
+        if '/' in cost_key:
+             _prefixed_name_cache[cost_key] = cost_key
+             return cost_key
+        possible_matches = []
+        for prefixed_key in list(model_capabilities.keys()) + list(model_speed_fallback.keys()) + list(model_quality.keys()):
+            if '/' in prefixed_key and prefixed_key.endswith(f'/{cost_key}'):
+                 possible_matches.append(prefixed_key)
+        unique_matches = list(set(possible_matches))
+        if len(unique_matches) == 1:
+            _prefixed_name_cache[cost_key] = unique_matches[0]
+            return unique_matches[0]
+        elif len(unique_matches) > 1:
+             logger.warning(f"Ambiguous cost key '{cost_key}'. Found multiple potential prefixed names: {unique_matches}. Cannot reliably map.")
+             _prefixed_name_cache[cost_key] = None
+             return None
+        else:
+             logger.warning(f"Cost key '{cost_key}' not found in any prefixed metadata. Cannot determine provider.")
+             _prefixed_name_cache[cost_key] = None
+             return None
+
     # Use a simple placeholder text based on length for cost estimation
     sample_text = "a" * expected_input_length
     required_capabilities = required_capabilities or []
@@ -332,172 +405,231 @@ async def recommend_model(
     # Estimate max_tokens based on character length (very rough)
     estimated_max_tokens = estimated_output_length_chars // 3
 
-    # --- Model Metadata (Keep as defined before, ensure it's up-to-date) --- 
+    # --- Model Metadata (Updated based on provided images) ---
     model_capabilities = {
         # OpenAI models
-        "openai/gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
+        "openai/gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Assuming multimodal based on general knowledge
+        "openai/gpt-4o-mini": ["reasoning", "knowledge", "instruction-following"],
+        "openai/gpt-4.1": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
         "openai/gpt-4.1-mini": ["reasoning", "coding", "knowledge", "instruction-following"],
-        
-        # Anthropic models (corrected names)
-        "anthropic/claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
-        "anthropic/claude-3-sonnet-20240229": ["reasoning", "coding", "knowledge", "instruction-following"],
-        "anthropic/claude-3-5-haiku-20241022": ["knowledge", "instruction-following"],
-        "anthropic/claude-3-7-sonnet-20250219": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
-        
-        # Other potential models (adjust based on actual availability/support)
-        # "deepseek/deepseek-chat": ["coding", "knowledge", "instruction-following"],
-        # "deepseek/deepseek-reasoner": ["reasoning", "math", "instruction-following"],
-        # "google/gemini-1.5-flash-latest": ["knowledge", "instruction-following"],
-        # "google/gemini-1.5-pro-latest": ["reasoning", "knowledge", "instruction-following", "math"],
+        "openai/gpt-4.1-nano": ["reasoning", "knowledge", "instruction-following"], # Added reasoning
+        "openai/o1-preview": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
+        "openai/o1": ["reasoning", "coding", "knowledge", "instruction-following", "math"], # Keep guess
+        "openai/o3-mini": ["reasoning", "knowledge", "instruction-following"],
+
+        # Anthropic models
+        "anthropic/claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"],
+        "anthropic/claude-3-sonnet-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Previous Sonnet version
+        "anthropic/claude-3-5-haiku-20241022": ["knowledge", "instruction-following", "multimodal"], # Based on 3.5 Haiku column
+        "anthropic/claude-3-5-sonnet-20241022": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Based on 3.5 Sonnet column
+        "anthropic/claude-3-7-sonnet-20250219": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Based on 3.7 Sonnet column
+
+        # DeepSeek models
+        "deepseek/deepseek-chat": ["coding", "knowledge", "instruction-following"],
+        "deepseek/deepseek-reasoner": ["reasoning", "math", "instruction-following"],
+
+        # Gemini models
+        "gemini/gemini-2.0-flash-lite": ["knowledge", "instruction-following"],
+        "gemini/gemini-2.0-flash": ["knowledge", "instruction-following", "multimodal"],
+        "gemini/gemini-2.0-flash-thinking-exp-01-21": ["reasoning", "coding", "knowledge", "instruction-following", "multimodal"],
+        "gemini/gemini-2.5-pro-exp-03-25": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Map from gemini-2.5-pro-preview-03-25
+
+        # OpenRouter models
+        "mistralai/mistral-nemo": ["knowledge", "instruction-following", "coding"] # Keep guess
     }
-    
-    model_speed = { # Lower is faster (latency score 1-5)
-        "openai/gpt-4o": 3,
-        "openai/gpt-4.1-mini": 2,
-        "anthropic/claude-3-opus-20240229": 5,
-        "anthropic/claude-3-sonnet-20240229": 3,
-        "anthropic/claude-3-5-haiku-20241022": 2,
-        "anthropic/claude-3-7-sonnet-20250219": 3,
-        # "deepseek/deepseek-chat": 2,
-        # "deepseek/deepseek-reasoner": 3,
-        # "google/gemini-1.5-flash-latest": 1,
-        # "google/gemini-1.5-pro-latest": 3,
-    }
-    
-    model_quality = { # Higher is better (quality score 1-10)
-        "openai/gpt-4o": 9,
+
+    model_speed_fallback = {}
+
+    model_quality = {
+        "openai/gpt-4o": 8, # Updated
         "openai/gpt-4.1-mini": 7,
+        "openai/gpt-4o-mini": 6,
+        "openai/gpt-4.1": 8,
+        "openai/gpt-4.1-nano": 5,
+        "openai/o1-preview": 10,
+        "openai/o3-mini": 7,
+
         "anthropic/claude-3-opus-20240229": 10,
         "anthropic/claude-3-sonnet-20240229": 8,
-        "anthropic/claude-3-5-haiku-20241022": 6,
-        "anthropic/claude-3-7-sonnet-20250219": 9,
-        # "deepseek/deepseek-chat": 7,
-        # "deepseek/deepseek-reasoner": 8,
-        # "google/gemini-1.5-flash-latest": 5,
-        # "google/gemini-1.5-pro-latest": 8,
+        "anthropic/claude-3-5-haiku-20241022": 7,
+        "anthropic/claude-3-5-sonnet-20241022": 9,
+        "anthropic/claude-3-7-sonnet-20250219": 10,
+
+        "deepseek/deepseek-chat": 7,
+        "deepseek/deepseek-reasoner": 8,
+
+        "gemini/gemini-2.0-flash-lite": 5,
+        "gemini/gemini-2.0-flash": 6,
+        "gemini/gemini-2.0-flash-thinking-exp-01-21": 6,
+        "gemini/gemini-2.5-pro-exp-03-25": 9,
+
+        "mistralai/mistral-nemo": 7
     }
     # --- End Model Metadata --- 
 
     candidate_models_data = []
     excluded_models_reasons = {}
-    # Use models available in COST_PER_MILLION_TOKENS as the source of truth for available models
-    all_known_models = list(COST_PER_MILLION_TOKENS.keys())
+    all_cost_keys = list(COST_PER_MILLION_TOKENS.keys())
 
-    async def evaluate_model(model_name):
-        # 1. Check capabilities
-        capabilities = model_capabilities.get(model_name, [])
+    async def evaluate_model(cost_key: str):
+        # 1. Find prefixed name
+        prefixed_model_name = _get_prefixed_name_for_cost_key(cost_key)
+        if not prefixed_model_name:
+             excluded_models_reasons[cost_key] = "Could not reliably determine provider/full name for metadata lookup."
+             return
+
+        # 2. Check capabilities
+        capabilities = model_capabilities.get(prefixed_model_name, [])
         missing_caps = [cap for cap in required_capabilities if cap not in capabilities]
         if missing_caps:
-            excluded_models_reasons[model_name] = f"Missing required capabilities: {missing_caps}"
+            excluded_models_reasons[prefixed_model_name] = f"Missing required capabilities: {missing_caps}"
             return
 
-        # 2. Estimate cost
+        # 3. Estimate cost
         try:
             cost_estimate = await estimate_cost(
                 prompt=sample_text,
-                model=model_name,
+                model=cost_key, # Use the key from COST_PER_MILLION_TOKENS
                 max_tokens=estimated_max_tokens,
                 include_output=True
             )
             estimated_cost_value = cost_estimate["cost"]
         except ToolError as e:
-            # Model exists in cost list but maybe not elsewhere? Log and exclude.
-            excluded_models_reasons[model_name] = f"Cost estimation failed: {e.detail}"
+            excluded_models_reasons[prefixed_model_name] = f"Cost estimation failed: {e.detail}"
             return
         except Exception as e:
-            logger.error(f"Unexpected error estimating cost for {model_name} in recommendation: {e}", exc_info=True)
-            excluded_models_reasons[model_name] = f"Cost estimation failed unexpectedly: {str(e)}"
+            logger.error(f"Unexpected error estimating cost for {cost_key} (prefixed: {prefixed_model_name}) in recommendation: {e}", exc_info=True)
+            excluded_models_reasons[prefixed_model_name] = f"Cost estimation failed unexpectedly: {str(e)}"
             return
 
-        # 3. Check max cost constraint
+        # 4. Check max cost constraint
         if max_cost is not None and estimated_cost_value > max_cost:
-            excluded_models_reasons[model_name] = f"Exceeds max cost (${estimated_cost_value:.6f} > ${max_cost:.6f})"
+            excluded_models_reasons[prefixed_model_name] = f"Exceeds max cost (${estimated_cost_value:.6f} > ${max_cost:.6f})"
             return
 
-        # 4. Gather data for scoring
+        # --- 5. Get Measured Speed (Tokens/Second) ---
+        measured_tps = 0.0 # Default to 0.0 if no data
+        speed_source = "unavailable"
+
+        measured_data = measured_speeds.get(prefixed_model_name) or measured_speeds.get(cost_key)
+
+        if measured_data and isinstance(measured_data, dict) and "error" not in measured_data:
+            tokens_per_sec = measured_data.get("output_tokens_per_second")
+            if tokens_per_sec is not None and isinstance(tokens_per_sec, (int, float)) and tokens_per_sec >= 0:
+                measured_tps = float(tokens_per_sec)
+                speed_source = f"measured ({measured_tps:.1f} t/s)"
+            else:
+                 speed_source = "no t/s in measurement"
+        elif measured_data and "error" in measured_data:
+                 speed_source = "measurement error"
+
+        logger.debug(f"Speed for {prefixed_model_name}: {measured_tps:.1f} t/s (Source: {speed_source})")
+        # --- End Get Measured Speed ---
+
+        # 6. Gather data for scoring
         candidate_models_data.append({
-            "model": model_name,
+            "model": prefixed_model_name,
+            "cost_key": cost_key,
             "cost": estimated_cost_value,
-            "quality": model_quality.get(model_name, 5), # Default quality if missing
-            "speed": model_speed.get(model_name, 3),     # Default speed if missing
-            "capabilities": capabilities
+            "quality": model_quality.get(prefixed_model_name, 5),
+            "measured_speed_tps": measured_tps, # Store raw TPS
+            "capabilities": capabilities,
+            "speed_source": speed_source # Store source for potential debugging/output
         })
 
-    # Evaluate all known models concurrently
-    await asyncio.gather(*(evaluate_model(model) for model in all_known_models))
+    # Evaluate all models
+    await asyncio.gather(*(evaluate_model(key) for key in all_cost_keys))
 
-    # --- Scoring Logic (Keep as defined before, adjust weights if needed) ---
-    def calculate_score(model_data):
+    # --- Scoring Logic (Updated for raw TPS) ---
+    def calculate_score(model_data, min_cost, cost_range, min_tps, tps_range):
         cost = model_data['cost']
         quality = model_data['quality']
-        speed = model_data['speed'] # Lower is better for speed score
+        measured_tps = model_data['measured_speed_tps']
 
-        # Normalize cost (needs context of min/max cost among candidates)
-        all_costs = [m['cost'] for m in candidate_models_data if m['cost'] > 0] # Avoid division by zero
-        min_cost = min(all_costs) if all_costs else 0.000001
-        max_cost = max(all_costs) if all_costs else 0.000001
-        cost_range = max_cost - min_cost
-        # Normalized score (1 is cheapest, 0 is most expensive) - handle zero range
+        # Normalize cost (1 is cheapest, 0 is most expensive)
         norm_cost_score = 1.0 - ((cost - min_cost) / cost_range) if cost_range > 0 else 1.0
 
         # Normalize quality (scale 1-10)
         norm_quality_score = quality / 10.0
 
-        # Normalize speed (scale 1-5, lower is better, so invert)
-        norm_speed_score = (5 - speed + 1) / 5.0 # Maps 1->1, 5->0.2
+        # Normalize speed (measured TPS - higher is better)
+        # (1 is fastest, 0 is slowest/0)
+        norm_speed_score_tps = (measured_tps - min_tps) / tps_range if tps_range > 0 else 0.0
 
         # Calculate final score based on priority
         if priority == "cost":
-            score = norm_cost_score * 0.7 + norm_quality_score * 0.15 + norm_speed_score * 0.15
+            # Lower weight for speed if using TPS, as cost is main driver
+            score = norm_cost_score * 0.7 + norm_quality_score * 0.2 + norm_speed_score_tps * 0.1
         elif priority == "quality":
-            score = norm_cost_score * 0.15 + norm_quality_score * 0.7 + norm_speed_score * 0.15
+            score = norm_cost_score * 0.15 + norm_quality_score * 0.7 + norm_speed_score_tps * 0.15
         elif priority == "speed":
-            score = norm_cost_score * 0.15 + norm_quality_score * 0.15 + norm_speed_score * 0.7
+            score = norm_cost_score * 0.1 + norm_quality_score * 0.2 + norm_speed_score_tps * 0.7
         else: # balanced
-            score = norm_cost_score * 0.34 + norm_quality_score * 0.33 + norm_speed_score * 0.33
+            score = norm_cost_score * 0.34 + norm_quality_score * 0.33 + norm_speed_score_tps * 0.33
 
         return score
-    # --- End Scoring Logic --- 
+    # --- End Scoring Logic ---
 
     # Calculate scores for all candidates
-    for model_data in candidate_models_data:
-        model_data['score'] = calculate_score(model_data)
+    if not candidate_models_data:
+        logger.warning("No candidate models found after filtering.")
+    else:
+        # Get min/max for normalization *before* scoring loop
+        all_costs = [m['cost'] for m in candidate_models_data if m['cost'] > 0]
+        min_cost = min(all_costs) if all_costs else 0.000001
+        max_cost_found = max(all_costs) if all_costs else 0.000001
+        cost_range = max_cost_found - min_cost
+
+        all_tps = [m['measured_speed_tps'] for m in candidate_models_data]
+        min_tps = min(all_tps) if all_tps else 0.0
+        max_tps_found = max(all_tps) if all_tps else 0.0
+        tps_range = max_tps_found - min_tps
+
+        for model_data in candidate_models_data:
+            # Pass normalization ranges to scoring function
+            model_data['score'] = calculate_score(model_data, min_cost, cost_range, min_tps, tps_range)
 
     # Sort candidates by score (highest first)
-    sorted_candidates = sorted(candidate_models_data, key=lambda x: x['score'], reverse=True)
+    sorted_candidates = sorted(candidate_models_data, key=lambda x: x.get('score', 0), reverse=True)
 
     # Format recommendations
     recommendations_list = []
-    for cand in sorted_candidates:
-        # Add a simple reason based on priority
-        reason = f"High overall score ({cand['score']:.2f}) according to '{priority}' priority."
-        if priority == 'cost' and cand['cost'] <= min(m['cost'] for m in candidate_models_data):
-            reason = f"Lowest estimated cost (${cand['cost']:.6f}) and meets requirements."
-        elif priority == 'quality' and cand['quality'] >= max(m['quality'] for m in candidate_models_data):
-             reason = f"Highest quality score ({cand['quality']}/10) and meets requirements."
-        elif priority == 'speed' and cand['speed'] <= min(m['speed'] for m in candidate_models_data):
-             reason = f"Fastest speed score ({cand['speed']}/5) and meets requirements."
+    if candidate_models_data:
+        # Get min/max across candidates *after* filtering
+        min_candidate_cost = min(m['cost'] for m in candidate_models_data)
+        max_candidate_quality = max(m['quality'] for m in candidate_models_data)
+        max_candidate_tps = max(m['measured_speed_tps'] for m in candidate_models_data)
 
-        recommendations_list.append({
-            "model": cand['model'],
-            "estimated_cost": cand['cost'],
-            "quality_score": cand['quality'],
-            "speed_score": cand['speed'],
-            "capabilities": cand['capabilities'],
-            "reason": reason
-        })
+        for cand in sorted_candidates:
+            reason = f"High overall score ({cand['score']:.2f}) according to '{priority}' priority."
+            # Adjust reason phrasing for TPS
+            if priority == 'cost' and cand['cost'] <= min_candidate_cost:
+                reason = f"Lowest estimated cost (${cand['cost']:.6f}) and meets requirements."
+            elif priority == 'quality' and cand['quality'] >= max_candidate_quality:
+                 reason = f"Highest quality score ({cand['quality']}/10) and meets requirements."
+            elif priority == 'speed' and cand['measured_speed_tps'] >= max_candidate_tps:
+                 reason = f"Fastest measured speed ({cand['measured_speed_tps']:.1f} t/s) and meets requirements."
+
+            recommendations_list.append({
+                "model": cand['model'],
+                "estimated_cost": cand['cost'],
+                "quality_score": cand['quality'],
+                "measured_speed_tps": cand['measured_speed_tps'], # Add raw TPS
+                "capabilities": cand['capabilities'],
+                "reason": reason
+            })
 
     logger.info(f"Recommended models (priority: {priority}): {[r['model'] for r in recommendations_list]}")
     return {
         "recommendations": recommendations_list,
-        "parameters": {
-            "task_type": task_type,
-            "expected_input_length": expected_input_length,
-            "expected_output_length": estimated_output_length_chars,
-            "required_capabilities": required_capabilities,
-            "max_cost": max_cost,
-            "priority": priority
-        },
+        "parameters": { # Include input parameters for context
+             "task_type": task_type,
+             "expected_input_length": expected_input_length,
+             "expected_output_length": estimated_output_length_chars,
+             "required_capabilities": required_capabilities,
+             "max_cost": max_cost,
+             "priority": priority
+         },
         "excluded_models": excluded_models_reasons
     }
 

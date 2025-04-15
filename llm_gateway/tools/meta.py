@@ -11,7 +11,7 @@ from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
 from llm_gateway.constants import Provider, COST_PER_MILLION_TOKENS # Add COST_PER_MILLION_TOKENS
 from llm_gateway.core.providers.base import get_provider # Add get_provider
-from llm_gateway.exceptions import ProviderError, ToolInputError # Add ToolInputError
+from llm_gateway.exceptions import ProviderError, ToolInputError, ToolExecutionError # Add ToolInputError
 from llm_gateway.tools.completion import generate_completion # Add generate_completion import
 
 logger = get_logger("llm_gateway.tools.meta")

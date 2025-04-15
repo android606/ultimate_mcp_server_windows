@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from llm_gateway.constants import Provider
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, DEFAULT_MODELS, Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.tools.optimization import estimate_cost, recommend_model
 from llm_gateway.utils import get_logger
@@ -86,7 +86,8 @@ async def demonstrate_cost_optimization():
     
     # Note for the demo: Use proper token counting, not character estimation
     logger.info("Calculating tokens for the prompt with tiktoken", emoji_key="info")
-    models_to_show = ["gpt-4o", "claude-3-5-sonnet-latest"]
+    # Use default models from constants for the initial token count display
+    models_to_show = list(DEFAULT_MODELS.values())
     for model_name in models_to_show:
         token_count = count_tokens(prompt, model_name)
         logger.info(f"Model {model_name}: {token_count} input tokens", emoji_key="token")
@@ -97,16 +98,8 @@ async def demonstrate_cost_optimization():
     console.print(Rule("[cyan]Cost Estimation[/cyan]"))
     logger.info("Estimating costs for different models", emoji_key="cost")
     
-    models_to_compare = [
-        "gpt-4o",
-        "gpt-4.1-mini",
-        "claude-3-opus-20240229",
-        "claude-3-7-sonnet-20250219",
-        "claude-3-5-haiku-20241022",
-        "gemini-2.5-pro-latest",
-        "gemini-2.5-flash-latest",
-        "deepseek-chat"
-    ]
+    # Dynamically get models from the constants file
+    models_to_compare = list(COST_PER_MILLION_TOKENS.keys())
     
     cost_table = Table(title="Estimated Costs", box=box.ROUNDED, show_header=True)
     cost_table.add_column("Model", style="magenta")
@@ -117,12 +110,21 @@ async def demonstrate_cost_optimization():
     cost_table.add_column("Estimated Cost", style="green", justify="right")
 
     cost_estimates = []
-    for model in models_to_compare:
+    for model_name_only in models_to_compare: # Renamed variable for clarity
         try:
-            # Call the estimate_cost tool
+            # Determine provider and construct full model name
+            provider_name = _get_provider_for_model(model_name_only)
+            if not provider_name:
+                logger.warning(f"Could not determine provider for model '{model_name_only}'. Skipping cost estimation.", emoji_key="warning")
+                cost_table.add_row(escape(model_name_only), "-", "-", "-", "-", "[dim yellow]Unknown provider[/dim yellow]")
+                continue
+
+            full_model_name = f"{provider_name}/{model_name_only}"
+
+            # Call the estimate_cost tool with the prefixed model name
             raw_result = await mcp.call_tool("estimate_cost", {
                 "prompt": prompt,
-                "model": model,
+                "model": full_model_name, # Use the prefixed name
                 "max_tokens": estimated_output_tokens
             })
             
@@ -130,12 +132,13 @@ async def demonstrate_cost_optimization():
             estimate_result = unpack_tool_result(raw_result)
             
             if "error" in estimate_result:
-                logger.warning(f"Could not estimate cost for {model}: {estimate_result['error']}", emoji_key="warning")
-                cost_table.add_row(escape(model), "-", "-", "-", "-", f"[dim red]{estimate_result['error']}[/dim red]")
+                # Log the error with the original model name for clarity in logs
+                logger.warning(f"Could not estimate cost for {model_name_only}: {estimate_result['error']}", emoji_key="warning")
+                cost_table.add_row(escape(model_name_only), "-", "-", "-", "-", f"[dim red]{estimate_result['error']}[/dim red]")
             else:
                 cost_estimates.append(estimate_result) # Store for later use if needed
                 cost_table.add_row(
-                    escape(model),
+                    escape(model_name_only), # Display original model name in table
                     str(estimate_result["tokens"]["input"]),
                     str(estimate_result["tokens"]["output"]),
                     f"${estimate_result['rate']['input']:.2f}",
@@ -143,8 +146,8 @@ async def demonstrate_cost_optimization():
                     f"${estimate_result['cost']:.6f}"
                 )
         except Exception as e:
-            logger.error(f"Error calling estimate_cost for {model}: {e}", emoji_key="error", exc_info=True)
-            cost_table.add_row(escape(model), "-", "-", "-", "-", "[red]Error[/red]")
+            logger.error(f"Error calling estimate_cost for {model_name_only}: {e}", emoji_key="error", exc_info=True)
+            cost_table.add_row(escape(model_name_only), "-", "-", "-", "-", "[red]Error[/red]")
             
     console.print(cost_table)
     console.print()
@@ -198,30 +201,38 @@ async def demonstrate_cost_optimization():
                 other_recs_str = ", ".join([escape(r["model"]) for r in recs[1:]]) if len(recs) > 1 else "None"
                 
                 # Calculate score if missing (library versions may differ)
+                # NOTE: recommend_model now includes score, quality_score, speed_score, estimated_cost
+                # This fallback score calculation is likely unnecessary but kept for safety.
+                # Use the correct keys from the recommendation result.
+                cost_key = "estimated_cost"
+                quality_key = "quality_score"
+                speed_key = "speed_score"
+                
                 if 'score' not in top_rec:
                     if priority == "cost":
                         # Lower cost is better
-                        score = 10.0 / (float(top_rec['cost']) + 0.001)
+                        score = 10.0 / (float(top_rec.get(cost_key, 1.0)) + 0.001) # Use .get with default
                     elif priority == "quality":
                         # Higher quality is better
-                        score = float(top_rec['quality'])
+                        score = float(top_rec.get(quality_key, 0))
                     elif priority == "speed":
                         # Lower speed value is better
-                        score = 10.0 - float(top_rec['speed'])
+                        score = 10.0 - float(top_rec.get(speed_key, 5))
                     else:  # balanced
-                        # Balanced score
-                        score = (float(top_rec['quality']) * 0.5 - 
-                                float(top_rec['cost']) * 100.0 - 
-                                float(top_rec['speed']) * 0.3)
+                        # Balanced score - use .get for safety
+                        q = float(top_rec.get(quality_key, 5))
+                        c = float(top_rec.get(cost_key, 0.001))
+                        s = float(top_rec.get(speed_key, 3))
+                        score = (q * 0.5 - c * 100.0 - s * 0.3)
                 else:
                     score = top_rec['score']
                 
                 recommendation_table.add_row(
                     priority,
                     escape(top_rec["model"]),
-                    f"${top_rec['cost']:.6f}",
-                    str(top_rec["quality"]),
-                    str(top_rec["speed"]),
+                    f"${top_rec.get(cost_key, 0.0):.6f}", # Use .get
+                    str(top_rec.get(quality_key, '-')), # Use .get
+                    str(top_rec.get(speed_key, '-')),    # Use .get
                     f"{score:.2f}",
                     other_recs_str
                 )
@@ -276,7 +287,8 @@ async def demonstrate_cost_optimization():
             return
         
         try:
-            provider = get_provider(provider_name, api_key=api_key)
+            # Await the get_provider coroutine
+            provider = await get_provider(provider_name, api_key=api_key)
             await provider.initialize()
             
             # Generate the completion and get accurate token counts from the response
@@ -322,7 +334,19 @@ async def demonstrate_cost_optimization():
 
 
 def _get_provider_for_model(model_name: str) -> str:
-    """Helper to determine provider from model name."""
+    """Helper to determine provider from model name (handles prefixed names)."""
+    if '/' in model_name:
+        # If already prefixed, extract provider
+        provider = model_name.split('/')[0]
+        # Validate against known providers if necessary
+        known_providers = [p.value for p in Provider]
+        if provider in known_providers:
+            return provider
+        else:
+            logger.warning(f"Unknown provider prefix in '{model_name}'")
+            return None # Or try fallback below?
+            
+    # Fallback for non-prefixed names (original logic)
     if model_name.startswith("gpt-"):
         return Provider.OPENAI.value
     elif model_name.startswith("claude-"):
@@ -331,6 +355,12 @@ def _get_provider_for_model(model_name: str) -> str:
         return Provider.DEEPSEEK.value
     elif model_name.startswith("gemini-"):
         return Provider.GEMINI.value
+        
+    # Add specific non-prefixed model checks if needed
+    if model_name in ["o1-preview", "o3-mini"]: # Example
+         return Provider.OPENAI.value
+         
+    logger.warning(f"Could not determine provider for model '{model_name}'")
     return None
 
 

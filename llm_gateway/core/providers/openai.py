@@ -96,10 +96,10 @@ class OpenAIProvider(BaseProvider):
         # Use default model if not specified
         model = model or self.get_default_model()
         
-        # Strip provider prefix if present (e.g., "openai:gpt-4o" -> "gpt-4o")
-        if ":" in model:
+        # Strip provider prefix if present (e.g., "openai/gpt-4o" -> "gpt-4o")
+        if model.startswith(f"{self.provider_name}/"):
             original_model = model
-            model = model.split(":", 1)[1]
+            model = model.split("/", 1)[1]
             self.logger.debug(f"Stripped provider prefix from model name: {original_model} -> {model}")
         
         # Create messages
@@ -118,6 +118,19 @@ class OpenAIProvider(BaseProvider):
             
         # Add any additional parameters
         params.update(kwargs)
+
+        # --- Special handling for specific model parameter constraints ---
+        if model == 'o3-mini':
+            if 'temperature' in params:
+                self.logger.debug(f"Removing unsupported 'temperature' parameter for model {model}")
+                del params['temperature']
+        elif model == 'o1-preview':
+            current_temp = params.get('temperature')
+            # Only allow temperature if it's explicitly set to 1.0, otherwise remove it to use API default.
+            if current_temp is not None and current_temp != 1.0:
+                self.logger.debug(f"Removing non-default 'temperature' ({current_temp}) for model {model}")
+                del params['temperature']
+        # --- End special handling ---
         
         # Log request
         self.logger.info(
@@ -199,10 +212,10 @@ class OpenAIProvider(BaseProvider):
         # Use default model if not specified
         model = model or self.get_default_model()
         
-        # Strip provider prefix if present (e.g., "openai:gpt-4o" -> "gpt-4o")
-        if ":" in model:
+        # Strip provider prefix if present (e.g., "openai/gpt-4o" -> "gpt-4o")
+        if model.startswith(f"{self.provider_name}/"):
             original_model = model
-            model = model.split(":", 1)[1]
+            model = model.split("/", 1)[1]
             self.logger.debug(f"Stripped provider prefix from model name (stream): {original_model} -> {model}")
         
         # Create messages

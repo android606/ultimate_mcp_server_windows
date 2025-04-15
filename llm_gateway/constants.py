@@ -47,7 +47,9 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     # Claude models
     "claude-3-7-sonnet-20250219": {"input": 3.0, "output": 15.0},
     "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.0},
-    
+    "claude-3-opus-20240229": {"input": 15.0, "output": 75.0},
+    "claude-3-sonnet-20240229": {"input": 3.0, "output": 15.0},
+
     # DeepSeek models
     "deepseek-chat": {"input": 0.27, "output": 1.10},
     "deepseek-reasoner": {"input": 0.55, "output": 2.19},
@@ -56,7 +58,7 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30},
     "gemini-2.0-flash": {"input": 0.35, "output": 1.05},
     "gemini-2.0-flash-thinking-exp-01-21": {"input": 0.0, "output": 0.0},
-    "gemini-2.5-pro-exp-03-25": {"input": 0.0, "output": 0.5},
+    "gemini-2.5-pro-exp-03-25": {"input": 1.25, "output": 10.0},
 
     # OpenRouter models
     "mistralai/mistral-nemo": {"input": 0.035, "output": 0.08}, 

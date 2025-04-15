@@ -80,9 +80,6 @@ async def generate_completion(
     try:
         # Use provider name directly, get_provider handles splitting if needed
         provider_instance = await get_provider(provider)
-        # Ensure model ID includes provider prefix if not already present
-        if model and provider not in model:
-            model = f"{provider}/{model}" 
     except Exception as e:
         raise ProviderError(
             f"Failed to initialize provider '{provider}': {str(e)}",
@@ -97,7 +94,7 @@ async def generate_completion(
         # Generate completion
         result = await provider_instance.generate_completion(
             prompt=prompt,
-            model=model, # Pass potentially prefixed model ID
+            model=model,
             max_tokens=max_tokens,
             temperature=temperature,
             **additional_params
@@ -210,8 +207,6 @@ async def stream_completion(
     # Get provider instance
     try:
         provider_instance = await get_provider(provider)
-        if model and provider not in model:
-             model = f"{provider}/{model}" 
     except Exception as e:
         logger.error(
             f"Failed to initialize provider '{provider}': {str(e)}",
@@ -400,8 +395,6 @@ async def chat_completion(
     # Get provider instance
     try:
         provider_instance = await get_provider(provider)
-        if model and provider not in model:
-             model = f"{provider}/{model}" 
     except Exception as e:
         raise ProviderError(
             f"Failed to initialize provider '{provider}': {str(e)}",
@@ -578,9 +571,6 @@ async def multi_completion(
                     successful_requests += 1
                     successful_times.append(provider_processing_time)
                     actual_model_used = result_data.get("model") # Get the actual model used
-                    # Update result key if default model was used
-                    if not model_name:
-                         result_key = actual_model_used or result_key
                     logger.info(f"Success from {result_key} in {provider_processing_time:.2f}s")
                 else:
                     failed_requests += 1
@@ -598,9 +588,6 @@ async def multi_completion(
                  error_message = f"ProviderError: {str(pe)}"
                  logger.warning(f"ProviderError for {result_key}: {str(pe)}")
                  actual_model_used = pe.model # Get model from exception if available
-                 # Update result key if needed
-                 if not model_name:
-                    result_key = actual_model_used or result_key
             except Exception as e:
                 provider_processing_time = time.time() - provider_start_time
                 failed_requests += 1
