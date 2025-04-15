@@ -18,6 +18,7 @@ from llm_gateway.services.knowledge_base import (
 )
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.logging.console import console
+from llm_gateway.utils.display import CostTracker
 
 # Initialize logger
 logger = get_logger("rag_example")
@@ -71,7 +72,7 @@ EXAMPLE_QUERIES = [
 
 KB_NAME = "ai_technologies"
 
-async def run_rag_demo():
+async def run_rag_demo(tracker: CostTracker):
     """Run the complete RAG demonstration."""
     console.print("[bold blue]RAG Example with LLM Gateway MCP Server[/bold blue]")
     console.print("This example demonstrates the RAG functionality using direct knowledge base services.")
@@ -387,6 +388,10 @@ async def run_rag_demo():
         metrics_table.add_row("Cost", f"${response.cost:.6f}")
         
         console.print(metrics_table)
+
+        # Track the generation call
+        tracker.add_call(response)
+
     except Exception as e:
         logger.error(f"Failed to generate response: {str(e)}", emoji_key="error")
     
@@ -394,6 +399,10 @@ async def run_rag_demo():
     
     # Step 6: Clean up
     console.print(Rule("[bold blue]Step 6: Cleaning Up[/bold blue]"))
+
+    # Display cost summary before final cleanup
+    tracker.display_summary(console)
+
     try:
         await kb_manager.delete_knowledge_base(name=KB_NAME)
         logger.success(f"Knowledge base {KB_NAME} deleted successfully", emoji_key="success")
@@ -404,13 +413,16 @@ async def run_rag_demo():
     return 0
 
 async def main():
-    """Main entry point."""
+    """Run the RAG example."""
+    tracker = CostTracker() # Instantiate tracker
     try:
-        return await run_rag_demo()
+        await run_rag_demo(tracker) # Pass tracker
     except Exception as e:
-        logger.critical(f"RAG demo failed: {str(e)}", emoji_key="critical", exc_info=True)
+        logger.critical(f"RAG demo failed unexpectedly: {e}", exc_info=True)
         return 1
+    return 0
 
 if __name__ == "__main__":
+    # Run the demonstration
     exit_code = asyncio.run(main())
     sys.exit(exit_code) 

@@ -2,6 +2,7 @@
 """Document processing examples for LLM Gateway."""
 import asyncio
 import sys
+from collections import namedtuple  # Import namedtuple
 from pathlib import Path
 
 # Add project root to path for imports when running as script
@@ -27,13 +28,16 @@ from llm_gateway.tools.document import (
 from llm_gateway.utils import get_logger
 
 # --- Import display utilities ---
-from llm_gateway.utils.display import display_text_content_result
+from llm_gateway.utils.display import CostTracker, display_text_content_result  # Import CostTracker
 from llm_gateway.utils.logging.console import console
 
 # ----------------------
 
 # Initialize logger
 logger = get_logger("example.document_processing")
+
+# Create a simple structure for cost tracking from dict
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Initialize FastMCP server
 mcp = FastMCP("Document Processing Demo")
@@ -63,7 +67,7 @@ async def safe_tool_call(tool_name: str, args: dict) -> dict:
         logger.error(f"Exception calling {tool_name}: {e}", emoji_key="error", exc_info=True)
         return {"success": False, "error": str(e)}
 
-async def demonstrate_document_processing():
+async def demonstrate_document_processing(tracker: CostTracker): # Add tracker
     """Demonstrate document processing capabilities using Rich."""
     console.print(Rule("[bold blue]Document Processing Demonstration[/bold blue]"))
     logger.info("Starting document processing demonstration", emoji_key="start")
@@ -219,6 +223,20 @@ async def demonstrate_document_processing():
             "Generated Summary",
             summary_response["result"]
         )
+        # Track cost
+        if isinstance(summary_response["result"], dict) and all(k in summary_response["result"] for k in ["cost", "provider", "model"]) and "tokens" in summary_response["result"]:
+            try:
+                trackable = TrackableResult(
+                    cost=summary_response["result"].get("cost", 0.0),
+                    input_tokens=summary_response["result"].get("tokens", {}).get("input", 0),
+                    output_tokens=summary_response["result"].get("tokens", {}).get("output", 0),
+                    provider=summary_response["result"].get("provider", "unknown"),
+                    model=summary_response["result"].get("model", "unknown"),
+                    processing_time=summary_response["result"].get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for summarization: {track_err}", exc_info=False)
     else:
         console.print(f"[bold red]Summarization Failed:[/bold red] {escape(summary_response['error'])}")
     console.print()
@@ -240,6 +258,20 @@ async def demonstrate_document_processing():
             "Extracted Entities",
             entity_response["result"]
         )
+        # Track cost
+        if isinstance(entity_response["result"], dict) and all(k in entity_response["result"] for k in ["cost", "provider", "model"]) and "tokens" in entity_response["result"]:
+            try:
+                trackable = TrackableResult(
+                    cost=entity_response["result"].get("cost", 0.0),
+                    input_tokens=entity_response["result"].get("tokens", {}).get("input", 0),
+                    output_tokens=entity_response["result"].get("tokens", {}).get("output", 0),
+                    provider=entity_response["result"].get("provider", "unknown"),
+                    model=entity_response["result"].get("model", "unknown"),
+                    processing_time=entity_response["result"].get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for entity extraction: {track_err}", exc_info=False)
     else:
         console.print(f"[bold red]Entity Extraction Failed:[/bold red] {escape(entity_response['error'])}")
     console.print()
@@ -263,15 +295,32 @@ async def demonstrate_document_processing():
             "Generated Q&A Pairs",
             qa_response["result"]
         )
+        # Track cost
+        if isinstance(qa_response["result"], dict) and all(k in qa_response["result"] for k in ["cost", "provider", "model"]) and "tokens" in qa_response["result"]:
+            try:
+                trackable = TrackableResult(
+                    cost=qa_response["result"].get("cost", 0.0),
+                    input_tokens=qa_response["result"].get("tokens", {}).get("input", 0),
+                    output_tokens=qa_response["result"].get("tokens", {}).get("output", 0),
+                    provider=qa_response["result"].get("provider", "unknown"),
+                    model=qa_response["result"].get("model", "unknown"),
+                    processing_time=qa_response["result"].get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for Q&A generation: {track_err}", exc_info=False)
     else:
         console.print(f"[bold red]Q&A Generation Failed:[/bold red] {escape(qa_response['error'])}")
     console.print()
 
+    # Display cost summary at the end
+    tracker.display_summary(console)
 
 async def main():
     """Run document processing demonstration."""
+    tracker = CostTracker() # Instantiate tracker
     try:
-        await demonstrate_document_processing()
+        await demonstrate_document_processing(tracker) # Pass tracker
         
     except Exception as e:
         logger.critical(f"Document processing demo failed: {str(e)}", emoji_key="critical", exc_info=True)

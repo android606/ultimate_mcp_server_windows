@@ -18,6 +18,7 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.vector import get_embedding_service, get_vector_db_service
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import CostTracker
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -192,7 +193,7 @@ async def demonstrate_vector_operations():
             logger.warning(f"Could not delete collection {collection_name}: {del_e}", emoji_key="warning")
 
 
-async def demonstrate_llm_with_vector_retrieval():
+async def demonstrate_llm_with_vector_retrieval(tracker: CostTracker):
     """Demonstrate RAG using vector search and LLM with Rich display."""
     console.print(Rule("[bold blue]Retrieval-Augmented Generation (RAG) Demo[/bold blue]"))
     logger.info("Starting RAG demo", emoji_key="start")
@@ -276,6 +277,9 @@ Answer:"""
         gen_time = time.time() - gen_start_time
         logger.success("Answer generated.", emoji_key="success")
         
+        # Track cost for the generation step
+        tracker.add_call(result)
+
         # --- Display RAG Result --- 
         console.print(Panel(
             escape(result.text.strip()), 
@@ -313,10 +317,11 @@ async def main():
     """Run all vector search demonstrations."""
     console.print(Rule("[bold magenta]Vector Search & RAG Demos Starting[/bold magenta]"))
     success = False
+    tracker = CostTracker()
     try:
         operations_ok = await demonstrate_vector_operations()
         if operations_ok:
-            rag_ok = await demonstrate_llm_with_vector_retrieval()
+            rag_ok = await demonstrate_llm_with_vector_retrieval(tracker)
             success = rag_ok
         else:
              logger.warning("Skipping RAG demo due to vector operation errors.", emoji_key="skip")
@@ -329,10 +334,12 @@ async def main():
     if success:
         logger.success("Vector Search & RAG Demos Finished Successfully!", emoji_key="complete")
         console.print(Rule("[bold magenta]Vector Search & RAG Demos Complete[/bold magenta]"))
+        tracker.display_summary(console)
         return 0
     else:
          logger.error("One or more vector search demos failed.", emoji_key="error")
          console.print(Rule("[bold red]Vector Search & RAG Demos Finished with Errors[/bold red]"))
+         tracker.display_summary(console)
          return 1
 
 

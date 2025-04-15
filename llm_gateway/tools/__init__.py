@@ -69,6 +69,9 @@ from .rag import (
     retrieve_context,
 )
 
+# Import standalone functions from marqo_fused_search.py
+from .marqo_fused_search import marqo_fused_search
+
 # Import standalone functions from tournament.py
 from .tournament import (
     cancel_tournament,
@@ -80,6 +83,38 @@ from .tournament import (
 
 # Import text classification function
 from .text_classification import text_classification
+
+# Add import for the Meta API tools
+from .meta_api_tool import register_api_meta_tools
+
+# Import SQL tools
+from .sql_database_interactions import (
+    connect_to_database,
+    disconnect_from_database,
+    discover_database_schema,
+    execute_query,
+    generate_database_documentation,
+    get_table_details,
+    find_related_tables,
+    analyze_column_statistics,
+    execute_parameterized_query,
+    create_database_view,
+    create_database_index,
+    test_connection,
+    execute_transaction,
+    execute_query_with_pagination,
+    get_database_status,
+)
+
+# Import Audio tools
+from .audio_transcription import (
+    transcribe_audio,
+    extract_audio_transcript_key_points,
+    chat_with_transcript,
+)
+
+# Import Browser tools registration function
+from .browser_automation import register_playwright_tools
 
 from llm_gateway.utils import get_logger
 
@@ -161,6 +196,37 @@ __all__ = [
     
     # Utility functions
     "extract_code_from_response",
+    
+    # Add the function to register Meta API tools
+    "register_api_meta_tools",
+
+    # Added Marqo tool
+    "marqo_fused_search",
+
+    # Added SQL tools
+    "connect_to_database",
+    "disconnect_from_database",
+    "discover_database_schema",
+    "execute_query",
+    "generate_database_documentation",
+    "get_table_details",
+    "find_related_tables",
+    "analyze_column_statistics",
+    "execute_parameterized_query",
+    "create_database_view",
+    "create_database_index",
+    "test_connection",
+    "execute_transaction",
+    "execute_query_with_pagination",
+    "get_database_status",
+
+    # Added Audio tools
+    "transcribe_audio",
+    "extract_audio_transcript_key_points",
+    "chat_with_transcript",
+
+    # Added Browser tools registration function
+    "register_playwright_tools",
 ]
 
 logger = get_logger("llm_gateway.tools")
@@ -226,6 +292,33 @@ STANDALONE_TOOL_FUNCTIONS = [
     enhance_ocr_text,
     analyze_pdf_structure,
     batch_process_documents,
+
+    # Added Marqo tool
+    marqo_fused_search,
+
+    # Added SQL tools
+    connect_to_database,
+    disconnect_from_database,
+    discover_database_schema,
+    execute_query,
+    generate_database_documentation,
+    get_table_details,
+    find_related_tables,
+    analyze_column_statistics,
+    execute_parameterized_query,
+    create_database_view,
+    create_database_index,
+    test_connection,
+    execute_transaction,
+    execute_query_with_pagination,
+    get_database_status,
+
+    # Added Audio tools
+    transcribe_audio,
+    extract_audio_transcript_key_points,
+    chat_with_transcript,
+
+    # Note: register_playwright_tools is handled separately in server.py
 ]
 
 # Registry of tool classes (for tools still using the class pattern) - Should be empty

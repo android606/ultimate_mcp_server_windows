@@ -20,7 +20,7 @@ from llm_gateway.tools.optimization import estimate_cost, recommend_model
 from llm_gateway.utils import get_logger
 
 # --- Import display utilities ---
-from llm_gateway.utils.display import parse_and_display_result
+from llm_gateway.utils.display import CostTracker, parse_and_display_result
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -73,7 +73,7 @@ def unpack_tool_result(result):
     return result
 
 # Modified to use provider system directly
-async def _execute_with_recommended_model(balanced_rec, prompt, estimated_output_tokens):
+async def _execute_with_recommended_model(balanced_rec, prompt, estimated_output_tokens, tracker: CostTracker):
     """Execute completion with the recommended model using provider system."""
     if not balanced_rec:
         logger.error("No recommended model provided", emoji_key="error")
@@ -96,6 +96,9 @@ async def _execute_with_recommended_model(balanced_rec, prompt, estimated_output
             temperature=0.7,
             max_tokens=estimated_output_tokens
         )
+        
+        # Track cost
+        tracker.add_call(result)
         
         # Display result information using actual token counts from the API response
         logger.success(f"Completion with {balanced_rec} successful", emoji_key="success")
@@ -128,7 +131,7 @@ async def _execute_with_recommended_model(balanced_rec, prompt, estimated_output
     except Exception as e:
          logger.error(f"Error running completion with {balanced_rec}: {e}", emoji_key="error", exc_info=True)
 
-async def demonstrate_cost_optimization():
+async def demonstrate_cost_optimization(tracker: CostTracker):
     """Demonstrate cost optimization features using Rich."""
     console.print(Rule("[bold blue]Cost Optimization Demonstration[/bold blue]"))
     logger.info("Starting cost optimization demonstration", emoji_key="start")
@@ -332,9 +335,12 @@ async def demonstrate_cost_optimization():
         logger.info(f"Running completion with balanced recommendation: {balanced_rec}", emoji_key="processing")
         
         # Use the new helper function instead of direct API key handling
-        await _execute_with_recommended_model(balanced_rec, prompt, estimated_output_tokens)
+        await _execute_with_recommended_model(balanced_rec, prompt, estimated_output_tokens, tracker)
     else:
         logger.info("Could not get a balanced recommendation to execute.", emoji_key="info")
+
+    # Display cost summary at the end of the demonstration
+    tracker.display_summary(console)
 
 
 def _get_provider_for_model(model_name: str) -> str:
@@ -346,9 +352,16 @@ def _get_provider_for_model(model_name: str) -> str:
         known_providers = [p.value for p in Provider]
         if provider in known_providers:
             return provider
+        # Handle OpenRouter's nested structure specifically if needed, though the general check above might suffice
+        # elif provider == Provider.OPENROUTER.value:
+        #     return Provider.OPENROUTER.value
         else:
-            logger.warning(f"Unknown provider prefix in '{model_name}'")
-            return None # Or try fallback below?
+            # Check if it's an OpenRouter model *without* the openrouter prefix but with another slash
+            # e.g., just "mistralai/mistral-nemo" was passed. Infer OpenRouter.
+            # This might be too broad; relying on the explicit prefix is safer.
+            # Let's stick to the explicit prefix check above.
+            logger.warning(f"Unknown or ambiguous provider prefix in '{model_name}'")
+            return None
             
     # Fallback for non-prefixed names (original logic)
     if model_name.startswith("gpt-"):
@@ -359,6 +372,8 @@ def _get_provider_for_model(model_name: str) -> str:
         return Provider.DEEPSEEK.value
     elif model_name.startswith("gemini-"):
         return Provider.GEMINI.value
+    elif model_name.startswith("grok-"): # Added Grok check
+        return Provider.GROK.value
         
     # Add specific non-prefixed model checks if needed
     if model_name in ["o1-preview", "o3-mini"]: # Example
@@ -370,8 +385,9 @@ def _get_provider_for_model(model_name: str) -> str:
 
 async def main():
     """Run cost optimization examples."""
+    tracker = CostTracker() # Instantiate tracker
     try:
-        await demonstrate_cost_optimization()
+        await demonstrate_cost_optimization(tracker) # Pass tracker
         
     except Exception as e:
         logger.critical(f"Example failed: {str(e)}", emoji_key="critical")

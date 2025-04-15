@@ -36,11 +36,9 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger
-
-# Initialize logger
-logger = get_logger("demo.meta_api")
+import llm_gateway.core  # To access the global gateway instance
+from llm_gateway import create_app
+from llm_gateway.tools.meta_api_tool import APIMetaTool  # Import class for type hinting
 
 # Initialize Rich console
 console = Console()
@@ -66,26 +64,6 @@ DEMO_APIS = {
 
 # Default API to use for demos
 DEFAULT_API = "petstore"
-
-
-async def setup_client() -> Gateway:
-    """Set up and return an MCP client instance."""
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold green]Setting up MCP client..."),
-        transient=True
-    ) as progress:
-        progress.add_task("", total=None)  # noqa: F841
-        
-        # Initialize Gateway instead of MCPClient
-        gateway = Gateway("meta-api-demo", register_tools=False)
-        
-        # Initialize providers
-        logger.info("Initializing providers...", emoji_key="provider")
-        await gateway._initialize_providers()
-        
-        # Return the gateway instance - APIs will be accessed through gateway.tools
-        return gateway
 
 
 async def show_intro():
@@ -119,11 +97,11 @@ async def show_intro():
     console.print("\n")
 
 
-async def register_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[str, Any]:
+async def register_api_demo(api_meta_tool: APIMetaTool, api_name: str = DEFAULT_API) -> Dict[str, Any]:
     """Register an API with the MCP server using its OpenAPI specification.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         api_name: Name of the API to register
         
     Returns:
@@ -156,7 +134,8 @@ async def register_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dic
     ) as progress:
         task = progress.add_task("", total=None)  # noqa: F841
         try:
-            result = await client.tools.register_api(
+            # Use the passed-in instance directly
+            result = await api_meta_tool.register_api(
                 api_name=api_info["name"],
                 openapi_url=api_info["url"]
             )
@@ -188,11 +167,11 @@ async def register_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dic
             return {}
 
 
-async def list_apis_demo(client: Gateway) -> Dict[str, Any]:
+async def list_apis_demo(api_meta_tool: APIMetaTool) -> Dict[str, Any]:
     """List all registered APIs and their tools.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         
     Returns:
         Result containing information about registered APIs
@@ -201,7 +180,7 @@ async def list_apis_demo(client: Gateway) -> Dict[str, Any]:
     
     with console.status("[bold green]Fetching registered APIs...", spinner="dots"):
         try:
-            result = await client.tools.list_registered_apis()
+            result = await api_meta_tool.list_registered_apis()
             
             if result.get("total_apis", 0) > 0:
                 # Display registered APIs in a table
@@ -233,11 +212,11 @@ async def list_apis_demo(client: Gateway) -> Dict[str, Any]:
             return {}
 
 
-async def get_api_details_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[str, Any]:
+async def get_api_details_demo(api_meta_tool: APIMetaTool, api_name: str = DEFAULT_API) -> Dict[str, Any]:
     """Get detailed information about a registered API.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         api_name: Name of the API to get details for
         
     Returns:
@@ -247,7 +226,7 @@ async def get_api_details_demo(client: Gateway, api_name: str = DEFAULT_API) -> 
     
     with console.status(f"[bold green]Fetching details for {api_name} API...", spinner="dots"):
         try:
-            result = await client.tools.get_api_details(api_name=api_name)
+            result = await api_meta_tool.get_api_details(api_name=api_name)
             
             # Display API overview
             console.print(Panel(
@@ -292,11 +271,11 @@ async def get_api_details_demo(client: Gateway, api_name: str = DEFAULT_API) -> 
             return {}
 
 
-async def get_tool_details_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[str, Any]:
+async def get_tool_details_demo(api_meta_tool: APIMetaTool, api_name: str = DEFAULT_API) -> Dict[str, Any]:
     """Get detailed information about a specific tool from an API.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         api_name: Name of the API that contains the tool
         
     Returns:
@@ -307,7 +286,7 @@ async def get_tool_details_demo(client: Gateway, api_name: str = DEFAULT_API) ->
     # First get the API details to find available tools
     with console.status(f"[bold green]Fetching available tools for {api_name} API...", spinner="dots"):
         try:
-            api_details = await client.tools.get_api_details(api_name=api_name)
+            api_details = await api_meta_tool.get_api_details(api_name=api_name)
             
             if not api_details.get("tools", []):
                 console.print(f"[yellow]No tools available for {api_name} API.[/yellow]")
@@ -333,7 +312,7 @@ async def get_tool_details_demo(client: Gateway, api_name: str = DEFAULT_API) ->
             
             # Get detailed information about the selected tool
             with console.status(f"[bold green]Fetching details for {tool_name}...", spinner="dots"):
-                result = await client.tools.get_tool_details(tool_name=tool_name)
+                result = await api_meta_tool.get_tool_details(tool_name=tool_name)
                 
                 # Display tool overview
                 console.print(Panel(
@@ -400,11 +379,11 @@ async def get_tool_details_demo(client: Gateway, api_name: str = DEFAULT_API) ->
             return {}
 
 
-async def call_tool_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[str, Any]:
+async def call_tool_demo(api_meta_tool: APIMetaTool, api_name: str = DEFAULT_API) -> Dict[str, Any]:
     """Call a dynamically registered tool from an API.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         api_name: Name of the API that contains the tool
         
     Returns:
@@ -420,7 +399,7 @@ async def call_tool_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[s
     ) as progress:
         task = progress.add_task("", total=None)  # noqa: F841
         try:
-            api_details = await client.tools.get_api_details(api_name=api_name)
+            api_details = await api_meta_tool.get_api_details(api_name=api_name)
             
             if not api_details.get("tools", []):
                 console.print(f"[yellow]No tools available for {api_name} API.[/yellow]")
@@ -474,7 +453,7 @@ async def call_tool_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[s
             ))
             
             # Get tool details to determine parameters
-            tool_details = await client.tools.get_tool_details(tool_name=tool_name)
+            tool_details = await api_meta_tool.get_tool_details(tool_name=tool_name)
             parameters = tool_details.get("parameters", [])
             
             # Prepare inputs based on the tool
@@ -515,7 +494,7 @@ async def call_tool_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[s
             console.print("\n[bold]Calling the tool...[/bold]")
             start_time = time.time()
             with console.status(f"[bold green]Executing {tool_name}...", spinner="dots"):
-                result = await client.tools.call_dynamic_tool(
+                result = await api_meta_tool.call_dynamic_tool(
                     tool_name=tool_name,
                     inputs=inputs
                 )
@@ -538,11 +517,11 @@ async def call_tool_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[s
             return {}
 
 
-async def list_tools_demo(client: Gateway) -> Dict[str, Any]:
+async def list_tools_demo(api_meta_tool: APIMetaTool) -> Dict[str, Any]:
     """List all dynamically registered tools.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         
     Returns:
         Result with information about all available tools
@@ -551,7 +530,7 @@ async def list_tools_demo(client: Gateway) -> Dict[str, Any]:
     
     with console.status("[bold green]Fetching available tools...", spinner="dots"):
         try:
-            result = await client.tools.list_available_tools()
+            result = await api_meta_tool.list_available_tools()
             
             tools = result.get("tools", [])
             if tools:
@@ -586,11 +565,11 @@ async def list_tools_demo(client: Gateway) -> Dict[str, Any]:
             return {}
 
 
-async def refresh_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[str, Any]:
+async def refresh_api_demo(api_meta_tool: APIMetaTool, api_name: str = DEFAULT_API) -> Dict[str, Any]:
     """Refresh an API to update its endpoints.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         api_name: Name of the API to refresh
         
     Returns:
@@ -603,7 +582,7 @@ async def refresh_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict
     with console.status(f"[bold green]Refreshing {api_name} API...", spinner="dots"):
         try:
             start_time = time.time()
-            result = await client.tools.refresh_api(api_name=api_name)
+            result = await api_meta_tool.refresh_api(api_name=api_name)
             processing_time = time.time() - start_time
             
             console.print(f"[bold green]✓ Success![/bold green] API refreshed in {processing_time:.2f}s")
@@ -638,11 +617,11 @@ async def refresh_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict
             return {}
 
 
-async def unregister_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> Dict[str, Any]:
+async def unregister_api_demo(api_meta_tool: APIMetaTool, api_name: str = DEFAULT_API) -> Dict[str, Any]:
     """Unregister an API and all its tools.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
         api_name: Name of the API to unregister
         
     Returns:
@@ -653,7 +632,7 @@ async def unregister_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> D
     with console.status(f"[bold green]Unregistering {api_name} API...", spinner="dots"):
         try:
             start_time = time.time()
-            result = await client.tools.unregister_api(api_name=api_name)
+            result = await api_meta_tool.unregister_api(api_name=api_name)
             processing_time = time.time() - start_time
             
             console.print(f"[bold green]✓ Success![/bold green] API unregistered in {processing_time:.2f}s")
@@ -673,11 +652,11 @@ async def unregister_api_demo(client: Gateway, api_name: str = DEFAULT_API) -> D
             return {}
 
 
-async def run_multi_api_demo(client: Gateway):
+async def run_multi_api_demo(api_meta_tool: APIMetaTool):
     """Run a demonstration with multiple APIs registered simultaneously.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
     """
     console.print(Rule("[bold blue]MULTI-API DEMONSTRATION[/bold blue]"))
     
@@ -695,7 +674,7 @@ async def run_multi_api_demo(client: Gateway):
     
     for api_name in apis_to_register:
         console.print(f"\n[bold]Registering {api_name} API...[/bold]")
-        result = await register_api_demo(client, api_name)
+        result = await register_api_demo(api_meta_tool, api_name)
         if result:
             registered_apis.append(api_name)
     
@@ -706,27 +685,27 @@ async def run_multi_api_demo(client: Gateway):
     console.print("\n[bold]Now we have multiple APIs registered:[/bold]")
     
     # List all registered APIs
-    await list_apis_demo(client)
+    await list_apis_demo(api_meta_tool)
     
     # List all available tools
-    await list_tools_demo(client)
+    await list_tools_demo(api_meta_tool)
     
     # Call a tool from each API
     for api_name in registered_apis:
         console.print(f"\n[bold]Calling a tool from {api_name} API:[/bold]")
-        await call_tool_demo(client, api_name)
+        await call_tool_demo(api_meta_tool, api_name)
     
     # Clean up: unregister all APIs
     for api_name in registered_apis:
         console.print(f"\n[bold]Cleaning up: Unregistering {api_name} API:[/bold]")
-        await unregister_api_demo(client, api_name)
+        await unregister_api_demo(api_meta_tool, api_name)
 
 
-async def run_full_demo(client: Gateway) -> None:
+async def run_full_demo(api_meta_tool: APIMetaTool) -> None:
     """Run the complete demonstration sequence with proper progress tracking.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
     """
     console.print(Rule("[bold cyan]RUNNING FULL META API DEMONSTRATION[/bold cyan]"))
     
@@ -773,7 +752,7 @@ async def run_full_demo(client: Gateway) -> None:
         try:
             # 1. Register the Petstore API
             progress.update(overall_task, description="[bold cyan]STEP 1: Register the Petstore API[/bold cyan]")
-            await register_api_demo(client, "petstore")
+            await register_api_demo(api_meta_tool, "petstore")
             progress.advance(overall_task)
             input("\nPress Enter to continue...")
             
@@ -784,11 +763,11 @@ async def run_full_demo(client: Gateway) -> None:
             console.print(f"[bold red]Error during full demonstration:[/bold red] {str(e)}")
 
 
-async def interactive_demo(client: Gateway):
+async def interactive_demo(api_meta_tool: APIMetaTool):
     """Run an interactive menu-driven demonstration.
     
     Args:
-        client: The Gateway instance
+        api_meta_tool: The APIMetaTool instance
     """
     while True:
         console.clear()
@@ -849,13 +828,13 @@ async def interactive_demo(client: Gateway):
                     default="1"
                 )
                 api_name = list(DEMO_APIS.keys())[int(api_choice) - 1]
-                await register_api_demo(client, api_name)
+                await register_api_demo(api_meta_tool, api_name)
             
             elif choice == 2:  # List Registered APIs
-                await list_apis_demo(client)
+                await list_apis_demo(api_meta_tool)
             
             elif choice == 3:  # API Details
-                apis = await list_apis_demo(client)
+                apis = await list_apis_demo(api_meta_tool)
                 api_names = list(apis.get("apis", {}).keys())
                 
                 if not api_names:
@@ -868,10 +847,10 @@ async def interactive_demo(client: Gateway):
                         default="1"
                     )
                     api_name = api_options[api_choice]
-                    await get_api_details_demo(client, api_name)
+                    await get_api_details_demo(api_meta_tool, api_name)
             
             elif choice == 4:  # Tool Details
-                apis = await list_apis_demo(client)
+                apis = await list_apis_demo(api_meta_tool)
                 api_names = list(apis.get("apis", {}).keys())
                 
                 if not api_names:
@@ -884,10 +863,10 @@ async def interactive_demo(client: Gateway):
                         default="1"
                     )
                     api_name = api_options[api_choice]
-                    await get_tool_details_demo(client, api_name)
+                    await get_tool_details_demo(api_meta_tool, api_name)
             
             elif choice == 5:  # Call a Tool
-                apis = await list_apis_demo(client)
+                apis = await list_apis_demo(api_meta_tool)
                 api_names = list(apis.get("apis", {}).keys())
                 
                 if not api_names:
@@ -900,13 +879,13 @@ async def interactive_demo(client: Gateway):
                         default="1"
                     )
                     api_name = api_options[api_choice]
-                    await call_tool_demo(client, api_name)
+                    await call_tool_demo(api_meta_tool, api_name)
             
             elif choice == 6:  # List All Tools
-                await list_tools_demo(client)
+                await list_tools_demo(api_meta_tool)
             
             elif choice == 7:  # Refresh an API
-                apis = await list_apis_demo(client)
+                apis = await list_apis_demo(api_meta_tool)
                 api_names = list(apis.get("apis", {}).keys())
                 
                 if not api_names:
@@ -919,10 +898,10 @@ async def interactive_demo(client: Gateway):
                         default="1"
                     )
                     api_name = api_options[api_choice]
-                    await refresh_api_demo(client, api_name)
+                    await refresh_api_demo(api_meta_tool, api_name)
             
             elif choice == 8:  # Unregister an API
-                apis = await list_apis_demo(client)
+                apis = await list_apis_demo(api_meta_tool)
                 api_names = list(apis.get("apis", {}).keys())
                 
                 if not api_names:
@@ -935,13 +914,13 @@ async def interactive_demo(client: Gateway):
                         default="1"
                     )
                     api_name = api_options[api_choice]
-                    await unregister_api_demo(client, api_name)
+                    await unregister_api_demo(api_meta_tool, api_name)
             
             elif choice == 9:  # Multi-API Demo
-                await run_multi_api_demo(client)
+                await run_multi_api_demo(api_meta_tool)
             
             elif choice == 10:  # Run Full Demo
-                await run_full_demo(client)
+                await run_full_demo(api_meta_tool)
             
             # Wait for user to press Enter before returning to menu
             input("\nPress Enter to return to the menu...")
@@ -954,11 +933,21 @@ async def interactive_demo(client: Gateway):
 async def main():
     """Main entry point for the demonstration."""
     try:
-        # Set up the MCP client
-        client = await setup_client()
+        # Set up the MCP client using create_app
+        print("=== API Meta-Tool Demo ===")
+        app = create_app()  # noqa: F841
         
-        # Run the interactive demo
-        await interactive_demo(client)
+        # Access the globally initialized Gateway instance and its api_meta_tool
+        gateway_instance = llm_gateway.core._gateway_instance
+        if not gateway_instance:
+            raise RuntimeError("Gateway instance not initialized by create_app.")
+            
+        api_meta_tool = gateway_instance.api_meta_tool
+        if not api_meta_tool:
+            raise RuntimeError("API Meta Tool instance not found on Gateway. Ensure it was registered.")
+            
+        # Run the interactive demo with the retrieved instance
+        await interactive_demo(api_meta_tool)
         
     except KeyboardInterrupt:
         console.print("\n[yellow]Demonstration interrupted by user.[/yellow]")

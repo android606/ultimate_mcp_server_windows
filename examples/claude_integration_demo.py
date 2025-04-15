@@ -20,13 +20,14 @@ from rich.table import Table  # noqa: E402
 from llm_gateway.constants import Provider  # noqa: E402
 from llm_gateway.core.server import Gateway  # noqa: E402
 from llm_gateway.utils import get_logger  # noqa: E402
+from llm_gateway.utils.display import CostTracker  # Import CostTracker
 from llm_gateway.utils.logging.console import console  # noqa: E402
 
 # Initialize logger
 logger = get_logger("example.claude_integration_demo")
 
 
-async def compare_claude_models():
+async def compare_claude_models(tracker: CostTracker):
     """Compare different Claude models."""
     console.print(Rule("[bold blue]Claude Model Comparison[/bold blue]"))
     logger.info("Starting Claude models comparison", emoji_key="start")
@@ -85,6 +86,9 @@ async def compare_claude_models():
                 )
                 processing_time = time.time() - start_time
                 
+                # Track the cost
+                tracker.add_call(result)
+                
                 results_data.append({
                     "model": model_name,
                     "text": result.text,
@@ -140,7 +144,7 @@ async def compare_claude_models():
         # Optionally re-raise or handle differently
 
 
-async def demonstrate_system_prompt():
+async def demonstrate_system_prompt(tracker: CostTracker):
     """Demonstrate Claude with system prompts."""
     console.print(Rule("[bold blue]Claude System Prompt Demonstration[/bold blue]"))
     logger.info("Demonstrating Claude with system prompts", emoji_key="start")
@@ -187,6 +191,9 @@ Always provide real-world examples to illustrate concepts.
             system=system_prompt,
             max_tokens=1000 # Increased max_tokens
         )
+        
+        # Track the cost
+        tracker.add_call(result)
         
         logger.success("Completion with system prompt successful", emoji_key="success")
         
@@ -251,17 +258,21 @@ async def explore_claude_models():
 
 async def main():
     """Run Claude integration examples."""
+    tracker = CostTracker() # Instantiate tracker here
     try:
         # Run model comparison
-        await compare_claude_models()
+        await compare_claude_models(tracker) # Pass tracker
         
         console.print() # Add space between sections
         
         # Run system prompt demonstration
-        await demonstrate_system_prompt()
+        await demonstrate_system_prompt(tracker) # Pass tracker
         
         # Run explore Claude models
         await explore_claude_models()
+
+        # Display final summary
+        tracker.display_summary(console) # Display summary at the end
         
     except Exception as e:
         logger.critical(f"Example failed: {str(e)}", emoji_key="critical", exc_info=True)

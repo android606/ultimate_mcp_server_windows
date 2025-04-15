@@ -155,6 +155,7 @@ class Gateway:
         self.logger = get_logger(f"llm_gateway.{name}")
         self.event_handlers = {}
         self.provider_exclusions = provider_exclusions or []
+        self.api_meta_tool = None # Initialize api_meta_tool attribute
         
         # Load configuration if not already loaded
         if get_config() is None:
@@ -163,9 +164,6 @@ class Gateway:
         
         # Initialize logger
         self.logger.info(f"Initializing {self.name}...")
-        
-        # Initialize provider tracking
-        self.marqo_available = False # Initialize state
         
         # Create MCP server with host and port settings
         self.mcp = FastMCP(
@@ -232,9 +230,6 @@ class Gateway:
         Yields:
             Dict containing initialized resources
         """
-        # Import here to avoid circular import
-        from llm_gateway.tools.marqo_fused_search import DEFAULT_MARQO_URL, check_marqo_availability
-        
         self.logger.info(f"Starting LLM Gateway '{self.name}'")
         
         # Initialize providers
@@ -250,19 +245,6 @@ class Gateway:
         except Exception as e:
             self.logger.error(f"Error during dynamic docstring generation startup task: {e}", exc_info=True)
         # ---------------------------------------------
-
-        # --- Check Marqo Availability ---
-        try:
-            self.marqo_available = await check_marqo_availability(DEFAULT_MARQO_URL)
-            if not self.marqo_available:
-                self.logger.warning("Marqo health check failed. Marqo-related tools will be disabled.")
-            else:
-                # Register Marqo tools only if available
-                self._register_marqo_tools() # Moved here from _register_tools
-        except Exception as e:
-            self.logger.error(f"Error during Marqo health check: {e}", exc_info=True)
-            self.marqo_available = False # Assume unavailable on error
-        # --------------------------------
 
         # --- Set the global instance variable --- 
         # Make the fully initialized instance accessible globally AFTER init
@@ -535,33 +517,29 @@ first and be prepared to adapt to available providers.
         # Register all standard tools using the register_all_tools function
         self.logger.info("Calling register_all_tools to register standalone and class-based tools...")
         register_all_tools(self.mcp)
+        
+        # Register Meta API tools
+        try:
+            from llm_gateway.tools.meta_api_tool import register_api_meta_tools
+            self.logger.info("Registering Meta API tools...")
+            # Store the instance
+            self.api_meta_tool = register_api_meta_tools(self.mcp)
+            self.logger.info("Meta API tools registered successfully.")
+        except ImportError:
+            self.logger.warning("Meta API tools not found (llm_gateway.tools.meta_api_tool). Skipping registration.")
+        except Exception as e:
+            self.logger.error(f"Failed to register Meta API tools: {e}", exc_info=True)
 
-    def _register_marqo_tools(self):
-        """Register Marqo search tools if Marqo is available."""
-        # This check is slightly redundant now as we call this method
-        # only after self.marqo_available is set to True, but keep for safety.
-        if self.marqo_available:
-            self.logger.info("Registering Marqo search tools...")
-            try:
-                # Ensure the tool is imported correctly
-                from llm_gateway.tools.marqo_fused_search import marqo_fused_search
-
-                tools_to_register = [marqo_fused_search]
-
-                for tool_func in tools_to_register:
-                    # Apply the logging decorator
-                    logged_tool_func = self.log_tool_calls(tool_func)
-                    # Register with MCP server
-                    self.mcp.tool(name=tool_func.__name__)(logged_tool_func)
-                    self.logger.debug(f"Registered Marqo tool: {tool_func.__name__}")
-                self.logger.info("Marqo tools registered successfully.")
-            except ImportError:
-                 self.logger.error("Marqo tools import failed unexpectedly even though Marqo seemed available. Skipping registration.")
-            except Exception as e:
-                 self.logger.error(f"Failed to register Marqo tools: {e}", exc_info=True)
-        else:
-             # This case should technically not be hit anymore due to the call location in lifespan
-             self.logger.warning("Marqo is unavailable (called _register_marqo_tools while unavailable). Skipping registration of Marqo tools.")
+        # Register Playwright Browser tools
+        try:
+            from llm_gateway.tools.browser_automation import register_playwright_tools
+            self.logger.info("Registering Playwright browser tools...")
+            register_playwright_tools(self.mcp) # Call the registration function
+            self.logger.info("Playwright browser tools registered successfully.")
+        except ImportError:
+            self.logger.warning("Playwright browser tools not found (llm_gateway.tools.browser_automation). Skipping registration.")
+        except Exception as e:
+            self.logger.error(f"Failed to register Playwright browser tools: {e}", exc_info=True)
 
     def _register_resources(self):
         """Register MCP resources."""

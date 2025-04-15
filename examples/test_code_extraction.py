@@ -24,10 +24,14 @@ from llm_gateway.core.server import Gateway
 # Import the extraction function from the library
 from llm_gateway.tools import extract_code_from_response
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import CostTracker  # Import CostTracker
 from llm_gateway.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.test_extraction")
+
+# Create a simple structure for cost tracking (though likely won't be used directly here)
+# TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Initialize global gateway
 gateway = None
@@ -57,7 +61,7 @@ async def load_tournament_state() -> Dict:
         logger.error(f"Error loading tournament state: {str(e)}", emoji_key="error")
         return {}
 
-async def test_extraction():
+async def test_extraction(tracker: CostTracker): # Add tracker
     """Test the LLM-based code extraction function."""
     # Load the tournament state
     tournament_state = await load_tournament_state()
@@ -91,8 +95,8 @@ async def test_extraction():
             response_text = response.get('response_text', '')
             
             if response_text:
-                # Extract code using our new function
-                extracted_code = await extract_code_from_response(response_text)
+                # Extract code using our new function, passing the tracker
+                extracted_code = await extract_code_from_response(response_text, tracker=tracker)
                 
                 # Calculate line count
                 line_count = len(extracted_code.split('\n')) if extracted_code else 0
@@ -136,16 +140,20 @@ async def test_extraction():
     console.print("\n[bold]Extraction Summary:[/bold]")
     console.print(extraction_table)
     
+    # Display cost summary at the end
+    tracker.display_summary(console)
+    
     return 0
 
 async def main():
     """Run the test script."""
+    tracker = CostTracker() # Instantiate tracker
     try:
         # Set up gateway
         await setup_gateway()
         
         # Run the extraction test
-        return await test_extraction()
+        return await test_extraction(tracker) # Pass tracker
     except Exception as e:
         logger.critical(f"Test failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1

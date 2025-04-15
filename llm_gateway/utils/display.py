@@ -1519,3 +1519,167 @@ async def generate_rich_directory_tree(path: Union[str, Path], max_depth: int = 
     # Start the recursive build if initial check seems okay
     await _build_rich_directory_tree_recursive(start_path, tree_root, depth=0, max_depth=max_depth)
     return tree_root 
+
+# --- Cost Tracking Utility ---
+
+class CostTracker:
+    """Tracks API call costs and token usage across multiple calls."""
+    def __init__(self):
+        self.data: Dict[str, Dict[str, Dict[str, Any]]] = {} # {provider: {model: {cost, tokens..., calls}}}
+
+    def add_call(self, result: Any, provider: Optional[str] = None, model: Optional[str] = None):
+        """Adds cost and token data from an API call result."""
+        cost = 0.0
+        input_tokens = 0
+        output_tokens = 0
+        total_tokens = 0
+
+        # Try extracting from object attributes (e.g., CompletionResult)
+        if hasattr(result, 'cost') and result.cost is not None:
+            cost = float(result.cost)
+        if hasattr(result, 'provider') and result.provider:
+            provider = result.provider
+        if hasattr(result, 'model') and result.model:
+            model = result.model
+        if hasattr(result, 'input_tokens') and result.input_tokens is not None:
+            input_tokens = int(result.input_tokens)
+        if hasattr(result, 'output_tokens') and result.output_tokens is not None:
+            output_tokens = int(result.output_tokens)
+        if hasattr(result, 'total_tokens') and result.total_tokens is not None:
+            total_tokens = int(result.total_tokens)
+        elif input_tokens > 0 or output_tokens > 0:
+             total_tokens = input_tokens + output_tokens # Calculate if not present
+
+        # Try extracting from dictionary keys (e.g., tool results, stats dicts)
+        elif isinstance(result, dict):
+            cost = float(result.get('cost', 0.0))
+            provider = result.get('provider', provider) # Use existing if key not found
+            model = result.get('model', model)         # Use existing if key not found
+            tokens_data = result.get('tokens', {})
+            if isinstance(tokens_data, dict):
+                input_tokens = int(tokens_data.get('input', 0))
+                output_tokens = int(tokens_data.get('output', 0))
+                total_tokens = int(tokens_data.get('total', 0))
+                if total_tokens == 0 and (input_tokens > 0 or output_tokens > 0):
+                     total_tokens = input_tokens + output_tokens
+            elif isinstance(tokens_data, (int, float)): # Handle case where 'tokens' is just a total number
+                total_tokens = int(tokens_data)
+
+        # --- Fallback / Defaulting ---
+        # If provider/model couldn't be determined, use defaults
+        provider = provider or "UnknownProvider"
+        model = model or "UnknownModel"
+
+        # --- Update Tracking Data ---
+        if provider not in self.data:
+            self.data[provider] = {}
+        if model not in self.data[provider]:
+            self.data[provider][model] = {
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "calls": 0
+            }
+
+        self.data[provider][model]["cost"] += cost
+        self.data[provider][model]["input_tokens"] += input_tokens
+        self.data[provider][model]["output_tokens"] += output_tokens
+        self.data[provider][model]["total_tokens"] += total_tokens
+        self.data[provider][model]["calls"] += 1
+
+    def display_summary(self, console_instance: Optional[Console] = None, title: str = "Total Demo Cost Summary"):
+        """Displays the aggregated cost and token summary using Rich."""
+        output = console_instance or console # Use provided or default console
+
+        output.print(Rule(f"[bold blue]{escape(title)}[/bold blue]"))
+
+        if not self.data:
+            output.print("[yellow]No cost data tracked.[/yellow]")
+            return
+
+        summary_table = Table(
+            title="[bold]API Call Costs & Tokens[/bold]",
+            box=box.ROUNDED,
+            show_footer=True,
+            footer_style="bold"
+        )
+        summary_table.add_column("Provider", style="cyan", footer="Grand Total")
+        summary_table.add_column("Model", style="magenta")
+        summary_table.add_column("Calls", style="blue", justify="right", footer=" ") # Placeholder footer
+        summary_table.add_column("Input Tokens", style="yellow", justify="right", footer=" ")
+        summary_table.add_column("Output Tokens", style="yellow", justify="right", footer=" ")
+        summary_table.add_column("Total Tokens", style="bold yellow", justify="right", footer=" ")
+        summary_table.add_column("Total Cost ($)", style="bold green", justify="right", footer=" ")
+
+        grand_total_cost = 0.0
+        grand_total_calls = 0
+        grand_total_input = 0
+        grand_total_output = 0
+        grand_total_tokens = 0
+
+        sorted_providers = sorted(self.data.keys())
+        for provider in sorted_providers:
+            provider_total_cost = 0.0
+            provider_total_calls = 0
+            provider_total_input = 0
+            provider_total_output = 0
+            provider_total_tokens = 0
+            
+            sorted_models = sorted(self.data[provider].keys())
+            num_models = len(sorted_models)
+
+            for i, model in enumerate(sorted_models):
+                stats = self.data[provider][model]
+                provider_total_cost += stats['cost']
+                provider_total_calls += stats['calls']
+                provider_total_input += stats['input_tokens']
+                provider_total_output += stats['output_tokens']
+                provider_total_tokens += stats['total_tokens']
+
+                # Display provider only on the first row for that provider
+                provider_display = escape(provider) if i == 0 else ""
+                
+                summary_table.add_row(
+                    provider_display,
+                    escape(model),
+                    str(stats['calls']),
+                    f"{stats['input_tokens']:,}",
+                    f"{stats['output_tokens']:,}",
+                    f"{stats['total_tokens']:,}",
+                    f"{stats['cost']:.6f}"
+                )
+                
+            # Add provider subtotal row if more than one model for the provider
+            if num_models > 1:
+                 summary_table.add_row(
+                     "[dim]Subtotal[/dim]",
+                     f"[dim]{provider}[/dim]",
+                     f"[dim]{provider_total_calls:,}[/dim]",
+                     f"[dim]{provider_total_input:,}[/dim]",
+                     f"[dim]{provider_total_output:,}[/dim]",
+                     f"[dim]{provider_total_tokens:,}[/dim]",
+                     f"[dim]{provider_total_cost:.6f}[/dim]",
+                     style="dim",
+                     end_section=(provider != sorted_providers[-1]) # Add separator line unless it's the last provider
+                 )
+            elif provider != sorted_providers[-1]:
+                 # Add separator if only one model but not the last provider
+                 summary_table.add_row(end_section=True)
+
+
+            grand_total_cost += provider_total_cost
+            grand_total_calls += provider_total_calls
+            grand_total_input += provider_total_input
+            grand_total_output += provider_total_output
+            grand_total_tokens += provider_total_tokens
+
+        # Update footer values (need to re-assign list for footer update)
+        summary_table.columns[2].footer = f"{grand_total_calls:,}"
+        summary_table.columns[3].footer = f"{grand_total_input:,}"
+        summary_table.columns[4].footer = f"{grand_total_output:,}"
+        summary_table.columns[5].footer = f"{grand_total_tokens:,}"
+        summary_table.columns[6].footer = f"{grand_total_cost:.6f}"
+
+        output.print(summary_table)
+        output.print() # Add a blank line after the table 

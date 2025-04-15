@@ -24,6 +24,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+from collections import namedtuple
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -40,7 +41,7 @@ from llm_gateway.tools import extract_code_from_response
 # Import tournament tools
 from llm_gateway.tools.tournament import create_tournament, get_tournament_status, get_tournament_results
 from llm_gateway.utils import get_logger, process_mcp_result
-from llm_gateway.utils.display import display_tournament_results, display_tournament_status
+from llm_gateway.utils.display import display_tournament_results, display_tournament_status, CostTracker
 from llm_gateway.utils.logging.console import console
 
 
@@ -63,6 +64,9 @@ def parse_arguments():
 
 # Initialize logger using get_logger
 logger = get_logger("example.tournament_code")
+
+# Create a simple structure for cost tracking from dict (tokens might be missing)
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Initialize global gateway
 gateway = None
@@ -436,7 +440,7 @@ def analyze_code_quality(code_str: str) -> Dict[str, Any]:
 
 
 # --- Main Script Logic ---
-async def run_tournament_demo():
+async def run_tournament_demo(tracker: CostTracker):
     """Run the code tournament demo."""
     # Parse command line arguments
     args = parse_arguments()
@@ -531,6 +535,24 @@ async def run_tournament_demo():
                 # Use the imported display function for tournament results
                 display_tournament_results(results_data)
                 
+                # Track aggregated cost
+                if isinstance(results_data, dict) and "cost" in results_data:
+                    try:
+                        total_cost = results_data.get("cost", {}).get("total_cost", 0.0)
+                        processing_time = results_data.get("total_processing_time", 0.0)
+                        # Provider/Model is ambiguous here, use a placeholder
+                        trackable = TrackableResult(
+                            cost=total_cost,
+                            input_tokens=0, # Not aggregated
+                            output_tokens=0, # Not aggregated
+                            provider="tournament",
+                            model="code_tournament",
+                            processing_time=processing_time
+                        )
+                        tracker.add_call(trackable)
+                    except Exception as track_err:
+                        logger.warning(f"Could not track tournament cost: {track_err}", exc_info=False)
+
                 # Analyze round progression if available
                 rounds_results = results_data.get('rounds_results', [])
                 if rounds_results:
@@ -595,6 +617,9 @@ async def run_tournament_demo():
         else:
             logger.error(f"Tournament did not complete successfully (status: {final_status})", emoji_key="error")
             
+        # Display cost summary at the end
+        tracker.display_summary(console)
+
         return 0
         
     except Exception as e:
@@ -604,9 +629,10 @@ async def run_tournament_demo():
 
 async def main():
     """Run the code tournament demo."""
+    tracker = CostTracker() # Instantiate tracker
     try:
         await setup_gateway()
-        return await run_tournament_demo()
+        return await run_tournament_demo(tracker) # Pass tracker
     except Exception as e:
         logger.critical(f"Tournament demo failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1

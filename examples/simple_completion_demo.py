@@ -14,12 +14,13 @@ from rich.table import Table
 from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import CostTracker
 from llm_gateway.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.simple_completion")
 
-async def run_model_demo():
+async def run_model_demo(tracker: CostTracker):
     """Run a simple demo using direct provider access."""
     logger.info("Starting simple completion demo", emoji_key="start")
     # Use Rich Rule for title
@@ -80,12 +81,19 @@ async def run_model_demo():
     stats_table.add_row("Processing Time", f"{result.processing_time:.2f}s")
     console.print(stats_table)
 
+    # Track the call
+    tracker.add_call(result)
+
+    # Display cost summary
+    tracker.display_summary(console)
+
     return 0
 
 async def main():
     """Run the demo."""
+    tracker = CostTracker()
     try:
-        return await run_model_demo()
+        return await run_model_demo(tracker)
     except Exception as e:
         logger.critical(f"Demo failed: {str(e)}", emoji_key="critical")
         return 1

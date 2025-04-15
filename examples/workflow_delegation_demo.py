@@ -7,6 +7,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from collections import namedtuple # Import namedtuple
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -26,7 +27,7 @@ from llm_gateway.utils import get_logger, process_mcp_result
 from llm_gateway.exceptions import ToolExecutionError
 
 # --- Add Display Utils Import ---
-from llm_gateway.utils.display import _display_stats
+from llm_gateway.utils.display import _display_stats, CostTracker # Import CostTracker
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -40,6 +41,9 @@ from llm_gateway.tools.optimization import estimate_cost # Import estimate_cost 
 
 # Initialize logger
 logger = get_logger("example.workflow_delegation")
+
+# Create a simple structure for cost tracking from dict
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Initialize FastMCP server
 mcp = FastMCP("Workflow Delegation Demo")
@@ -309,7 +313,7 @@ async def run_analyze_task_demo():
     console.print()
 
 
-async def run_delegate_task_demo():
+async def run_delegate_task_demo(tracker: CostTracker): # Add tracker
     """Demonstrate the delegate_task tool."""
     console.print(Rule("[bold blue]Delegate Task Demo[/bold blue]"))
     logger.info("Running task delegation demo (using recommend_model + completion)...", emoji_key="start")
@@ -352,7 +356,22 @@ async def run_delegate_task_demo():
                  "model": rec_model,
                  "max_tokens": 100
             })
+
+            # Track cost if possible
             completion_result = process_mcp_result(completion_result_raw)
+            if isinstance(completion_result, dict) and all(k in completion_result for k in ["cost", "provider", "model"]) and "tokens" in completion_result:
+                try:
+                    trackable = TrackableResult(
+                        cost=completion_result.get("cost", 0.0),
+                        input_tokens=completion_result.get("tokens", {}).get("input", 0),
+                        output_tokens=completion_result.get("tokens", {}).get("output", 0),
+                        provider=completion_result.get("provider", rec_provider), # Use known provider as fallback
+                        model=completion_result.get("model", rec_model), # Use known model as fallback
+                        processing_time=completion_result.get("processing_time", 0.0)
+                    )
+                    tracker.add_call(trackable)
+                except Exception as track_err:
+                    logger.warning(f"Could not track cost for delegated task ({priority}): {track_err}", exc_info=False)
 
             # Display result
             if "error" in completion_result:
@@ -493,41 +512,51 @@ async def run_prompt_optimization_demo():
 
 
 async def main():
-    """Run all workflow delegation demonstrations."""
-    await initialize_providers() # Ensure keys are checked/providers ready
-    console.print(Rule("[bold magenta]Workflow & Delegation Demos Starting[/bold magenta]"))
+    """Run workflow delegation examples."""
+    console.print(Rule("[bold magenta]Workflow Delegation Demo Suite[/bold magenta]"))
+    tracker = CostTracker() # Instantiate tracker
     
-    # --- Register Necessary Tools --- 
-    # Ensure tools called by demos are registered on the MCP instance
-    # This assumes the gateway setup might not register all by default for this demo
-    # Or perhaps Gateway() should register them if register_tools=True?
-    # For now, manually register the ones needed for this specific demo file.
-    from llm_gateway.tools.optimization import recommend_model
-    from llm_gateway.tools.completion import generate_completion
-    from llm_gateway.tools.document import summarize_document, extract_entities, generate_qa_pairs
-    
-    mcp.tool()(recommend_model)
-    mcp.tool()(generate_completion)
-    mcp.tool()(summarize_document)
-    mcp.tool()(extract_entities)
-    mcp.tool()(generate_qa_pairs)
-    logger.info("Manually registered recommend_model, completion, and document tools.")
-    # --------------------------------
-
     try:
-        await run_analyze_task_demo()
-        await run_delegate_task_demo()
-        await run_workflow_demo()
-        await run_prompt_optimization_demo()
+        # Setup providers first
+        await initialize_providers() # Ensure keys are checked/providers ready
+        console.print(Rule("[bold magenta]Workflow & Delegation Demos Starting[/bold magenta]"))
         
+        # --- Register Necessary Tools --- 
+        # Ensure tools called by demos are registered on the MCP instance
+        # This assumes the gateway setup might not register all by default for this demo
+        # Or perhaps Gateway() should register them if register_tools=True?
+        # For now, manually register the ones needed for this specific demo file.
+        from llm_gateway.tools.optimization import recommend_model
+        from llm_gateway.tools.completion import generate_completion
+        from llm_gateway.tools.document import summarize_document, extract_entities, generate_qa_pairs
+        
+        mcp.tool()(recommend_model)
+        mcp.tool()(generate_completion)
+        mcp.tool()(summarize_document)
+        mcp.tool()(extract_entities)
+        mcp.tool()(generate_qa_pairs)
+        logger.info("Manually registered recommend_model, completion, and document tools.")
+        # --------------------------------
+
+        await run_analyze_task_demo()
+        
+        # Pass tracker only to delegate demo
+        await run_delegate_task_demo(tracker)
+        
+        await run_workflow_demo()
+        # await run_prompt_optimization_demo() # Add back if needed
+        
+        # Display final cost summary
+        tracker.display_summary(console)
+
+        logger.success("Workflow Delegation Demo Finished Successfully!", emoji_key="complete")
+        console.print(Rule("[bold magenta]Workflow Delegation Demos Complete[/bold magenta]"))
+        return 0
+
     except Exception as e:
         logger.critical(f"Workflow demo failed: {str(e)}", emoji_key="critical", exc_info=True)
         console.print(f"[bold red]Critical Demo Error:[/bold red] {escape(str(e))}")
         return 1
-    
-    logger.success("Workflow & Delegation Demos Finished Successfully!", emoji_key="complete")
-    console.print(Rule("[bold magenta]Workflow & Delegation Demos Complete[/bold magenta]"))
-    return 0
 
 
 if __name__ == "__main__":

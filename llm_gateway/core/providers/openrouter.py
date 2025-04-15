@@ -33,7 +33,7 @@ class OpenRouterProvider(BaseProvider):
                 - x_title (str): Optional X-Title header.
         """
         config = get_config().providers.openrouter
-        super().__init__(api_key=config.api_key, **kwargs)
+        super().__init__(**kwargs)
         self.name = "openrouter"
         self.default_model = config.default_model
 
@@ -321,14 +321,9 @@ class OpenRouterProvider(BaseProvider):
         Returns:
             List of example model information dictionaries
         """
-        # OpenRouter doesn't have a standard API endpoint listable via openai client
-        # Return a static list of common examples. Users should refer to OpenRouter docs.
         if self.available_models:
             return self.available_models
-
         models = self._get_fallback_models()
-
-        logger.warning(f"{self.provider_name} model list is illustrative. Check OpenRouter for full details.", emoji_key="warning")
         return models
 
     def get_default_model(self) -> str:

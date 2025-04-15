@@ -19,7 +19,7 @@ from rich.traceback import Traceback
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import parse_and_display_result
+from llm_gateway.utils.display import parse_and_display_result, CostTracker
 from llm_gateway.utils.logging.console import console
 from llm_gateway.utils.parsing import extract_json_from_markdown
 
@@ -29,6 +29,7 @@ USE_DEBUG_LOGS = True # Set to True to enable detailed logging
 
 # Initialize logger
 logger = get_logger("example.advanced_extraction")
+logger.set_level("debug")
 
 # Configure the OpenAI client for direct extraction demos
 async def setup_openai_provider():
@@ -48,7 +49,7 @@ async def setup_openai_provider():
         logger.error(f"Failed to initialize OpenAI provider: {e}", emoji_key="error")
         return None
 
-async def run_json_extraction_example(provider):
+async def run_json_extraction_example(provider, tracker: CostTracker):
     """Demonstrate JSON extraction."""
     if USE_DEBUG_LOGS:
         logger.debug("Entering run_json_extraction_example.")
@@ -199,6 +200,9 @@ async def run_json_extraction_example(provider):
             max_tokens=1500        # Enough tokens for a full response
         )
         
+        # Track cost
+        tracker.add_call(result)
+
         if USE_DEBUG_LOGS:
             logger.debug(f"Raw JSON Extraction Result Text:\n{result.text}")
         
@@ -264,7 +268,7 @@ async def run_json_extraction_example(provider):
     if USE_DEBUG_LOGS:
         logger.debug("Exiting run_json_extraction_example.")
 
-async def table_extraction_demo(provider):
+async def table_extraction_demo(provider, tracker: CostTracker):
     """Demonstrate table extraction capabilities."""
     if USE_DEBUG_LOGS:
         logger.debug("Entering table_extraction_demo.")
@@ -343,6 +347,9 @@ async def table_extraction_demo(provider):
             max_tokens=1500
         )
         
+        # Track cost
+        tracker.add_call(result)
+
         if USE_DEBUG_LOGS:
             logger.debug(f"Raw Table Extraction Result Text:\n{result.text}")
         
@@ -408,7 +415,7 @@ async def table_extraction_demo(provider):
     if USE_DEBUG_LOGS:
         logger.debug("Exiting table_extraction_demo.")
 
-async def semantic_schema_inference_demo(provider):
+async def semantic_schema_inference_demo(provider, tracker: CostTracker):
     """Demonstrate semantic schema inference."""
     if USE_DEBUG_LOGS:
         logger.debug("Entering semantic_schema_inference_demo.")
@@ -538,9 +545,12 @@ async def semantic_schema_inference_demo(provider):
             prompt=prompt,
             model="gpt-4.1-mini",
             temperature=0.2,
-            max_tokens=1500
+            max_tokens=1000
         )
         
+        # Track cost
+        tracker.add_call(result)
+
         if USE_DEBUG_LOGS:
             logger.debug(f"Raw Schema Inference Result Text:\n{result.text}")
         
@@ -601,7 +611,7 @@ async def semantic_schema_inference_demo(provider):
     if USE_DEBUG_LOGS:
         logger.debug("Exiting semantic_schema_inference_demo.")
 
-async def entity_extraction_demo(provider):
+async def entity_extraction_demo(provider, tracker: CostTracker):
     """Demonstrate entity extraction capabilities."""
     if USE_DEBUG_LOGS:
         logger.debug("Entering entity_extraction_demo.")
@@ -663,9 +673,12 @@ async def entity_extraction_demo(provider):
             prompt=prompt,
             model="gpt-4.1-mini", 
             temperature=0.2,
-            max_tokens=1500
+            max_tokens=500
         )
         
+        # Track cost
+        tracker.add_call(result)
+
         if USE_DEBUG_LOGS:
             logger.debug(f"Raw Entity Extraction Result Text:\n{result.text}")
             
@@ -676,6 +689,8 @@ async def entity_extraction_demo(provider):
             if USE_DEBUG_LOGS:
                 logger.debug(f"Raw text received (Entity): {raw_text[:500]}...")
                 logger.debug(f"Attempting to parse Entity Extraction JSON after cleaning: {text_to_parse[:500]}...")
+            if USE_DEBUG_LOGS:
+                logger.debug(f"EXACT STRING PASSED TO json.loads: >>>{text_to_parse}<<<")
             json_result = json.loads(text_to_parse)
             if USE_DEBUG_LOGS:
                 logger.debug(f"Successfully parsed Entity Extraction JSON: {json.dumps(json_result, indent=2)}")
@@ -729,41 +744,34 @@ async def entity_extraction_demo(provider):
         logger.debug("Exiting entity_extraction_demo.")
 
 async def main():
-    """Run all extraction demos."""
-    if USE_DEBUG_LOGS:
-        logger.debug("Entering main function.")
-    provider = None # Initialize provider to None
-    exit_code = 1 # Default to error
-    try:
-        # Set up OpenAI provider
-        provider = await setup_openai_provider()
+    """Run the advanced extraction demos."""
+    tracker = CostTracker() # Instantiate tracker
+    provider = await setup_openai_provider()
+    
+    if not provider:
+        logger.warning("OpenAI provider not available. Demo sections requiring it will be skipped.", emoji_key="warning")
         
-        # If provider is None, the individual demo functions will print skips
-        # but the overall script continues and should exit 0 unless an *unexpected* error occurs.
-        if not provider:
-             logger.warning("OpenAI provider not available. Demo sections requiring it will be skipped.", emoji_key="warning")
-            
-        console.print(Rule("[bold magenta]Advanced Extraction Demos Starting[/bold magenta]"))
-        
-        # Run demo steps (they handle None provider internally)
-        await run_json_extraction_example(provider)
-        await table_extraction_demo(provider)
-        await semantic_schema_inference_demo(provider)
-        await entity_extraction_demo(provider)
-        
-        logger.success("Advanced Extraction Demos Finished.", emoji_key="complete")
-        console.print(Rule("[bold magenta]Advanced Extraction Demos Complete[/bold magenta]"))
-        exit_code = 0 # Success even if provider was missing
-        
-    except Exception as e:
-        logger.critical(f"Extraction demo failed unexpectedly: {str(e)}", emoji_key="critical", exc_info=True)
-        console.print(f"[bold red]Critical Demo Error:[/bold red] {escape(str(e))}")
-        exit_code = 1 # Return 1 ONLY for unexpected errors during execution
-    finally:
-        if USE_DEBUG_LOGS:
-            logger.debug(f"Exiting main function with code: {exit_code}")
-        return exit_code
+    console.print(Rule("[bold magenta]Advanced Extraction Demos Starting[/bold magenta]"))
+    
+    demos_to_run = [
+        (run_json_extraction_example, "JSON Extraction"),
+        (table_extraction_demo, "Table Extraction"),
+        (semantic_schema_inference_demo, "Schema Inference"),
+        (entity_extraction_demo, "Entity Extraction")
+    ]
+    
+    # Execute demos sequentially
+    for demo_func, demo_name in demos_to_run:
+        try:
+            await demo_func(provider, tracker) # Pass tracker
+        except Exception as e:
+            logger.error(f"Error running {demo_name} demo: {e}", emoji_key="error", exc_info=True)
+    
+    # Display final cost summary
+    tracker.display_summary(console)
 
+    logger.success("Advanced Extraction Demo finished successfully!", emoji_key="complete")
+    console.print(Rule("[bold magenta]Advanced Extraction Demos Complete[/bold magenta]"))
 
 if __name__ == "__main__":
     # Run the demos

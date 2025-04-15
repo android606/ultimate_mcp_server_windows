@@ -3,22 +3,20 @@ Tournament task implementations for asynchronous tournament execution.
 """
 # Standard Library Imports
 import asyncio
+import json
 import logging
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
-import json
 
-from llm_gateway.core.models.requests import CompletionRequest
 from llm_gateway.core.models.tournament import (
     ModelResponseData,
     TournamentData,
     TournamentRoundResult,
     TournamentStatus,
 )
-from llm_gateway.core.providers.base import get_provider
 from llm_gateway.core.tournaments.manager import tournament_manager
 from llm_gateway.core.tournaments.utils import (
     create_round_prompt,
@@ -28,6 +26,9 @@ from llm_gateway.core.tournaments.utils import (
     get_word_count,
     save_model_response,
 )
+
+# Import the tool function
+from llm_gateway.tools.completion import generate_completion
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +258,7 @@ async def process_single_model(
     extraction_model_id: Optional[str] = None
 ) -> ModelResponseData:
     """
-    Handles the logic for calling a single model provider, processing, and saving results.
+    Handles the logic for calling a single model provider using the generate_completion tool.
     """
     start_time = time.monotonic()
     logger.info(f"[MODEL TASK] Processing model {model_id} for round {round_num}")
@@ -275,66 +276,75 @@ async def process_single_model(
     extracted_code: Optional[str] = None  # noqa: F841
     file_extension = ".py" if is_code_tournament else ".md"
     
+    provider_name = model_id.split('/')[0] if '/' in model_id else None # Infer provider from model_id if possible
+    if not provider_name:
+        logger.warning(f"[MODEL TASK] Could not infer provider from model_id: {model_id}. Attempting call without explicit provider.")
+        # Note: generate_completion might fail if provider isn't specified and cannot be inferred
+
     try:
-        # Get provider instance
-        provider_name = model_id.split(':')[0]
-        provider = get_provider(provider_name)
-        initialized = await provider.initialize()  # Ensure provider is ready
-        
-        if not initialized:
-            raise RuntimeError(f"Provider {provider_name} failed to initialize properly.")
-        
-        # Generate completion
-        logger.info(f"[MODEL TASK] Calling model {model_id} with prompt length {len(prompt)}")
+        # Use generate_completion tool
+        logger.info(f"[MODEL TASK] Calling generate_completion for model {model_id} with prompt length {len(prompt)}")
         # Log prompt preview
         preview_length = 100
         prompt_preview = prompt[:preview_length] + "..." if len(prompt) > preview_length else prompt
         logger.info(f"[MODEL TASK] Prompt preview: {prompt_preview}")
-        
-        request = CompletionRequest(prompt=prompt, model=model_id)
-        completion_result = await provider.generate_completion(
-            prompt=request.prompt,
-            model=request.model
+
+        # Call the tool function directly
+        completion_result_dict = await generate_completion(
+            prompt=prompt,
+            model=model_id, # Pass the full model ID
+            provider=provider_name # Pass inferred provider
+            # Add other params like max_tokens, temperature if needed/available in TournamentConfig
         )
-        response_text = completion_result.text
         
+        # Check for success
+        if not completion_result_dict.get("success"):
+            error_msg = completion_result_dict.get("error", "generate_completion tool indicated failure")
+            raise RuntimeError(f"Completion failed for {model_id}: {error_msg}")
+
+        # Extract data from the dictionary returned by the tool
+        response_text = completion_result_dict.get("text", "")
+        actual_model_used = completion_result_dict.get("model", model_id) # Use actual model if returned
+        token_info = completion_result_dict.get("tokens", {})
+        cost = completion_result_dict.get("cost", 0.0)
+        processing_time_sec = completion_result_dict.get("processing_time", 0.0)
+        latency_ms = int(processing_time_sec * 1000)
+
         # Log response preview
         response_preview = response_text[:preview_length] + "..." if len(response_text) > preview_length else response_text
-        logger.info(f"[MODEL TASK] Response preview: {response_preview}")
-        
-        # Extract metrics from the ModelResponse
+        logger.info(f"[MODEL TASK] Response preview for {actual_model_used}: {response_preview}")
+
+        # Extract metrics from the tool result
         completion_metrics = {
-            "input_tokens": completion_result.input_tokens,
-            "output_tokens": completion_result.output_tokens,
-            "cost": completion_result.cost
+            "input_tokens": token_info.get("input"),
+            "output_tokens": token_info.get("output"),
+            "cost": cost,
+            "latency_ms": latency_ms # Use processing_time from tool
         }
-        
-        # Process response
-        thinking = extract_thinking(response_text)
-        code_metrics = {}
-        
+
+        # Process response - use async extract_thinking
+        thinking = await extract_thinking(response_text)
+        code_metrics = {} # Placeholder for potential future code analysis metrics
+
         # Save response to file with better naming pattern
-        # Format: tournament_id_round-X_model-name_timestamp.md
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        safe_model_id = re.sub(r'[^a-zA-Z0-9_\-.]', '_', model_id)
+        safe_model_id = re.sub(r'[^a-zA-Z0-9_\-.]', '_', actual_model_used) # Use actual model name
         safe_tournament_id = re.sub(r'[^a-zA-Z0-9_\-.]', '_', tournament_id)
-        
-        # Create both raw and readable filenames
+
         filename_base = f"tournament_{safe_tournament_id}_round-{round_num}_model-{safe_model_id}_{timestamp}"
         raw_response_path = round_storage_path / f"{filename_base}{file_extension}"
-        
-        # Save to both locations
+
         raw_response_path.write_text(response_text or "", encoding="utf-8")
-        
+
         # Create a more user-friendly version with added context
         readable_content = f"""# Tournament Response
 **Tournament ID:** {tournament_id}
 **Round:** {round_num}
-**Model:** {model_id}
+**Model:** {actual_model_used}
 **Timestamp:** {datetime.now().isoformat()}
-**Tokens:** {completion_metrics['input_tokens']} in, {completion_metrics['output_tokens']} out
-**Cost:** ${completion_metrics['cost']:.6f}
-**Latency:** {completion_metrics['latency_ms']}ms
+**Tokens:** {completion_metrics.get('input_tokens', 'N/A')} in, {completion_metrics.get('output_tokens', 'N/A')} out
+**Cost:** ${completion_metrics.get('cost', 0.0):.6f}
+**Latency:** {completion_metrics.get('latency_ms', 'N/A')}ms
 
 ## Prompt
 ```
@@ -348,20 +358,20 @@ async def process_single_model(
 """
         readable_path = round_storage_path / f"{filename_base}_readable{file_extension}"
         readable_path.write_text(readable_content, encoding="utf-8")
-        
-        # Log the path for user reference
+
         logger.info(f"[MODEL TASK] Saved response to: {readable_path}")
-        
+
         # Populate response data
+        response_data.model_id = actual_model_used # Store the actual model used
         response_data.response_text = response_text
         response_data.thinking_process = thinking
         response_data.metrics = {**completion_metrics, **code_metrics}
         response_data.timestamp = datetime.now(timezone.utc)
-        response_data.response_file_path = str(raw_response_path)
-        response_data.metrics["total_processing_time_ms"] = int((time.monotonic() - start_time) * 1000)
-        
-        logger.info(f"[MODEL TASK] Finished processing model {model_id} for round {round_num} in {response_data.metrics['total_processing_time_ms']}ms")
-        
+        response_data.response_file_path = str(raw_response_path) # Store path to raw response
+        response_data.metrics["total_processing_time_ms"] = int((time.monotonic() - start_time) * 1000) # Keep overall task time
+
+        logger.info(f"[MODEL TASK] Finished processing model {actual_model_used} for round {round_num} in {response_data.metrics['total_processing_time_ms']}ms")
+
     except Exception as e:
         logger.error(f"[MODEL TASK] Error processing model {model_id}: {e}", exc_info=True)
         response_data.error = str(e)
@@ -505,93 +515,107 @@ async def process_model_task(
     round_num: int,
     previous_round_responses: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
-    """Process a single model task for the tournament.
+    """Process a single model task for the tournament using generate_completion tool.
     
     Args:
         tournament: Tournament data
-        model_id: Model to use
+        model_id: Model to use (e.g., 'openai/gpt-4o')
         round_num: Current round number
         previous_round_responses: Previous round responses (for rounds > 0)
         
     Returns:
         Model task result with response text and metrics
     """
-    provider_id = model_id.split(":")[0]
+    start_task_time = time.monotonic()
+    # Infer provider from model_id format 'provider/model_name'
+    provider_id = model_id.split('/')[0] if '/' in model_id else None
+    if not provider_id:
+         logger.warning(f"[MODEL TASK] Could not infer provider from model_id: {model_id}. Attempting call without explicit provider.")
     
     try:
         logger.info(f"[MODEL TASK] Processing model {model_id} for round {round_num}")
-        
-        # Get provider - removed 'await' since get_provider is not async
-        provider = get_provider(provider_id)
-        if not provider:
-            raise ValueError(f"Provider {provider_id} not available")
             
         # Generate prompt based on tournament type and round
         if round_num == 0:
-            # First round - just use the base prompt
             prompt = tournament.config.prompt
         else:
-            # Later rounds - include previous responses for synthesis
             prompt = generate_synthesis_prompt(tournament, previous_round_responses)
         
-        # Generate completion
-        logger.info(f"[MODEL TASK] Calling model {model_id} with prompt length {len(prompt)}")
-        # Log prompt preview
+        # Generate completion using the tool
+        logger.info(f"[MODEL TASK] Calling generate_completion for model {model_id} with prompt length {len(prompt)}")
         preview_length = 100
         prompt_preview = prompt[:preview_length] + "..." if len(prompt) > preview_length else prompt
         logger.info(f"[MODEL TASK] Prompt preview: {prompt_preview}")
-        
-        request = CompletionRequest(prompt=prompt, model=model_id)
-        completion_result = await provider.generate_completion(
-            prompt=request.prompt,
-            model=request.model
+
+        completion_result_dict = await generate_completion(
+            prompt=prompt,
+            model=model_id,
+            provider=provider_id 
+            # Add other params like max_tokens, temperature if needed/available
         )
-        response_text = completion_result.text
-        
+
+        # Check for success
+        if not completion_result_dict.get("success"):
+            error_msg = completion_result_dict.get("error", "generate_completion tool indicated failure")
+            raise RuntimeError(f"Completion failed for {model_id}: {error_msg}")
+
+        # Extract data from the result dictionary
+        response_text = completion_result_dict.get("text", "")
+        actual_model_used = completion_result_dict.get("model", model_id)
+        token_info = completion_result_dict.get("tokens", {})
+        cost = completion_result_dict.get("cost", 0.0)
+        processing_time_sec = completion_result_dict.get("processing_time", 0.0)
+
         # Log response preview
         response_preview = response_text[:preview_length] + "..." if len(response_text) > preview_length else response_text
-        logger.info(f"[MODEL TASK] Response preview: {response_preview}")
-        
-        # Extract metrics from the ModelResponse
+        logger.info(f"[MODEL TASK] Response preview for {actual_model_used}: {response_preview}")
+
+        # Extract metrics from the tool result
         completion_metrics = {
-            "input_tokens": completion_result.input_tokens,
-            "output_tokens": completion_result.output_tokens,
-            "cost": completion_result.cost
+            "input_tokens": token_info.get("input"),
+            "output_tokens": token_info.get("output"),
+            "cost": cost,
+            "processing_time_ms": int(processing_time_sec * 1000) # Use tool's processing time
         }
         
-        # Extract thinking/reasoning if present
-        thinking = extract_thinking(response_text)
+        # Extract thinking/reasoning if present - use async extract_thinking
+        thinking = await extract_thinking(response_text)
         
-        # Save response to a file with timestamp
-        response_file = save_model_response(
+        # Save response to a file with timestamp - use async save_model_response
+        response_file = await save_model_response(
             tournament=tournament,
             round_num=round_num,
-            model_id=model_id,
+            model_id=actual_model_used, # Use actual model name
             response_text=response_text,
             thinking=thinking
         )
         
-        # Calculate processing time
-        processing_time = int(completion_result.processing_time * 1000)  # Convert to milliseconds
-        
-        logger.info(f"[MODEL TASK] Finished processing model {model_id} for round {round_num} in {processing_time}ms")
+        total_task_time_ms = int((time.monotonic() - start_task_time) * 1000)
+        completion_metrics["total_task_time_ms"] = total_task_time_ms # Add overall task time
+
+        logger.info(f"[MODEL TASK] Finished processing model {actual_model_used} for round {round_num} in {total_task_time_ms}ms (LLM time: {completion_metrics['processing_time_ms']}ms)")
         
         return {
-            "model_id": model_id,
+            "model_id": actual_model_used, # Return actual model used
             "response_text": response_text,
             "thinking": thinking,
             "word_count": get_word_count(response_text),
             "metrics": completion_metrics,
-            "response_file": response_file
+            "response_file": str(response_file) # Ensure path is string
         }
     except Exception as e:
         logger.error(f"[MODEL TASK] Error processing model {model_id}: {str(e)}", exc_info=True)
+        total_task_time_ms = int((time.monotonic() - start_task_time) * 1000)
         return {
             "model_id": model_id,
             "error": str(e),
             "response_text": f"Error generating response: {str(e)}",
             "thinking": None,
             "word_count": 0,
-            "metrics": {"error": str(e)},
+            "metrics": {
+                "error": str(e), 
+                "total_task_time_ms": total_task_time_ms,
+                "processing_time_ms": None # LLM call failed
+            },
             "response_file": None
         } 

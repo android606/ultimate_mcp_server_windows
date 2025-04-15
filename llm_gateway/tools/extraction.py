@@ -584,7 +584,12 @@ async def extract_semantic_schema(
 # Note: This is a utility function, not typically exposed as a direct tool,
 # but kept here as it relates to extraction from LLM *responses*.
 # No standard decorators applied.
-async def extract_code_from_response(response_text: str, model: str = "openai:gpt-4.1-mini", timeout: int = 15) -> str:
+async def extract_code_from_response(
+    response_text: str, 
+    model: str = "openai:gpt-4.1-mini", 
+    timeout: int = 15,
+    tracker: Optional[Any] = None # Add optional tracker (use Any for now to avoid circular import)
+) -> str:
     """Extracts code blocks from LLM response text, using an LLM for complex cases.
 
     Primarily designed to clean up responses from code generation tasks.
@@ -596,6 +601,7 @@ async def extract_code_from_response(response_text: str, model: str = "openai:gp
         model: The specific model ID to use for LLM-based extraction if regex fails.
                Defaults to "openai/gpt-4.1-mini".
         timeout: Timeout in seconds for the LLM extraction call. Default 15.
+        tracker: (Optional) An instance of a CostTracker for tracking cost and metrics.
 
     Returns:
         The extracted code block as a string, or the original text if no code is found or extraction fails.
@@ -628,6 +634,24 @@ async def extract_code_from_response(response_text: str, model: str = "openai:gp
         )
         
         result = await asyncio.wait_for(completion_task, timeout=timeout)
+        
+        # Track cost if tracker is provided
+        if tracker and hasattr(result, 'cost'):
+            try:
+                # Use getattr to safely access attributes, provide defaults
+                # Create a temporary object for tracking as CostTracker expects attributes
+                class Trackable: pass
+                trackable = Trackable()
+                trackable.cost = getattr(result, 'cost', 0.0)
+                trackable.input_tokens = getattr(result, 'input_tokens', 0)
+                trackable.output_tokens = getattr(result, 'output_tokens', 0)
+                trackable.provider = getattr(result, 'provider', provider_id)
+                trackable.model = getattr(result, 'model', model_id)
+                trackable.processing_time = getattr(result, 'processing_time', 0.0)
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                 logger.warning(f"Could not track cost for LLM code extraction: {track_err}", exc_info=False)
+
         extracted_code = result.text.strip()
         logger.info(f"Extracted code using LLM ({model}).")
         return extracted_code

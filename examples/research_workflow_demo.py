@@ -9,6 +9,7 @@ analysis stages and produces visualizations of the results.
 import asyncio
 import os
 import sys
+from collections import namedtuple  # Import namedtuple
 
 # Add the project root to path so we can import llm_gateway
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -17,15 +18,24 @@ from rich.console import Console
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.tree import Tree
 
 from llm_gateway.constants import Provider
 from llm_gateway.tools.optimization import execute_optimized_workflow
+from llm_gateway.utils import get_logger  # Import get_logger
+from llm_gateway.utils.display import CostTracker  # Import CostTracker
 
 # Initialize rich console
 console = Console()
+
+# Initialize logger here so it's available in main()
+logger = get_logger("example.research_workflow")
+
+# Create a simple structure for cost tracking from dict (tokens might be missing)
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Sample research documents
 SAMPLE_DOCS = [
@@ -720,6 +730,9 @@ def create_research_workflow():
 
 async def main():
     """Run the complete research assistant workflow demo."""
+    console.print(Rule("[bold magenta]Advanced Research Workflow Demo[/bold magenta]"))
+    tracker = CostTracker() # Instantiate tracker
+
     try:
         # Display header
         console.print(Panel.fit(
@@ -748,25 +761,35 @@ async def main():
         
         results = await display_execution_progress(workflow_future)
         
-        # Visualize results
-        if results["success"]:
-            await visualize_results(results)
+        # Track cost if possible
+        if results and isinstance(results, dict) and "cost" in results:
+             try:
+                total_cost = results.get("cost", {}).get("total_cost", 0.0)
+                processing_time = results.get("total_processing_time", 0.0)
+                # Provider/Model is ambiguous here, use a placeholder
+                trackable = TrackableResult(
+                    cost=total_cost,
+                    input_tokens=0, # Not aggregated
+                    output_tokens=0, # Not aggregated
+                    provider="workflow",
+                    model="research_workflow",
+                    processing_time=processing_time
+                )
+                tracker.add_call(trackable)
+             except Exception as track_err:
+                logger.warning(f"Could not track workflow cost: {track_err}", exc_info=False)
+
+        if results:
+            console.print(Rule("[bold green]Workflow Execution Completed[/bold green]"))
+            await visualize_results(results.get("outputs", {}))
         else:
-            console.print(f"\n[bold red]Workflow execution failed:[/bold red] {results.get('error', 'Unknown error')}")
-            
-            # Show partial results
-            if results.get("results"):
-                console.print("\n[bold yellow]Partial results before failure:[/bold yellow]")
-                for stage_id, stage_result in results["results"].items():
-                    if "output" in stage_result:
-                        console.print(f"[green]{stage_id}[/green]: Completed successfully")
-                    elif "error" in stage_result:
-                        console.print(f"[red]{stage_id}[/red]: Failed - {stage_result['error']}")
-    
+            console.print("[bold red]Workflow execution failed or timed out.[/bold red]")
+
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        import traceback
-        console.print(Syntax(traceback.format_exc(), "python", theme="monokai"))
+        console.print(f"[bold red]An unexpected error occurred:[/bold red] {e}")
+    
+    # Display cost summary
+    tracker.display_summary(console)
 
 if __name__ == "__main__":
     asyncio.run(main()) 

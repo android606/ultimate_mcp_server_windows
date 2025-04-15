@@ -19,7 +19,7 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.services.prompts import PromptTemplate, get_prompt_repository
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import display_text_content_result
+from llm_gateway.utils.display import display_text_content_result, CostTracker
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -337,7 +337,7 @@ TRANSLATION:
     return retrieved_template
 
 
-async def demonstrate_llm_with_templates():
+async def demonstrate_llm_with_templates(tracker: CostTracker):
     """Demonstrate using a template from the repository with an LLM."""
     # Use Rich Rule
     console.print(Rule("[bold blue]LLM with Template Demonstration[/bold blue]"))
@@ -440,15 +440,22 @@ async def demonstrate_llm_with_templates():
             prompt=rendered_prompt,
             model=model,
             temperature=0.5,
-            max_tokens=100
+            max_tokens=150
         )
         processing_time = time.time() - start_time
         
         logger.success("Translation generated successfully!", emoji_key="success")
 
         # Use display.py function for better visualization
-        display_text_content_result("Translation Result", result)
+        display_text_content_result(
+            f"Translation Result ({escape(provider_name)}/{escape(model)})",
+            result,
+            console_instance=console
+        )
         
+        # Track cost
+        tracker.add_call(result)
+
         # Display additional stats with standard rich components
         stats_table = Table(title="Translation Stats", show_header=False, box=box.ROUNDED)
         stats_table.add_column("Metric", style="cyan")
@@ -471,6 +478,9 @@ async def demonstrate_llm_with_templates():
             border_style="yellow"
         ))
 
+    # Display cost summary at the end of this demo section
+    tracker.display_summary(console)
+
 
 async def main():
     """Run all demonstrations."""
@@ -485,7 +495,8 @@ async def main():
         
         # Demonstrate using a template with LLM - no longer check for retrieved_template
         # as it should always be available since we commented out the deletion
-        await demonstrate_llm_with_templates()
+        tracker = CostTracker() # Instantiate tracker here
+        await demonstrate_llm_with_templates(tracker)
             
     except Exception as e:
         logger.critical(f"Demo failed: {str(e)}", emoji_key="critical", exc_info=True)

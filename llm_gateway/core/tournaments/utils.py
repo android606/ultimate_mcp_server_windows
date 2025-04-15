@@ -9,6 +9,10 @@ from typing import Dict, Optional
 
 from llm_gateway.core.models.tournament import TournamentData
 
+# Add imports for harmonized tools
+from llm_gateway.tools.extraction import extract_code_from_response
+from llm_gateway.tools.filesystem import write_file
+
 logger = logging.getLogger(__name__)
 
 def create_round_prompt(tournament: TournamentData, round_num: int) -> str:
@@ -96,8 +100,10 @@ Improved Response:
 
     return combined_prompt.strip()
 
-def extract_thinking(response_text: str) -> Optional[str]:
+async def extract_thinking(response_text: str) -> Optional[str]:
     """Extract the thinking/reasoning process from a model response if present.
+    
+    Uses the standardized code extraction tool with fallbacks to simpler pattern matching.
     
     Args:
         response_text: The model's response text.
@@ -105,7 +111,20 @@ def extract_thinking(response_text: str) -> Optional[str]:
     Returns:
         The extracted thinking process, or None if not found.
     """
-    # Look for common thinking/reasoning section headers
+    # First try using the standard extraction tool - handles many formats
+    try:
+        extracted = await extract_code_from_response(
+            response_text=response_text,
+            language_hint="thinking", # Signal we're looking for reasoning/thinking blocks
+            timeout=10  # Shorter timeout for thinking extraction
+        )
+        if extracted and extracted.strip():
+            return extracted.strip()
+    except Exception as e:
+        # Log but don't fail - fall back to regex patterns
+        logger.debug(f"Error using standard extraction tool for thinking: {e}. Falling back to regex.")
+    
+    # Fall back to regex patterns for compatibility
     thinking_patterns = [
         (r'(?i)# *(thinking|reasoning).*?\n(.*?)(?=\n# |$)', 2),  # Markdown-style heading
         (r'(?i)<(?:thinking|reasoning)>\s*(.*?)\s*</(?:thinking|reasoning)>', 1),  # XML-style
@@ -282,7 +301,7 @@ def generate_comparison_file(tournament: TournamentData, round_num: int) -> Opti
     
     return comparison_content.strip() 
 
-def save_model_response(
+async def save_model_response(
     tournament: TournamentData, 
     round_num: int, 
     model_id: str, 
@@ -290,7 +309,7 @@ def save_model_response(
     thinking: Optional[str] = None,
     timestamp: Optional[str] = None
 ) -> str:
-    """Save model response to a file and return the path.
+    """Save model response to a file using standardized filesystem tools.
     
     Args:
         tournament: Tournament data
@@ -315,14 +334,6 @@ def save_model_response(
     safe_model_id = model_id.replace(":", "_").replace("/", "_")
     response_file = round_dir / f"{safe_model_id}_response.md"
     
-    # Create the content with metadata and response
-    metadata = {  # noqa: F841
-        "tournament_id": tournament.tournament_id,
-        "round": round_num,
-        "model": model_id,
-        "timestamp": timestamp,
-    }
-    
     # Construct the markdown file with basic metadata header
     content = f"""# Response from {model_id}
 
@@ -341,9 +352,24 @@ def save_model_response(
     if thinking:
         content += f"\n\n## Thinking Process:\n\n{thinking}\n"
     
-    # Write to file
-    with open(response_file, 'w', encoding='utf-8') as f:
-        f.write(content)
+    # Use the standard filesystem write tool
+    try:
+        # Properly use the async write_file tool
+        result = await write_file(
+            path=str(response_file),
+            content=content
+        )
+        
+        if not result.get("success", False):
+            logger.warning(f"Standard write_file tool reported failure: {result.get('error')}")
+            # Fall back to direct write
+            with open(response_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+    except Exception as e:
+        logger.error(f"Error using standardized file writer: {e}. Using direct file write.")
+        # Fall back to direct write in case of errors
+        with open(response_file, 'w', encoding='utf-8') as f:
+            f.write(content)
     
     return str(response_file)
 

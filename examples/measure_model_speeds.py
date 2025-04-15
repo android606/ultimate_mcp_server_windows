@@ -16,13 +16,17 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 # -------------------------------------
 
-from llm_gateway.constants import COST_PER_MILLION_TOKENS  # noqa: E402
+from llm_gateway.constants import (  # noqa: E402
+    COST_PER_MILLION_TOKENS,
+    Provider,
+)
 from llm_gateway.exceptions import (  # noqa: E402
     ProviderError,
     ToolError,
 )
 from llm_gateway.tools.completion import generate_completion  # noqa: E402
 from llm_gateway.utils import get_logger  # noqa: E402
+from llm_gateway.utils.display import CostTracker  # noqa: E402
 
 # Use Rich Console for better output
 console = Console()
@@ -46,57 +50,65 @@ DEFAULT_MODELS_TO_TEST = [
 
 # Re-introduce the provider extraction logic
 def extract_provider_model(model_identifier: str) -> tuple[str | None, str]:
-    """Extracts provider and potentially prefixed model name."""
+    """Extracts provider and model name, always returning the model name without the prefix."""
     model_identifier = model_identifier.strip()
+    provider: str | None = None
+    model_name_only: str = model_identifier # Start with the original identifier
 
     # 1. Check for explicit provider prefix (using /)
+    known_providers = [p.value for p in Provider] # Get list of known providers
     if '/' in model_identifier:
         parts = model_identifier.split('/', 1)
-        if len(parts) == 2 and parts[0] and parts[1]:
-            # Already prefixed, return as is
-            return parts[0], model_identifier
+        # Check if the first part is a known provider
+        if len(parts) == 2 and parts[0] in known_providers and parts[1]:
+            provider = parts[0]
+            model_name_only = parts[1]
+            # Handle potential nested OpenRouter names like openrouter/mistralai/mistral-7b
+            # In this case, model_name_only should remain "mistralai/mistral-7b"
+            # The current split('/', 1) already achieves this.
         else:
-            logger.warning(f"Invalid model format '{model_identifier}', cannot extract provider.")
-            return None, model_identifier
+            # It has a slash, but doesn't match known provider format
+            # Could be an OpenRouter model passed without the openrouter/ prefix? e.g. "mistralai/mistral-nemo"
+            # Let's try inferring OpenRouter if the first part isn't a known provider
+            # but the structure looks like provider/model.
+            # OR maybe it's just an invalid format.
+            # For simplicity, let's only recognize known prefixes directly.
+            logger.warning(f"Invalid or unknown provider prefix in '{model_identifier}'. Cannot extract provider reliably.")
+            return None, model_identifier # Return original identifier if prefix is invalid
 
-    # 2. Infer provider from model name pattern (no prefix provided)
-    provider: str | None = None
-    if model_identifier.startswith('claude-'):
-        provider = 'anthropic'
-    elif model_identifier.startswith('gemini-'):
-        provider = 'gemini'
-    elif model_identifier.startswith('deepseek-'):
-        provider = 'deepseek'
+    # 2. Infer provider from model name pattern if no prefix was found
+    if provider is None:
+        if model_identifier.startswith('claude-'):
+            provider = Provider.ANTHROPIC.value
+        elif model_identifier.startswith('gemini-'):
+            provider = Provider.GEMINI.value
+        elif model_identifier.startswith('deepseek-'):
+            provider = Provider.DEEPSEEK.value
+        elif model_identifier.startswith('grok-'): # Added Grok
+            provider = Provider.GROK.value
+        # Add other inferences if necessary
 
-    # 3. Assume OpenAI if not inferred and looks like OpenAI
-    openai_short_names = [
-        'gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
-        'o1-preview', 'o3-mini', 'gpt-3.5-turbo'
-    ]
-    if provider is None and (model_identifier in openai_short_names or model_identifier.startswith('gpt-')):
-        provider = 'openai'
-
-    # 4. If provider was determined, return provider and the *original* (non-prefixed) identifier
-    #    because generate_completion will add the prefix IF needed.
-    #    Wait, NO - the previous attempt showed generate_completion *does* add the prefix
-    #    if the provider name isn't in the model string. So we *should* return the prefixed
-    #    string here to *prevent* generate_completion from adding it again.
-    if provider:
-        # Return the provider and the *original* identifier IF it already contains the provider name
-        # OR return the provider and the *newly prefixed* identifier if it didn't.
-        # This logic seems overly complex. Let's stick to the plan: return the provider and the *non-prefixed* name.
-        # The issue MUST be elsewhere if this doesn't work.
+        # Assume OpenAI if it looks like an OpenAI model (common short names or gpt- prefix)
+        openai_short_names = [
+            'gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
+            'o1-preview', 'o3-mini', 'gpt-3.5-turbo'
+        ]
+        if provider is None and (model_identifier in openai_short_names or model_identifier.startswith('gpt-')):
+            provider = Provider.OPENAI.value
         
-        # *** Correction: Let's revert to the simple logic that seemed correct ***
-        # The core issue might be the specific model names requested vs what Anthropic API supports.
-        # This function will just separate provider/model based on prefix or inference.
-        return provider, model_identifier # Return provider and the original (non-prefixed) name
+        # If provider was inferred, model_name_only is already correct (the original identifier)
 
-    # 5. If provider couldn't be determined
-    logger.error(f"Could not determine provider for '{model_identifier}'. Skipping measurement.")
-    return None, model_identifier
+    # 3. Return provider and model_name_only (which has prefix removed if found)
+    if provider:
+        # Log the extracted provider and model name for clarity during debugging
+        logger.debug(f"Extracted Provider: {provider}, Model Name: {model_name_only} from Input: {model_identifier}")
+        return provider, model_name_only
+    else:
+        # If provider couldn't be determined even after inference
+        logger.error(f"Could not determine provider for '{model_identifier}'. Skipping measurement.")
+        return None, model_identifier # Return original identifier as model_name if provider is unknown
 
-async def measure_speed(model_identifier: str, prompt: str) -> Dict[str, Any]:
+async def measure_speed(model_identifier: str, prompt: str, tracker: CostTracker) -> Dict[str, Any]:
     """Measures the completion speed for a single model by calling the tool directly."""
     result_data: Dict[str, Any] = {}
     
@@ -121,6 +133,9 @@ async def measure_speed(model_identifier: str, prompt: str) -> Dict[str, Any]:
         end_time = time.monotonic()
 
         if result and isinstance(result, dict) and result.get("success"):
+            # Track cost for successful calls
+            tracker.add_call(result)
+
             processing_time = result.get("processing_time")
             if processing_time is None:
                 processing_time = end_time - start_time
@@ -162,7 +177,7 @@ async def measure_speed(model_identifier: str, prompt: str) -> Dict[str, Any]:
 async def main(models_to_test: List[str], output_file: str, prompt: str):
     """Main function to run speed tests and save results."""
     logger.info("Starting LLM speed measurement script...", emoji_key="rocket")
-
+    tracker = CostTracker() # Instantiate tracker
     results: Dict[str, Dict[str, Any]] = {}
 
     # Use Rich Progress bar
@@ -185,7 +200,7 @@ async def main(models_to_test: List[str], output_file: str, prompt: str):
                 progress.update(task, advance=1)
                 continue
 
-            results[model_id] = await measure_speed(model_id, prompt)
+            results[model_id] = await measure_speed(model_id, prompt, tracker)
             progress.update(task, advance=1)
             # await asyncio.sleep(0.1) # Reduce sleep time if desired
 
@@ -214,6 +229,9 @@ async def main(models_to_test: List[str], output_file: str, prompt: str):
                 "Success"
             )
     console.print(table)
+
+    # Display cost summary
+    tracker.display_summary(console)
 
     # --- Save Results --- (Saving logic remains the same)
     script_dir = os.path.dirname(os.path.abspath(__file__))

@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import time
+from collections import namedtuple  # Import namedtuple
 from pathlib import Path
 
 # Add project root to path for imports when running as script
@@ -30,6 +31,7 @@ from llm_gateway.config import get_config
 from llm_gateway.constants import Provider
 from llm_gateway.tools.text_classification import ClassificationStrategy, text_classification
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import CostTracker  # Import CostTracker
 from llm_gateway.utils.logging.console import console
 
 # Initialize logger
@@ -53,6 +55,9 @@ NEWS_SAMPLES_PATH = SAMPLE_DIR / "news_samples.txt"
 PRODUCT_REVIEWS_PATH = SAMPLE_DIR / "product_reviews.txt" 
 SUPPORT_TICKETS_PATH = SAMPLE_DIR / "support_tickets.txt"
 EMAIL_SAMPLES_PATH = SAMPLE_DIR / "email_classification.txt"
+
+# Create a simple structure for cost tracking from dict
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Helper Functions
 def extract_samples_from_file(file_path):
@@ -152,7 +157,7 @@ def display_classification_result(result, title, text_sample=None, categories=No
     console.print(results_table)
     console.print(meta_table)
 
-async def demo_basic_classification():
+async def demo_basic_classification(tracker: CostTracker): # Add tracker
     """Demonstrate basic single-label classification with zero-shot."""
     console.print(Rule("[bold blue]Basic Text Classification Demo[/bold blue]"))
     logger.info("Starting basic classification demo", emoji_key="start")
@@ -197,6 +202,21 @@ async def demo_basic_classification():
             explanation_detail="brief"
         )
     
+    # Track cost if possible
+    if all(k in result for k in ["cost", "provider", "model"]) and "tokens" in result:
+        try:
+            trackable = TrackableResult(
+                cost=result.get("cost", 0.0),
+                input_tokens=result.get("tokens", {}).get("input", 0),
+                output_tokens=result.get("tokens", {}).get("output", 0),
+                provider=result.get("provider", "unknown"),
+                model=result.get("model", "unknown"),
+                processing_time=result.get("processing_time", 0.0)
+            )
+            tracker.add_call(trackable)
+        except Exception as track_err:
+            logger.warning(f"Could not track cost for basic classification: {track_err}", exc_info=False)
+
     # Record actual time (may differ from model reported time)
     elapsed_time = time.time() - start_time
     result["actual_processing_time"] = elapsed_time
@@ -219,7 +239,7 @@ async def demo_basic_classification():
     console.print()
     return True
 
-async def demo_multi_label_classification():
+async def demo_multi_label_classification(tracker: CostTracker): # Add tracker
     """Demonstrate multi-label classification."""
     console.print(Rule("[bold blue]Multi-Label Classification Demo[/bold blue]"))
     logger.info("Starting multi-label classification demo", emoji_key="start")
@@ -264,6 +284,21 @@ async def demo_multi_label_classification():
             max_results=3  # Get top 3 matching categories
         )
     
+    # Track cost if possible
+    if all(k in result for k in ["cost", "provider", "model"]) and "tokens" in result:
+        try:
+            trackable = TrackableResult(
+                cost=result.get("cost", 0.0),
+                input_tokens=result.get("tokens", {}).get("input", 0),
+                output_tokens=result.get("tokens", {}).get("output", 0),
+                provider=result.get("provider", "unknown"),
+                model=result.get("model", "unknown"),
+                processing_time=result.get("processing_time", 0.0)
+            )
+            tracker.add_call(trackable)
+        except Exception as track_err:
+            logger.warning(f"Could not track cost for multi-label classification: {track_err}", exc_info=False)
+
     # Cache result for comparison
     DEMO_RESULTS_CACHE["multi_label"] = result
     
@@ -278,7 +313,7 @@ async def demo_multi_label_classification():
     console.print()
     return True
 
-async def demo_hierarchical_classification():
+async def demo_hierarchical_classification(tracker: CostTracker): # Add tracker
     """Demonstrate hierarchical category classification."""
     console.print(Rule("[bold blue]Hierarchical Classification Demo[/bold blue]"))
     logger.info("Starting hierarchical classification demo", emoji_key="start")
@@ -322,6 +357,21 @@ async def demo_hierarchical_classification():
             )
         )
     
+    # Track cost if possible
+    if all(k in result for k in ["cost", "provider", "model"]) and "tokens" in result:
+        try:
+            trackable = TrackableResult(
+                cost=result.get("cost", 0.0),
+                input_tokens=result.get("tokens", {}).get("input", 0),
+                output_tokens=result.get("tokens", {}).get("output", 0),
+                provider=result.get("provider", "unknown"),
+                model=result.get("model", "unknown"),
+                processing_time=result.get("processing_time", 0.0)
+            )
+            tracker.add_call(trackable)
+        except Exception as track_err:
+            logger.warning(f"Could not track cost for hierarchical classification: {track_err}", exc_info=False)
+
     # Cache result for comparison
     DEMO_RESULTS_CACHE["hierarchical"] = result
     
@@ -336,7 +386,7 @@ async def demo_hierarchical_classification():
     console.print()
     return True
 
-async def demo_few_shot_classification():
+async def demo_few_shot_classification(tracker: CostTracker): # Add tracker
     """Demonstrate few-shot learning classification."""
     console.print(Rule("[bold blue]Few-Shot Classification Demo[/bold blue]"))
     logger.info("Starting few-shot classification demo", emoji_key="start")
@@ -396,6 +446,21 @@ async def demo_few_shot_classification():
             explanation_detail="detailed"  # More detailed explanation
         )
     
+    # Track cost if possible
+    if all(k in result for k in ["cost", "provider", "model"]) and "tokens" in result:
+        try:
+            trackable = TrackableResult(
+                cost=result.get("cost", 0.0),
+                input_tokens=result.get("tokens", {}).get("input", 0),
+                output_tokens=result.get("tokens", {}).get("output", 0),
+                provider=result.get("provider", "unknown"),
+                model=result.get("model", "unknown"),
+                processing_time=result.get("processing_time", 0.0)
+            )
+            tracker.add_call(trackable)
+        except Exception as track_err:
+            logger.warning(f"Could not track cost for few-shot classification: {track_err}", exc_info=False)
+
     # Cache result for comparison
     DEMO_RESULTS_CACHE["few_shot"] = result
     
@@ -426,8 +491,8 @@ async def demo_few_shot_classification():
     console.print()
     return True
 
-async def demo_ensemble_classification():
-    """Demonstrate ensemble classification using multiple models."""
+async def demo_ensemble_classification(tracker: CostTracker): # Add tracker
+    """Demonstrate ensemble classification using multiple providers."""
     console.print(Rule("[bold blue]Ensemble Classification Demo[/bold blue]"))
     logger.info("Starting ensemble classification demo", emoji_key="start")
     
@@ -484,9 +549,26 @@ async def demo_ensemble_classification():
             confidence_threshold=0.4,
             strategy=ClassificationStrategy.ENSEMBLE,
             explanation_detail="brief",
-            ensemble_config=ensemble_config
+            ensemble_config=ensemble_config,
+            allow_abstain=True,
+            # abstention_threshold=0.4 # Optionally set abstention threshold
         )
     
+    # Track cost (The tool result should contain aggregated cost/tokens)
+    if all(k in result for k in ["cost", "provider", "model"]) and "tokens" in result:
+        try:
+            trackable = TrackableResult(
+                cost=result.get("cost", 0.0),
+                input_tokens=result.get("tokens", {}).get("input", 0),
+                output_tokens=result.get("tokens", {}).get("output", 0),
+                provider=result.get("provider", "ensemble"), # Provider is 'ensemble'
+                model=result.get("model", "ensemble"), # Model is 'ensemble'
+                processing_time=result.get("processing_time", 0.0)
+            )
+            tracker.add_call(trackable)
+        except Exception as track_err:
+            logger.warning(f"Could not track cost for ensemble classification: {track_err}", exc_info=False)
+
     # Cache result for comparison
     DEMO_RESULTS_CACHE["ensemble"] = result
     
@@ -517,8 +599,8 @@ async def demo_ensemble_classification():
     console.print()
     return True
 
-async def demo_custom_prompt_template():
-    """Demonstrate classification with custom prompt template."""
+async def demo_custom_prompt_template(tracker: CostTracker): # Add tracker
+    """Demonstrate classification with a custom prompt template."""
     console.print(Rule("[bold blue]Custom Prompt Template Demo[/bold blue]"))
     logger.info("Starting custom prompt template demo", emoji_key="start")
     
@@ -586,6 +668,21 @@ Please provide your analysis now.
             custom_prompt_template=custom_template
         )
     
+    # Track cost if possible
+    if all(k in result for k in ["cost", "provider", "model"]) and "tokens" in result:
+        try:
+            trackable = TrackableResult(
+                cost=result.get("cost", 0.0),
+                input_tokens=result.get("tokens", {}).get("input", 0),
+                output_tokens=result.get("tokens", {}).get("output", 0),
+                provider=result.get("provider", "unknown"),
+                model=result.get("model", "unknown"),
+                processing_time=result.get("processing_time", 0.0)
+            )
+            tracker.add_call(trackable)
+        except Exception as track_err:
+            logger.warning(f"Could not track cost for custom prompt classification: {track_err}", exc_info=False)
+
     # Cache result for comparison
     DEMO_RESULTS_CACHE["custom_prompt"] = result
     
@@ -634,7 +731,7 @@ def export_result(name, result, text_sample, categories):
     
     logger.info(f"Exported results to {filename}", emoji_key="save")
 
-async def demo_comparison():
+async def demo_comparison(tracker: CostTracker):
     """Compare different classification strategies."""
     console.print(Rule("[bold blue]Classification Strategies Comparison[/bold blue]"))
     logger.info("Comparing classification strategies", emoji_key="analytics")
@@ -778,7 +875,7 @@ def create_metric_panel(data, title, color):
     
     return Panel(content, title=title, border_style=color)
 
-async def run_all_demos():
+async def run_all_demos(tracker: CostTracker): # Add tracker
     """Run all classification demos in sequence."""
     console.print(Rule("[bold magenta]Text Classification Comprehensive Demo[/bold magenta]"))
     logger.info("Starting comprehensive text classification demo", emoji_key="start")
@@ -802,12 +899,12 @@ async def run_all_demos():
         with Live(overall_progress, refresh_per_second=4, console=console):
             # Run demos with timeout protection
             demo_tasks = [
-                asyncio.create_task(demo_basic_classification()),
-                asyncio.create_task(demo_multi_label_classification()),
-                asyncio.create_task(demo_hierarchical_classification()),
-                asyncio.create_task(demo_few_shot_classification()),
-                asyncio.create_task(demo_ensemble_classification()),
-                asyncio.create_task(demo_custom_prompt_template())
+                asyncio.create_task(demo_basic_classification(tracker)), # Pass tracker
+                asyncio.create_task(demo_multi_label_classification(tracker)), # Pass tracker
+                asyncio.create_task(demo_hierarchical_classification(tracker)), # Pass tracker
+                asyncio.create_task(demo_few_shot_classification(tracker)), # Pass tracker
+                asyncio.create_task(demo_ensemble_classification(tracker)), # Pass tracker
+                asyncio.create_task(demo_custom_prompt_template(tracker)) # Pass tracker
             ]
             
             # Run all demos with timeout
@@ -824,7 +921,7 @@ async def run_all_demos():
             
             # Compare results if we have enough demos completed
             if len(completed) >= 3:  # Require at least 3 demos for comparison
-                await demo_comparison()
+                await demo_comparison(tracker)
         
     except asyncio.CancelledError:
         logger.warning("Demo was cancelled by user", emoji_key="cancel")
@@ -837,6 +934,9 @@ async def run_all_demos():
     # Calculate total time
     total_time = time.time() - start_time
     
+    # Display cost summary
+    tracker.display_summary(console)
+
     if success:
         logger.success(f"Text Classification Demo Completed Successfully in {total_time:.2f}s!", emoji_key="complete")
         console.print(Rule(f"[bold magenta]Text Classification Demo Complete ({total_time:.2f}s)[/bold magenta]"))
@@ -848,8 +948,9 @@ async def run_all_demos():
 
 async def main():
     """Run the full text classification demo suite."""
+    tracker = CostTracker() # Instantiate tracker
     try:
-        return await run_all_demos()
+        return await run_all_demos(tracker) # Pass tracker
     except Exception as e:
         logger.critical(f"Demo failed unexpectedly: {str(e)}", emoji_key="critical", exc_info=True)
         return 1

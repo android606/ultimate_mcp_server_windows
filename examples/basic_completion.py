@@ -19,13 +19,13 @@ from rich.table import Table  # noqa: E402
 from llm_gateway.constants import Provider  # noqa: E402
 from llm_gateway.core.server import Gateway  # noqa: E402
 from llm_gateway.utils import get_logger  # noqa: E402
-from llm_gateway.utils.display import display_completion_result  # noqa: E402
+from llm_gateway.utils.display import CostTracker, display_completion_result  # Import CostTracker
 from llm_gateway.utils.logging.console import console  # noqa: E402
 
 # Initialize logger
 logger = get_logger("example.basic_completion")
 
-async def run_basic_completion(gateway):
+async def run_basic_completion(gateway, tracker: CostTracker):
     """Run a basic completion example."""
     logger.info("Starting basic completion example", emoji_key="start")
     console.print(Rule("[bold blue]Basic Completion[/bold blue]"))
@@ -73,6 +73,9 @@ async def run_basic_completion(gateway):
             title="Federated Learning Explanation"
         )
         
+        # Track cost
+        tracker.add_call(result)
+
     except Exception as e:
         # Use logger for errors, as DetailedLogFormatter handles error panels well
         logger.error(f"Error generating completion: {str(e)}", emoji_key="error", exc_info=True)
@@ -140,7 +143,7 @@ async def run_streaming_completion(gateway):
         raise
 
 
-async def run_cached_completion(gateway):
+async def run_cached_completion(gateway, tracker: CostTracker):
     """Run a completion with caching.
     
     Note: Since we're not using CompletionClient which has built-in caching,
@@ -169,6 +172,9 @@ async def run_cached_completion(gateway):
         )
         processing_time1 = time.time() - start_time1
         
+        # Track first call
+        tracker.add_call(result1)
+        
         # Note: We don't actually have caching here since we're not using CompletionClient
         # So instead we'll just make another call and compare times
         logger.info("Second request...", emoji_key="processing")
@@ -179,6 +185,9 @@ async def run_cached_completion(gateway):
             max_tokens=200
         )
         processing_time2 = time.time() - start_time2
+        
+        # Track second call
+        tracker.add_call(result2)
 
         # Log timing comparison
         processing_ratio = processing_time1 / processing_time2 if processing_time2 > 0 else 1.0
@@ -199,7 +208,7 @@ async def run_cached_completion(gateway):
         raise
 
 
-async def run_multi_provider(gateway):
+async def run_multi_provider(gateway, tracker: CostTracker):
     """Run completion with multiple providers."""
     logger.info("Starting multi-provider example", emoji_key="start")
     console.print(Rule("[bold blue]Multi-Provider Completion[/bold blue]"))
@@ -236,6 +245,9 @@ async def run_multi_provider(gateway):
                     max_tokens=200
                 )
                 
+                # Track cost
+                tracker.add_call(result_obj)
+
                 logger.success(f"Successfully used provider: {provider_name}", emoji_key="success")
                 break  # Exit loop on success
                 
@@ -260,6 +272,7 @@ async def run_multi_provider(gateway):
 
 async def main():
     """Run completion examples."""
+    tracker = CostTracker() # Instantiate tracker
     try:
         # Create a gateway instance for all examples to share
         gateway = Gateway("basic-completion-demo", register_tools=False)
@@ -269,7 +282,7 @@ async def main():
         await gateway._initialize_providers()
         
         # Run basic completion
-        await run_basic_completion(gateway)
+        await run_basic_completion(gateway, tracker)
         
         console.print() # Add space
         
@@ -279,13 +292,16 @@ async def main():
         console.print() # Add space
         
         # Run cached completion
-        await run_cached_completion(gateway)
+        await run_cached_completion(gateway, tracker)
         
         console.print() # Add space
         
         # Run multi-provider completion
-        await run_multi_provider(gateway)
+        await run_multi_provider(gateway, tracker)
         
+        # Display cost summary at the end
+        tracker.display_summary(console)
+
     except Exception as e:
         # Use logger for critical errors
         logger.critical(f"Example failed: {str(e)}", emoji_key="critical", exc_info=True)

@@ -5,6 +5,7 @@ import asyncio
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from collections import namedtuple # Import namedtuple
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -42,10 +43,14 @@ from llm_gateway.tools.sql_database_interactions import (
 )
 from llm_gateway.exceptions import ToolError, ToolInputError # Import specific exceptions
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import CostTracker # Import CostTracker
 
 # Initialize Rich console and logger
 console = Console()
 logger = get_logger("example.sql_database_interactions")
+
+# Create a simple structure for cost tracking from dict (tokens might be missing)
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # --- Demo Configuration ---
 # SQLite in-memory database for demonstration
@@ -969,10 +974,10 @@ async def transaction_demo(connection_id: str) -> None:
 
     console.print() # Spacing after the demo section
 
-async def documentation_demo(connection_id: str) -> None:
+async def documentation_demo(connection_id: str, tracker: CostTracker) -> None:
     """Demonstrate database documentation generation."""
-    console.print(Rule("[bold green]6. Database Documentation Demo[/bold green]", style="green"))
-    logger.info("Generating database documentation", emoji_key="book")
+    console.print(Rule("[bold green]8. Database Documentation Generation[/bold green]", style="green"))
+    logger.info("Starting database documentation generation demo", emoji_key="doc")
 
     with console.status("[bold cyan]Generating database documentation (Markdown)...", spinner="monkey"):
         try:
@@ -989,15 +994,25 @@ async def documentation_demo(connection_id: str) -> None:
                 logger.success("Successfully generated database documentation.", emoji_key="heavy_check_mark")
                 console.print(Panel("[green]:heavy_check_mark: Database documentation generated successfully.[/]", border_style="green", padding=(0, 1)))
 
-                documentation = doc_result.get("documentation", "")
+                doc_content = doc_result.get("documentation", "")
+                
+                # Track cost
+                if isinstance(doc_result, dict) and "cost" in doc_result and "provider" in doc_result and "model" in doc_result:
+                    try:
+                        trackable = TrackableResult(
+                            cost=doc_result.get("cost", 0.0),
+                            input_tokens=doc_result.get("tokens", {}).get("input", 0),
+                            output_tokens=doc_result.get("tokens", {}).get("output", 0),
+                            provider=doc_result.get("provider", "unknown"),
+                            model=doc_result.get("model", "doc_generator"),
+                            processing_time=doc_result.get("processing_time", 0.0)
+                        )
+                        tracker.add_call(trackable)
+                    except Exception as track_err:
+                        logger.warning(f"Could not track documentation generation cost: {track_err}", exc_info=False)
+
                 console.print(Panel(
-                    Syntax(
-                        documentation,
-                        "markdown",
-                        theme="default",
-                        line_numbers=True,
-                        word_wrap=True
-                    ),
+                    Syntax(doc_content, "markdown", theme="default", line_numbers=False, word_wrap=True),
                     title="Database Documentation (Markdown Output)",
                     border_style="magenta",
                     padding=1,
@@ -1041,37 +1056,47 @@ async def cleanup_demo(connection_id: str) -> None:
     console.print()
 
 async def main() -> int:
-    """Run all SQL database interaction demonstrations."""
+    """Run the SQL database interactions demo."""
     console.print(Rule("[bold magenta]SQL Database Interactions Demo Starting[/bold magenta]"))
-    
+    connection_id: Optional[str] = None
+    exit_code: int = 0 # Initialize exit code
+    tracker = CostTracker() # Instantiate tracker
+
     try:
-        # Connect to database
-        connection_id = await connection_demo()
-        
-        if not connection_id:
-            logger.critical("Failed to establish database connection. Cannot proceed with demos.", emoji_key="critical")
-            return 1
-        
         # Setup demo database
-        await setup_demo_database(connection_id)
-        
-        # Run all demos in sequence
-        await schema_discovery_demo(connection_id)
-        await query_execution_demo(connection_id)
-        await transaction_demo(connection_id)
-        await documentation_demo(connection_id)
-        
-        # Cleanup and disconnect
-        await cleanup_demo(connection_id)
-        
+        connection_id = await connection_demo()
+
+        # Note: tracker is only passed to documentation_demo
+        if connection_id:
+            await setup_demo_database(connection_id)
+            await schema_discovery_demo(connection_id)
+            await table_details_demo(connection_id, "customers")
+            await find_related_tables_demo(connection_id, "orders")
+            await column_statistics_demo(connection_id, "products", "price")
+            await query_execution_demo(connection_id)
+            await transaction_demo(connection_id)
+            await documentation_demo(connection_id, tracker) # Pass tracker
+            
+            # Final cleanup (will be called again in finally, but good to try here)
+            await cleanup_demo(connection_id)
+        else:
+            logger.error("Skipping subsequent demos due to connection failure.", emoji_key="skip")
+            exit_code = 1 # Indicate failure
+
     except Exception as e:
-        logger.critical(f"SQL database demo failed: {str(e)}", emoji_key="critical", exc_info=True)
-        console.print(f"[bold red]Critical Demo Error:[/bold red] {escape(str(e))}")
-        return 1
-    
-    logger.success("SQL Database Interactions Demo Finished Successfully!", emoji_key="complete")
-    console.print(Rule("[bold magenta]SQL Database Interactions Demo Complete[/bold magenta]"))
-    return 0
+        logger.critical("SQL Demo failed with unexpected error", emoji_key="critical", exc_info=True)
+        console.print("[bold red]CRITICAL ERROR[/bold red]")
+        console.print(Traceback.from_exception(type(e), e, e.__traceback__))
+        exit_code = 1
+    finally:
+        # Ensure disconnection even if errors occurred (if connection_id was obtained)
+        if connection_id:
+            await cleanup_demo(connection_id) # Try cleanup again
+            
+        # Display cost summary
+        tracker.display_summary(console)
+
+    return exit_code
 
 if __name__ == "__main__":
     exit_code = asyncio.run(main())

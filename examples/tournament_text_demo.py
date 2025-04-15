@@ -26,6 +26,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
+from collections import namedtuple
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -42,7 +43,7 @@ from llm_gateway.core.server import Gateway
 from llm_gateway.services.prompts import PromptTemplate
 from llm_gateway.tools.tournament import create_tournament, get_tournament_status, get_tournament_results
 from llm_gateway.utils import get_logger, process_mcp_result
-from llm_gateway.utils.display import display_tournament_results, display_tournament_status
+from llm_gateway.utils.display import display_tournament_results, display_tournament_status, CostTracker
 from llm_gateway.utils.logging.console import console
 
 
@@ -65,6 +66,9 @@ def parse_arguments():
 
 # Initialize logger using get_logger
 logger = get_logger("example.tournament_text")
+
+# Create a simple structure for cost tracking from dict (tokens might be missing)
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Initialize global gateway
 gateway = None
@@ -391,6 +395,8 @@ async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
     if not essays_by_model or len(essays_by_model) < 2:
         return {"error": "Not enough essays to compare"}
     
+    eval_cost = 0.0 # Initialize evaluation cost
+
     try:
         # Format the essays for evaluation
         evaluation_prompt = "# Essay Evaluation\n\nPlease analyze the following essays on the same topic and determine which one is the best. "
@@ -412,25 +418,25 @@ async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
         evaluation_prompt += "4. Suggest one improvement for each essay\n"
         
         # Use a more capable model for evaluation
-        evaluation_model = "gemini:gemini-2.5-pro-exp-03-25"
+        model_to_use = "gemini:gemini-2.5-pro-exp-03-25"
         
-        logger.info(f"Evaluating essays using {evaluation_model}...", emoji_key="evaluate")
+        logger.info(f"Evaluating essays using {model_to_use}...", emoji_key="evaluate")
         
         # Get the provider
-        provider_id = evaluation_model.split(':')[0]
+        provider_id = model_to_use.split(':')[0]
         provider = get_provider(provider_id)
         
         if not provider:
             return {
                 "error": f"Provider {provider_id} not available for evaluation",
-                "model_used": evaluation_model,
+                "model_used": model_to_use,
                 "eval_prompt": evaluation_prompt,
                 "cost": 0.0
             }
         
         # Generate completion for evaluation with timeout
         try:
-            request = CompletionRequest(prompt=evaluation_prompt, model=evaluation_model)
+            request = CompletionRequest(prompt=evaluation_prompt, model=model_to_use)
             
             # Set a timeout for the completion request
             completion_task = provider.generate_completion(
@@ -441,26 +447,24 @@ async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
             # 45 second timeout for evaluation
             completion_result = await asyncio.wait_for(completion_task, timeout=45)
             
-            # Extract cost information if available
-            cost = 0.0
+            # Accumulate cost
             if hasattr(completion_result, 'cost'):
-                cost = completion_result.cost
+                eval_cost = completion_result.cost
             elif hasattr(completion_result, 'metrics') and isinstance(completion_result.metrics, dict):
-                cost = completion_result.metrics.get('cost', 0.0)
+                eval_cost = completion_result.metrics.get('cost', 0.0)
             
-            return {
+            # Prepare result dict
+            result = {
                 "evaluation": completion_result.text,
-                "model_used": evaluation_model,
+                "model_used": model_to_use,
                 "eval_prompt": evaluation_prompt,
-                "cost": cost,
-                "input_tokens": getattr(completion_result, 'input_tokens', 0),
-                "output_tokens": getattr(completion_result, 'output_tokens', 0)
+                "cost": eval_cost # Return the cost
             }
         except asyncio.TimeoutError:
-            logger.warning(f"Evaluation with {evaluation_model} timed out after 45 seconds", emoji_key="warning")
+            logger.warning(f"Evaluation with {model_to_use} timed out after 45 seconds", emoji_key="warning")
             return {
                 "error": "Evaluation timed out after 45 seconds",
-                "model_used": evaluation_model,
+                "model_used": model_to_use,
                 "eval_prompt": evaluation_prompt,
                 "cost": 0.0
             }
@@ -468,7 +472,7 @@ async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
             logger.error(f"Error during model request: {str(request_error)}", emoji_key="error")
             return {
                 "error": f"Error during model request: {str(request_error)}",
-                "model_used": evaluation_model,
+                "model_used": model_to_use,
                 "eval_prompt": evaluation_prompt,
                 "cost": 0.0
             }
@@ -477,10 +481,12 @@ async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
         logger.error(f"Essay evaluation failed: {str(e)}", emoji_key="error", exc_info=True)
         return {
             "error": str(e),
-            "model_used": evaluation_model if 'evaluation_model' in locals() else "unknown",
+            "model_used": model_to_use if 'model_to_use' in locals() else "unknown",
             "eval_prompt": evaluation_prompt if 'evaluation_prompt' in locals() else "Error generating prompt",
             "cost": 0.0
         }
+
+    return result
 
 
 async def calculate_tournament_costs(rounds_results, evaluation_cost=None):
@@ -530,7 +536,7 @@ async def calculate_tournament_costs(rounds_results, evaluation_cost=None):
 
 
 # --- Main Script Logic ---
-async def run_tournament_demo():
+async def run_tournament_demo(tracker: CostTracker):
     """Run the text tournament demo."""
     # Parse command line arguments
     args = parse_arguments()
@@ -625,6 +631,24 @@ async def run_tournament_demo():
                 # Use the imported display function for tournament results
                 display_tournament_results(results_data)
                 
+                # Track aggregated tournament cost (excluding separate evaluation)
+                if isinstance(results_data, dict) and "cost" in results_data:
+                    try:
+                        total_cost = results_data.get("cost", {}).get("total_cost", 0.0)
+                        processing_time = results_data.get("total_processing_time", 0.0)
+                        trackable = TrackableResult(
+                            cost=total_cost,
+                            input_tokens=0,
+                            output_tokens=0,
+                            provider="tournament",
+                            model="text_tournament",
+                            processing_time=processing_time
+                        )
+                        tracker.add_call(trackable)
+                        logger.info(f"Tracked tournament cost: ${total_cost:.6f}", emoji_key="cost")
+                    except Exception as track_err:
+                        logger.warning(f"Could not track tournament cost: {track_err}", exc_info=False)
+
                 # Analyze round progression if available
                 rounds_results = results_data.get('rounds_results', [])
                 if rounds_results:
@@ -682,6 +706,21 @@ async def run_tournament_demo():
                                 expand=False
                             ))
                             
+                            # Track evaluation cost separately
+                            if evaluation_cost > 0:
+                                try:
+                                    trackable_eval = TrackableResult(
+                                        cost=evaluation_cost,
+                                        input_tokens=0, # Tokens for eval not easily available here
+                                        output_tokens=0,
+                                        provider=evaluation_result['model_used'].split(':')[0],
+                                        model=evaluation_result['model_used'].split(':')[-1],
+                                        processing_time=0 # Eval time not tracked here
+                                    )
+                                    tracker.add_call(trackable_eval)
+                                except Exception as track_err:
+                                    logger.warning(f"Could not track evaluation cost: {track_err}", exc_info=False)
+
                             # Save evaluation result to a file in the tournament directory
                             if storage_path:
                                 try:
@@ -732,13 +771,22 @@ async def run_tournament_demo():
                                         
                                         fallback_evaluation["evaluation"] = completion_result.text
                                         
-                                        # Add fallback cost if available
-                                        if hasattr(completion_result, 'cost'):
-                                            evaluation_cost = completion_result.cost
-                                        elif hasattr(completion_result, 'metrics') and isinstance(completion_result.metrics, dict):
-                                            evaluation_cost = completion_result.metrics.get('cost', 0.0)
-                                        
-                                        logger.info(f"Fallback evaluation cost: ${evaluation_cost:.6f}", emoji_key="cost")
+                                        # Track fallback evaluation cost
+                                        if completion_result.cost > 0:
+                                            try:
+                                                trackable_fallback = TrackableResult(
+                                                    cost=completion_result.cost,
+                                                    input_tokens=0,
+                                                    output_tokens=0,
+                                                    provider="openai",
+                                                    model="gpt-4.1-mini",
+                                                    processing_time=0 # Eval time not tracked
+                                                )
+                                                tracker.add_call(trackable_fallback)
+                                            except Exception as track_err:
+                                                logger.warning(f"Could not track fallback evaluation cost: {track_err}", exc_info=False)
+
+                                        logger.info(f"Fallback evaluation cost: ${completion_result.cost:.6f}", emoji_key="cost")
                                         
                                         console.print(Panel(
                                             escape(fallback_evaluation["evaluation"]),
@@ -837,6 +885,9 @@ async def run_tournament_demo():
         logger.error(f"Error in tournament demo: {str(e)}", emoji_key="error", exc_info=True)
         return 1
 
+    # Display cost summary at the end
+    tracker.display_summary(console)
+
     logger.success("Text Tournament Demo Finished", emoji_key="complete")
     console.print(Panel(
         "To view full essays and detailed comparisons, check the storage directory indicated in the results summary.",
@@ -849,12 +900,13 @@ async def run_tournament_demo():
 
 async def main():
     """Run the tournament demo."""
+    tracker = CostTracker() # Instantiate tracker
     try:
         # Set up gateway
         await setup_gateway()
         
         # Run the demo
-        return await run_tournament_demo()
+        return await run_tournament_demo(tracker) # Pass tracker
     except Exception as e:
         logger.critical(f"Demo failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from collections import namedtuple  # Import namedtuple
 from pathlib import Path
 
 # Add project root to path for imports when running as script
@@ -19,10 +20,14 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway  # Use Gateway to get MCP
 from llm_gateway.tools.meta import compare_and_synthesize  # Add correct import
 from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import CostTracker  # Import CostTracker
 from llm_gateway.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.compare_synthesize_v2")
+
+# Create a simple structure for cost tracking from dict (tokens might be missing)
+TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Global MCP instance (will be populated from Gateway)
 mcp = None
@@ -179,7 +184,7 @@ def print_result(title: str, result: dict):
     console.print() # Add spacing after each result block
 
 
-async def run_comparison_demo():
+async def run_comparison_demo(tracker: CostTracker):
     """Demonstrate different modes of compare_and_synthesize."""
     if not mcp:
         logger.error("MCP server not initialized. Run setup first.", emoji_key="error")
@@ -249,6 +254,20 @@ async def run_comparison_demo():
             # "synthesis_model": synthesis_model_config # Optionally specify
         })
         print_result("Response Format: 'best' (with reasoning)", result)
+        # Track cost
+        if isinstance(result, dict) and "cost" in result and "synthesis_provider" in result and "synthesis_model" in result:
+            try:
+                trackable = TrackableResult(
+                    cost=result.get("cost", {}).get("total_cost", 0.0),
+                    input_tokens=0, # Tokens not typically aggregated in this tool's output
+                    output_tokens=0,
+                    provider=result.get("synthesis_provider", "unknown"),
+                    model=result.get("synthesis_model", "compare_synthesize"),
+                    processing_time=result.get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for 'best' format: {track_err}", exc_info=False)
     except Exception as e:
         logger.error(f"Error during 'best' format demo: {e}", emoji_key="error", exc_info=True)
 
@@ -263,6 +282,20 @@ async def run_comparison_demo():
             "include_reasoning": True,
         })
         print_result("Response Format: 'synthesis' (Comprehensive Strategy)", result)
+        # Track cost
+        if isinstance(result, dict) and "cost" in result and "synthesis_provider" in result and "synthesis_model" in result:
+            try:
+                trackable = TrackableResult(
+                    cost=result.get("cost", {}).get("total_cost", 0.0),
+                    input_tokens=0, # Tokens not typically aggregated
+                    output_tokens=0,
+                    provider=result.get("synthesis_provider", "unknown"),
+                    model=result.get("synthesis_model", "compare_synthesize"),
+                    processing_time=result.get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for 'synthesis comprehensive': {track_err}", exc_info=False)
     except Exception as e:
         logger.error(f"Error during 'synthesis comprehensive' demo: {e}", emoji_key="error", exc_info=True)
 
@@ -277,6 +310,20 @@ async def run_comparison_demo():
             "include_reasoning": False, # Hide the synthesis strategy explanation
         })
         print_result("Response Format: 'synthesis' (Conservative, No Reasoning)", result)
+        # Track cost
+        if isinstance(result, dict) and "cost" in result and "synthesis_provider" in result and "synthesis_model" in result:
+            try:
+                trackable = TrackableResult(
+                    cost=result.get("cost", {}).get("total_cost", 0.0),
+                    input_tokens=0, # Tokens not typically aggregated
+                    output_tokens=0,
+                    provider=result.get("synthesis_provider", "unknown"),
+                    model=result.get("synthesis_model", "compare_synthesize"),
+                    processing_time=result.get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for 'synthesis conservative': {track_err}", exc_info=False)
     except Exception as e:
         logger.error(f"Error during 'synthesis conservative' demo: {e}", emoji_key="error", exc_info=True)
 
@@ -290,6 +337,20 @@ async def run_comparison_demo():
             "synthesis_model": synthesis_model_config,
         })
         print_result("Response Format: 'ranked' (with reasoning)", result)
+        # Track cost
+        if isinstance(result, dict) and "cost" in result and "synthesis_provider" in result and "synthesis_model" in result:
+            try:
+                trackable = TrackableResult(
+                    cost=result.get("cost", {}).get("total_cost", 0.0),
+                    input_tokens=0, # Tokens not typically aggregated
+                    output_tokens=0,
+                    provider=result.get("synthesis_provider", "unknown"),
+                    model=result.get("synthesis_model", "compare_synthesize"),
+                    processing_time=result.get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for 'ranked' format: {track_err}", exc_info=False)
     except Exception as e:
         logger.error(f"Error during 'ranked' format demo: {e}", emoji_key="error", exc_info=True)
 
@@ -303,14 +364,32 @@ async def run_comparison_demo():
             "synthesis_model": synthesis_model_config,
         })
         print_result("Response Format: 'analysis'", result)
+        # Track cost
+        if isinstance(result, dict) and "cost" in result and "synthesis_provider" in result and "synthesis_model" in result:
+            try:
+                trackable = TrackableResult(
+                    cost=result.get("cost", {}).get("total_cost", 0.0),
+                    input_tokens=0, # Tokens not typically aggregated
+                    output_tokens=0,
+                    provider=result.get("synthesis_provider", "unknown"),
+                    model=result.get("synthesis_model", "compare_synthesize"),
+                    processing_time=result.get("processing_time", 0.0)
+                )
+                tracker.add_call(trackable)
+            except Exception as track_err:
+                logger.warning(f"Could not track cost for 'analysis' format: {track_err}", exc_info=False)
     except Exception as e:
         logger.error(f"Error during 'analysis' format demo: {e}", emoji_key="error", exc_info=True)
+
+    # Display cost summary at the end
+    tracker.display_summary(console)
 
 
 async def main():
     """Run the enhanced compare_and_synthesize demo."""
+    tracker = CostTracker() # Instantiate tracker
     await setup_gateway_and_tools()
-    await run_comparison_demo() # UNCOMMENTED
+    await run_comparison_demo(tracker) # Pass tracker
     # logger.info("Skipping run_comparison_demo() as the 'compare_and_synthesize' tool function is missing.") # Remove skip message
 
 if __name__ == "__main__":

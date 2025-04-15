@@ -19,12 +19,13 @@ from rich.table import Table  # noqa: E402
 from llm_gateway.constants import Provider  # noqa: E402
 from llm_gateway.core.server import Gateway  # noqa: E402
 from llm_gateway.utils import get_logger  # noqa: E402
+from llm_gateway.utils.display import CostTracker  # Import CostTracker
 from llm_gateway.utils.logging.console import console  # noqa: E402
 
 # Initialize logger
 logger = get_logger("example.multi_provider")
 
-async def run_provider_comparison():
+async def run_provider_comparison(tracker: CostTracker):
     """Run a comparison of completions across multiple providers using Rich."""
     console.print(Rule("[bold blue]Multi-Provider Completion Comparison[/bold blue]"))
     logger.info("Starting multi-provider comparison demo", emoji_key="start")
@@ -44,7 +45,9 @@ async def run_provider_comparison():
         {"provider": Provider.OPENAI.value, "model": "gpt-4.1-mini"},
         {"provider": Provider.ANTHROPIC.value, "model": "claude-3-5-haiku-20241022"}, 
         {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash-lite"}, 
-        {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat"} 
+        {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat"}, 
+        {"provider": Provider.GROK.value, "model": "grok-3-mini-latest"},
+        {"provider": Provider.OPENROUTER.value, "model": "mistralai/mistral-nemo"}
     ]
     
     results_data = []
@@ -67,6 +70,9 @@ async def run_provider_comparison():
                 max_tokens=150
             )
             
+            # Track the cost
+            tracker.add_call(result)
+
             results_data.append({
                 "provider": provider_name,
                 "model": model_name,
@@ -135,13 +141,17 @@ async def run_provider_comparison():
     else:
         console.print("[yellow]No valid results to generate summary.[/yellow]")
         
+    # Display final summary
+    tracker.display_summary(console) # Display summary at the end
+    
     console.print() # Final spacing
     return 0
 
 async def main():
     """Run the demo."""
+    tracker = CostTracker() # Instantiate tracker
     try:
-        return await run_provider_comparison()
+        return await run_provider_comparison(tracker) # Pass tracker
     except Exception as e:
         logger.critical(f"Demo failed: {str(e)}", emoji_key="critical")
         return 1

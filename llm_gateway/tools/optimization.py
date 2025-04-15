@@ -473,8 +473,16 @@ async def recommend_model(
         "gemini/gemini-2.0-flash-thinking-exp-01-21": ["reasoning", "coding", "knowledge", "instruction-following", "multimodal"],
         "gemini/gemini-2.5-pro-exp-03-25": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Map from gemini-2.5-pro-preview-03-25
 
+        # Grok models (Estimates)
+        "grok/grok-3-latest": ["reasoning", "knowledge", "instruction-following", "math"],
+        "grok/grok-3-fast-latest": ["reasoning", "knowledge", "instruction-following"],
+        "grok/grok-3-mini-latest": ["knowledge", "instruction-following"],
+        "grok/grok-3-mini-fast-latest": ["knowledge", "instruction-following"],
+
         # OpenRouter models
-        "mistralai/mistral-nemo": ["knowledge", "instruction-following", "coding"] # Keep guess
+        # Note: Capabilities depend heavily on the underlying model proxied by OpenRouter.
+        # This is a generic entry for the one model listed in constants.py.
+        "openrouter/mistralai/mistral-nemo": ["knowledge", "instruction-following", "coding"] # Estimate based on Mistral family
     }
 
     model_speed_fallback = {}
@@ -502,7 +510,14 @@ async def recommend_model(
         "gemini/gemini-2.0-flash-thinking-exp-01-21": 6,
         "gemini/gemini-2.5-pro-exp-03-25": 9,
 
-        "mistralai/mistral-nemo": 7
+        # Grok models (Estimates: 1-10 scale)
+        "grok/grok-3-latest": 9,
+        "grok/grok-3-fast-latest": 8,
+        "grok/grok-3-mini-latest": 6,
+        "grok/grok-3-mini-fast-latest": 6,
+
+        # OpenRouter models (Estimates: 1-10 scale)
+        "openrouter/mistralai/mistral-nemo": 7 # Estimate based on Mistral family
     }
     # --- End Model Metadata --- 
 
@@ -744,7 +759,31 @@ async def execute_optimized_workflow(
 
     # --- Tool Mapping --- (Dynamically import or map tool names to functions)
     # Ensure all tools listed in workflows are mapped here correctly.
+    
+    try:
+        from llm_gateway.tools.meta_api_tool import APIMetaTool # Import the class
+        api_meta_tool = None # Placeholder - this needs to be the actual instance
+        
+        if api_meta_tool: # Only add if instance is available
+             meta_api_tools = {
+                 "register_api": api_meta_tool.register_api,
+                 "list_registered_apis": api_meta_tool.list_registered_apis,
+                 "get_api_details": api_meta_tool.get_api_details,
+                 "unregister_api": api_meta_tool.unregister_api,
+                 "call_dynamic_tool": api_meta_tool.call_dynamic_tool,
+                 "refresh_api": api_meta_tool.refresh_api,
+                 "get_tool_details": api_meta_tool.get_tool_details,
+                 "list_available_tools": api_meta_tool.list_available_tools,
+             }
+        else:
+            logger.warning("APIMetaTool instance not available in execute_optimized_workflow. Meta API tools will not be callable in workflows.")
+            meta_api_tools = {}
+    except ImportError:
+        logger.warning("APIMetaTool not found (meta_api_tool.py). Meta API tools cannot be used in workflows.")
+        meta_api_tools = {}
+        
     tool_functions = {
+        # Core Gateway Tools
         "estimate_cost": estimate_cost,
         "compare_models": compare_models,
         "recommend_model": recommend_model,
@@ -766,6 +805,10 @@ async def execute_optimized_workflow(
         "enhance_ocr_text": enhance_ocr_text, 
         "analyze_pdf_structure": analyze_pdf_structure,
         "batch_process_documents": batch_process_documents,
+        
+        # Merge Meta API tools
+        **meta_api_tools,
+        
         # Add other tools as needed...
     }
 
