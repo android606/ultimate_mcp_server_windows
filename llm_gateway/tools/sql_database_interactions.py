@@ -1611,7 +1611,7 @@ async def get_table_details(
                         # Get null count
                         null_query = text(f"SELECT COUNT(*) FROM {table_identifier} WHERE {col_identifier} IS NULL")
                         null_result = await conn.execute(null_query)
-                        null_count_row = await null_result.fetchone()
+                        null_count_row = null_result.fetchone()
                         stats["null_count"] = null_count_row[0] if null_count_row else 0
 
                         # Basic Numeric Stats (MIN, MAX, AVG)
@@ -1622,7 +1622,7 @@ async def get_table_details(
                                 FROM {table_identifier} WHERE {col_identifier} IS NOT NULL
                             """)
                             num_stats_result = await conn.execute(num_stats_query)
-                            num_stats_row = await num_stats_result.fetchone()
+                            num_stats_row = num_stats_result.fetchone()
                             min_val, max_val, avg_val = num_stats_row if num_stats_row else (None, None, None)
                             stats["min"] = min_val
                             stats["max"] = max_val

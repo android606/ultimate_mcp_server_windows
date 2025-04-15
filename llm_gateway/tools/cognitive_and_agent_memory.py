@@ -2086,7 +2086,7 @@ async def add_action_dependency(
                            "SELECT dependency_id FROM dependencies WHERE source_action_id = ? AND target_action_id = ? AND dependency_type = ?",
                            (source_action_id, target_action_id, dependency_type)
                       ) as existing_cursor:
-                           existing_row = await existing_cursor.fetchone()
+                           existing_row = existing_cursor.fetchone()
                            if existing_row:
                                 dependency_id = existing_row["dependency_id"]
                                 logger.debug(f"Dependency already existed. Retrieved existing ID: {dependency_id}")
@@ -4336,7 +4336,7 @@ async def get_artifact_by_id(
 
                   # Update access stats for related memory if possible
                   async with conn.execute("SELECT memory_id FROM memories WHERE artifact_id = ?", (artifact_id,)) as mem_cursor:
-                       mem_row = await mem_cursor.fetchone()
+                       mem_row = mem_cursor.fetchone()
                        if mem_row:
                            await MemoryUtils._update_memory_access(conn, mem_row["memory_id"])
                            await MemoryUtils._log_memory_operation(conn, artifact["workflow_id"], "access_via_artifact", mem_row["memory_id"], None, {"artifact_id": artifact_id})
@@ -4869,7 +4869,7 @@ async def optimize_working_memory(
         async with DBConnection(db_path) as conn:
             # Get current context state
             state_cursor = await conn.execute("SELECT workflow_id, active_memories FROM cognitive_states WHERE id = ?", (context_id,))
-            state_row = await state_cursor.fetchone()
+            state_row = state_cursor.fetchone()
             if not state_row:
                 raise ToolInputError(f"Context {context_id} not found.", param_name="context_id")
             workflow_id = state_row["workflow_id"]
@@ -6045,7 +6045,7 @@ async def get_linked_memories(
                                 """, 
                                 (target_memory_id,)
                             ) as mem_cursor:
-                                target_memory = await mem_cursor.fetchone()
+                                target_memory = mem_cursor.fetchone()
                                 if target_memory:
                                     mem_dict = dict(target_memory)
                                     # Process fields
@@ -6091,7 +6091,7 @@ async def get_linked_memories(
                                 """, 
                                 (source_memory_id,)
                             ) as mem_cursor:
-                                source_memory = await mem_cursor.fetchone()
+                                source_memory = mem_cursor.fetchone()
                                 if source_memory:
                                     mem_dict = dict(source_memory)
                                     # Process fields
