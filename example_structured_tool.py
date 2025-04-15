@@ -11,10 +11,77 @@ that implements all the best practices for LLM usability:
 """
 import time
 from typing import Any, Dict, Optional
+import asyncio
+import uuid
+
+# --- Import RAG tools/services --- 
+# Assuming direct function import for simplicity in example
+# In a real structured app, might use dependency injection or service locators
+from llm_gateway.tools.rag import (
+    create_knowledge_base, 
+    add_documents, 
+    retrieve_context, 
+    delete_knowledge_base
+)
+# ---------------------------------
 
 from error_handling import non_empty_string, validate_inputs, with_error_handling
 from tool_annotations import ToolAnnotations
 
+# --- Define KB Name for Demo --- 
+DEMO_KB_NAME = f"example_tool_kb_{uuid.uuid4().hex[:8]}" 
+# ------------------------------
+
+# --- Sample Data (moved to top) ---
+# This data will now be *added* to the KB during setup
+SAMPLE_DOCUMENTS = [
+    {
+        "id": "kb-001",
+        "title": "Introduction to Climate Change",
+        "text": "An overview of climate change causes and effects.",
+        "type": "article",
+        "level": "beginner",
+        "date": "2023-01-15",
+        "score_for_ranking": 0.95 # Keep score for potential sorting demonstration?
+    },
+    {
+        "id": "kb-002",
+        "title": "Machine Learning Fundamentals",
+        "text": "Learn the basics of machine learning algorithms.",
+        "type": "tutorial",
+        "level": "beginner",
+        "date": "2023-02-20",
+        "score_for_ranking": 0.92
+    },
+    {
+        "id": "kb-003",
+        "title": "Advanced Neural Networks",
+        "text": "Deep dive into neural network architectures.",
+        "type": "tutorial",
+        "level": "advanced",
+        "date": "2023-03-10",
+        "score_for_ranking": 0.88
+    },
+    {
+        "id": "kb-004",
+        "title": "Climate Policy FAQ",
+        "text": "Frequently asked questions about climate policies.",
+        "type": "faq",
+        "level": "intermediate",
+        "date": "2023-04-05",
+        "score_for_ranking": 0.82
+    },
+    {
+        "id": "kb-005",
+        "title": "Python Reference for Data Science",
+        "text": "Reference guide for Python in data science applications.",
+        "type": "reference",
+        "level": "intermediate",
+        "date": "2023-05-12",
+        "score_for_ranking": 0.78
+    }
+]
+# -------------------------------------
 
 class ExampleTool:
     """Example implementation of a well-structured MCP tool."""
@@ -171,9 +238,9 @@ class ExampleTool:
                 
             Returns:
                 Dictionary containing:
-                - results: List of matching items with metadata
-                - total_matches: Total number of matches found
-                - search_time_ms: Search execution time in milliseconds
+                - results: List of retrieved document chunks with metadata and scores.
+                - count: Number of results returned (respecting limit).
+                - retrieval_time: Time taken for retrieval in seconds.
                 
             Examples:
                 Basic search:
@@ -189,126 +256,96 @@ class ExampleTool:
             # Start timing
             start_time = time.time()
             
-            # Validate inputs
-            if not query or not isinstance(query, str):
-                return {
-                    "error": "Invalid query. Query must be a non-empty string.",
-                    "results": [],
-                    "total_matches": 0,
-                    "search_time_ms": 0
-                }
-                
-            # Handle filters
-            filters = filters or {}
-            content_type = filters.get("type")
-            level = filters.get("level")
-            date_after = filters.get("date_after")
+            # Convert simple filters to ChromaDB compatible format if needed
+            # The retrieve_context tool might already handle this, depending on its implementation.
+            # For simplicity, we pass the filters dict directly.
+            metadata_filter = filters # Pass filters directly
             
-            # Validate limit
-            limit = max(1, min(20, limit))  # Ensure limit is between 1-20
+            # Ensure limit is positive
+            limit = max(1, limit)
             
             try:
-                # Simulate knowledge base search
-                # In a real implementation, this would query a database, search engine, etc.
-                sample_results = [
-                    {
-                        "id": "kb-001",
-                        "title": "Introduction to Climate Change",
-                        "summary": "An overview of climate change causes and effects.",
-                        "type": "article",
-                        "level": "beginner",
-                        "date": "2023-01-15",
-                        "score": 0.95
-                    },
-                    {
-                        "id": "kb-002",
-                        "title": "Machine Learning Fundamentals",
-                        "summary": "Learn the basics of machine learning algorithms.",
-                        "type": "tutorial",
-                        "level": "beginner",
-                        "date": "2023-02-20",
-                        "score": 0.92
-                    },
-                    {
-                        "id": "kb-003",
-                        "title": "Advanced Neural Networks",
-                        "summary": "Deep dive into neural network architectures.",
-                        "type": "tutorial",
-                        "level": "advanced",
-                        "date": "2023-03-10",
-                        "score": 0.88
-                    },
-                    {
-                        "id": "kb-004",
-                        "title": "Climate Policy FAQ",
-                        "summary": "Frequently asked questions about climate policies.",
-                        "type": "faq",
-                        "level": "intermediate",
-                        "date": "2023-04-05",
-                        "score": 0.82
-                    },
-                    {
-                        "id": "kb-005",
-                        "title": "Python Reference for Data Science",
-                        "summary": "Reference guide for Python in data science applications.",
-                        "type": "reference",
-                        "level": "intermediate",
-                        "date": "2023-05-12",
-                        "score": 0.78
-                    }
-                ]
-                
-                # Simulate relevance matching based on query
-                matched_results = []
-                for result in sample_results:
-                    # Simple keyword matching (real implementation would use proper search)
-                    if query.lower() in result["title"].lower() or query.lower() in result["summary"].lower():
-                        
-                        # Apply filters if specified
-                        if content_type and result["type"] != content_type:
-                            continue
-                        if level and result["level"] != level:
-                            continue
-                        if date_after and result["date"] < date_after:
-                            continue
-                            
-                        matched_results.append(result)
-                
-                # Sort by relevance score
-                matched_results.sort(key=lambda x: x["score"], reverse=True)
-                
-                # Apply limit
-                limited_results = matched_results[:limit]
-                
-                # Calculate search time
-                search_time_ms = int((time.time() - start_time) * 1000)
+                # Call the actual retrieve_context tool
+                # Ensure DEMO_KB_NAME is defined appropriately
+                retrieval_result = await retrieve_context(
+                    knowledge_base_name=DEMO_KB_NAME,
+                    query=query,
+                    top_k=limit,
+                    metadata_filter=metadata_filter
+                    # Add other relevant params like min_score if needed
+                )
                 
                 # Return formatted results
-                return {
-                    "results": limited_results,
-                    "total_matches": len(matched_results),
-                    "search_time_ms": search_time_ms,
-                    "query": query  # Return the original query for reference
-                }
+                # The retrieve_context tool already returns a dict with 'success', 'results', etc.
+                # We can return it directly or reformat if needed.
+                if retrieval_result.get("success"):
+                    return {
+                        "results": retrieval_result.get("results", []),
+                        "count": len(retrieval_result.get("results", [])),
+                        "retrieval_time": retrieval_result.get("retrieval_time", time.time() - start_time)
+                    }
+                else:
+                    # Propagate the error from retrieve_context
+                    return {
+                        "error": retrieval_result.get("message", "Retrieval failed"),
+                        "results": [],
+                        "count": 0,
+                        "retrieval_time": time.time() - start_time
+                    }
                 
             except Exception as e:
                 # Log the error (in a real implementation)
                 print(f"Search error: {str(e)}")
                 
                 # Return error response
-                return {
-                    "error": f"Search failed: {str(e)}",
-                    "results": [],
-                    "total_matches": 0,
-                    "search_time_ms": int((time.time() - start_time) * 1000)
-                }
+                return {"error": f"Search failed: {str(e)}"}
 
+# --- Added Setup/Teardown for Demo KB ---
+async def setup_demo_kb():
+    """Creates and populates the demo knowledge base."""
+    print(f"Setting up demo knowledge base: {DEMO_KB_NAME}...")
+    try:
+        await create_knowledge_base(name=DEMO_KB_NAME, overwrite=True)
+        texts_to_add = [doc["text"] for doc in SAMPLE_DOCUMENTS]
+        metadatas_to_add = [{k:v for k,v in doc.items() if k != 'text'} for doc in SAMPLE_DOCUMENTS]
+        ids_to_add = [doc["id"] for doc in SAMPLE_DOCUMENTS]
+        await add_documents(
+            knowledge_base_name=DEMO_KB_NAME,
+            documents=texts_to_add,
+            metadatas=metadatas_to_add,
+            ids=ids_to_add
+        )
+        print("Demo knowledge base setup complete.")
+    except Exception as e:
+        print(f"Error setting up demo KB: {e}")
+        raise
+
+async def teardown_demo_kb():
+    """Deletes the demo knowledge base."""
+    print(f"Cleaning up demo knowledge base: {DEMO_KB_NAME}...")
+    try:
+        await delete_knowledge_base(name=DEMO_KB_NAME)
+        print("Demo knowledge base cleaned up.")
+    except Exception as e:
+        print(f"Error cleaning up demo KB: {e}")
+# -----------------------------------------
 
 def register_example_tools(mcp_server):
     """
     Register all example tools with the MCP server.
+    Also performs setup/teardown for the demo KB needed by this tool.
     
     Args:
         mcp_server: MCP server instance
     """
+    # Perform setup when tools are registered
+    # Note: In a real server, setup/teardown might be handled differently (e.g., lifespan)
+    # Running async setup directly here might block if called synchronously.
+    # A better approach might be to trigger setup after server start.
+    # For this example modification, we assume it can be awaited here or handled externally.
+    # asyncio.run(setup_demo_kb()) # This would block if register_example_tools is sync
+    # TODO: Need a way to run async setup/teardown non-blockingly or during server lifespan.
+    # Skipping async setup call here due to potential blocking issues.
+    # KB needs to be set up *before* the tool is called in a demo.
+    
     ExampleTool(mcp_server) 

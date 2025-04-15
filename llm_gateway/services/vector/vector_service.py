@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 
-from llm_gateway.services.vector.embeddings import cosine_similarity, get_embedding_service
+from llm_gateway.services.vector.embeddings import get_embedding_service
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -369,8 +370,16 @@ class VectorCollection:
         Returns:
             List of results with scores and metadata
         """
-        # Get query embedding
-        query_embedding = await self.embedding_service.get_embedding(query_text, model)
+        # Get query embedding - call create_embeddings with a list and get the first result
+        query_embeddings = await self.embedding_service.create_embeddings(
+            texts=[query_text], # Pass text as a list
+            # model=model # create_embeddings uses the model set during service init
+        )
+        if not query_embeddings: # Handle potential empty result
+            logger.error(f"Failed to generate embedding for query: {query_text}")
+            return []
+            
+        query_embedding = query_embeddings[0] # Get the first (only) embedding
         
         # Search with the embedding
         return self.search(query_embedding, top_k, filter, similarity_threshold)
@@ -1090,7 +1099,7 @@ class VectorDatabaseService:
             texts: Texts to add
             metadatas: Optional metadata for each text
             ids: Optional IDs for the texts
-            embedding_model: Embedding model name
+            embedding_model: Embedding model name (NOTE: Model is set during EmbeddingService init)
             batch_size: Maximum batch size for embedding generation
             
         Returns:
@@ -1105,12 +1114,17 @@ class VectorDatabaseService:
             collection = await self.create_collection(collection_name)
         
         # Generate embeddings
-        logger.debug(f"Generating embeddings for {len(texts)} texts with model: {embedding_model or 'default'}")
-        embeddings = await self.embedding_service.get_embeddings(
-            texts=texts,
-            model=embedding_model,
-            batch_size=batch_size
-        )
+        logger.debug(f"Generating embeddings for {len(texts)} texts using model: {self.embedding_service.model_name}")
+        embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            batch_embeddings = await self.embedding_service.create_embeddings(
+                texts=batch_texts,
+            )
+            embeddings.extend(batch_embeddings)
+            if len(texts) > batch_size: # Add delay if batching
+                await asyncio.sleep(0.1) # Small delay between batches
+        
         logger.debug(f"Generated {len(embeddings)} embeddings")
         
         # Add to collection
@@ -1213,12 +1227,17 @@ class VectorDatabaseService:
                 if include_vectors:
                     include_params.append("embeddings")
                 
-                # Get embedding directly from OpenAI to avoid ChromaDB's default model
-                query_embedding = await self.embedding_service.get_embedding(
-                    text=query_text,
-                    model=embedding_model
+                # Get embedding directly using our service
+                query_embeddings = await self.embedding_service.create_embeddings(
+                    texts=[query_text],
+                    # model=embedding_model # Model is defined in the service instance
                 )
-                logger.debug(f"Using explicitly generated embedding with model {embedding_model or 'default'}")
+                if not query_embeddings:
+                    logger.error(f"Failed to generate embedding for query: {query_text}")
+                    return []
+                query_embedding = query_embeddings[0]
+                
+                logger.debug(f"Using explicitly generated embedding with model {self.embedding_service.model_name}")
                 
                 # Search ChromaDB collection with our embedding
                 results = collection.query(
@@ -1263,7 +1282,7 @@ class VectorDatabaseService:
                 query_text=query_text,
                 top_k=top_k,
                 filter=filter,
-                model=embedding_model,
+                # model=embedding_model, # Pass model used by the collection's service instance
                 similarity_threshold=similarity_threshold
             )
             

@@ -19,6 +19,7 @@ from llm_gateway.core.providers.base import get_provider
 from llm_gateway.exceptions import ProviderError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
+from llm_gateway.tools.base import BaseTool
 
 logger = get_logger("llm_gateway.tools.extraction")
 
@@ -44,7 +45,7 @@ async def extract_json(
                      JSON against. If validation fails, the error is included in the result.
         provider: The name of the LLM provider (e.g., "openai"). Defaults to "openai".
                   Providers supporting JSON mode (like OpenAI) are recommended for reliability.
-        model: The specific model ID (e.g., "openai/gpt-4o-mini"). Uses provider default if None.
+        model: The specific model ID (e.g., "openai/gpt-4.1-mini"). Uses provider default if None.
         validate_output: (Optional) If True (default) and `json_schema` is provided, validates
                          the extracted data against the schema.
 
@@ -193,7 +194,7 @@ async def extract_table(
         extract_metadata: (Optional) If True, attempts to extract contextual metadata about the table,
                           such as a title, surrounding notes, or source information. Default False.
         provider: The name of the LLM provider (e.g., "openai"). Defaults to "openai".
-        model: The specific model ID (e.g., "openai/gpt-4o-mini"). Uses provider default if None.
+        model: The specific model ID (e.g., "openai/gpt-4.1-mini"). Uses provider default if None.
 
     Returns:
         A dictionary containing the extracted table data and metadata:
@@ -334,7 +335,7 @@ async def extract_key_value_pairs(
         keys: (Optional) A list of specific key names to look for and extract. If omitted,
               the tool attempts to extract all identifiable key-value pairs.
         provider: The name of the LLM provider (e.g., "openai"). Defaults to "openai".
-        model: The specific model ID (e.g., "openai/gpt-4o-mini"). Uses provider default if None.
+        model: The specific model ID (e.g., "openai/gpt-4.1-mini"). Uses provider default if None.
 
     Returns:
         A dictionary containing the extracted key-value data and metadata:
@@ -583,7 +584,7 @@ async def extract_semantic_schema(
 # Note: This is a utility function, not typically exposed as a direct tool,
 # but kept here as it relates to extraction from LLM *responses*.
 # No standard decorators applied.
-async def extract_code_from_response(response_text: str, model: str = "openai:gpt-4o-mini", timeout: int = 15) -> str:
+async def extract_code_from_response(response_text: str, model: str = "openai:gpt-4.1-mini", timeout: int = 15) -> str:
     """Extracts code blocks from LLM response text, using an LLM for complex cases.
 
     Primarily designed to clean up responses from code generation tasks.
@@ -593,7 +594,7 @@ async def extract_code_from_response(response_text: str, model: str = "openai:gp
     Args:
         response_text: The text potentially containing code blocks.
         model: The specific model ID to use for LLM-based extraction if regex fails.
-               Defaults to "openai/gpt-4o-mini".
+               Defaults to "openai/gpt-4.1-mini".
         timeout: Timeout in seconds for the LLM extraction call. Default 15.
 
     Returns:
@@ -637,3 +638,27 @@ async def extract_code_from_response(response_text: str, model: str = "openai:gp
     except Exception as e:
         logger.error(f"LLM code extraction failed: {str(e)}. Returning original text.", exc_info=False)
         return response_text # Fallback to original on error
+
+class ExtractionTools(BaseTool):
+    """Tools for extracting structured data from unstructured text."""
+    
+    tool_name = "extraction"
+    description = "Tools for extracting structured data from unstructured text, including JSON, tables, and key-value pairs."
+    
+    def __init__(self, gateway):
+        """Initialize extraction tools.
+        
+        Args:
+            gateway: Gateway or MCP server instance
+        """
+        super().__init__(gateway)
+        self._register_tools()
+        
+    def _register_tools(self):
+        """Register extraction tools with MCP server."""
+        # Register the extraction functions as tools
+        self.mcp.tool(name="extract_json")(extract_json)
+        self.mcp.tool(name="extract_table")(extract_table) 
+        self.mcp.tool(name="extract_key_value_pairs")(extract_key_value_pairs)
+        self.mcp.tool(name="extract_semantic_schema")(extract_semantic_schema)
+        self.logger.info(f"Registered extraction tools", emoji_key="success")

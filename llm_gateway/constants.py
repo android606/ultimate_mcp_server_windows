@@ -37,12 +37,16 @@ class LogLevel(str, Enum):
 COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     # OpenAI models
     "gpt-4o": {"input": 2.5, "output": 10.0},
-    "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+    "gpt-4o-mini": {"input": 0.15, "output": 0.6},
+    "gpt-4.1": {"input": 2.0, "output": 8.0},
+    "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
+    "gpt-4.1-nano": {"input": 0.10, "output": 0.40},
+    "o1-preview": {"input": 15.00, "output": 60.00},
     "o3-mini": {"input": 1.10, "output": 4.40},
     
     # Claude models
-    "claude-3-7-sonnet-latest": {"input": 3.0, "output": 15.0},
-    "claude-3-5-haiku-latest": {"input": 0.80, "output": 4.0},
+    "claude-3-7-sonnet-20250219": {"input": 3.0, "output": 15.0},
+    "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.0},
     
     # DeepSeek models
     "deepseek-chat": {"input": 0.27, "output": 1.10},
@@ -56,17 +60,16 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
 
     # OpenRouter models
     "mistralai/mistral-nemo": {"input": 0.035, "output": 0.08}, 
-    "openrouter/quasar-alpha": {"input": 0.0, "output": 0.0},  
 }
 
 
 # Default models by provider
 DEFAULT_MODELS = {
-    Provider.OPENAI: "gpt-4o-mini",
-    Provider.ANTHROPIC: "claude-3-5-haiku-latest",
+    Provider.OPENAI: "gpt-4.1-mini",
+    Provider.ANTHROPIC: "claude-3-5-haiku-20241022",
     Provider.DEEPSEEK: "deepseek-chat",
-    Provider.GEMINI: "gemini-2.0-flash-lite",
-    Provider.OPENROUTER: "openrouter/quasar-alpha"
+    Provider.GEMINI: "gemini-2.5-pro-exp-03-25",
+    Provider.OPENROUTER: "mistralai/mistral-nemo"
 }
 
 

@@ -865,7 +865,11 @@ async def _store_embedding(conn: aiosqlite.Connection, memory_id: str, text: str
              return None
 
         # Generate embedding using the service (handles caching internally)
-        embedding_array: Optional[np.ndarray] = await embedding_service.get_embedding(text)
+        embedding_list = await embedding_service.create_embeddings(texts=[text])
+        if not embedding_list:
+             logger.warning(f"Failed to generate embedding for memory {memory_id}")
+             return None
+        embedding_array = np.array(embedding_list[0]) # Convert list to numpy array
 
         # Generate a unique ID for this embedding entry in our DB table
         embedding_db_id = MemoryUtils.generate_id()
@@ -939,10 +943,11 @@ async def _find_similar_memories(
             return []
 
         # 1. Generate query embedding
-        query_embedding: Optional[np.ndarray] = await embedding_service.get_embedding(query_text)
-        if query_embedding is None:
+        query_embedding_list = await embedding_service.create_embeddings(texts=[query_text])
+        if not query_embedding_list:
             logger.warning(f"Failed to generate query embedding for: '{query_text[:50]}...'")
             return []
+        query_embedding = np.array(query_embedding_list[0])
         query_embedding_2d = query_embedding.reshape(1, -1)
 
         # 2. Build query to fetch candidate embeddings from DB, including filters
@@ -1919,7 +1924,7 @@ CONCISE SUMMARY:
         # Use the default provider for context summarization
         # Here we prioritize speed and cost over quality
         provider = "anthropic"  # Using Anthropic for summarization
-        model = "claude-3-5-haiku-latest"  # Using Haiku for faster, cheaper summarization
+        model = "claude-3-5-haiku-20241022"  # Using Haiku for faster, cheaper summarization
         
         # Get provider instance
         provider_instance = await get_provider(provider)
@@ -6444,7 +6449,7 @@ async def consolidate_memories(
             try:
                  provider_instance = await get_provider(provider)
                  # Use a reasonable default model if none provided for the provider
-                 default_models = {"openai": "gpt-4o-mini", "anthropic": "claude-3-haiku-20240307"}
+                 default_models = {"openai": "gpt-4.1-mini", "anthropic": "claude-3-5-haiku-20241022"}
                  final_model = model or default_models.get(provider)
                  if not final_model:
                       logger.warning(f"No specific or default model known for provider '{provider}'. Attempting provider default.")
@@ -6719,8 +6724,8 @@ async def summarize_text(
     
     # Use default models for common providers if none specified
     default_models = {
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-3-haiku-20240307"
+        "openai": "gpt-4.1-mini",
+        "anthropic": "claude-3-5-haiku-20241022"
     }
     model_to_use = model or default_models.get(provider)
     

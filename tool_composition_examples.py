@@ -6,9 +6,23 @@ in sequences and patterns, making it easier for LLMs to understand how to
 compose tools for multi-step operations.
 """
 from typing import Any, Dict, List, Optional
+import asyncio
+import aiofiles
+import csv
+import io
+import json
+import os
+from pathlib import Path
 
 from error_handling import non_empty_string, validate_inputs, with_error_handling
 from tool_annotations import QUERY_TOOL, READONLY_TOOL
+from llm_gateway.tools.filesystem import write_file, read_file, delete_file
+from llm_gateway.tools.document import summarize_document
+from llm_gateway.tools.use_local_text_tools import run_sed
+from llm_gateway.utils import get_logger
+from llm_gateway.exceptions import ToolInputError, ToolExecutionError
+
+logger = get_logger("tool_composition_examples")
 
 
 class DocumentProcessingExample:
@@ -101,7 +115,7 @@ class DocumentProcessingExample:
         
         @self.mcp.tool(
             description=(
-                "Analyze a single document chunk. "
+                "Analyze a single document chunk by summarizing it. "
                 "This is the SECOND step in the document processing workflow. "
                 "Use after chunk_document() and before aggregate_chunks()."
             ),
@@ -127,7 +141,7 @@ class DocumentProcessingExample:
             ctx=None
         ) -> Dict[str, Any]:
             """
-            Analyze a single document chunk.
+            Analyze a single document chunk by summarizing it.
             
             This tool is the second step in a multi-step document processing workflow:
             1. First, chunk the document with chunk_document()
@@ -143,24 +157,35 @@ class DocumentProcessingExample:
             Returns:
                 Dictionary containing the analysis results
             """
-            # Simulate chunk analysis
-            word_count = len(chunk.split())
-            key_sentences = [s.strip() for s in chunk.split(".") if len(s.strip()) > 40][:3]
-            
-            # Different analysis types
-            analysis = {
-                "word_count": word_count,
-                "key_sentences": key_sentences,
-            }
-            
-            # Add analysis-specific data
-            if analysis_type == "sentiment":
-                # Simulate sentiment analysis
-                analysis["sentiment"] = "positive" if "good" in chunk.lower() else "neutral"
-                analysis["sentiment_score"] = 0.75 if "good" in chunk.lower() else 0.5
-            elif analysis_type == "entities":
-                # Simulate entity extraction
-                analysis["entities"] = [word for word in chunk.split() if word[0].isupper()][:5]
+            # --- Call the actual summarize_document tool --- 
+            logger.info(f"Analyzing chunk {chunk_id} with summarize_document...")
+            try:
+                # Use a concise summary for chunk analysis
+                summary_result = await summarize_document(
+                    document=chunk,
+                    summary_format="key_points", # Use key points for chunk analysis
+                    max_length=100 # Keep chunk summaries relatively short
+                    # We might need to specify provider/model if defaults aren't suitable
+                )
+
+                if summary_result.get("success"):
+                    analysis = {
+                        "summary": summary_result.get("summary", "[Summary Unavailable]"),
+                        "analysis_type": "summary", # Indicate the type of analysis performed
+                        "metrics": { # Include metrics from the summary call
+                            "cost": summary_result.get("cost", 0.0),
+                            "tokens": summary_result.get("tokens", {}),
+                            "processing_time": summary_result.get("processing_time", 0.0)
+                        }
+                    }
+                    logger.success(f"Chunk {chunk_id} analyzed successfully.")
+                else:
+                    logger.warning(f"Summarize tool failed for chunk {chunk_id}: {summary_result.get('error')}")
+                    analysis = {"error": f"Analysis failed: {summary_result.get('error')}"}
+            except Exception as e:
+                logger.error(f"Error calling summarize_document for chunk {chunk_id}: {e}", exc_info=True)
+                analysis = {"error": f"Analysis error: {str(e)}"}
+            # -------------------------------------------------
             
             return {
                 "analysis": analysis,
@@ -255,6 +280,56 @@ class DocumentProcessingExample:
             }
 
 
+# --- Helper: Get a temporary path within allowed storage ---
+# Assume storage directory exists and is allowed for this demo context
+STORAGE_DIR = Path(__file__).resolve().parent.parent / "storage"
+TEMP_DATA_DIR = STORAGE_DIR / "temp_pipeline_data"
+
+async def _setup_temp_data_files():
+    """Create temporary data files for the pipeline demo."""
+    TEMP_DATA_DIR.mkdir(exist_ok=True)
+    # Sample CSV Data
+    csv_data = io.StringIO()
+    writer = csv.writer(csv_data)
+    writer.writerow(["date", "amount", "category"])
+    writer.writerow(["2023-01-01", "1,200", "electronics"]) # Note: Amount as string with comma
+    writer.writerow(["2023-01-02", "950", "clothing"])
+    writer.writerow(["2023-01-03", "1500", "electronics"])
+    writer.writerow(["2023-01-04", "800", "food"])
+    csv_content = csv_data.getvalue()
+    csv_path = TEMP_DATA_DIR / "temp_sales.csv"
+    await write_file(path=str(csv_path), content=csv_content) # Use write_file tool implicitly
+
+    # Sample JSON Data
+    json_data = [
+        {"user_id": 101, "name": "Alice", "active": True, "last_login": "2023-01-10"},
+        {"user_id": 102, "name": "Bob", "active": False, "last_login": "2022-12-15"},
+        {"user_id": 103, "name": "Charlie", "active": True, "last_login": "2023-01-05"},
+    ]
+    json_content = json.dumps(json_data, indent=2)
+    json_path = TEMP_DATA_DIR / "temp_users.json"
+    await write_file(path=str(json_path), content=json_content) # Use write_file tool implicitly
+
+    return {"csv": str(csv_path), "json": str(json_path)}
+
+async def _cleanup_temp_data_files(temp_files: Dict[str, str]):
+    """Remove temporary data files."""
+    for file_path in temp_files.values():
+        try:
+            await delete_file(path=file_path) # Use delete_file tool implicitly
+            logger.debug(f"Cleaned up temp file: {file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to clean up temp file {file_path}: {e}")
+    try:
+        # Attempt to remove the directory if empty
+        if TEMP_DATA_DIR.exists() and not any(TEMP_DATA_DIR.iterdir()):
+             TEMP_DATA_DIR.rmdir()
+             logger.debug(f"Cleaned up temp directory: {TEMP_DATA_DIR}")
+    except Exception as e:
+         logger.warning(f"Failed to remove temp directory {TEMP_DATA_DIR}: {e}")
+
+# --- End Helper ---
+
 class DataPipelineExample:
     """
     Example of tool composition for data processing pipelines.
@@ -280,7 +355,7 @@ class DataPipelineExample:
         
         @self.mcp.tool(
             description=(
-                "Fetch data from a source. "
+                "Fetch data from a temporary source file based on type. "
                 "This is the FIRST step in the data pipeline. "
                 "Continue with transform_data() to clean the fetched data."
             ),
@@ -289,7 +364,7 @@ class DataPipelineExample:
                 {
                     "name": "Fetch CSV data",
                     "description": "Fetch data from a CSV source",
-                    "input": {"source_type": "csv", "source_path": "data/sales.csv"},
+                    "input": {"source_type": "csv"},
                     "output": {
                         "data": [{"date": "2023-01-01", "amount": 1200}, {"date": "2023-01-02", "amount": 950}],
                         "record_count": 2,
@@ -301,54 +376,72 @@ class DataPipelineExample:
         @with_error_handling
         async def fetch_data(
             source_type: str,
-            source_path: str,
             limit: Optional[int] = None,
             ctx=None
         ) -> Dict[str, Any]:
             """
-            Fetch data from a source.
+            Fetch data from a temporary source file based on type.
             
             This tool is the first step in a data processing pipeline:
-            1. First, fetch data with fetch_data() (this tool)
+            1. First, fetch data with fetch_data() (this tool) - Creates temp files if needed.
             2. Then, clean the data with transform_data()
             3. Then, filter the data with filter_data()
             4. Finally, analyze the data with analyze_data()
             
             Args:
-                source_type: Type of data source (csv, json, etc.)
-                source_path: Path to the data source
-                limit: Maximum number of records to fetch
-                ctx: Context object passed by the MCP server
+                source_type: Type of data source (csv or json for this demo).
+                limit: Maximum number of records to fetch/read (applied after reading).
+                ctx: Context object passed by the MCP server.
                 
             Returns:
                 Dictionary containing the fetched data and metadata
             """
-            # Simulate fetching data from different sources
-            if source_type == "csv":
-                # Simulate CSV data
-                data = [
-                    {"date": "2023-01-01", "amount": 1200, "category": "electronics"},
-                    {"date": "2023-01-02", "amount": 950, "category": "clothing"},
-                    {"date": "2023-01-03", "amount": 1500, "category": "electronics"},
-                    {"date": "2023-01-04", "amount": 800, "category": "food"},
-                ]
-            elif source_type == "json":
-                # Simulate JSON data
-                data = [
-                    {"user_id": 101, "name": "Alice", "active": True, "last_login": "2023-01-10"},
-                    {"user_id": 102, "name": "Bob", "active": False, "last_login": "2022-12-15"},
-                    {"user_id": 103, "name": "Charlie", "active": True, "last_login": "2023-01-05"},
-                ]
-            else:
-                # Default dummy data
-                data = [{"id": i, "value": f"Sample {i}"} for i in range(1, 6)]
+            # Ensure temp files exist
+            temp_files = await _setup_temp_data_files()
+            source_path = temp_files.get(source_type.lower())
+
+            if not source_path:
+                 raise ToolInputError(f"Unsupported source_type for demo: {source_type}. Use 'csv' or 'json'.")
+
+            logger.info(f"Fetching data from temporary file: {source_path}")
             
-            # Apply limit if specified
-            if limit and limit > 0:
+            # Use read_file tool implicitly to get content
+            read_result = await read_file(path=source_path)
+            if not read_result.get("success"):
+                 raise ToolExecutionError(f"Failed to read temporary file {source_path}: {read_result.get('error')}")
+            
+            # Assuming read_file returns content in a predictable way (e.g., result['content'][0]['text'])
+            # Adjust parsing based on actual read_file output structure
+            content = read_result.get("content", [])
+            if not content or not isinstance(content, list) or "text" not in content[0]:
+                 raise ToolExecutionError(f"Unexpected content structure from read_file for {source_path}")
+            
+            file_content = content[0]["text"]
+            data = []
+            schema = {}
+
+            try:
+                if source_type.lower() == "csv":
+                    # Parse CSV data
+                    csv_reader = csv.reader(io.StringIO(file_content))
+                    headers = next(csv_reader)
+                    for row in csv_reader:
+                        if row: # Skip empty rows
+                            data.append(dict(zip(headers, row)))
+                elif source_type.lower() == "json":
+                    # Parse JSON data
+                    data = json.loads(file_content)
+                else:
+                    # Default dummy data if somehow type is wrong despite check
+                    data = [{"id": i, "value": f"Sample {i}"} for i in range(1, 6)]
+            except Exception as parse_error:
+                 raise ToolExecutionError(f"Failed to parse content from {source_path}: {parse_error}")
+
+            # Apply limit if specified AFTER reading/parsing
+            if limit and limit > 0 and len(data) > limit:
                 data = data[:limit]
             
             # Infer schema from first record
-            schema = {}
             if data:
                 first_record = data[0]
                 for key, value in first_record.items():
@@ -369,7 +462,7 @@ class DataPipelineExample:
         
         @self.mcp.tool(
             description=(
-                "Transform and clean data. "
+                "Transform and clean data using basic text processing tools (sed). "
                 "This is the SECOND step in the data pipeline. "
                 "Use after fetch_data() and before filter_data()."
             ),
@@ -397,7 +490,7 @@ class DataPipelineExample:
             ctx=None
         ) -> Dict[str, Any]:
             """
-            Transform and clean data.
+            Transform and clean data using basic text processing tools (sed).
             
             This tool is the second step in a data processing pipeline:
             1. First, fetch data with fetch_data()
@@ -415,49 +508,85 @@ class DataPipelineExample:
                 Dictionary containing the transformed data and transformation log
             """
             # Validate input
-            if not data or not isinstance(data, list):
+            if not data or not isinstance(data, list) or not all(isinstance(r, dict) for r in data):
                 return {
-                    "error": "Invalid data. Must provide a non-empty list of records."
+                    "error": "Invalid data. Must provide a non-empty list of records (dictionaries)."
                 }
             
-            # Copy data to avoid modifying the original
-            transformed_data = [record.copy() for record in data]
             transformation_log = []
+            # Convert input data (list of dicts) to a string format suitable for sed (e.g., JSON lines)
+            try:
+                input_text = "\n".join(json.dumps(record) for record in data)
+            except Exception as e:
+                return {"error": f"Could not serialize input data for transformation: {e}"}
+            
+            current_text = input_text
+            sed_scripts = [] # Accumulate sed commands
             
             # Apply standard transformations if specified
             transformations = transformations or []
             for transform in transformations:
                 if transform == "convert_dates":
-                    # Convert date strings to standard format
-                    date_count = 0
-                    for record in transformed_data:
-                        for key, value in record.items():
-                            if isinstance(value, str) and ("date" in key.lower() or "time" in key.lower()):
-                                # Simple date normalization (in real code, use datetime)
-                                record[key] = value.replace("/", "-")
-                                date_count += 1
-                    transformation_log.append(f"Converted {date_count} dates")
+                    # Use sed to replace '/' with '-' in date-like fields (heuristic)
+                    # This is complex with JSON structure, better done after parsing.
+                    # For demo, we apply a simple global substitution (less robust)
+                    sed_scripts.append("s|/|-|g")
+                    transformation_log.append(f"Applied date conversion (sed: s|/|-|g)")
                 
                 elif transform == "normalize_numbers":
-                    # Convert number strings to actual numbers
-                    number_count = 0
-                    for record in transformed_data:
-                        for key, value in record.items():
-                            if isinstance(value, str) and any(c.isdigit() for c in value):
-                                # Try to convert to number if it looks like one
-                                try:
-                                    # Remove commas and convert
-                                    clean_value = value.replace(",", "")
-                                    if "." in clean_value:
-                                        record[key] = float(clean_value)
-                                    else:
-                                        record[key] = int(clean_value)
-                                    number_count += 1
-                                except ValueError:
-                                    # Not a number after all, keep as string
-                                    pass
-                    transformation_log.append(f"Normalized {number_count} numbers")
+                    # Use sed to remove commas from numbers (heuristic)
+                    # Example: "amount": "1,200" -> "amount": "1200"
+                    sed_scripts.append("s/\"([a-zA-Z_]+)\":\"([0-9,]+)\"/\"\1\":\"\2\"/g; s/,//g") # More complex sed needed
+                    transformation_log.append(f"Applied number normalization (sed: remove commas)")
             
+            # --- Execute accumulated sed scripts --- 
+            if sed_scripts:
+                # Combine scripts with -e for each
+                combined_script = " ".join([f"-e '{s}'" for s in sed_scripts])
+                logger.info(f"Running sed transformation with script: {combined_script}")
+                try:
+                    sed_result = await run_sed(
+                        args_str=combined_script, # Pass combined script
+                        input_data=current_text
+                    )
+
+                    if sed_result.get("success"):
+                        current_text = sed_result["stdout"]
+                        logger.success("Sed transformation completed successfully.")
+                    else:
+                        error_msg = sed_result.get("error", "Sed command failed")
+                        logger.error(f"Sed transformation failed: {error_msg}")
+                        return {"error": f"Transformation failed: {error_msg}"}
+                except Exception as e:
+                    logger.error(f"Error running sed transformation: {e}", exc_info=True)
+                    return {"error": f"Transformation execution error: {e}"}
+            
+            # --- Attempt to parse back to list of dicts --- 
+            try:
+                transformed_data = []
+                for line in current_text.strip().split("\n"):
+                    if line:
+                        record = json.loads(line)
+                        # Post-processing for number normalization (sed only removes commas)
+                        if "normalize_numbers" in transformations:
+                            for key, value in record.items():
+                                if isinstance(value, str) and value.replace(".", "", 1).isdigit():
+                                    try:
+                                        record[key] = float(value) if "." in value else int(value)
+                                    except ValueError:
+                                        pass # Keep as string if conversion fails
+                        transformed_data.append(record)
+                logger.success("Successfully parsed transformed data back to JSON objects.")
+            except Exception as e:
+                logger.error(f"Could not parse transformed data back to JSON: {e}", exc_info=True)
+                # Return raw text if parsing fails
+                return {
+                    "transformed_data_raw": current_text,
+                    "transformation_log": transformation_log,
+                    "warning": "Could not parse final data back to JSON records"
+                }
+            # ---------------------------------------------------
+
             return {
                 "transformed_data": transformed_data,
                 "transformation_log": transformation_log,
@@ -465,4 +594,136 @@ class DataPipelineExample:
                 "next_step": "filter_data"  # Hint for the next tool to use
             }
         
-        # Additional tools for the data pipeline would be added here... 
+        @self.mcp.tool(
+            description=(
+                "Filter data based on criteria. "
+                "This is the THIRD step in the data pipeline. "
+                "Use after transform_data() and before analyze_data()."
+            ),
+            annotations=READONLY_TOOL.to_dict(),
+            examples=[
+                {
+                    "name": "Filter data",
+                    "description": "Filter data based on criteria",
+                    "input": {
+                        "data": [{"date": "2023-01-01", "amount": 1200}, {"date": "2023-01-02", "amount": 950}],
+                        "filter_criteria": {"amount": {"$gt": 1000}}
+                    },
+                    "output": {
+                        "filtered_data": [{"date": "2023-01-01", "amount": 1200}],
+                        "filter_criteria": {"amount": {"$gt": 1000}}
+                    }
+                }
+            ]
+        )
+        @with_error_handling
+        async def filter_data(
+            data: List[Dict[str, Any]],
+            filter_criteria: Dict[str, Any],
+            ctx=None
+        ) -> Dict[str, Any]:
+            """
+            Filter data based on criteria.
+            
+            This tool is the third step in a data processing pipeline:
+            1. First, fetch data with fetch_data()
+            2. Then, clean the data with transform_data()
+            3. Then, filter the data with filter_data() (this tool)
+            4. Finally, analyze the data with analyze_data()
+            
+            Args:
+                data: List of data records to filter
+                filter_criteria: Criteria to filter data
+                ctx: Context object passed by the MCP server
+                
+            Returns:
+                Dictionary containing the filtered data and filter criteria
+            """
+            # Filter data based on criteria
+            filtered_data = [record for record in data if all(record.get(key) == value for key, value in filter_criteria.items())]
+            
+            return {
+                "filtered_data": filtered_data,
+                "filter_criteria": filter_criteria,
+                "record_count": len(filtered_data)
+            }
+        
+        @self.mcp.tool(
+            description=(
+                "Analyze data. "
+                "This is the FINAL step in the data pipeline. "
+                "Use after filtering data with filter_data()."
+            ),
+            annotations=READONLY_TOOL.to_dict(),
+            examples=[
+                {
+                    "name": "Analyze data",
+                    "description": "Analyze filtered data",
+                    "input": {
+                        "data": [{"date": "2023-01-01", "amount": 1200}, {"date": "2023-01-02", "amount": 950}],
+                        "analysis_type": "summary"
+                    },
+                    "output": {
+                        "analysis_results": [
+                            {"analysis": {"key_topics": ["methodology"]}, "chunk_id": "doc123_chunk_1"},
+                            {"analysis": {"key_topics": ["results"]}, "chunk_id": "doc123_chunk_2"}
+                        ],
+                        "analysis_type": "summary"
+                    }
+                }
+            ]
+        )
+        @with_error_handling
+        async def analyze_data(
+            data: List[Dict[str, Any]],
+            analysis_type: str = "summary",
+            ctx=None
+        ) -> Dict[str, Any]:
+            """
+            Analyze data.
+            
+            This tool is the final step in a data processing pipeline:
+            1. First, fetch data with fetch_data()
+            2. Then, clean the data with transform_data()
+            3. Then, filter the data with filter_data()
+            4. Finally, analyze the data with analyze_data() (this tool)
+            
+            Args:
+                data: List of data records to analyze
+                analysis_type: Type of analysis to perform
+                ctx: Context object passed by the MCP server
+                
+            Returns:
+                Dictionary containing the analysis results
+            """
+            # Simulate analysis based on analysis_type
+            if analysis_type == "summary":
+                # Aggregate analysis results
+                analysis_results = [{"analysis": {"key_topics": ["methodology"]}, "chunk_id": "doc123_chunk_1"},
+                                    {"analysis": {"key_topics": ["results"]}, "chunk_id": "doc123_chunk_2"}]
+            else:
+                # Placeholder for other analysis types
+                analysis_results = []
+            
+            return {
+                "analysis_results": analysis_results,
+                "analysis_type": analysis_type
+            }
+
+    async def cleanup_pipeline_data(self):
+        """Cleans up temporary data files created by fetch_data."""
+        await _cleanup_temp_data_files({"csv": str(TEMP_DATA_DIR / "temp_sales.csv"), "json": str(TEMP_DATA_DIR / "temp_users.json")})
+
+# Example usage (if this file were run directly or imported)
+# async def run_pipeline_example():
+#     # ... initialize MCP server ...
+#     pipeline = DataPipelineExample(mcp_server)
+#     try:
+#         # ... run pipeline steps ...
+#         fetch_result = await pipeline.fetch_data(source_type="csv")
+#         transform_result = await pipeline.transform_data(data=fetch_result['data'])
+#         # ... etc ...
+#     finally:
+#         await pipeline.cleanup_pipeline_data()
+
+# asyncio.run(run_pipeline_example()) 

@@ -47,12 +47,22 @@ async def demonstrate_cache():
     stats_log = {}
 
     try:
+        # Helper function to get current stats snapshot
+        def get_current_stats_dict():
+            return {
+                "get_count": getattr(cache_service.metrics, "gets", 0), # Use gets for Total Gets
+                "hit_count": getattr(cache_service.metrics, "hits", 0),
+                "miss_count": getattr(cache_service.metrics, "misses", 0),
+                "set_count": getattr(cache_service.metrics, "stores", 0), # Use stores for Total Sets
+                # Add other stats if needed by display_cache_stats later
+            }
+            
         # 1. Cache Miss
         logger.info("1. Running first completion (expect cache MISS)...", emoji_key="processing")
         start_time = time.time()
         results[1] = await run_completion_with_cache(prompt, use_cache=True)
         times[1] = time.time() - start_time
-        stats_log[1] = cache_service.get_stats()["stats"]
+        stats_log[1] = get_current_stats_dict()
         console.print(f"   [yellow]MISS:[/yellow] Took [bold]{times[1]:.3f}s[/bold] (Cost: ${results[1].cost:.6f}, Tokens: {results[1].total_tokens})")
 
         # 2. Cache Hit
@@ -60,7 +70,7 @@ async def demonstrate_cache():
         start_time = time.time()
         results[2] = await run_completion_with_cache(prompt, use_cache=True)
         times[2] = time.time() - start_time
-        stats_log[2] = cache_service.get_stats()["stats"]
+        stats_log[2] = get_current_stats_dict()
         speedup = times[1] / times[2] if times[2] > 0 else float('inf')
         console.print(f"   [green]HIT:[/green]  Took [bold]{times[2]:.3f}s[/bold] (Speed-up: {speedup:.1f}x vs Miss)")
 
@@ -69,7 +79,7 @@ async def demonstrate_cache():
         start_time = time.time()
         results[3] = await run_completion_with_cache(prompt, use_cache=False)
         times[3] = time.time() - start_time
-        stats_log[3] = cache_service.get_stats()["stats"] # Stats shouldn't change much
+        stats_log[3] = get_current_stats_dict() # Stats shouldn't change much for bypass
         console.print(f"   [cyan]BYPASS:[/cyan] Took [bold]{times[3]:.3f}s[/bold] (Cost: ${results[3].cost:.6f}, Tokens: {results[3].total_tokens})")
 
         # 4. Another Cache Hit
@@ -77,7 +87,7 @@ async def demonstrate_cache():
         start_time = time.time()
         results[4] = await run_completion_with_cache(prompt, use_cache=True)
         times[4] = time.time() - start_time
-        stats_log[4] = cache_service.get_stats()["stats"]
+        stats_log[4] = get_current_stats_dict()
         speedup_vs_bypass = times[3] / times[4] if times[4] > 0 else float('inf')
         console.print(f"   [green]HIT:[/green]  Took [bold]{times[4]:.3f}s[/bold] (Speed-up: {speedup_vs_bypass:.1f}x vs Bypass)")
         console.print()
@@ -86,14 +96,26 @@ async def demonstrate_cache():
          logger.error(f"Error during cache demonstration run: {e}", emoji_key="error", exc_info=True)
          console.print(f"[bold red]Error during demo run:[/bold red] {escape(str(e))}")
          # Attempt to display stats even if error occurred mid-way
-         stats = cache_service.get_stats()
+         final_stats_dict = get_current_stats_dict() # Get stats even on error
     else:
-         stats = cache_service.get_stats() # Use final stats if all runs succeeded
+         # Get final stats if all runs succeeded
+         final_stats_dict = get_current_stats_dict()
+
+    # Prepare the final stats dictionary for display_cache_stats
+    # It expects top-level keys like 'enabled', 'persistence', and a 'stats' sub-dict
+    display_stats = {
+        "enabled": cache_service.enabled,
+        "persistence": cache_service.enable_persistence,
+        "stats": final_stats_dict,
+        # Add savings if available/calculated (Example: Placeholder)
+        # "savings": { "cost": getattr(cache_service.metrics, "saved_cost", 0.0) }
+    }
 
     # Display Final Cache Statistics using our display function
-    display_cache_stats(stats, stats_log, console)
+    display_cache_stats(display_stats, stats_log, console)
     
     console.print()
+    # Use the persistence setting directly from cache_service
     if cache_service.enable_persistence:
         logger.info("Cache persistence is enabled.", emoji_key="cache")
         if hasattr(cache_service, 'cache_dir'):

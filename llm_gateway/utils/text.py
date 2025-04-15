@@ -61,8 +61,8 @@ def count_tokens(text: str, model: Optional[str] = None) -> int:
         import tiktoken
         
         # Select encoding based on model
-        if model and model.startswith("gpt-4o-mini"):
-            encoding = tiktoken.encoding_for_model("gpt-4o-mini")
+        if model and model.startswith("gpt-4.1-mini"):
+            encoding = tiktoken.encoding_for_model("gpt-4.1-mini")
         elif model and model.startswith("gpt-4o"):
             encoding = tiktoken.encoding_for_model("gpt-4o")
         elif model and "claude" in model.lower():

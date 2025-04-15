@@ -176,8 +176,8 @@ class TestServerIntegration:
                         "models": {
                             "openai": [
                                 {"id": "gpt-4o", "provider": "openai"},
-                                {"id": "gpt-4o-mini", "provider": "openai"},
-                                {"id": "gpt-4o-mini", "provider": "openai"}
+                                {"id": "gpt-4.1-mini", "provider": "openai"},
+                                {"id": "gpt-4.1-mini", "provider": "openai"}
                             ]
                         }
                     }
@@ -186,11 +186,11 @@ class TestServerIntegration:
                         "models": {
                             "openai": [
                                 {"id": "gpt-4o", "provider": "openai"},
-                                {"id": "gpt-4o-mini", "provider": "openai"}
+                                {"id": "gpt-4.1-mini", "provider": "openai"}
                             ],
                             "anthropic": [
                                 {"id": "claude-3-opus-20240229", "provider": "anthropic"},
-                                {"id": "claude-3-5-haiku-latest", "provider": "anthropic"}
+                                {"id": "claude-3-5-haiku-20241022", "provider": "anthropic"}
                             ]
                         }
                     }

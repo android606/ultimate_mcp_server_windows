@@ -7,6 +7,7 @@ security features like allowed directory restrictions and deletion protection.
 """
 import argparse
 import asyncio
+import json
 import os
 import platform
 import shutil
@@ -15,7 +16,7 @@ import tempfile
 import time
 from pathlib import Path
 
-# --- Configuration ---
+# --- Configuration --- (Standard libs only here)
 # Add project root to path for imports when running as script
 # Adjust this path if your script location relative to the project root differs
 try:
@@ -28,31 +29,12 @@ try:
              sys.exit(1)
     sys.path.insert(0, str(PROJECT_ROOT))
 
-    # --- Important: Configure Allowed Directories ---
-    # For this demo, we will dynamically allow the temporary directory.
-    # In a real application, this would be set via llm_gateway.config
-    # We'll simulate this by setting an environment variable *before* importing the tools.
-    # Create a temporary directory *first*
+    # --- Important: Set Environment Variables FIRST --- 
     DEMO_TEMP_DIR = tempfile.mkdtemp(prefix="llm_gateway_fs_demo_")
-
-    # Format for JSON list in environment variable
-    # Use json.dumps to ensure correct quoting, especially on Windows
-    import json
-    
-    # Set both environment variables for maximum compatibility
-    # 1. The format expected by the Pydantic model with the correct prefix and delimiter
     os.environ["GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
-    
-    # 2. Direct format for backward compatibility 
-    os.environ["FILESYSTEM_ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
-    
-    # 3. Try an alternate format that more directly sets the field (this is the key change)
     os.environ["GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
-
-    # Force config reload if it was cached previously
     os.environ["GATEWAY_FORCE_CONFIG_RELOAD"] = "true"
     
-    # Print debug information
     print(f"INFO: Temporarily allowing access to: {DEMO_TEMP_DIR}")
     print("DEBUG: Environment variables set:")
     print(f"  GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES = {os.environ['GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES']}")
@@ -61,7 +43,11 @@ except Exception as e:
     print(f"Error during initial setup: {e}", file=sys.stderr)
     sys.exit(1)
 
+# --- Defer ALL llm_gateway imports until AFTER env vars are set ---
+from llm_gateway.config import get_config
+from llm_gateway.utils import get_logger
 
+# Import Rich components (can happen earlier, but keep grouped for clarity)
 from rich.markup import escape
 from rich.panel import Panel
 from rich.pretty import pretty_repr
@@ -70,37 +56,30 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.tree import Tree
 
-# Now import the tools and other gateway components
-# We must import *after* setting the environment variable for allowed dirs
-try:
-    from llm_gateway.config import get_config  # Import get_config to verify loading later
-    from llm_gateway.exceptions import ToolError, ToolInputError
+# Import necessary exceptions
+from llm_gateway.exceptions import ToolError, ToolInputError
 
-    # Import ProtectionTriggeredError directly from filesystem
-    from llm_gateway.tools.filesystem import (
-        ProtectionTriggeredError,
-        create_directory,
-        delete_path,
-        directory_tree,
-        edit_file,
-        get_file_info,
-        list_allowed_directories,
-        list_directory,
-        move_file,
-        read_file,
-        read_multiple_files,
-        search_files,
-        write_file,
-    )
-    from llm_gateway.utils import get_logger
-    from llm_gateway.utils.logging.console import console  # Use the shared console
-    # Assume FastMCP or a similar mechanism is available for calling tools
-    # For this demo, we'll call the functions directly after setup
-except ImportError as e:
-     print(f"Import Error: {e}. Please ensure all dependencies are installed and the script is run from the correct location relative to the project.", file=sys.stderr)
-     sys.exit(1)
+# Filesystem Tools
+from llm_gateway.tools.filesystem import (
+    create_directory,
+    delete_path,
+    directory_tree,
+    edit_file,
+    get_file_info,
+    list_allowed_directories,
+    list_directory,
+    move_file,
+    read_file,
+    read_multiple_files,
+    search_files,
+    write_file,
+)
 
-# Initialize logger
+# Shared console and display utils
+from llm_gateway.utils.logging.console import console
+from llm_gateway.utils.display import safe_tool_call, generate_rich_directory_tree
+
+# Initialize logger AFTER all relevant imports
 logger = get_logger("example.filesystem")
 
 def parse_arguments():
@@ -134,6 +113,7 @@ def parse_arguments():
 def verify_config():
     """Verify that the filesystem configuration has loaded correctly."""
     try:
+        # Get config only ONCE
         config = get_config()
         fs_config = config.filesystem
         allowed_dirs = fs_config.allowed_directories
@@ -147,38 +127,18 @@ def verify_config():
             for key in os.environ:
                 if "ALLOWED_DIRECTORIES" in key:
                     print(f"  {key} = {os.environ[key]}")
-            
-            # Try direct loading from env vars for debugging
-            from llm_gateway.config import load_config_from_env
-            env_config = load_config_from_env()
-            print("Direct environment config loading result:")
-            for key, value in env_config.items():
-                print(f"  {key}: {value}")
-            
             print(f"DEMO_TEMP_DIR set to: {DEMO_TEMP_DIR}")
-            
-            # Try to manually fix config as a last resort
-            print("Attempting to force update the config object directly...")
-            force_update_config(DEMO_TEMP_DIR)
-            
-            # Verify again
-            updated_dirs = get_config().filesystem.allowed_directories
-            print(f"After direct update, allowed directories: {updated_dirs}")
-            return DEMO_TEMP_DIR in updated_dirs
+            # Do NOT attempt to force update - rely on initial load
+            print("ERROR: Configuration failed to load allowed_directories from environment variables.")
+            return False # Fail verification if dirs are missing
         
+        # If allowed_dirs were loaded, check if our temp dir is in it
         if DEMO_TEMP_DIR in allowed_dirs:
             print(f"SUCCESS: Temporary directory {DEMO_TEMP_DIR} properly loaded in configuration!")
             return True
         else:
-            print(f"WARNING: Temporary directory {DEMO_TEMP_DIR} not in loaded allowed dirs: {allowed_dirs}")
-            # Try manual fix
-            print("Attempting to force update the config object directly...")
-            force_update_config(DEMO_TEMP_DIR)
-            
-            # Verify again
-            updated_dirs = get_config().filesystem.allowed_directories
-            print(f"After direct update, allowed directories: {updated_dirs}")
-            return DEMO_TEMP_DIR in updated_dirs
+            print(f"WARNING: Temporary directory {DEMO_TEMP_DIR} not found in loaded allowed dirs: {allowed_dirs}")
+            return False # Fail verification if temp dir is missing
             
     except Exception as e:
         print(f"ERROR during config verification: {e}")
@@ -186,314 +146,10 @@ def verify_config():
         traceback.print_exc()
         return False
 
-def force_update_config(temp_dir):
-    """Directly modify the global config object as a last resort to add the allowed directory."""
-    try:
-        from llm_gateway.config import get_config
-        # Get current global config
-        config = get_config()
-        
-        # Expand path for consistency
-        import os
-        expanded_path = os.path.abspath(os.path.expanduser(temp_dir))
-        
-        # Add to allowed directories if not already there
-        if expanded_path not in config.filesystem.allowed_directories:
-            config.filesystem.allowed_directories.append(expanded_path)
-            print(f"Added {expanded_path} to allowed_directories directly in the config object.")
-        
-    except Exception as e:
-        print(f"ERROR: Failed to manually update config: {e}")
-
 # --- Demo Setup ---
 # DEMO_ROOT is the base *within* the allowed temporary directory
 DEMO_ROOT = Path(DEMO_TEMP_DIR) / "demo_project"
 BULK_FILES_COUNT = 110 # Number of files to create for deletion protection demo (>100)
-
-async def safe_tool_call(tool_func, args_dict, description=""):
-    """Helper function to safely call a tool function and display results/errors."""
-    tool_name = tool_func.__name__
-    call_desc = description or f"Calling [bold magenta]{tool_name}[/bold magenta]"
-    args_str = ", ".join(f"{k}=[yellow]{v!r}[/yellow]" for k, v in args_dict.items())
-    console.print(Panel(f"{call_desc}\nArgs: {args_str}", title="Tool Call", border_style="blue", expand=False))
-
-    start_time = time.monotonic()
-    try:
-        # Directly await the function since we imported them
-        result = await tool_func(**args_dict)
-        duration = time.monotonic() - start_time
-
-        # --- Updated Error Handling Logic ---
-        # Check for the structure returned by format_error_response via @with_error_handling
-        # Success is indicated by the ABSENCE of 'error' or 'isError', or explicitly True if present
-        is_error = isinstance(result, dict) and (result.get("error") is not None or result.get("isError") is True)
-        is_protection_triggered = isinstance(result, dict) and result.get("protectionTriggered") is True
-
-        if is_protection_triggered:
-             # Extract details specific to protection error if available
-             error_msg = result.get("error", "Protection triggered, reason unspecified.")
-             context = result.get("details", {}).get("context", "N/A") # Context is nested in details
-             console.print(Panel(
-                 f"[bold yellow]🛡️ Protection Triggered![/bold yellow]\n"
-                 f"Message: {escape(error_msg)}\n"
-                 f"Context: {pretty_repr(context)}", # Use pretty_repr for context dict
-                 title=f"Result: {tool_name} (Blocked)",
-                 border_style="yellow",
-                 subtitle=f"Duration: {duration:.3f}s"
-             ))
-             # Return a structure indicating failure due to protection
-             return {"success": False, "protection_triggered": True, "result": result}
-
-        elif is_error:
-            # Extract standard error details
-            error_msg = result.get("error", "Unknown error occurred.")
-            error_code = result.get("error_code", "UNKNOWN_ERROR")
-            details = result.get("details", None) # Details can be None or a dict
-
-            # Format the error panel
-            error_content = f"[bold red]Error ({error_code})[/bold red]\n"
-            error_content += f"Message: {escape(str(error_msg))}" # Ensure message is string
-            if details:
-                 # Display details nicely using pretty_repr
-                 error_content += f"\nDetails:\n{pretty_repr(details)}"
-            else:
-                 error_content += "\nDetails: N/A"
-
-            console.print(Panel(
-                error_content,
-                title=f"Result: {tool_name} (Failed)",
-                border_style="red",
-                subtitle=f"Duration: {duration:.3f}s"
-            ))
-            return {"success": False, "error": error_msg, "details": details, "result": result}
-        # --- End Updated Error Handling Logic ---
-
-        else:
-            # Successful result - display nicely
-            # Try to format common result structures
-            output_content = ""
-            if isinstance(result, dict):
-                 # Common success patterns (Keep this part mostly as is, might need tweaks based on actual success dicts)
-                 if "message" in result:
-                      output_content += f"Message: [green]{escape(result['message'])}[/green]\n"
-                 if "path" in result:
-                      output_content += f"Path: [cyan]{escape(str(result['path']))}[/cyan]\n"
-                 if "size" in result:
-                      output_content += f"Size: [yellow]{result['size']}[/yellow] bytes\n"
-                 # Handle 'created' from create_directory
-                 if "created" in result and isinstance(result['created'], bool):
-                    output_content += f"Created: {'Yes' if result['created'] else 'No (already existed)'}\n"
-                 # Handle 'diff' from edit_file
-                 if "diff" in result and result.get("diff") != "No changes detected after applying edits." and result.get("diff") != "No edits provided.":
-                       diff_content = result['diff']
-                       # Check if diff is empty (meaning no functional change despite edits)
-                       if diff_content:
-                            output_content += f"Diff:\n{Syntax(diff_content, 'diff', theme='monokai', background_color='default')}\n"
-                       else:
-                            output_content += "Diff: [dim](No effective changes detected)[/dim]\n"
-                 # Handle 'matches' from search_files
-                 if "matches" in result and "pattern" in result:
-                       output_content += f"Search Matches ({len(result['matches'])} for pattern '{result['pattern']}'):\n"
-                       rel_base = Path(result.get("path", ".")) # Base path for relpath calculation
-                       output_content += "\n".join(f"- [cyan]{escape(os.path.relpath(m, rel_base))}[/cyan]" for m in result['matches'][:20])
-                       if len(result['matches']) > 20:
-                            output_content += "\n- ... (more matches)"
-                       if result.get("warnings"): # Check if warnings list exists and is not empty
-                            output_content += "\n[yellow]Warnings:[/yellow]\n" + "\n".join(f"- {escape(w)}" for w in result['warnings']) + "\n"
-                 # Handle 'entries' from list_directory
-                 elif "entries" in result and "path" in result: # list_directory
-                       output_content += f"Directory Listing for [cyan]{escape(str(result['path']))}[/cyan]:\n"
-                       table = Table(show_header=True, header_style="bold magenta", box=None)
-                       table.add_column("Name", style="cyan", no_wrap=True)
-                       table.add_column("Type", style="green")
-                       table.add_column("Info", style="yellow")
-                       for entry in result.get('entries', []):
-                            name = entry.get('name', '?')
-                            etype = entry.get('type', 'unknown')
-                            info_str = ""
-                            if etype == 'file' and 'size' in entry:
-                                 info_str += f"{entry['size']} bytes"
-                            elif etype == 'symlink' and 'symlink_target' in entry:
-                                 info_str += f"-> {escape(str(entry['symlink_target']))}" # Escape target
-                            if 'error' in entry:
-                                 info_str += f" [red](Error: {escape(entry['error'])})[/red]" # Escape error
-                            icon = "📄" if etype == "file" else "📁" if etype == "directory" else "🔗" if etype=="symlink" else "❓"
-                            table.add_row(f"{icon} {escape(name)}", etype, info_str)
-                       # Use capture context for table rendering
-                       from rich.console import Capture
-                       with Capture(console) as capture:
-                            console.print(table)
-                       output_content += capture.get()
-                       if result.get("warnings"): # Check warnings for list_directory
-                            output_content += "\n[yellow]Warnings:[/yellow]\n" + "\n".join(f"- {escape(w)}" for w in result['warnings']) + "\n"
-                 # Handle 'tree' from directory_tree
-                 elif "tree" in result and "path" in result: # directory_tree
-                       output_content += f"Directory Tree for [cyan]{escape(str(result['path']))}[/cyan]:\n"
-                       rich_tree = Tree(f"📁 [bold cyan]{escape(os.path.basename(result['path']))}[/bold cyan]")
-                       def build_rich_tree(parent_node, children):
-                            for item in children:
-                                name = item.get("name", "?")
-                                item_type = item.get("type", "unknown")
-                                info = ""
-                                if "size" in item:
-                                     size_bytes = item['size']
-                                     if size_bytes < 1024: 
-                                         info += f" ({size_bytes}b)"
-                                     elif size_bytes < 1024 * 1024: 
-                                         info += f" ({size_bytes/1024:.1f}KB)"
-                                     else: 
-                                         info += f" ({size_bytes/(1024*1024):.1f}MB)"
-                                if "target" in item: 
-                                    info += f" → {escape(item['target'])}" # Escape target
-                                if "error" in item: 
-                                    info += f" [red](Error: {escape(item['error'])})[/red]" # Escape error
-
-                                if item_type == "directory":
-                                    node = parent_node.add(f"📁 [bold cyan]{escape(name)}[/bold cyan]{info}")
-                                    if "children" in item: 
-                                        build_rich_tree(node, item["children"])
-                                elif item_type == "file":
-                                     icon = "📄" # Default icon
-                                     ext = os.path.splitext(name)[1].lower()
-                                     if ext in ['.jpg', '.png', '.gif', '.bmp', '.jpeg', '.svg']: 
-                                         icon = "🖼️"
-                                     elif ext in ['.mp3', '.wav', '.ogg', '.flac']: 
-                                         icon = "🎵"
-                                     elif ext in ['.mp4', '.avi', '.mov', '.mkv']: 
-                                         icon = "🎬"
-                                     elif ext in ['.py', '.js', '.java', '.c', '.cpp', '.go', '.rs']: 
-                                         icon = "📜"
-                                     elif ext in ['.json', '.xml', '.yaml', '.yml']: 
-                                         icon = "📋"
-                                     elif ext in ['.zip', '.tar', '.gz', '.7z', '.rar']: 
-                                         icon = "📦"
-                                     elif ext in ['.md', '.txt', '.doc', '.docx', '.pdf']: 
-                                         icon = "📝"
-                                     parent_node.add(f"{icon} [green]{escape(name)}[/green]{info}")
-                                elif item_type == "symlink": 
-                                    parent_node.add(f"🔗 [magenta]{escape(name)}[/magenta]{info}")
-                                elif item_type == "info": 
-                                    parent_node.add(f"ℹ️ [dim]{escape(name)}[/dim]") # Info node from max depth
-                                elif item_type == "error": 
-                                    parent_node.add(f"❌ [red]{escape(name)}[/red]{info}") # Error node from scan error
-                                else: 
-                                    parent_node.add(f"❓ [yellow]{escape(name)}[/yellow]{info}")
-                       build_rich_tree(rich_tree, result["tree"])
-                       from rich.console import Capture
-                       with Capture(console) as capture:
-                           console.print(rich_tree)
-                       output_content += capture.get()
-                 # Handle 'directories' from list_allowed_directories
-                 elif "directories" in result and "count" in result: # list_allowed_directories
-                        output_content += f"Allowed Directories ({result['count']}):\n"
-                        output_content += "\n".join(f"- [green]{escape(d)}[/green]" for d in result['directories']) + "\n"
-                 # Handle 'files' from read_multiple_files
-                 elif "files" in result and "succeeded" in result: # read_multiple_files
-                        output_content += f"Read Results: [green]{result['succeeded']} succeeded[/green], [red]{result['failed']} failed[/red]\n"
-                        for file_res in result.get('files', []): # Use get with default
-                            path_str = escape(str(file_res.get('path', 'N/A')))
-                            if file_res.get('success'):
-                                size_info = f" ({file_res.get('size', 'N/A')}b)" if 'size' in file_res else ""
-                                content_preview = str(file_res.get('content', '')) # Already formatted preview
-                                output_content += f"- [green]Success[/green]: [cyan]{path_str}[/cyan]{size_info}\n  Content: '{escape(content_preview)}'\n" # Escape preview
-                            else:
-                                output_content += f"- [red]Failed[/red]: [cyan]{path_str}[/cyan]\n  Error: {escape(str(file_res.get('error', 'Unknown')))}\n"
-                 # Handle MCP 'content' block (from read_file maybe?)
-                 elif "content" in result and isinstance(result["content"], list) and len(result["content"]) > 0 and "text" in result["content"][0]:
-                      output_content += "Content:\n" + "\n".join([escape(block.get("text","")) for block in result["content"] if block.get("type")=="text"]) + "\n"
-                 # Handle 'modified' from get_file_info
-                 elif "name" in result and "modified" in result: # get_file_info
-                      output_content += f"File Info for [cyan]{escape(result['name'])}[/cyan]:\n"
-                      info_table = Table(show_header=False, box=None)
-                      info_table.add_column("Property", style="blue")
-                      info_table.add_column("Value", style="yellow")
-                      # Keys to exclude from generic table display
-                      skip_keys = {"success", "message", "path", "name"} # Already shown or redundant
-                      for k, v in result.items():
-                           if k not in skip_keys:
-                               # Use pretty_repr for better display of complex values (like lists/dicts)
-                               info_table.add_row(escape(k), pretty_repr(v))
-                      from rich.console import Capture
-                      with Capture(console) as capture:
-                           console.print(info_table)
-                      output_content += capture.get()
-
-                 # Fallback for other dictionaries
-                 else:
-                     # Exclude potentially large fields like 'content', 'tree', 'entries', 'matches', 'files'
-                     # from the generic fallback display
-                     excluded_keys = {'content', 'tree', 'entries', 'matches', 'files', 'success', 'message'}
-                     display_dict = {k:v for k,v in result.items() if k not in excluded_keys}
-                     if display_dict: # Only show if there's something left to display
-                         output_content += "Result Data:\n" + pretty_repr(display_dict) + "\n"
-                     elif not output_content: # If nothing else was printed
-                          output_content = "[dim](Tool executed successfully, no specific output format matched)[/dim]"
-
-            # Handle non-dict results (should be rare now)
-            else:
-                 output_content = escape(str(result))
-
-            console.print(Panel(
-                 output_content,
-                 title=f"Result: {tool_name} (Success)",
-                 border_style="green",
-                 subtitle=f"Duration: {duration:.3f}s"
-            ))
-            return {"success": True, "result": result}
-
-    except ProtectionTriggeredError as pte:
-         # Handle ProtectionTriggeredError specifically (raised by tools like delete_path)
-         duration = time.monotonic() - start_time
-         logger.warning(f"Protection triggered calling {tool_name}: {pte}", emoji_key="security")
-         console.print(Panel(
-             f"[bold yellow]🛡️ Protection Triggered![/bold yellow]\n"
-             f"Message: {escape(str(pte))}\n"
-             f"Context: {pretty_repr(pte.context)}", # Use pretty_repr for context
-             title=f"Result: {tool_name} (Blocked)",
-             border_style="yellow",
-             subtitle=f"Duration: {duration:.3f}s"
-         ))
-         return {"success": False, "protection_triggered": True, "error": str(pte), "context": pte.context}
-    except (ToolInputError, ToolError) as tool_err:
-         # Handle other ToolErrors raised directly by the tool function
-         duration = time.monotonic() - start_time
-         error_code = getattr(tool_err, 'error_code', 'TOOL_ERROR')
-         details = getattr(tool_err, 'details', 'N/A')
-         logger.error(f"Tool Error calling {tool_name}: {tool_err} ({error_code})", emoji_key="error", details=details)
-
-         error_content = f"[bold red]{type(tool_err).__name__} ({error_code})[/bold red]\n"
-         error_content += f"Message: {escape(str(tool_err))}"
-         if details and details != 'N/A':
-              error_content += f"\nDetails:\n{pretty_repr(details)}"
-         else:
-              error_content += "\nDetails: N/A"
-             
-         # Add debugging info for filesystem operations
-         error_content += f"\n\nFunction: [yellow]{tool_name}[/yellow]"
-         error_content += f"\nArguments: [dim]{args_dict}[/dim]"
-
-         console.print(Panel(
-             error_content,
-             title=f"Result: {tool_name} (Failed)",
-             border_style="red",
-             subtitle=f"Duration: {duration:.3f}s"
-         ))
-         # Return structure consistent with handled errors
-         return {"success": False, "error": str(tool_err), "details": details, "error_code": error_code}
-    except Exception as e:
-        # Catch unexpected exceptions during the tool call itself
-        duration = time.monotonic() - start_time
-        logger.critical(f"Unexpected Exception calling {tool_name}: {e}", emoji_key="critical", exc_info=True)
-        console.print(Panel(
-            f"[bold red]Unexpected Error ({type(e).__name__})[/bold red]\n"
-            f"{escape(str(e))}",
-            title=f"Result: {tool_name} (Critical Failure)",
-            border_style="red",
-            subtitle=f"Duration: {duration:.3f}s"
-        ))
-        return {"success": False, "error": f"Unexpected: {str(e)}", "details": {"type": type(e).__name__}}
-    
-
 
 async def setup_demo_environment():
     """Create a temporary directory structure for the demo."""
@@ -634,18 +290,38 @@ def test_format_message():
     # Create bulk files for deletion protection test
     bulk_dir = DEMO_ROOT / "bulk_files"
     bulk_dir.mkdir(exist_ok=True) # Ensure bulk dir exists
+    
+    # Create files with deliberately varied timestamps to trigger protection
+    current_time = time.time()
+    file_types = [".txt", ".log", ".dat", ".csv", ".tmp", ".bak", ".json"]
+    
     for i in range(BULK_FILES_COUNT):
-        # Introduce slight variations in timestamps and extensions
-        ext = ".txt" if i % 3 == 0 else ".tmp" if i % 3 == 1 else ".dat"
+        # Use a wider variety of extensions
+        ext = file_types[i % len(file_types)]
         fpath = bulk_dir / f"file_{i:03d}{ext}"
         fpath.write_text(f"Content for file {i}")
-        # Vary modification times slightly (may not be precise enough on all FS)
-        if i % 5 == 0:
-             await asyncio.sleep(0.001) # Small delay
-             try:
-                  os.utime(fpath, (time.time() - i * 60, time.time() - i * 60)) # Set past mtime
-             except OSError as e:
-                  logger.warning(f"Could not set utime for {fpath}: {e}") # Log utime errors
+        
+        # Create highly varied timestamps spanning days/weeks, not just minutes
+        # Some files very old, some very new, to ensure high standard deviation
+        if i < BULK_FILES_COUNT // 3:
+            # First third: older files (30-60 days old)
+            age = 60 * 60 * 24 * (30 + (i % 30))  # 30-60 days in seconds
+        elif i < 2 * (BULK_FILES_COUNT // 3):
+            # Middle third: medium age (1-10 days old)
+            age = 60 * 60 * 24 * (1 + (i % 10))  # 1-10 days in seconds
+        else:
+            # Final third: very recent (0-12 hours old)
+            age = 60 * 60 * (i % 12)  # 0-12 hours in seconds
+            
+        # Set both access and modification times to the calculated age
+        try:
+            timestamp = current_time - age
+            os.utime(fpath, (timestamp, timestamp))
+        except OSError as e:
+            logger.warning(f"Could not set utime for {fpath}: {e}", emoji_key="warning")
+    
+    # Add a message about the setup
+    logger.info(f"Created {BULK_FILES_COUNT} files in 'bulk_files/' with highly varied timestamps and {len(file_types)} different extensions", emoji_key="setup")
 
     # Create a symlink (if supported)
     SYMLINK_PATH = DEMO_ROOT / "link_to_src"
@@ -861,52 +537,24 @@ async def demonstrate_directory_operations(symlink_path, use_rich_tree=False):
 
     # --- Enhanced visualization for directory tree if requested ---
     if use_rich_tree:
-        # Create a rich Tree for visual representation
-        console.print("\n[bold cyan]Enhanced Directory Tree Visualization[/bold cyan]")
+        # Restore direct call to async tree generator utility
+        console.print("\n[bold cyan]Enhanced Directory Tree Visualization (Async Tool Based)[/bold cyan]")
         
-        root_tree = Tree(f"📁 [bold cyan]{DEMO_ROOT.name}[/bold cyan]")
-        
-        # Helper function to build tree recursively
-        async def build_visual_tree(path, tree_node, depth=0, max_depth=3):
-            if depth >= max_depth:
-                tree_node.add("📁 [dim]...(max depth reached)[/dim]")
-                return
-                
-            try:
-                items = sorted(os.listdir(path))
-                for item in items:
-                    item_path = os.path.join(path, item)
-                    
-                    # Skip hidden files/dirs for cleaner visualization
-                    if item.startswith('.') and item != '.gitignore':
-                        continue
-                        
-                    try:
-                        is_dir = os.path.isdir(item_path)
-                        is_link = os.path.islink(item_path)
-                        
-                        if is_link:
-                            target = os.readlink(item_path)
-                            link_node = tree_node.add(f"🔗 [magenta]{item}[/magenta] → {target}")  # noqa: F841
-                        elif is_dir:
-                            dir_node = tree_node.add(f"📁 [bold cyan]{item}[/bold cyan]")
-                            await build_visual_tree(item_path, dir_node, depth + 1, max_depth)
-                        else:
-                            size = os.path.getsize(item_path)
-                            size_str = f"({size:,} bytes)" if size < 10000 else f"({size/1024:.1f} KB)"
-                            tree_node.add(f"📄 [green]{item}[/green] {size_str}")
-                    except OSError as e:
-                        tree_node.add(f"❌ [red]{item} - Error: {str(e)}[/red]")
-            except OSError as e:
-                tree_node.add(f"❌ [red]Error listing directory: {str(e)}[/red]")
-        
-        # Build and display the tree
-        await build_visual_tree(DEMO_ROOT, root_tree, max_depth=3)
-        console.print(root_tree)
-        console.print()
+        try:
+            # Generate the tree using the async utility function from display.py
+            rich_tree = await generate_rich_directory_tree(str(DEMO_ROOT), max_depth=3)
+            console.print(rich_tree)
+        except Exception as e:
+            logger.error(f"Error generating async directory tree: {e}", exc_info=True)
+            console.print(f"[bold red]Error generating directory tree: {escape(str(e))}[/bold red]")
+            
+        console.print() # Add newline
 
-    # --- Directory Tree (Default Depth) ---
-    await safe_tool_call(directory_tree, {"path": str(DEMO_ROOT)}, description="Generating directory tree for demo root (default depth)")
+    # --- Directory Tree (Default Depth) --- # This uses the directory_tree TOOL
+    # The safe_tool_call will now use its built-in tree renderer for this standard call
+    # Note: The tool 'directory_tree' produces a similar but potentially slightly different
+    # structure/detail level than the custom async generator above.
+    await safe_tool_call(directory_tree, {"path": str(DEMO_ROOT)}, description="Generating directory tree for demo root (default depth - using tool)")
 
     # --- Directory Tree (Specific Depth) ---
     await safe_tool_call(directory_tree, {"path": str(DEMO_ROOT), "max_depth": 1}, description="Generating directory tree (max_depth=1)")

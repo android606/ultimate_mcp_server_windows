@@ -110,29 +110,30 @@ class BaseProvider(abc.ABC):
         self.client = None
         self.logger = get_logger(f"provider.{self.provider_name}")
         
-    def get_api_key_from_env(self) -> Optional[str]:
-        """Get API key from environment variables.
-        
-        Returns:
-            API key string or None if not found
-        """
-        import os
-        
-        # Map provider names to environment variable names
-        env_vars = {
-            Provider.OPENAI.value: "OPENAI_API_KEY",
-            Provider.ANTHROPIC.value: "ANTHROPIC_API_KEY",
-            Provider.DEEPSEEK.value: "DEEPSEEK_API_KEY",
-            Provider.GEMINI.value: "GEMINI_API_KEY",
-        }
-        
-        # Get the appropriate environment variable name
-        env_var = env_vars.get(self.provider_name)
-        if not env_var:
-            return None
-            
-        # Try to get from environment
-        return os.environ.get(env_var)
+    # Removed get_api_key_from_env - API key comes from config
+    # def get_api_key_from_env(self) -> Optional[str]:
+    #     """Get API key from environment variables.
+    #     
+    #     Returns:
+    #         API key string or None if not found
+    #     """
+    #     import os
+    #     
+    #     # Map provider names to environment variable names
+    #     env_vars = {
+    #         Provider.OPENAI.value: "OPENAI_API_KEY",
+    #         Provider.ANTHROPIC.value: "ANTHROPIC_API_KEY",
+    #         Provider.DEEPSEEK.value: "DEEPSEEK_API_KEY",
+    #         Provider.GEMINI.value: "GEMINI_API_KEY",
+    #     }
+    #     
+    #     # Get the appropriate environment variable name
+    #     env_var = env_vars.get(self.provider_name)
+    #     if not env_var:
+    #         return None
+    #         
+    #     # Try to get from environment
+    #     return os.environ.get(env_var)
         
     @abc.abstractmethod
     async def initialize(self) -> bool:
@@ -275,9 +276,15 @@ async def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     if provider_name not in providers:
         raise ValueError(f"Invalid provider name: {provider_name}")
         
-    provider_cfg = getattr(cfg, 'providers', {}).get(provider_name, None)
+    # Get the top-level 'providers' config object, default to None if it doesn't exist
+    providers_config = getattr(cfg, 'providers', None)
     
-    if 'api_key' not in kwargs and provider_cfg and provider_cfg.api_key:
+    # Get the specific provider config (e.g., providers_config.openai) from the providers_config object
+    # Default to None if providers_config is None or the specific provider attr doesn't exist
+    provider_cfg = getattr(providers_config, provider_name, None) if providers_config else None
+    
+    # Now use provider_cfg to get the api_key if needed
+    if 'api_key' not in kwargs and provider_cfg and hasattr(provider_cfg, 'api_key') and provider_cfg.api_key:
         kwargs['api_key'] = provider_cfg.api_key
     
     provider_class = providers[provider_name]

@@ -14,50 +14,50 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
+from rich.traceback import Traceback
 
 from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.tools.extraction import ExtractionTools
+from llm_gateway.core.providers.base import get_provider
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.display import parse_and_display_result
 from llm_gateway.utils.logging.console import console
+from llm_gateway.utils.parsing import extract_json_from_markdown
+
+# --- Debug Flag ---
+USE_DEBUG_LOGS = True # Set to True to enable detailed logging
+# ------------------
 
 # Initialize logger
 logger = get_logger("example.advanced_extraction")
 
-# Initialize global gateway
-gateway = None
+# Configure the OpenAI client for direct extraction demos
+async def setup_openai_provider():
+    """Set up an OpenAI provider for demonstration."""
+    try:
+        logger.info("Initializing OpenAI for demonstration", emoji_key="start")
+        
+        # Get OpenAI provider - get_provider will return None if key missing/invalid in config
+        provider = await get_provider(Provider.OPENAI.value)
+        if not provider: 
+             logger.error("Failed to get OpenAI provider. Is the OPENAI_API_KEY configured correctly in your environment/config?")
+             return None
+             
+        logger.success("OpenAI provider initialized successfully.")
+        return provider
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenAI provider: {e}", emoji_key="error")
+        return None
 
-async def setup_gateway():
-    """Set up the gateway for demonstration."""
-    global gateway
-    
-    # Create gateway instance
-    logger.info("Initializing gateway for demonstration", emoji_key="start")
-    gateway = Gateway("extraction-demo")
-    
-    # Initialize the server with all providers and built-in tools
-    await gateway._initialize_providers()
-    
-    # Get available tools before registering our extraction tools
-    tools_before = await gateway.mcp.list_tools()
-    logger.info(f"Tools before registering extraction tools: {[t.name for t in tools_before]}", emoji_key="info")
-    
-    # Register extraction tools using our ExtractionTools class
-    extraction_tools = ExtractionTools(gateway)
-    
-    # Get available tools after registering extraction tools
-    tools_after = await gateway.mcp.list_tools()
-    logger.info(f"Tools after registering extraction tools: {[t.name for t in tools_after]}", emoji_key="info")
-    
-    # Create a set of the new tools added
-    new_tools = set([t.name for t in tools_after]) - set([t.name for t in tools_before])
-    logger.success(f"Added extraction tools: {new_tools}", emoji_key="success")
-    
-    return extraction_tools
-
-async def run_json_extraction_example():
+async def run_json_extraction_example(provider):
     """Demonstrate JSON extraction."""
+    if USE_DEBUG_LOGS:
+        logger.debug("Entering run_json_extraction_example.")
+    if not provider:
+        console.print("[yellow]Skipping JSON extraction demo - no provider available.[/yellow]")
+        if USE_DEBUG_LOGS:
+            logger.debug("Exiting run_json_extraction_example (no provider).")
+        return
+        
     console.print(Rule("[bold blue]1. JSON Extraction Example[/bold blue]"))
     
     # Load sample text
@@ -168,35 +168,112 @@ async def run_json_extraction_example():
         border_style="green"
     ))
     
-    # Extract JSON using extract_json tool
+    # Extract JSON using direct provider call
     logger.info("Extracting structured JSON data from text...", emoji_key="processing")
     
     try:
-        start_time = time.time()  # noqa: F841
+        start_time = time.time()
         
-        # Call the extract_json method
-        result = await gateway.mcp.call_tool("extract_json", {
-            "text": sample_text,
-            "json_schema": event_schema,
-            "provider": Provider.OPENAI.value,
-            "validate_output": True
-        })
+        # Instead of using the tool, use direct completion for demo purposes
+        prompt = f"""
+        Extract structured information from the following text into a JSON object.
+        Follow the provided JSON schema exactly.
         
-        # Display the results using the utility function
-        parse_and_display_result(
-            title="JSON Extraction Results",
-            input_data={"text": sample_text, "schema": event_schema},
-            result=result,
-            console=console
+        TEXT:
+        {sample_text}
+        
+        JSON SCHEMA:
+        {json.dumps(event_schema, indent=2)}
+        
+        Provide only the valid JSON object as output, with no additional commentary.
+        """
+        
+        if USE_DEBUG_LOGS:
+            logger.debug(f"JSON Extraction Prompt:\n{prompt}")
+        
+        # Call the provider directly
+        result = await provider.generate_completion(
+            prompt=prompt,
+            model="gpt-4.1-mini",  # Use an available OpenAI model
+            temperature=0.2,       # Lower temperature for more deterministic output
+            max_tokens=1500        # Enough tokens for a full response
         )
         
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Raw JSON Extraction Result Text:\n{result.text}")
+        
+        # Process the result to extract just the JSON
+        try:
+            # Try to parse the response as JSON
+            raw_text = result.text.strip()
+            text_to_parse = extract_json_from_markdown(raw_text)
+            if USE_DEBUG_LOGS:
+                logger.debug(f"Raw text received: {raw_text[:500]}...")
+                logger.debug(f"Attempting to parse JSON after cleaning: {text_to_parse[:500]}...")
+            json_result = json.loads(text_to_parse)
+            if USE_DEBUG_LOGS:
+                logger.debug(f"Successfully parsed JSON: {json.dumps(json_result, indent=2)}")
+            
+            # Create a dictionary with structured data and metadata for display
+            structured_result_data = {
+                "json": json_result, # The actual parsed JSON
+                "validated": True,   # Assuming validation happens elsewhere or is implied
+                "model": result.model,
+                "processing_time": time.time() - start_time,
+                "tokens": {
+                    "input": result.input_tokens,
+                    "output": result.output_tokens,
+                    "total": result.input_tokens + result.output_tokens
+                },
+                "cost": result.cost
+            }
+            
+            # Display the results using the utility function
+            parse_and_display_result(
+                title="JSON Extraction Results",
+                input_data={"text": sample_text, "schema": event_schema},
+                result=structured_result_data, # Pass the structured data
+                console=console
+            )
+            
+        except json.JSONDecodeError as e:
+            # Log the error regardless of debug flag
+            logger.error(f"JSONDecodeError occurred: {e}", exc_info=False)
+            
+            if USE_DEBUG_LOGS:
+                # Log the string that caused the error (before cleaning)
+                logger.debug(f"Raw string causing JSONDecodeError:\n{raw_text}")
+                # Log the string that failed parsing (after cleaning)
+                logger.debug(f"Cleaned string that failed JSON parsing:\n{text_to_parse}")
+                # Print a rich traceback to the console
+                console.print("[bold red]-- Traceback for JSONDecodeError --[/bold red]")
+                console.print(Traceback())
+                console.print("[bold red]-- End Traceback --[/bold red]")
+                
+            # If JSON parsing fails, show the raw response
+            console.print(Panel(
+                raw_text, # Show the original raw text from the model
+                title="[yellow]Raw Model Output (JSON parsing failed)[/yellow]",
+                border_style="red"
+            ))
+            
     except Exception as e:
         logger.error(f"Error extracting JSON: {str(e)}", emoji_key="error", exc_info=True)
         
     console.print()
+    if USE_DEBUG_LOGS:
+        logger.debug("Exiting run_json_extraction_example.")
 
-async def table_extraction_demo():
+async def table_extraction_demo(provider):
     """Demonstrate table extraction capabilities."""
+    if USE_DEBUG_LOGS:
+        logger.debug("Entering table_extraction_demo.")
+    if not provider:
+        console.print("[yellow]Skipping table extraction demo - no provider available.[/yellow]")
+        if USE_DEBUG_LOGS:
+            logger.debug("Exiting table_extraction_demo (no provider).")
+        return
+        
     logger.info("Starting table extraction demo", emoji_key="start")
     
     # Sample text with embedded table
@@ -220,27 +297,127 @@ async def table_extraction_demo():
     logger.info("Performing table extraction", emoji_key="processing")
     
     try:
-        # Call the extract_table tool directly
-        result = await gateway.mcp.call_tool("extract_table", {
-            "text": text,
-            "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
-            "formats": ["json", "markdown"],
-            "extract_metadata": True
-        })
+        start_time = time.time()
         
-        # Parse the result using the shared utility
-        parse_and_display_result("Table Extraction Demo", {"text": text}, result)
+        # Prompt for table extraction
+        prompt = f"""
+        Extract the table from the following text and format it as both JSON and Markdown.
         
-        return result
+        TEXT:
+        {text}
+        
+        For the JSON format, use this structure:
+        {{
+            "headers": ["Header1", "Header2", ...],
+            "rows": [
+                {{"Header1": "value", "Header2": "value", ...}},
+                ...
+            ]
+        }}
+        
+        For the Markdown format, output a well-formatted Markdown table.
+        
+        Also extract any metadata about the table (title, notes, etc.).
+        
+        Format your response as JSON with the following structure:
+        {{
+            "json_table": {{...}},
+            "markdown_table": "...",
+            "metadata": {{
+                "title": "...",
+                "notes": [
+                    "..."
+                ]
+            }}
+        }}
+        """
+        
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Table Extraction Prompt:\n{prompt}")
+        
+        # Call the provider directly
+        result = await provider.generate_completion(
+            prompt=prompt,
+            model="gpt-4.1-mini",
+            temperature=0.2,
+            max_tokens=1500
+        )
+        
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Raw Table Extraction Result Text:\n{result.text}")
+        
+        try:
+            # Try to parse the response as JSON
+            raw_text = result.text.strip() # Keep raw text separate
+            text_to_parse = extract_json_from_markdown(raw_text) # Clean it
+            if USE_DEBUG_LOGS:
+                # Log both raw and cleaned versions
+                logger.debug(f"Raw text received (Table): {raw_text[:500]}...")
+                logger.debug(f"Attempting to parse Table Extraction JSON after cleaning: {text_to_parse[:500]}...")
+            json_result = json.loads(text_to_parse) # Parse the cleaned version
+            if USE_DEBUG_LOGS:
+                logger.debug(f"Successfully parsed Table Extraction JSON: {json.dumps(json_result, indent=2)}")
+            
+            # Create structured data dictionary for display
+            structured_result_data = {
+                "formats": {
+                    "json": json_result.get("json_table", {}),
+                    "markdown": json_result.get("markdown_table", "")
+                },
+                "metadata": json_result.get("metadata", {}),
+                "model": result.model,
+                "processing_time": time.time() - start_time,
+                "tokens": {
+                    "input": result.input_tokens,
+                    "output": result.output_tokens,
+                    "total": result.input_tokens + result.output_tokens
+                },
+                "cost": result.cost
+            }
+            
+            # Parse the result using the shared utility
+            parse_and_display_result(
+                "Table Extraction Demo", 
+                {"text": text}, 
+                structured_result_data # Pass the structured data
+            )
+            
+        except json.JSONDecodeError as e:
+            # Log the error regardless of debug flag
+            logger.error(f"JSONDecodeError in Table Extraction occurred: {e}", exc_info=False)
+            
+            if USE_DEBUG_LOGS:
+                # Log both raw and cleaned versions for debugging the failure
+                logger.debug(f"Raw string causing JSONDecodeError in Table Extraction:\n{raw_text}")
+                logger.debug(f"Cleaned string that failed JSON parsing in Table Extraction:\n{text_to_parse}")
+                # Print a rich traceback to the console
+                console.print("[bold red]-- Traceback for JSONDecodeError (Table Extraction) --[/bold red]")
+                console.print(Traceback())
+                console.print("[bold red]-- End Traceback --[/bold red]")
+                
+            # If JSON parsing fails, show the raw response using the original raw_text
+            console.print(Panel(
+                raw_text,
+                title="[yellow]Raw Model Output (JSON parsing failed)[/yellow]",
+                border_style="red"
+            ))
             
     except Exception as e:
         logger.error(f"Error in table extraction: {str(e)}", emoji_key="error")
-        return None
+    # Add exit log
+    if USE_DEBUG_LOGS:
+        logger.debug("Exiting table_extraction_demo.")
 
-
-async def semantic_schema_inference_demo():
+async def semantic_schema_inference_demo(provider):
     """Demonstrate semantic schema inference."""
+    if USE_DEBUG_LOGS:
+        logger.debug("Entering semantic_schema_inference_demo.")
+    if not provider:
+        console.print("[yellow]Skipping semantic schema inference demo - no provider available.[/yellow]")
+        if USE_DEBUG_LOGS:
+            logger.debug("Exiting semantic_schema_inference_demo (no provider).")
+        return
+        
     logger.info("Starting semantic schema inference demo", emoji_key="start")
     
     # Sample text for schema inference
@@ -275,31 +452,165 @@ async def semantic_schema_inference_demo():
     - Appendectomy (2005)
     """
     
+    # Define a schema template for the extraction
+    patient_schema = {
+        "type": "object",
+        "properties": {
+            "patient": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "dob": {"type": "string"},
+                    "id": {"type": "string"},
+                    "blood_type": {"type": "string"},
+                    "height": {"type": "string"},
+                    "weight": {"type": "string"}
+                }
+            },
+            "medications": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "dosage": {"type": "string"},
+                        "frequency": {"type": "string"}
+                    }
+                }
+            },
+            "allergies": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "allergen": {"type": "string"},
+                        "severity": {"type": "string"}
+                    }
+                }
+            },
+            "vital_signs": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "blood_pressure": {"type": "string"},
+                    "heart_rate": {"type": "string"},
+                    "temperature": {"type": "string"},
+                    "oxygen_saturation": {"type": "string"}
+                }
+            },
+            "medical_history": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "condition": {"type": "string"},
+                        "diagnosed": {"type": "string"}
+                    }
+                }
+            }
+        }
+    }
+    
     # Log schema inference attempt
     logger.info("Performing schema inference", emoji_key="processing")
     
     try:
-        # Call the extract_semantic_schema tool directly
-        result = await gateway.mcp.call_tool("extract_semantic_schema", {
-            "text": text,
-            "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
-            "format": "json_schema",
-            "add_descriptions": True
-        })
+        start_time = time.time()
         
-        # Parse the result using the shared utility
-        parse_and_display_result("Semantic Schema Inference Demo", {"text": text}, result)
+        # Prompt for semantic schema extraction
+        prompt = f"""
+        Extract structured information from the text according to the provided semantic schema.
         
-        return result
+        TEXT:
+        {text}
+        
+        SEMANTIC SCHEMA:
+        {json.dumps(patient_schema, indent=2)}
+        
+        Analyze the text and extract information following the schema structure. Return a valid JSON object.
+        """
+        
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Schema Inference Prompt:\n{prompt}")
+        
+        # Call the provider directly
+        result = await provider.generate_completion(
+            prompt=prompt,
+            model="gpt-4.1-mini",
+            temperature=0.2,
+            max_tokens=1500
+        )
+        
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Raw Schema Inference Result Text:\n{result.text}")
+        
+        try:
+            # Try to parse the response as JSON
+            raw_text = result.text.strip()
+            text_to_parse = extract_json_from_markdown(raw_text)
+            if USE_DEBUG_LOGS:
+                logger.debug(f"Raw text received (Schema): {raw_text[:500]}...")
+                logger.debug(f"Attempting to parse Schema Inference JSON after cleaning: {text_to_parse[:500]}...")
+            json_result = json.loads(text_to_parse)
+            if USE_DEBUG_LOGS:
+                logger.debug(f"Successfully parsed Schema Inference JSON: {json.dumps(json_result, indent=2)}")
+            
+            # Create structured data dictionary for display
+            structured_result_data = {
+                "extracted_data": json_result,
+                "model": result.model,
+                "processing_time": time.time() - start_time,
+                "tokens": {
+                    "input": result.input_tokens,
+                    "output": result.output_tokens,
+                    "total": result.input_tokens + result.output_tokens
+                },
+                "cost": result.cost
+            }
+            
+            # Parse the result using the shared utility
+            parse_and_display_result(
+                "Semantic Schema Inference Demo", 
+                {"text": text}, 
+                structured_result_data # Pass the structured data
+            )
+            
+        except json.JSONDecodeError as e:
+            # Log the error regardless of debug flag
+            logger.error(f"JSONDecodeError in Schema Inference occurred: {e}", exc_info=False)
+            
+            if USE_DEBUG_LOGS:
+                # Log both raw and cleaned versions
+                logger.debug(f"Raw string causing JSONDecodeError in Schema Inference:\n{raw_text}")
+                logger.debug(f"Cleaned string that failed JSON parsing in Schema Inference:\n{text_to_parse}")
+                # Print a rich traceback to the console
+                console.print("[bold red]-- Traceback for JSONDecodeError (Schema Inference) --[/bold red]")
+                console.print(Traceback())
+                console.print("[bold red]-- End Traceback --[/bold red]")
+                
+            # If JSON parsing fails, show the raw response
+            console.print(Panel(
+                raw_text,
+                title="[yellow]Raw Model Output (JSON parsing failed)[/yellow]",
+                border_style="red"
+            ))
             
     except Exception as e:
         logger.error(f"Error in schema inference: {str(e)}", emoji_key="error")
-        return None
+    # Add exit log
+    if USE_DEBUG_LOGS:
+        logger.debug("Exiting semantic_schema_inference_demo.")
 
-
-async def entity_extraction_demo():
+async def entity_extraction_demo(provider):
     """Demonstrate entity extraction capabilities."""
+    if USE_DEBUG_LOGS:
+        logger.debug("Entering entity_extraction_demo.")
+    if not provider:
+        console.print("[yellow]Skipping entity extraction demo - no provider available.[/yellow]")
+        if USE_DEBUG_LOGS:
+            logger.debug("Exiting entity_extraction_demo (no provider).")
+        return
+        
     logger.info("Starting entity extraction demo", emoji_key="start")
     
     # Sample text for entity extraction
@@ -323,110 +634,135 @@ async def entity_extraction_demo():
     logger.info("Performing entity extraction", emoji_key="processing")
     
     try:
-        # Call the extract_key_value_pairs tool directly 
-        result = await gateway.mcp.call_tool("extract_key_value_pairs", {
-            "text": text,
-            "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
-            "structured": True,
-            "categorize": True
-        })
+        start_time = time.time()
         
-        # Parse the result using the shared utility
-        parse_and_display_result("Entity Extraction Demo", {"text": text}, result)
+        # Prompt for entity extraction
+        prompt = f"""
+        Extract key-value pairs and entities from the following text, categorized by type.
         
-        return result
+        TEXT:
+        {text}
+        
+        Extract the following categories of information:
+        - Organizations (companies, institutions, etc.)
+        - People (names and titles)
+        - Locations (cities, states, facilities, etc.)
+        - Dates and Times
+        - Products and Technologies
+        - Numerical Values (monetary values, percentages, measurements, etc.)
+        
+        Format the output as a JSON object with these categories as keys, and each containing relevant entities found.
+        Within each category, provide structured information when possible.
+        """
+        
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Entity Extraction Prompt:\n{prompt}")
+            
+        # Call the provider directly
+        result = await provider.generate_completion(
+            prompt=prompt,
+            model="gpt-4.1-mini", 
+            temperature=0.2,
+            max_tokens=1500
+        )
+        
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Raw Entity Extraction Result Text:\n{result.text}")
+            
+        try:
+            # Try to parse the response as JSON
+            raw_text = result.text.strip()
+            text_to_parse = extract_json_from_markdown(raw_text)
+            if USE_DEBUG_LOGS:
+                logger.debug(f"Raw text received (Entity): {raw_text[:500]}...")
+                logger.debug(f"Attempting to parse Entity Extraction JSON after cleaning: {text_to_parse[:500]}...")
+            json_result = json.loads(text_to_parse)
+            if USE_DEBUG_LOGS:
+                logger.debug(f"Successfully parsed Entity Extraction JSON: {json.dumps(json_result, indent=2)}")
+            
+            # Create structured data dictionary for display
+            structured_result_data = {
+                "extracted_data": json_result,
+                "structured": True,
+                "categorized": True,
+                "model": result.model,
+                "processing_time": time.time() - start_time,
+                "tokens": {
+                    "input": result.input_tokens,
+                    "output": result.output_tokens,
+                    "total": result.input_tokens + result.output_tokens
+                },
+                "cost": result.cost
+            }
+            
+            # Parse the result using the shared utility
+            parse_and_display_result(
+                "Entity Extraction Demo", 
+                {"text": text}, 
+                structured_result_data # Pass the structured data
+            )
+            
+        except json.JSONDecodeError as e:
+            # Log the error regardless of debug flag
+            logger.error(f"JSONDecodeError in Entity Extraction occurred: {e}", exc_info=False)
+            
+            if USE_DEBUG_LOGS:
+                # Log both raw and cleaned versions
+                logger.debug(f"Raw string causing JSONDecodeError in Entity Extraction:\n{raw_text}")
+                logger.debug(f"Cleaned string that failed JSON parsing in Entity Extraction:\n{text_to_parse}")
+                # Print a rich traceback to the console
+                console.print("[bold red]-- Traceback for JSONDecodeError (Entity Extraction) --[/bold red]")
+                console.print(Traceback())
+                console.print("[bold red]-- End Traceback --[/bold red]")
+                
+            # If JSON parsing fails, show the raw response
+            console.print(Panel(
+                raw_text,
+                title="[yellow]Raw Model Output (JSON parsing failed)[/yellow]",
+                border_style="red"
+            ))
             
     except Exception as e:
         logger.error(f"Error in entity extraction: {str(e)}", emoji_key="error")
-        # Try an alternative tool if available
-        try:
-            logger.info("Trying alternative entity extraction approach", emoji_key="processing")
-            
-            # Define a simple schema for entity extraction
-            entity_schema = {
-                "type": "object",
-                "properties": {
-                    "organizations": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    },
-                    "people": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    },
-                    "locations": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    },
-                    "products": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    },
-                    "dates": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    },
-                    "monetary_values": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    }
-                }
-            }
-            
-            # Call extract_json as an alternative for entity extraction
-            result = await gateway.mcp.call_tool("extract_json", {
-                "text": text,
-                "schema": entity_schema,
-                "provider": Provider.OPENAI.value,
-                "model": "gpt-4o-mini",
-                "validate": True
-            })
-            
-            # Parse the result using the shared utility
-            parse_and_display_result("Entity Extraction Demo (Alternative)", {"text": text}, result)
-            
-            return result
-            
-        except Exception as nested_e:
-            logger.error(f"Error in alternative entity extraction: {str(nested_e)}", emoji_key="error")
-            return None
-
+    # Add exit log
+    if USE_DEBUG_LOGS:
+        logger.debug("Exiting entity_extraction_demo.")
 
 async def main():
     """Run all extraction demos."""
+    if USE_DEBUG_LOGS:
+        logger.debug("Entering main function.")
+    provider = None # Initialize provider to None
+    exit_code = 1 # Default to error
     try:
-        # Set up gateway
-        await setup_gateway()
+        # Set up OpenAI provider
+        provider = await setup_openai_provider()
         
+        # If provider is None, the individual demo functions will print skips
+        # but the overall script continues and should exit 0 unless an *unexpected* error occurs.
+        if not provider:
+             logger.warning("OpenAI provider not available. Demo sections requiring it will be skipped.", emoji_key="warning")
+            
         console.print(Rule("[bold magenta]Advanced Extraction Demos Starting[/bold magenta]"))
         
-        # Run JSON extraction demo
-        await run_json_extraction_example()
+        # Run demo steps (they handle None provider internally)
+        await run_json_extraction_example(provider)
+        await table_extraction_demo(provider)
+        await semantic_schema_inference_demo(provider)
+        await entity_extraction_demo(provider)
         
-        # Run table extraction demo
-        await table_extraction_demo()
-        
-        # Run schema inference demo
-        await semantic_schema_inference_demo()
-        
-        # Run entity extraction demo
-        await entity_extraction_demo()
-        
-        # Final success message
-        logger.success("All extraction demos completed successfully", emoji_key="success")
+        logger.success("Advanced Extraction Demos Finished.", emoji_key="complete")
         console.print(Rule("[bold magenta]Advanced Extraction Demos Complete[/bold magenta]"))
+        exit_code = 0 # Success even if provider was missing
         
     except Exception as e:
-        logger.critical(f"Extraction demo failed: {str(e)}", emoji_key="critical")
+        logger.critical(f"Extraction demo failed unexpectedly: {str(e)}", emoji_key="critical", exc_info=True)
         console.print(f"[bold red]Critical Demo Error:[/bold red] {escape(str(e))}")
-        return 1
+        exit_code = 1 # Return 1 ONLY for unexpected errors during execution
     finally:
-        # Clean up
-        if gateway:
-            pass  # No cleanup needed for Gateway instance
-    
-    return 0
+        if USE_DEBUG_LOGS:
+            logger.debug(f"Exiting main function with code: {exit_code}")
+        return exit_code
 
 
 if __name__ == "__main__":

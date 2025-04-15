@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +21,9 @@ from rich.table import Table
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
+from llm_gateway.core.server import Gateway
 from llm_gateway.utils import get_logger, process_mcp_result
+from llm_gateway.exceptions import ToolExecutionError
 
 # --- Add Display Utils Import ---
 from llm_gateway.utils.display import _display_stats
@@ -28,7 +31,12 @@ from llm_gateway.utils.display import _display_stats
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
 
-# ----------------------
+# --- Import Tools Needed ---
+# Import tool functions directly if not registering them all
+# from llm_gateway.tools.optimization import recommend_model, execute_optimized_workflow # No, call via MCP
+# from llm_gateway.tools.completion import generate_completion # Call via MCP
+from llm_gateway.tools.optimization import estimate_cost # Import estimate_cost for _display_stats
+# -------------------------
 
 # Initialize logger
 logger = get_logger("example.workflow_delegation")
@@ -53,231 +61,137 @@ async def initialize_providers():
     else:
          logger.warning("Some API keys missing, functionality may be limited.", emoji_key="warning")
 
-# Register meta tools directly
-@mcp.tool()
-async def analyze_task(
-    task_description: str,
-    available_providers: Optional[List[str]] = None,
-    analyze_features: bool = True,
-    analyze_cost: bool = True,
-    ctx = None
-) -> Dict[str, Any]:
-    """Analyze a task and recommend suitable models."""
-    start_time = time.time()
-    
-    # Mock implementation for demonstration
-    if not available_providers:
-        available_providers = [Provider.OPENAI.value, Provider.GEMINI.value, Provider.ANTHROPIC.value]
-    
-    # Analyze task type based on description
-    task_type = "extraction" if "extract" in task_description.lower() else \
-                "summarization" if "summarize" in task_description.lower() else \
-                "generation"
-    
-    # Mock required features
-    if "entities" in task_description.lower():
-        required_features = ["entity_recognition", "classification"]
-        features_explanation = "This task requires entity recognition capabilities to identify key concepts."
-    elif "technical" in task_description.lower():
-        required_features = ["domain_knowledge", "technical_understanding"]
-        features_explanation = "This task requires technical domain knowledge to properly analyze content."
-    else:
-        required_features = ["text_processing"]
-        features_explanation = "This is a general text processing task."
-    
-    # Generate recommendations
-    recommendations = [
-        {
-            "provider": Provider.OPENAI.value,
-            "model": "gpt-4o",
-            "explanation": "Best overall quality for complex tasks"
-        },
-        {
-            "provider": Provider.ANTHROPIC.value,
-            "model": "claude-3-opus-20240229",
-            "explanation": "Excellent for technical content analysis"
-        },
-        {
-            "provider": Provider.GEMINI.value,
-            "model": "gemini-2.0-pro",
-            "explanation": "Good balance of performance and cost"
-        }
-    ]
-    
-    # Calculate processing time
-    processing_time = time.time() - start_time
-    
-    return {
-        "task_type": task_type,
-        "required_features": required_features,
-        "features_explanation": features_explanation,
-        "recommendations": recommendations,
-        "processing_time": processing_time
-    }
-
-@mcp.tool()
-async def delegate_task(
-    task_description: str,
-    prompt: str,
-    optimization_criteria: str = "balanced",
-    available_providers: Optional[List[str]] = None,
-    max_cost: Optional[float] = None,
-    ctx = None
-) -> Dict[str, Any]:
-    """Delegate a task to the most appropriate provider."""
-    start_time = time.time()
-    
-    # Mock implementation for demonstration
-    if not available_providers:
-        available_providers = [Provider.OPENAI.value, Provider.GEMINI.value]
-    
-    # Select a provider based on criteria
-    if optimization_criteria == "cost":
-        provider = Provider.GEMINI.value
-        model = "gemini-2.0-flash-lite"
-    elif optimization_criteria == "quality":
-        provider = Provider.OPENAI.value
-        model = "gpt-4o"
-    else:  # balanced
-        provider = Provider.OPENAI.value
-        model = "gpt-4o-mini"
-    
-    # Get provider instance
-    provider_instance = get_provider(provider)
-    await provider_instance.initialize()
-    
-    # Generate completion
-    result = await provider_instance.generate_completion(
-        prompt=prompt,
-        model=model,
-        temperature=0.7,
-        max_tokens=300
-    )
-    
-    # Calculate processing time
-    processing_time = time.time() - start_time
-    
-    return {
-        "text": result.text,
-        "provider": provider,
-        "model": model,
-        "processing_time": processing_time,
-        "cost": result.cost,
-        "tokens": {
-            "input": result.input_tokens,
-            "output": result.output_tokens,
-            "total": result.total_tokens
-        }
-    }
-
+# Keep execute_workflow as a locally defined tool demonstrating the concept
 @mcp.tool()
 async def execute_workflow(
     workflow_steps: List[Dict[str, Any]],
-    initial_input: str,
-    max_concurrency: int = 1,
-    ctx = None
+    initial_input: Optional[str] = None, # Make initial_input optional
+    max_concurrency: int = 1, # Keep concurrency, though sequential for demo
+    ctx = None # Keep ctx for potential use by called tools
 ) -> Dict[str, Any]:
-    """Execute a multi-step workflow."""
+    """Execute a multi-step workflow by calling registered project tools."""
     start_time = time.time()
     total_cost = 0.0
-    
-    # Initialize output collection
-    outputs = {}
-    
-    # Initialize input for first step
-    current_input = initial_input
-    
-    # Process each step sequentially (for demo)
-    for step in workflow_steps:
-        step_id = step.get("id", "unknown")
-        operation = step.get("operation", "")
-        provider_name = step.get("provider", Provider.OPENAI.value)
-        model_name = step.get("model", "")
-        parameters = step.get("parameters", {})
-        output_as = step.get("output_as", step_id)
-        
-        # Check if we should use output from previous step
-        if "input_from" in step and step["input_from"] in outputs:
-            current_input = outputs[step["input_from"]]
-        
-        # Get provider instance
-        provider = get_provider(provider_name)
-        await provider.initialize()
-        
-        # Create prompts based on operation
-        if operation == "summarize":
-            prompt = f"Summarize the following text. {parameters.get('format', 'Keep it concise')}:\n\n{current_input}"
-        elif operation == "extract_entities":
-            entity_types = parameters.get("entity_types", ["organization", "person", "concept"])
-            prompt = f"Extract the following entity types from the text: {', '.join(entity_types)}.\n\n{current_input}"
-        elif operation == "generate_questions":
-            prompt = f"Generate {parameters.get('question_count', 3)} {parameters.get('question_type', 'analytical')} questions about the following text:\n\n{current_input}"
-        else:
-            prompt = current_input
-        
-        # Generate completion
-        result = await provider.generate_completion(
-            prompt=prompt,
-            model=model_name,
-            temperature=0.7,
-            max_tokens=500
-        )
-        
-        # Store output
-        outputs[output_as] = result.text
-        
-        # Add to total cost
-        total_cost += result.cost
-    
-    # Calculate processing time
-    processing_time = time.time() - start_time
-    
-    return {
-        "outputs": outputs,
-        "processing_time": processing_time,
-        "total_cost": total_cost
+    step_results: Dict[str, Any] = {} # Store results keyed by step_id
+
+    # Mapping from simple operation names to actual tool names
+    operation_to_tool_map = {
+        "summarize": "summarize_document",
+        "extract_entities": "extract_entities",
+        "generate_questions": "generate_qa_pairs", # Correct tool name
+        "chunk": "chunk_document",
+        # Add mappings for other tools as needed
+        "completion": "generate_completion", 
+        "chat": "chat_completion",
+        "retrieve": "retrieve_context",
+        "rag_generate": "generate_with_rag",
     }
 
-@mcp.tool()
-async def optimize_prompt(
-    prompt: str,
-    target_model: str,
-    optimization_type: str = "general",
-    provider: str = Provider.OPENAI.value,
-    ctx = None
-) -> Dict[str, Any]:
-    """Optimize a prompt for a specific model."""
-    # Get provider instance
-    provider_instance = get_provider(provider)
-    await provider_instance.initialize()
-    
-    # Create optimization prompt
-    optimization_prompt = f"""
-    I need to optimize this prompt for the {target_model} model:
-    
-    "{prompt}"
-    
-    Please rewrite this prompt to work optimally with {target_model}, 
-    focusing on {optimization_type} optimization.
-    
-    Return ONLY the optimized prompt with no explanations.
-    """
-    
-    # Generate optimized prompt
-    result = await provider_instance.generate_completion(
-        prompt=optimization_prompt,
-        model=provider_instance.get_default_model(),
-        temperature=0.7,
-        max_tokens=300
-    )
-    
-    # Return optimized prompt
+    current_input_value = initial_input
+    logger.info(f"Starting workflow execution with {len(workflow_steps)} steps.")
+
+    for i, step in enumerate(workflow_steps):
+        step_id = step.get("id")
+        operation = step.get("operation")
+        tool_name = operation_to_tool_map.get(operation)
+        parameters = step.get("parameters", {}).copy() # Get parameters
+        input_from_step = step.get("input_from") # ID of previous step for input
+        output_as = step.get("output_as", step_id) # Key to store output under
+
+        if not step_id:
+             raise ValueError(f"Workflow step {i} is missing required 'id' key.")
+        if not tool_name:
+            raise ValueError(f"Unsupported operation '{operation}' in workflow step '{step_id}'. Mapped tool name not found.")
+
+        logger.info(f"Executing workflow step {i+1}/{len(workflow_steps)}: ID='{step_id}', Tool='{tool_name}'")
+
+        # Resolve input: Use previous step output or initial input
+        step_input_data = None
+        if input_from_step:
+            if input_from_step not in step_results:
+                 raise ValueError(f"Input for step '{step_id}' requires output from '{input_from_step}', which has not run or failed.")
+            # Decide which part of the previous result to use
+            # This needs a more robust mechanism (e.g., specifying the key)
+            # For now, assume the primary output is needed (e.g., 'text', 'summary', 'chunks', etc.)
+            prev_result = step_results[input_from_step]
+            # Simple logic: look for common output keys
+            if isinstance(prev_result, dict):
+                 if 'summary' in prev_result: step_input_data = prev_result['summary']
+                 elif 'text' in prev_result: step_input_data = prev_result['text']
+                 elif 'chunks' in prev_result: step_input_data = prev_result['chunks'] # May need specific handling
+                 elif 'result' in prev_result: step_input_data = prev_result['result'] # From DocumentResponse
+                 else: step_input_data = prev_result # Pass the whole dict?
+            else:
+                 step_input_data = prev_result # Pass raw output
+            logger.debug(f"Using output from step '{input_from_step}' as input.")
+        else:
+            step_input_data = current_input_value # Use input from previous step or initial
+            logger.debug("Using input from previous step/initial input.")
+
+        # --- Construct parameters for the target tool --- 
+        # This needs mapping based on the target tool's expected signature
+        # Example: If tool is 'summarize_document', map step_input_data to 'document' param
+        if tool_name == "summarize_document" and isinstance(step_input_data, str):
+            parameters["document"] = step_input_data
+        elif tool_name == "extract_entities" and isinstance(step_input_data, str):
+             parameters["document"] = step_input_data
+             # Ensure entity_types is a list
+             if "entity_types" not in parameters or not isinstance(parameters["entity_types"], list):
+                  parameters["entity_types"] = ["organization", "person", "concept"] # Default
+        elif tool_name == "generate_qa_pairs" and isinstance(step_input_data, str):
+             parameters["document"] = step_input_data
+             parameters["num_pairs"] = parameters.get("num_questions") or 5 # Map parameter name
+        elif tool_name in ["generate_completion", "chat_completion"] and isinstance(step_input_data, str):
+            if "prompt" not in parameters:
+                 parameters["prompt"] = step_input_data # Assume input is the prompt if not specified
+        # Add more mappings as needed for other tools...
+        else:
+             # Fallback: pass the input data under a generic key if not handled?
+             # Or maybe the tool parameter should explicitly name the input field?
+             # For now, we assume the tool can handle the input directly if not mapped.
+             # This requires careful workflow definition. 
+             # Maybe add 'input_arg_name' to workflow step definition?
+             logger.warning(f"Input mapping for tool '{tool_name}' not explicitly defined. Passing raw input.")
+             # Decide how to pass step_input_data if no specific mapping exists
+             # Example: parameters['input_data'] = step_input_data
+
+        # --- Call the actual tool via MCP --- 
+        try:
+            logger.debug(f"Calling tool '{tool_name}' with params: {parameters}")
+            tool_result = await mcp.call_tool(tool_name, parameters)
+            # Process result to handle potential list format from MCP
+            step_output = process_mcp_result(tool_result)
+            logger.debug(f"Tool '{tool_name}' returned: {step_output}")
+            
+            if isinstance(step_output, dict) and step_output.get("error"):
+                 raise ToolExecutionError(f"Tool '{tool_name}' failed: {step_output['error']}")
+                 
+            # Store the successful result
+            step_results[output_as] = step_output
+            # Update current_input_value for the next step (assuming primary output is desired)
+            # This logic might need refinement based on tool outputs
+            if isinstance(step_output, dict):
+                 current_input_value = step_output.get("text") or step_output.get("summary") or step_output.get("result") or step_output
+            else:
+                 current_input_value = step_output
+                 
+            # Accumulate cost if available
+            if isinstance(step_output, dict) and "cost" in step_output:
+                total_cost += float(step_output["cost"])
+                
+        except Exception as e:
+            logger.error(f"Error executing step '{step_id}' (Tool: {tool_name}): {e}", exc_info=True)
+            # Propagate exception to fail the workflow
+            raise ToolExecutionError(f"Workflow failed at step '{step_id}': {e}") from e
+
+    # Workflow completed successfully
+    processing_time = time.time() - start_time
+    logger.success(f"Workflow completed successfully in {processing_time:.2f}s")
     return {
-        "original_prompt": prompt,
-        "optimized_prompt": result.text.strip(),
-        "target_model": target_model,
-        "optimization_type": optimization_type,
-        "cost": result.cost
+        "outputs": step_results,
+        "processing_time": processing_time,
+        "total_cost": total_cost,
+        "success": True # Indicate overall success
     }
 
 # Enhanced display function for workflow demos
@@ -362,9 +276,17 @@ async def run_analyze_task_demo():
     console.print(f"[cyan]Task Description:[/cyan] {escape(task_description)}")
     
     try:
-        result = await mcp.call_tool("analyze_task", {
+        # Call the real recommend_model tool
+        # Need to estimate input/output length for recommend_model
+        # Rough estimate for demo purposes
+        input_len_chars = len(task_description) * 10 # Assume task needs more context
+        output_len_chars = 200 # Estimate output size
+
+        result = await mcp.call_tool("recommend_model", {
             "task_description": task_description,
-            "analyze_features": True
+            "expected_input_length": input_len_chars,
+            "expected_output_length": output_len_chars,
+            # Can add other recommend_model params like required_capabilities, max_cost
         })
         
         # Use enhanced display function
@@ -379,7 +301,7 @@ async def run_analyze_task_demo():
 async def run_delegate_task_demo():
     """Demonstrate the delegate_task tool."""
     console.print(Rule("[bold blue]Delegate Task Demo[/bold blue]"))
-    logger.info("Running delegate_task demo...", emoji_key="start")
+    logger.info("Running task delegation demo (using recommend_model + completion)...", emoji_key="start")
     
     task_description = "Generate a short marketing blurb for a new AI-powered writing assistant."
     prompt = "Write a catchy, 2-sentence marketing blurb for 'AI Writer Pro', a tool that helps users write faster and better."
@@ -392,30 +314,47 @@ async def run_delegate_task_demo():
         console.print(Rule(f"[yellow]Delegating with Priority: {priority}[/yellow]"))
         logger.info(f"Delegating task with priority: {priority}", emoji_key="processing")
         try:
-            result = await mcp.call_tool("delegate_task", {
-                "task_description": task_description,
-                "prompt": prompt,
-                "optimization_criteria": priority,
-                # "available_providers": [Provider.OPENAI.value] # Example constraint
+            # 1. Get recommendation
+            recommendation_result_raw = await mcp.call_tool("recommend_model", {
+                 "task_type": "creative_writing", # Infer task type
+                 "expected_input_length": len(prompt),
+                 "expected_output_length": 100, # Estimate blurb length
+                 "priority": priority
             })
-            
-            # Use display_text_content_result for consistent formatting
-            result_obj = process_mcp_result(result)
-            
-            # Display the text result
-            text_content = result_obj.get("text", "")
-            if not text_content and hasattr(result, 'text'):
-                text_content = result.text
-                
-            console.print(Panel(
-                escape(text_content.strip() if text_content else "[red]No text returned[/red]"),
-                title=f"[bold green]Delegated Result ({escape(priority)})[/bold green]",
-                border_style="green",
-                expand=False
-            ))
-            
-            # Display execution stats
-            _display_stats(result_obj, console)
+            recommendation_result = process_mcp_result(recommendation_result_raw)
+
+            if "error" in recommendation_result or not recommendation_result.get("recommendations"):
+                 logger.error(f"Could not get recommendation for priority '{priority}'.")
+                 console.print(f"[red]Error getting recommendation for '{priority}'.[/red]")
+                 continue
+
+            # 2. Execute with recommended model
+            top_rec = recommendation_result["recommendations"][0]
+            rec_provider = _get_provider_for_model(top_rec["model"])
+            rec_model = top_rec["model"]
+            logger.info(f"Recommendation for '{priority}': Use {rec_provider}/{rec_model}")
+
+            # Call generate_completion tool
+            completion_result_raw = await mcp.call_tool("generate_completion", {
+                 "prompt": prompt,
+                 "provider": rec_provider,
+                 "model": rec_model,
+                 "max_tokens": 100
+            })
+            completion_result = process_mcp_result(completion_result_raw)
+
+            # Display result
+            if "error" in completion_result:
+                 logger.error(f"Completion failed for recommended model {rec_model}: {completion_result['error']}")
+                 console.print(f"[red]Completion failed for {rec_model}: {completion_result['error']}[/red]")
+            else:
+                 console.print(Panel(
+                     escape(completion_result.get("text", "").strip()),
+                     title=f"[bold green]Delegated Result ({escape(priority)} -> {escape(rec_model)})[/bold green]",
+                     border_style="green",
+                     expand=False
+                 ))
+                 _display_stats(completion_result, console) # Display stats from completion
 
         except Exception as e:
             logger.error(f"Error delegating task with priority {priority}: {e}", emoji_key="error", exc_info=True)
@@ -442,7 +381,7 @@ async def run_workflow_demo():
             "id": "step1_summarize",
             "operation": "summarize",
             "provider": Provider.ANTHROPIC.value,
-            "model": "claude-3-5-haiku-latest",
+            "model": "claude-3-5-haiku-20241022",
             "parameters": {"format": "Provide a 2-sentence summary"},
             "output_as": "summary"
         },
@@ -450,7 +389,7 @@ async def run_workflow_demo():
             "id": "step2_extract",
             "operation": "extract_entities",
             "provider": Provider.OPENAI.value,
-            "model": "gpt-4o-mini",
+            "model": "gpt-4.1-mini",
             "parameters": {"entity_types": ["person", "organization", "field"]},
             "input_from": None, # Use initial_input
             "output_as": "entities"
@@ -547,6 +486,23 @@ async def main():
     await initialize_providers() # Ensure keys are checked/providers ready
     console.print(Rule("[bold magenta]Workflow & Delegation Demos Starting[/bold magenta]"))
     
+    # --- Register Necessary Tools --- 
+    # Ensure tools called by demos are registered on the MCP instance
+    # This assumes the gateway setup might not register all by default for this demo
+    # Or perhaps Gateway() should register them if register_tools=True?
+    # For now, manually register the ones needed for this specific demo file.
+    from llm_gateway.tools.optimization import recommend_model
+    from llm_gateway.tools.completion import generate_completion
+    from llm_gateway.tools.document import summarize_document, extract_entities, generate_qa_pairs
+    
+    mcp.tool()(recommend_model)
+    mcp.tool()(generate_completion)
+    mcp.tool()(summarize_document)
+    mcp.tool()(extract_entities)
+    mcp.tool()(generate_qa_pairs)
+    logger.info("Manually registered recommend_model, completion, and document tools.")
+    # --------------------------------
+
     try:
         await run_analyze_task_demo()
         await run_delegate_task_demo()
@@ -565,4 +521,17 @@ async def main():
 
 if __name__ == "__main__":
     exit_code = asyncio.run(main())
-    sys.exit(exit_code) 
+    sys.exit(exit_code)
+
+def _get_provider_for_model(model_name: str) -> str:
+    """Helper to determine provider from model name."""
+    # Handle potential prefixes like 'openai:' or just model names like 'gpt-4o'
+    model_lower = model_name.lower()
+    if ':' in model_lower:
+        return model_lower.split(':')[0]
+    elif model_lower.startswith("gpt-"):
+        return Provider.OPENAI.value
+    elif model_lower.startswith("claude-"):
+        return Provider.ANTHROPIC.value
+    else:
+        raise ValueError(f"Unknown model prefix for model: {model_name}") 

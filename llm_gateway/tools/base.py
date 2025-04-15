@@ -718,8 +718,12 @@ def with_error_handling(func):
                 details=e.details
             )
             
+            # Debug log the formatted error response
+            error_response = format_error_response(e)
+            logger.debug(f"Formatted error response for {tool_name}: {error_response}")
+            
             # Return standardized error response
-            return format_error_response(e)
+            return error_response
             
         except ValueError as e:
             # Convert ValueError to ToolInputError with more detailed information

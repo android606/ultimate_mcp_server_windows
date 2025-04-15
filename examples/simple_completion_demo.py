@@ -1,20 +1,20 @@
 #!/usr/bin/env python
 """Simple completion demo using LLM Gateway's direct provider functionality."""
 import asyncio
-import os
 import sys
 from pathlib import Path
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+
 from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.logging.console import console
-from rich.panel import Panel
-from rich.rule import Rule
-from rich.table import Table
 
 # Initialize logger
 logger = get_logger("example.simple_completion")
@@ -26,7 +26,7 @@ async def run_model_demo():
     console.print(Rule("[bold blue]Simple Completion Demo[/bold blue]"))
     
     # Create Gateway instance
-    gateway = Gateway("simple-demo")
+    gateway = Gateway("simple-demo", register_tools=False)
     
     # Initialize providers
     logger.info("Initializing providers", emoji_key="provider")
@@ -47,7 +47,7 @@ async def run_model_demo():
     logger.info(f"Available models: {len(models)}", emoji_key="model")
     
     # Pick a valid model from the provider
-    model = "gpt-4o-mini"  # A valid model from constants.py
+    model = "gpt-4.1-mini"  # A valid model from constants.py
     
     # Generate a completion
     prompt = "Explain quantum computing in simple terms."

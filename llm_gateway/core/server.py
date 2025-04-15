@@ -10,25 +10,20 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Dict, List, Optional
 
-# Import core specifically to set the global instance
-import llm_gateway.core 
+from fastapi import FastAPI
+from mcp.server.fastmcp import Context, FastMCP
+
 import llm_gateway
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
-from mcp.server.fastmcp import Context, FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
-
+# Import core specifically to set the global instance
+import llm_gateway.core
 from llm_gateway.config import get_config
 from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.core.tournaments.manager import tournament_manager
-from llm_gateway.utils.logging import logger
-from llm_gateway.utils.logging.logger import get_logger
 
 # --- Import the trigger function ---
 from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
+from llm_gateway.utils.logging import logger
+from llm_gateway.utils.logging.logger import get_logger
 
 # --- Define Logging Configuration Dictionary ---
 
@@ -141,12 +136,18 @@ class ProviderStatus:
 class Gateway:
     """Main LLM Gateway implementation."""
     
-    def __init__(self, name: Optional[str] = None):
+    def __init__(self, name: Optional[str] = None, register_tools: bool = True):
         """Initialize the gateway.
         
         Args:
             name: Name for the MCP server
+            register_tools: Whether to register all tools (False for demo scripts)
         """
+        # Force configuration loading to ensure API keys are available
+        # This is crucial for example scripts that run outside the main CLI
+        from llm_gateway.config import config_logger, get_config
+        config_logger.info("Initializing Gateway: Loading configuration...")
+        
         # Get the current config
         cfg = get_config()
         
@@ -173,11 +174,11 @@ class Gateway:
             timeout=300,
             debug=True
         )
-        # Register tools
-        self._register_tools()
         
-        # Register resources
-        self._register_resources()
+        # Register tools if requested
+        if register_tools:
+            self._register_tools()
+            self._register_resources()
         
         self.logger.info(f"LLM Gateway '{self.name}' initialized")
     
@@ -229,7 +230,7 @@ class Gateway:
             Dict containing initialized resources
         """
         # Import here to avoid circular import
-        from llm_gateway.tools.marqo_fused_search import check_marqo_availability, DEFAULT_MARQO_URL
+        from llm_gateway.tools.marqo_fused_search import DEFAULT_MARQO_URL, check_marqo_availability
         
         self.logger.info(f"Starting LLM Gateway '{self.name}'")
         
@@ -286,92 +287,145 @@ class Gateway:
             self.logger.info(f"Shutting down LLM Gateway '{self.name}'")
     
     async def _initialize_providers(self):
-        """Initialize all enabled providers."""
+        """Initialize all enabled providers based on the loaded config."""
         self.logger.info("Initializing LLM providers")
-        
-        # Get the current config
+
         cfg = get_config()
-        
-        # Get list of providers to initialize from config
         providers_to_init = []
+
+        # Determine which providers to initialize based SOLELY on the loaded config
         for provider_name in [p.value for p in Provider]:
-            provider_config = getattr(cfg, 'providers', {}).get(provider_name, None)
-            if provider_config and getattr(provider_config, 'enabled', False):
+            provider_config = getattr(cfg.providers, provider_name, None)
+            # Check if the provider is enabled AND has an API key configured in the loaded settings
+            if provider_config and provider_config.enabled and provider_config.api_key:
+                self.logger.debug(f"Found configured and enabled provider: {provider_name}")
                 providers_to_init.append(provider_name)
-                
-        # Add providers that have environment variables set
-        env_var_map = {
-            Provider.OPENAI.value: "OPENAI_API_KEY",
-            Provider.ANTHROPIC.value: "ANTHROPIC_API_KEY",
-            Provider.DEEPSEEK.value: "DEEPSEEK_API_KEY",
-            Provider.GEMINI.value: "GEMINI_API_KEY",
-            Provider.OPENROUTER.value: "OPENROUTER_API_KEY",
-        }
-        
-        for provider_name, env_var in env_var_map.items():
-            if provider_name not in providers_to_init and os.environ.get(env_var):
-                self.logger.info(f"Adding provider {provider_name} from environment variable {env_var}")
-                providers_to_init.append(provider_name)
-                
+            elif provider_config and provider_config.enabled:
+                self.logger.warning(f"Provider {provider_name} is enabled but missing API key in config. Skipping.")
+            # else: # Provider not found in config or not enabled
+            #     self.logger.debug(f"Provider {provider_name} not configured or not enabled.")
+
         # Initialize providers in parallel
-        init_tasks = []
-        for provider_name in providers_to_init:
-            task = asyncio.create_task(
+        init_tasks = [
+            asyncio.create_task(
                 self._initialize_provider(provider_name),
                 name=f"init-{provider_name}"
             )
-            init_tasks.append(task)
-            
-        await asyncio.gather(*init_tasks)
-        
+            for provider_name in providers_to_init
+        ]
+
+        if init_tasks:
+            await asyncio.gather(*init_tasks)
+
         # Log initialization summary
         available_providers = [
             name for name, status in self.provider_status.items()
             if status.available
         ]
-        
         self.logger.info(f"Providers initialized: {len(available_providers)}/{len(providers_to_init)} available")
-    
+
     async def _initialize_provider(self, provider_name: str):
-        """Initialize a single provider.
-        
-        Args:
-            provider_name: Provider name
-        """
+        """Initialize a single provider using ONLY the loaded configuration."""
+        api_key = None
+        api_key_configured = False
+        provider_config = None
+
         try:
-            # Create and initialize provider instance using the updated get_provider
-            # This will raise an exception if initialization fails
-            provider = await get_provider(provider_name)
-            
-            # If get_provider succeeded, the provider is initialized and available
-            # Get available models
-            models = await provider.list_models()
-            
-            # Store provider instance and status
-            self.providers[provider_name] = provider
-            self.provider_status[provider_name] = ProviderStatus(
-                enabled=True,
-                available=True,
-                api_key_configured=bool(provider.api_key),
-                models=models
-            )
-            
-            self.logger.success(
-                f"Provider {provider_name} initialized successfully with {len(models)} models",
-                emoji_key="provider"
-            )
-                
+            cfg = get_config()
+            provider_config = getattr(cfg.providers, provider_name, None)
+
+            # Get API key ONLY from the loaded config object
+            if provider_config and provider_config.api_key:
+                api_key = provider_config.api_key
+                api_key_configured = True
+            else:
+                # This case should ideally not be reached if checks in _initialize_providers are correct,
+                # but handle defensively.
+                self.logger.warning(f"Attempted to initialize {provider_name}, but API key not found in loaded config.")
+                api_key_configured = False
+
+            if not api_key_configured:
+                # Record status for providers found in config but without a key
+                if provider_config:
+                     self.provider_status[provider_name] = ProviderStatus(
+                        enabled=provider_config.enabled, # Reflects config setting
+                        available=False,
+                        api_key_configured=False,
+                        models=[],
+                        error="API key not found in loaded configuration"
+                    )
+                # Do not log the warning here again, just return
+                return
+
+            # --- API Key is configured, proceed with initialization ---
+            self.logger.debug(f"Initializing provider {provider_name} with key from config.")
+
+            # Import provider classes (consider moving imports outside the loop if performance is critical)
+            from llm_gateway.core.providers.anthropic import AnthropicProvider
+            from llm_gateway.core.providers.deepseek import DeepSeekProvider
+            from llm_gateway.core.providers.gemini import GeminiProvider
+            from llm_gateway.core.providers.openai import OpenAIProvider
+            from llm_gateway.core.providers.openrouter import OpenRouterProvider
+
+            providers = {
+                Provider.OPENAI.value: OpenAIProvider,
+                Provider.ANTHROPIC.value: AnthropicProvider,
+                Provider.DEEPSEEK.value: DeepSeekProvider,
+                Provider.GEMINI.value: GeminiProvider,
+                Provider.OPENROUTER.value: OpenRouterProvider,
+            }
+
+            provider_class = providers.get(provider_name)
+            if not provider_class:
+                raise ValueError(f"Invalid provider name mapping: {provider_name}")
+
+            # Instantiate provider with the API key retrieved from the config (via decouple)
+            # Ensure provider classes' __init__ expect 'api_key' as a keyword argument
+            provider = provider_class(api_key=api_key)
+
+            # Initialize provider (which should use the config passed)
+            available = await provider.initialize()
+
+            # Update status based on initialization result
+            if available:
+                models = await provider.list_models()
+                self.providers[provider_name] = provider
+                self.provider_status[provider_name] = ProviderStatus(
+                    enabled=provider_config.enabled,
+                    available=True,
+                    api_key_configured=True,
+                    models=models
+                )
+                self.logger.success(
+                    f"Provider {provider_name} initialized successfully with {len(models)} models",
+                    emoji_key="provider"
+                )
+            else:
+                self.provider_status[provider_name] = ProviderStatus(
+                    enabled=provider_config.enabled,
+                    available=False,
+                    api_key_configured=True, # Key was found, but init failed
+                    models=[],
+                    error="Initialization failed (check provider API status or logs)"
+                )
+                self.logger.error(
+                    f"Provider {provider_name} initialization failed",
+                    emoji_key="error"
+                )
+
         except Exception as e:
-            # Handle initialization failures (raised by get_provider or list_models)
+            # Handle unexpected errors during initialization
+            error_msg = f"Error initializing provider {provider_name}: {str(e)}"
+            self.logger.error(error_msg, exc_info=True)
+            # Ensure status is updated even on exceptions
+            enabled_status = provider_config.enabled if provider_config else False # Best guess
             self.provider_status[provider_name] = ProviderStatus(
-                enabled=True,  # Still considered enabled if config/env var found
+                enabled=enabled_status,
                 available=False,
-                api_key_configured=False, # Assume key issue if init fails
+                api_key_configured=api_key_configured, # Reflects if key was found before error
                 models=[],
-                error=str(e)
+                error=error_msg
             )
-            
-            self.logger.error(f"Error initializing provider {provider_name}: {str(e)}")
     
     @property
     def system_instructions(self) -> str:
@@ -384,7 +438,7 @@ class Gateway:
         Returns:
             String containing formatted instructions
         """
-        return f"""
+        return """
 # LLM Gateway Tool Usage Instructions
         
 You have access to the LLM Gateway, which provides unified access to multiple language model
@@ -435,7 +489,7 @@ to effectively use the gateway tools.
 For more detailed information and examples, access these MCP resources:
 - `info://server`: Basic server information
 - `info://tools`: Overview of available tools
-- `provider://{{provider_name}}`: Details about a specific provider
+- `provider://{provider_name}`: Details about a specific provider
 - `guide://llm`: Comprehensive usage guide for LLMs
 - `guide://error-handling`: Detailed error handling guidance
 - `examples://workflows`: Detailed examples of common workflows
@@ -750,7 +804,7 @@ first and be prepared to adapt to available providers.
                     "config": {
                         "base_url": "https://api.openai.com/v1",
                         "timeout_seconds": 30,
-                        "default_model": "gpt-4o-mini"
+                        "default_model": "gpt-4.1-mini"
                     }
                 }
                 
@@ -1650,7 +1704,7 @@ def start_server(
         _gateway_instance = Gateway()
     
     # Log startup info to stderr instead of using logging directly
-    print(f"Starting LLM Gateway server", file=sys.stderr)
+    print("Starting LLM Gateway server", file=sys.stderr)
     print(f"Host: {server_host}", file=sys.stderr)
     print(f"Port: {server_port}", file=sys.stderr)
     print(f"Workers: {server_workers}", file=sys.stderr)

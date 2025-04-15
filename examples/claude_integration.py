@@ -8,16 +8,19 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import BaseProvider, ModelResponse, get_provider
-from llm_gateway.utils import get_logger
+# Third-party imports
+# These imports need to be below sys.path modification, which is why they have noqa comments
+from rich import box  # noqa: E402
+from rich.markup import escape  # noqa: E402
+from rich.panel import Panel  # noqa: E402
+from rich.rule import Rule  # noqa: E402
+from rich.table import Table  # noqa: E402
 
-from llm_gateway.utils.logging.console import console
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.markup import escape
-from rich import box
+# Project imports
+from llm_gateway.constants import Provider  # noqa: E402
+from llm_gateway.core.server import Gateway  # noqa: E402
+from llm_gateway.utils import get_logger  # noqa: E402
+from llm_gateway.utils.logging.console import console  # noqa: E402
 
 # Initialize logger
 logger = get_logger("example.claude_integration")
@@ -28,10 +31,20 @@ async def compare_claude_models():
     console.print(Rule("[bold blue]Claude Model Comparison[/bold blue]"))
     logger.info("Starting Claude models comparison", emoji_key="start")
     
+    # Create Gateway instance - this handles provider initialization
+    gateway = Gateway("claude-demo", register_tools=False)
+    
+    # Initialize providers
+    logger.info("Initializing providers...", emoji_key="provider")
+    await gateway._initialize_providers()
+    
     provider_name = Provider.ANTHROPIC.value
     try:
-        provider = get_provider(provider_name)
-        await provider.initialize()
+        # Get the provider from the gateway
+        provider = gateway.providers.get(provider_name)
+        if not provider:
+            logger.error(f"Provider {provider_name} not available or initialized", emoji_key="error")
+            return
         
         logger.info(f"Using provider: {provider_name}", emoji_key="provider")
         
@@ -41,8 +54,8 @@ async def compare_claude_models():
         
         # Select specific models to compare (Ensure these are valid and available)
         claude_models = [
-            "claude-3-5-haiku-latest", 
-            "claude-3-7-sonnet-latest"
+            "claude-3-5-haiku-20241022", 
+            "claude-3-7-sonnet-20250219"
         ]
         # Filter based on available models
         models_to_compare = [m for m in claude_models if m in model_names]
@@ -132,13 +145,23 @@ async def demonstrate_system_prompt():
     console.print(Rule("[bold blue]Claude System Prompt Demonstration[/bold blue]"))
     logger.info("Demonstrating Claude with system prompts", emoji_key="start")
     
+    # Create Gateway instance - this handles provider initialization
+    gateway = Gateway("claude-demo", register_tools=False)
+    
+    # Initialize providers
+    logger.info("Initializing providers...", emoji_key="provider")
+    await gateway._initialize_providers()
+    
     provider_name = Provider.ANTHROPIC.value
     try:
-        provider = get_provider(provider_name)
-        await provider.initialize()
+        # Get the provider from the gateway
+        provider = gateway.providers.get(provider_name)
+        if not provider:
+            logger.error(f"Provider {provider_name} not available or initialized", emoji_key="error")
+            return
         
         # Use a fast Claude model (ensure it's available)
-        model = "claude-3-5-haiku-latest"
+        model = "claude-3-5-haiku-20241022"
         available_models = await provider.list_models()
         if model not in [m["id"] for m in available_models]:
             logger.warning(f"Model {model} not available, falling back to default.", emoji_key="warning")
@@ -207,9 +230,18 @@ async def explore_claude_models():
     """Display available Claude models."""
     console.print(Rule("[bold cyan]Available Claude Models[/bold cyan]"))
     
-    # Get provider instance - API key loaded automatically by config system
-    provider = get_provider(Provider.ANTHROPIC.value)
-    await provider.initialize()
+    # Create Gateway instance - this handles provider initialization
+    gateway = Gateway("claude-demo", register_tools=False)
+    
+    # Initialize providers
+    logger.info("Initializing providers...", emoji_key="provider")
+    await gateway._initialize_providers()
+    
+    # Get provider from the gateway
+    provider = gateway.providers.get(Provider.ANTHROPIC.value)
+    if not provider:
+        logger.error(f"Provider {Provider.ANTHROPIC.value} not available or initialized", emoji_key="error")
+        return
     
     # Get list of available models
     models = await provider.list_models()
@@ -220,7 +252,6 @@ async def explore_claude_models():
 async def main():
     """Run Claude integration examples."""
     try:
-
         # Run model comparison
         await compare_claude_models()
         

@@ -62,7 +62,7 @@ async def run_completion_with_cache(
         logger.warning(f"API key for {provider_name} not found. Request may fail.", emoji_key="warning")
 
     try:
-        provider = get_provider(provider_name, api_key=api_key)
+        provider = await get_provider(provider_name, api_key=api_key)
         await provider.initialize()
     except Exception as e:
          logger.error(f"Failed to initialize provider {provider_name}: {e}", emoji_key="error")

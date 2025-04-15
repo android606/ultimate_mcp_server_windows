@@ -10,11 +10,11 @@ from typing import Any, Dict, List, Optional
 from llm_gateway.exceptions import ProviderError, ResourceError, ToolInputError
 
 # Moved imports for services to the top level
-from llm_gateway.services import (
+from llm_gateway.services.knowledge_base import (
     get_knowledge_base_manager,
     get_knowledge_base_retriever,
-    get_rag_engine,
 )
+from llm_gateway.services import get_rag_engine
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
 
@@ -400,7 +400,7 @@ async def generate_with_rag(
         query: The user's query or question to be answered.
         provider: (Optional) The LLM provider for the generation step (e.g., "openai", "anthropic").
                   If None, the RAG engine selects a default provider.
-        model: (Optional) The specific LLM model ID for generation (e.g., "openai/gpt-4o-mini").
+        model: (Optional) The specific LLM model ID for generation (e.g., "openai/gpt-4.1-mini").
                If None, the RAG engine selects a default model.
         template: (Optional) The name of the prompt template to use for combining the query and context.
                   Available templates might include: "rag_default" (standard Q&A), "rag_with_sources"
@@ -431,7 +431,7 @@ async def generate_with_rag(
                 },
                 { ... } # Other source chunks used
             ],
-            "model": "openai/gpt-4o-mini", # Actual model used
+            "model": "openai/gpt-4.1-mini", # Actual model used
             "provider": "openai",
             "tokens": { "input": ..., "output": ..., "total": ... }, # Generation tokens
             "cost": 0.000120,

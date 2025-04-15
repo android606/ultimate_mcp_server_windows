@@ -37,6 +37,8 @@ from rich.table import Table
 from llm_gateway.core.server import Gateway
 from llm_gateway.services.prompts import PromptTemplate
 from llm_gateway.tools import extract_code_from_response
+# Import tournament tools
+from llm_gateway.tools.tournament import create_tournament, get_tournament_status, get_tournament_results
 from llm_gateway.utils import get_logger, process_mcp_result
 from llm_gateway.utils.display import display_tournament_results, display_tournament_status
 from llm_gateway.utils.logging.console import console
@@ -68,7 +70,7 @@ gateway = None
 # --- Configuration ---
 # Adjust model IDs based on your configured providers
 MODEL_IDS = [
-    "openai:gpt-4o-mini",
+    "openai:gpt-4.1-mini",
     "deepseek:deepseek-chat",
     "gemini:gemini-2.5-pro-exp-03-25"
 ]
@@ -214,11 +216,18 @@ async def setup_gateway():
     
     # Create gateway instance
     logger.info("Initializing gateway for demonstration", emoji_key="start")
-    gateway = Gateway("code-tournament-demo")
+    gateway = Gateway("code-tournament-demo", register_tools=False)
     
     # Initialize the server with all providers and built-in tools
     await gateway._initialize_providers()
     
+    # Manually register tournament tools
+    mcp = gateway.mcp
+    mcp.tool()(create_tournament)
+    mcp.tool()(get_tournament_status)
+    mcp.tool()(get_tournament_results)
+    logger.info("Manually registered tournament tools.")
+
     # Verify tools are registered
     tools = await gateway.mcp.list_tools()
     tournament_tools = [t.name for t in tools if t.name.startswith('tournament') or 'tournament' in t.name]

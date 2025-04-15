@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browser Automation Demo Report</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2, h3 {
+            color: #2c3e50;
+        }
+        h1 {
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+        h2 {
+            border-bottom: 1px solid #bdc3c7;
+            padding-bottom: 5px;
+            margin-top: 30px;
+        }
+        .summary-box {
+            background-color: #f8f9fa;
+            border-left: 5px solid #3498db;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .action {
+            background-color: #fff;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .action-header {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 10px;
+        }
+        .action-title {
+            font-weight: bold;
+            color: #2980b9;
+        }
+        .action-time {
+            color: #7f8c8d;
+        }
+        .success {
+            color: #27ae60;
+        }
+        .error {
+            color: #e74c3c;
+        }
+        .screenshots {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 10px;
+        }
+        .screenshot {
+            max-width: 45%;
+        }
+        .screenshot img {
+            max-width: 100%;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .screenshot-caption {
+            font-size: 0.9em;
+            text-align: center;
+            margin-top: 5px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            padding: 10px;
+            border: 1px solid #ddd;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        .timing-chart {
+            height: 30px;
+            background-color: #ecf0f1;
+            position: relative;
+            margin-top: 20px;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        .timing-bar {
+            height: 100%;
+            background-color: #3498db;
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .before-after {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        .before-after-panel {
+            flex: 1;
+            min-width: 45%;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 15px;
+        }
+        .panel-header {
+            font-weight: bold;
+            margin-bottom: 10px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #eee;
+        }
+        .before {
+            background-color: #f8f9fa;
+        }
+        .after {
+            background-color: #e8f4fc;
+        }
+        .code {
+            font-family: monospace;
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 5px;
+            overflow-x: auto;
+        }
+        .summary-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .metric-box {
+            flex: 1;
+            min-width: 200px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 15px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .metric-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #2980b9;
+        }
+        .metric-label {
+            color: #7f8c8d;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <h1>Browser Automation Demo Report</h1>
+    <div class="summary-box">
+        <p><strong>Generated:</strong> 2025-04-14 21:46:57</p>
+        <p><strong>Total Duration:</strong> 31.11 seconds</p>
+        <p><strong>Actions Performed:</strong> 0</p>
+        <p><strong>Screenshots Captured:</strong> 0</p>
+    </div>
+    
+    <div class="summary-metrics">
+        <div class="metric-box">
+            <div class="metric-value">0</div>
+            <div class="metric-label">Actions Performed</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-value">31.1s</div>
+            <div class="metric-label">Total Duration</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-value">0</div>
+            <div class="metric-label">Screenshots</div>
+        </div>
+        <div class="metric-box">
+            <div class="metric-value">8</div>
+            <div class="metric-label">Demos Run</div>
+        </div>
+    </div>
+    
+    <h2>Action Timeline</h2>
+    <div class="timing-chart">
+        <!-- Timing bars would be generated here -->
+    </div>
+    
+    <h2>Actions Performed</h2>
+
+    <h2>Demo Statistics</h2>
+    <table>
+        <tr>
+            <th>Demo</th>
+            <th>Duration</th>
+            <th>Actions</th>
+            <th>Status</th>
+        </tr>
+        <tr>
+            <td>Navigation Basics</td>
+            <td>0.00s</td>
+            <td>0</td>
+            <td class="error">❌ Failed</td>
+        </tr>
+        <tr>
+            <td>Form Interaction</td>
+            <td>2.28s</td>
+            <td>0</td>
+            <td class="success">✅ Success</td>
+        </tr>
+        <tr>
+            <td>JavaScript Execution</td>
+            <td>0.08s</td>
+            <td>0</td>
+            <td class="success">✅ Success</td>
+        </tr>
+        <tr>
+            <td>Tab Management</td>
+            <td>2.70s</td>
+            <td>0</td>
+            <td class="success">✅ Success</td>
+        </tr>
+        <tr>
+            <td>Authentication Workflow</td>
+            <td>0.31s</td>
+            <td>0</td>
+            <td class="error">❌ Failed</td>
+        </tr>
+        <tr>
+            <td>Search Interaction</td>
+            <td>0.49s</td>
+            <td>0</td>
+            <td class="error">❌ Failed</td>
+        </tr>
+        <tr>
+            <td>File Upload</td>
+            <td>16.59s</td>
+            <td>0</td>
+            <td class="success">✅ Success</td>
+        </tr>
+        <tr>
+            <td>Network Monitoring</td>
+            <td>5.34s</td>
+            <td>0</td>
+            <td class="error">❌ Failed</td>
+        </tr>
+    </table>
+
+</body>
+</html>

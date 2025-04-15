@@ -101,7 +101,7 @@ async def list_models(
     """Lists available LLM models, optionally filtered by provider.
 
     Use this tool to discover specific models offered by the configured and available LLM providers.
-    The returned model IDs (e.g., 'openai/gpt-4o-mini') are needed for other tools like
+    The returned model IDs (e.g., 'openai/gpt-4.1-mini') are needed for other tools like
     `chat_completion`, `generate_completion`, `estimate_cost`, or `create_tournament`.
 
     Args:
@@ -114,7 +114,7 @@ async def list_models(
             "models": {
                 "openai": [                       # Example for one provider
                     {
-                        "id": "openai/gpt-4o-mini", # Unique ID used in other tools
+                        "id": "openai/gpt-4.1-mini", # Unique ID used in other tools
                         "name": "GPT-4o Mini",     # Human-friendly name
                         "context_window": 128000,
                         "features": ["chat", "completion", "vision"],
@@ -142,7 +142,7 @@ async def list_models(
     Usage Flow:
         1. (Optional) Call `get_provider_status` to see which providers are generally available.
         2. Call `list_models` (optionally specifying a provider) to get usable model IDs.
-        3. Use a specific model ID (like "openai/gpt-4o-mini") as the 'model' parameter in other tools.
+        3. Use a specific model ID (like "openai/gpt-4.1-mini") as the 'model' parameter in other tools.
 
     Raises:
         ToolError: If the specified provider name is invalid or provider status is unavailable.

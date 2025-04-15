@@ -39,25 +39,28 @@ async def simulate_llm_usage():
     metrics = get_metrics_tracker()
     providers_info = []
     
-    # Setup providers
-    provider_configs = {
-        Provider.OPENAI: decouple_config("OPENAI_API_KEY", default=None),
-        Provider.ANTHROPIC: decouple_config("ANTHROPIC_API_KEY", default=None),
-        Provider.GEMINI: decouple_config("GEMINI_API_KEY", default=None),
-        Provider.OPENROUTER: decouple_config("OPENROUTER_API_KEY", default=None),
-    }
+    # Setup providers - Get keys from loaded config via get_provider
+    # REMOVED provider_configs dict and direct decouple calls
 
-    for provider_enum, api_key in provider_configs.items():
-        if api_key:
-            try:
-                provider = get_provider(provider_enum.value, api_key=api_key)
-                await provider.initialize()
+    # Iterate through defined Provider enums
+    for provider_enum in Provider:
+        # Skip if provider doesn't make sense to simulate here, e.g., OpenRouter might need extra config
+        if provider_enum == Provider.OPENROUTER:
+             logger.info(f"Skipping {provider_enum.value} in simulation.", emoji_key="skip")
+             continue 
+             
+        try:
+            # Let get_provider handle config/key lookup internally
+            provider = await get_provider(provider_enum.value) # REMOVED api_key argument
+            if provider:
+                # Ensure initialization (get_provider might not initialize)
+                # await provider.initialize() # Initialization might be done by get_provider or completion call
                 providers_info.append((provider_enum.value, provider))
-                logger.info(f"Initialized provider: {provider_enum.value}", emoji_key="provider")
-            except Exception as e:
-                logger.warning(f"Failed to initialize {provider_enum.value}: {e}", emoji_key="warning")
-        else:
-             logger.info(f"API key not found for {provider_enum.value}, skipping.", emoji_key="skip")
+                logger.info(f"Provider instance obtained for: {provider_enum.value}", emoji_key="provider")
+            else:
+                logger.info(f"Provider {provider_enum.value} not configured or key missing, skipping simulation.", emoji_key="skip")
+        except Exception as e:
+            logger.warning(f"Failed to get/initialize {provider_enum.value}: {e}", emoji_key="warning")
 
     if not providers_info:
         logger.error("No providers could be initialized. Cannot simulate usage.", emoji_key="error")
@@ -160,17 +163,78 @@ async def demonstrate_analytics_reporting():
         await simulate_llm_usage()
         stats = metrics.get_stats()
     
-    # Initialize reporting service
-    reporting = AnalyticsReporting()
+    # --- Perform calculations directly from stats --- 
+    general_stats = stats.get("general", {})
+    provider_stats = stats.get("providers", {})
+    model_stats = stats.get("models", {})
+    daily_usage_stats = stats.get("daily_usage", [])
+    total_cost = general_stats.get("cost_total", 0.0)
+    total_tokens = general_stats.get("tokens_total", 0)
     
-    # Generate reports
-    cost_by_provider = reporting.cost_by_provider(stats)
-    cost_by_model = reporting.cost_by_model(stats)
-    tokens_by_provider = reporting.tokens_by_provider(stats)
-    tokens_by_model = reporting.tokens_by_model(stats)
-    daily_cost_trend = reporting.daily_cost_trend(stats)
-    
-    # Display reports using tables
+    # Calculate cost by provider
+    cost_by_provider = []
+    if total_cost > 0:
+        cost_by_provider = [
+            {
+                "name": provider,
+                "value": data.get("cost", 0.0),
+                "percentage": data.get("cost", 0.0) / total_cost * 100 if total_cost > 0 else 0,
+            }
+            for provider, data in provider_stats.items()
+        ]
+        cost_by_provider.sort(key=lambda x: x["value"], reverse=True)
+        
+    # Calculate cost by model
+    cost_by_model = []
+    if total_cost > 0:
+        cost_by_model = [
+            {
+                "name": model,
+                "value": data.get("cost", 0.0),
+                "percentage": data.get("cost", 0.0) / total_cost * 100 if total_cost > 0 else 0,
+            }
+            for model, data in model_stats.items()
+        ]
+        cost_by_model.sort(key=lambda x: x["value"], reverse=True)
+
+    # Calculate tokens by provider
+    tokens_by_provider = []
+    if total_tokens > 0:
+        tokens_by_provider = [
+            {
+                "name": provider,
+                "value": data.get("tokens", 0),
+                "percentage": data.get("tokens", 0) / total_tokens * 100 if total_tokens > 0 else 0,
+            }
+            for provider, data in provider_stats.items()
+        ]
+        tokens_by_provider.sort(key=lambda x: x["value"], reverse=True)
+
+    # Calculate tokens by model
+    tokens_by_model = []
+    if total_tokens > 0:
+        tokens_by_model = [
+            {
+                "name": model,
+                "value": data.get("tokens", 0),
+                "percentage": data.get("tokens", 0) / total_tokens * 100 if total_tokens > 0 else 0,
+            }
+            for model, data in model_stats.items()
+        ]
+        tokens_by_model.sort(key=lambda x: x["value"], reverse=True)
+        
+    # Calculate daily cost trend (simplified: just show daily cost, no % change)
+    daily_cost_trend = [
+        {
+            "date": day.get("date"),
+            "cost": day.get("cost", 0.0)
+        }
+        for day in daily_usage_stats
+    ]
+    daily_cost_trend.sort(key=lambda x: x["date"]) # Sort by date
+    # --------------------------------------------------
+
+    # Display reports using tables (using the calculated data)
     # Provider cost report
     if cost_by_provider:
         provider_cost_table = Table(title="[bold green]Cost by Provider[/bold green]", box=box.ROUNDED)
@@ -240,25 +304,26 @@ async def demonstrate_analytics_reporting():
         daily_trend_table = Table(title="[bold green]Daily Cost Trend[/bold green]", box=box.ROUNDED)
         daily_trend_table.add_column("Date", style="yellow")
         daily_trend_table.add_column("Cost", style="green", justify="right")
-        daily_trend_table.add_column("Change", style="cyan", justify="right")
+        # daily_trend_table.add_column("Change", style="cyan", justify="right") # Removed change calculation for simplicity
         
         for item in daily_cost_trend:
-            change_str = f"{item.get('change', 0):.1f}%" if 'change' in item else "N/A"
-            change_style = ""
-            if 'change' in item:
-                if item['change'] > 0:
-                    change_style = "[red]+"
-                elif item['change'] < 0:
-                    change_style = "[green]"
+            # change_str = f"{item.get('change', 0):.1f}%" if 'change' in item else "N/A"
+            # change_style = ""
+            # if 'change' in item:
+            #     if item['change'] > 0:
+            #         change_style = "[red]+"
+            #     elif item['change'] < 0:
+            #         change_style = "[green]"
                     
             daily_trend_table.add_row(
                 item["date"],
-                f"${item['cost']:.6f}",
-                f"{change_style}{change_str}[/]" if change_style else change_str
+                f"${item['cost']:.6f}"
+                # f"{change_style}{change_str}[/]" if change_style else change_str
             )
         console.print(daily_trend_table)
         console.print()
     
+    # Return the calculated data instead of None
     return {
         "cost_by_provider": cost_by_provider,
         "cost_by_model": cost_by_model,

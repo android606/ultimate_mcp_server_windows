@@ -41,7 +41,7 @@ async def setup_gateway():
     
     # Create gateway instance
     logger.info("Initializing gateway for testing", emoji_key="start")
-    gateway = Gateway("test-extraction")
+    gateway = Gateway("test-extraction", register_tools=False)
     
     # Initialize the server with all providers and built-in tools
     await gateway._initialize_providers()

@@ -19,9 +19,14 @@ from llm_gateway.services.vector.embeddings import cosine_similarity, get_embedd
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.display import (
     display_embedding_generation_results,
+    display_text_content_result,
     display_vector_similarity_results,
     parse_and_display_result,
 )
+
+# --- Add Marqo Tool Import ---
+from llm_gateway.tools.marqo_fused_search import marqo_fused_search
+# ---------------------------
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -44,7 +49,7 @@ async def setup_services():
     global gateway, vector_service, embedding_service
     
     logger.info("Initializing gateway and services...", emoji_key="start")
-    gateway = Gateway("vector-demo")
+    gateway = Gateway("vector-demo", register_tools=False)
     await gateway._initialize_providers()
     
     if not openai_api_key:
@@ -86,9 +91,8 @@ async def embedding_generation_demo():
         try:
             logger.info(f"Generating embeddings with {model_name}...", emoji_key="processing")
             start_time = time.time()
-            embeddings = await embedding_service.get_embeddings(
-                texts=text_samples,
-                model=model_name
+            embeddings = await embedding_service.create_embeddings(
+                texts=text_samples
             )
             processing_time = time.time() - start_time
             
@@ -156,7 +160,7 @@ async def vector_search_demo():
 
     try:
         logger.info(f"Creating/resetting collection: {collection_name}", emoji_key="db")
-        vector_service.create_collection(
+        await vector_service.create_collection(
             name=collection_name,
             dimension=embedding_dimension, 
             overwrite=True, 
@@ -213,90 +217,59 @@ async def vector_search_demo():
          # Clean up the collection
         try:
             logger.info(f"Deleting collection: {collection_name}", emoji_key="db")
-            vector_service.delete_collection(collection_name)
+            await vector_service.delete_collection(collection_name)
         except Exception as delete_err:
              logger.warning(f"Could not delete collection {collection_name}: {delete_err}", emoji_key="warning")
     console.print()
 
 
 async def hybrid_search_demo():
-    """Demonstrate hybrid search (vector + keyword). Currently conceptual/mocked."""
-    console.print(Rule("[bold blue]Hybrid Search Demo (Conceptual)[/bold blue]"))
+    """Demonstrate hybrid search using the marqo_fused_search tool."""
+    console.print(Rule("[bold blue]Hybrid Search Demo (using Marqo Fused Search Tool)[/bold blue]"))
     logger.info("Starting hybrid search demo (conceptual)", emoji_key="start")
     
-    # Hybrid search typically requires a DB that supports it (e.g., Pinecone, Weaviate with keyword args)
-    # We'll simulate the idea here.
+    # This demo uses the marqo_fused_search tool, which performs hybrid search.
+    # It requires a running Marqo instance and a configured index 
+    # as defined in marqo_index_config.json.
     
-    collection_name = "demo_hybrid_store_rich"
-    embedding_dimension = 1536 
-    documents = [
-        {"id": "h_doc1", "text": "Optimizing cloud infrastructure for cost efficiency.", "tags": ["cloud", "cost"]}, 
-        {"id": "h_doc2", "text": "Using vector databases for semantic search applications.", "tags": ["ai", "vector", "search"]}, 
-        {"id": "h_doc3", "text": "A guide to cloud security best practices.", "tags": ["cloud", "security"]}, 
-        {"id": "h_doc4", "text": "Advanced techniques in semantic understanding for AI.", "tags": ["ai", "semantic"]}
-    ]
-    texts = [d["text"] for d in documents]
-    metadatas = [{k: (', '.join(v) if k == 'tags' and isinstance(v, list) else v) for k, v in d.items() if k != 'text'} for d in documents]
+    # Note: For this demo to work correctly, the configured Marqo index
+    # should contain documents related to the query, potentially including
+    # metadata fields like 'tags' if filtering is intended.
+    # The setup below is removed as the data needs to be pre-indexed in Marqo.
+    # collection_name = "demo_hybrid_store_rich"
+    # try:
+    #    logger.info(f"Creating/resetting collection: {collection_name}", emoji_key="db")
+    #    # ... [Code to create collection and add documents would go here if using local DB] ...
+    # except Exception as setup_e:
+    #     logger.error(f"Failed to setup data for hybrid demo: {setup_e}", emoji_key="error")
+    #     console.print(f"[bold red]Error setting up demo data: {escape(str(setup_e))}[/bold red]")
+    #     return
     
     try:
-        logger.info(f"Creating/resetting collection: {collection_name}", emoji_key="db")
-        vector_service.create_collection(name=collection_name, dimension=embedding_dimension, overwrite=True)
-        ids = await vector_service.add_texts(collection_name=collection_name, texts=texts, metadatas=metadatas)
-        logger.success(f"Added {len(ids)} documents for hybrid demo.", emoji_key="success")
-        
         # --- Perform Hybrid Search (Simulated) ---
         query = "cloud semantic search techniques"
-        keywords = ["cloud", "semantic"] # Keywords for filtering/boosting
-        alpha = 0.6 # Weight for vector search (vs keyword)
+        # keywords = ["cloud", "semantic"] # Keywords can be included in query or filters
+        semantic_weight_param = 0.6 # Weight for semantic search (alpha)
         
-        logger.info(f'Hybrid search for: "{escape(query)}" with keywords {escape(str(keywords))}', emoji_key="search")
+        logger.info(f'Hybrid search for: "{escape(query)}" with semantic weight {semantic_weight_param}', emoji_key="search")
         
-        # In a real implementation, the vector_service.search call would handle 'keywords' and 'alpha'.
-        # We simulate by doing a vector search and then potentially re-ranking or filtering.
-        vector_results = await vector_service.search_by_text(
-            collection_name=collection_name, 
-            query_text=query, 
-            top_k=5 
+        # Call the marqo_fused_search tool directly
+        hybrid_result = await marqo_fused_search(
+            query=query,
+            limit=3, # Request top 3 results
+            semantic_weight=semantic_weight_param
+            # Add filters={}, date_range=None etc. if needed based on schema
         )
-        
-        # Mock re-ranking/filtering based on keywords (conceptual)
-        hybrid_results = []
-        for match in vector_results:
-            metadata = match.get("metadata", {})
-            tags = metadata.get("tags", "").split(", ") if metadata.get("tags") else []
-            keyword_match_score = sum(1 for kw in keywords if kw in tags) # Simple keyword score
-            
-            # Combine scores (conceptual - real DBs do this internally)
-            final_score = (alpha * match.get('similarity', 0.0)) + ((1 - alpha) * (keyword_match_score / len(keywords) if keywords else 0))
-            match['final_score'] = final_score
-            hybrid_results.append(match)
-            
-        hybrid_results.sort(key=lambda x: x['final_score'], reverse=True)
-        
-        # Format the result for our display utility
-        hybrid_result = {
-            "results": hybrid_results[:3],  # Show top 3
-            "alpha": alpha,
-            "keywords": keywords,
-            "query": query
-        }
-        
-        # Use the shared display utility
-        parse_and_display_result(
-            title=f"Hybrid Search: {query}",
-            input_data={"query": query, "keywords": keywords, "alpha": alpha},
-            result=hybrid_result
+
+        display_text_content_result(
+            f"Hybrid Search Results (Weight={semantic_weight_param})",
+            hybrid_result # Pass the result dict directly
         )
 
     except Exception as e:
         logger.error(f"Error during hybrid search demo: {e}", emoji_key="error", exc_info=True)
         console.print(f"[bold red]Error:[/bold red] {escape(str(e))}")
-    finally:
-        try:
-            logger.info(f"Deleting collection: {collection_name}", emoji_key="db")
-            vector_service.delete_collection(collection_name)
-        except Exception as delete_err:
-            logger.warning(f"Could not delete collection {collection_name}: {delete_err}", emoji_key="warning")
+    # Removed cleanup as we assume Marqo index exists independently
     console.print()
 
 async def semantic_similarity_demo():
@@ -321,7 +294,9 @@ async def semantic_similarity_demo():
 
     try:
         all_texts = [text for pair in text_pairs for text in pair]
-        embeddings = await embedding_service.get_embeddings(texts=all_texts, model=model_name)
+        embeddings = await embedding_service.create_embeddings(
+            texts=all_texts
+        )
         
         if len(embeddings) == len(all_texts):
             for i, pair in enumerate(text_pairs):

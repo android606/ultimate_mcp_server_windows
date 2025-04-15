@@ -40,6 +40,7 @@ from llm_gateway.core.models.requests import CompletionRequest
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.services.prompts import PromptTemplate
+from llm_gateway.tools.tournament import create_tournament, get_tournament_status, get_tournament_results
 from llm_gateway.utils import get_logger, process_mcp_result
 from llm_gateway.utils.display import display_tournament_results, display_tournament_status
 from llm_gateway.utils.logging.console import console
@@ -71,7 +72,7 @@ gateway = None
 # --- Configuration ---
 # Adjust model IDs based on your configured providers
 MODEL_IDS = [
-    "openai:gpt-4o-mini",
+    "openai:gpt-4.1-mini",
     "deepseek:deepseek-chat",
     "gemini:gemini-2.5-pro-exp-03-25"
 ]
@@ -276,11 +277,18 @@ async def setup_gateway():
     
     # Create gateway instance
     logger.info("Initializing gateway for demonstration", emoji_key="start")
-    gateway = Gateway("text-tournament-demo")
+    gateway = Gateway("text-tournament-demo", register_tools=False)
     
     # Initialize the server with all providers and built-in tools
     await gateway._initialize_providers()
     
+    # Manually register tournament tools
+    mcp = gateway.mcp
+    mcp.tool()(create_tournament)
+    mcp.tool()(get_tournament_status)
+    mcp.tool()(get_tournament_results)
+    logger.info("Manually registered tournament tools.")
+
     # Verify tools are registered
     tools = await gateway.mcp.list_tools()
     tournament_tools = [t.name for t in tools if t.name.startswith('tournament') or 'tournament' in t.name]
@@ -693,7 +701,7 @@ async def run_tournament_demo():
                             console.print(f"[yellow]Could not evaluate essays: {evaluation_result.get('error')}[/yellow]")
                             # Try with fallback model if Gemini fails
                             if "gemini" in evaluation_result.get("model_used", ""):
-                                console.print("[bold]Trying evaluation with fallback model (GPT-4o-mini)...[/bold]")
+                                console.print("[bold]Trying evaluation with fallback model (gpt-4.1-mini)...[/bold]")
                                 # Switch to OpenAI model as backup
                                 essays_by_model_limited = {}
                                 # Limit content size to avoid token limits
@@ -701,7 +709,7 @@ async def run_tournament_demo():
                                     essays_by_model_limited[model_id] = essay[:5000]  # Shorter excerpt to fit in context
                                 
                                 fallback_evaluation = {
-                                    "model_used": "openai:gpt-4o-mini",
+                                    "model_used": "openai:gpt-4.1-mini",
                                     "eval_prompt": evaluation_result.get("eval_prompt", "Evaluation failed")
                                 }
                                 
@@ -716,7 +724,7 @@ async def run_tournament_demo():
                                             display_model = model_id.split(':')[-1] if ':' in model_id else model_id
                                             simple_prompt += f"Essay {i} ({display_model}):\n{essay[:2000]}...\n\n"
                                         
-                                        request = CompletionRequest(prompt=simple_prompt, model="openai:gpt-4o-mini")
+                                        request = CompletionRequest(prompt=simple_prompt, model="openai:gpt-4.1-mini")
                                         completion_result = await provider.generate_completion(
                                             prompt=request.prompt,
                                             model=request.model
@@ -734,7 +742,7 @@ async def run_tournament_demo():
                                         
                                         console.print(Panel(
                                             escape(fallback_evaluation["evaluation"]),
-                                            title="[bold]Fallback Evaluation (by gpt-4o-mini)[/bold]",
+                                            title="[bold]Fallback Evaluation (by gpt-4.1-mini)[/bold]",
                                             border_style="yellow",
                                             expand=False
                                         ))
@@ -744,7 +752,7 @@ async def run_tournament_demo():
                                             try:
                                                 fallback_eval_file = os.path.join(storage_path, "fallback_evaluation.md")
                                                 with open(fallback_eval_file, "w", encoding="utf-8") as f:
-                                                    f.write("# Fallback Essay Evaluation by gpt-4o-mini\n\n")
+                                                    f.write("# Fallback Essay Evaluation by gpt-4.1-mini\n\n")
                                                     f.write(fallback_evaluation["evaluation"])
                                                 
                                                 logger.info(f"Fallback evaluation saved to {fallback_eval_file}", emoji_key="save")

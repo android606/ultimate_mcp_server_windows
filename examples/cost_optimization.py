@@ -2,29 +2,31 @@
 """Cost optimization examples for LLM Gateway."""
 import asyncio
 import sys
-import time
 from pathlib import Path
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from decouple import config as decouple_config
-from mcp.server.fastmcp import Context, FastMCP
-
-from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.tools.optimization import OptimizationTools
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.text import count_tokens  # Import proper token counting function
-# --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.markup import escape
+from mcp.server.fastmcp import FastMCP
 from rich import box
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+
+from llm_gateway.constants import Provider
+from llm_gateway.core.providers.base import get_provider
+from llm_gateway.tools.optimization import estimate_cost, recommend_model
+from llm_gateway.utils import get_logger
+
 # --- Import display utilities ---
 from llm_gateway.utils.display import parse_and_display_result
+
+# --- Add Rich Imports ---
+from llm_gateway.utils.logging.console import console
+from llm_gateway.utils.text import count_tokens  # Import proper token counting function
+
 # ----------------------
 
 # Initialize logger
@@ -34,7 +36,12 @@ logger = get_logger("example.cost_optimization")
 mcp = FastMCP("Cost Optimization Demo")
 
 # Create optimization tools instance with MCP server - this registers all the tools
-OptimizationTools(mcp)
+# OptimizationTools(mcp)
+
+# Manually register the tools needed for this demo on the local MCP instance
+mcp.tool()(estimate_cost)
+mcp.tool()(recommend_model)
+logger.info("Manually registered optimization tools (estimate_cost, recommend_model).")
 
 # Helper function to unpack tool results that might be returned as a list
 def unpack_tool_result(result):
@@ -78,7 +85,7 @@ async def demonstrate_cost_optimization():
     """
     
     # Note for the demo: Use proper token counting, not character estimation
-    logger.info(f"Calculating tokens for the prompt with tiktoken", emoji_key="info")
+    logger.info("Calculating tokens for the prompt with tiktoken", emoji_key="info")
     models_to_show = ["gpt-4o", "claude-3-5-sonnet-latest"]
     for model_name in models_to_show:
         token_count = count_tokens(prompt, model_name)
@@ -92,10 +99,10 @@ async def demonstrate_cost_optimization():
     
     models_to_compare = [
         "gpt-4o",
-        "gpt-4o-mini",
+        "gpt-4.1-mini",
         "claude-3-opus-20240229",
-        "claude-3-sonnet-20240229",
-        "claude-3-haiku-20240307",
+        "claude-3-7-sonnet-20250219",
+        "claude-3-5-haiku-20241022",
         "gemini-2.5-pro-latest",
         "gemini-2.5-flash-latest",
         "deepseek-chat"

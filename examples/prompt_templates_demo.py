@@ -381,7 +381,7 @@ async def demonstrate_llm_with_templates():
         return
     
     # Initialize gateway with providers
-    gateway = Gateway("prompt-templates-demo")
+    gateway = Gateway("prompt-templates-demo", register_tools=False)
     logger.info("Initializing providers...", emoji_key="provider")
     await gateway._initialize_providers()
     

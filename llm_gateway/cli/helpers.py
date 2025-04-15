@@ -231,10 +231,10 @@ llm-gateway run --host 0.0.0.0 --port 8013
 llm-gateway providers --check
 
 # Test a provider
-llm-gateway test openai --model gpt-4o-mini --prompt "Hello, world!"
+llm-gateway test openai --model gpt-4.1-mini --prompt "Hello, world!"
 
 # Generate a completion
-llm-gateway complete --provider anthropic --model claude-3-5-haiku-latest --prompt "Explain quantum computing"
+llm-gateway complete --provider anthropic --model claude-3-5-haiku-20241022 --prompt "Explain quantum computing"
 
 # Stream a completion
 llm-gateway complete --provider openai --stream --prompt "Write a poem about AI"

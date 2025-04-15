@@ -2,10 +2,13 @@
 import asyncio
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from llm_gateway.utils import get_logger
+from llm_gateway.config import get_config
+from llm_gateway.exceptions import PromptTemplateError
+from llm_gateway.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -24,17 +27,21 @@ def get_prompt_service():
 class PromptService:
     """Service for managing and rendering prompt templates."""
     
-    def __init__(self, templates_dir: Optional[str] = None):
+    def __init__(self):
         """Initialize the prompt service.
         
         Args:
             templates_dir: Directory containing template files
         """
         self.templates: Dict[str, str] = {}
-        self.templates_dir = templates_dir or os.environ.get(
-            "PROMPT_TEMPLATES_DIR", 
-            str(Path.home() / ".llm_gateway" / "templates")
-        )
+        try:
+            config = get_config()
+            self.templates_dir = config.prompt_templates_directory
+            logger.info(f"Initializing PromptService. Looking for templates in: {self.templates_dir}")
+            self._load_templates()
+        except Exception as e:
+            logger.error(f"Failed to initialize PromptService: {e}", exc_info=True)
+            # Allow service to exist even if loading fails, get_template will raise errors
         
         # Create templates directory if it doesn't exist
         os.makedirs(self.templates_dir, exist_ok=True)
@@ -42,6 +49,29 @@ class PromptService:
         # Read templates from files
         self._read_templates()
         logger.info(f"Prompt service initialized with {len(self.templates)} templates")
+    
+    def _load_templates(self):
+        """Loads all .txt files from the templates directory."""
+        if not Path(self.templates_dir).is_dir():
+            logger.warning(f"Prompt templates directory not found or not a directory: {self.templates_dir}")
+            return
+
+        loaded_count = 0
+        for filepath in Path(self.templates_dir).glob('*.txt'):
+            try:
+                template_name = filepath.stem # Use filename without extension as name
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                self.templates[template_name] = content
+                logger.debug(f"Loaded prompt template: {template_name}")
+                loaded_count += 1
+            except Exception as e:
+                logger.error(f"Failed to load prompt template {filepath.name}: {e}")
+
+        if loaded_count > 0:
+             logger.info(f"Successfully loaded {loaded_count} prompt templates.")
+        else:
+             logger.info("No prompt templates found or loaded.")
     
     def _read_templates(self) -> None:
         """Read templates from files in the templates directory."""
@@ -186,3 +216,55 @@ class PromptService:
         except Exception as e:
             logger.error(f"Error rendering template {template_name}: {str(e)}")
             return None 
+
+# Global instance
+_prompt_manager_instance = None
+_prompt_manager_lock = threading.Lock()
+
+def get_prompt_manager() -> PromptService:
+    """Gets the singleton PromptManager instance."""
+    global _prompt_manager_instance
+    if _prompt_manager_instance is None:
+        with _prompt_manager_lock:
+            if _prompt_manager_instance is None:
+                _prompt_manager_instance = PromptService()
+    return _prompt_manager_instance
+
+# Example Usage
+if __name__ == '__main__':
+    from llm_gateway.utils.logging import setup_logging
+
+    setup_logging(log_level="DEBUG")
+
+    # Create dummy templates dir and file for example
+    EXAMPLE_TEMPLATES_DIR = Path("./temp_prompt_templates_example")
+    EXAMPLE_TEMPLATES_DIR.mkdir(exist_ok=True)
+    (EXAMPLE_TEMPLATES_DIR / "greeting.txt").write_text("Hello, {{name}}! How are you today?")
+    (EXAMPLE_TEMPLATES_DIR / "summary.txt").write_text("Summarize the following text:\n\n{{text}}")
+
+    # Set env var to use this temp dir
+    os.environ['GATEWAY_PROMPT_TEMPLATES_DIR'] = str(EXAMPLE_TEMPLATES_DIR.resolve())
+    os.environ['GATEWAY_FORCE_CONFIG_RELOAD'] = 'true' # Force reload
+
+    try:
+        manager = get_prompt_manager()
+        print(f"Templates directory: {manager.templates_dir}")
+        print(f"Available templates: {manager.list_templates()}")
+
+        greeting_template = manager.get_template('greeting')
+        print(f"Greeting Template: {greeting_template}")
+
+        try:
+            manager.get_template('non_existent')
+        except PromptTemplateError as e:
+            print(f"Caught expected error: {e}")
+
+    finally:
+        # Clean up
+        import shutil
+        shutil.rmtree(EXAMPLE_TEMPLATES_DIR)
+        print(f"Cleaned up {EXAMPLE_TEMPLATES_DIR}")
+        if 'GATEWAY_PROMPT_TEMPLATES_DIR' in os.environ:
+            del os.environ['GATEWAY_PROMPT_TEMPLATES_DIR']
+        if 'GATEWAY_FORCE_CONFIG_RELOAD' in os.environ:
+            del os.environ['GATEWAY_FORCE_CONFIG_RELOAD']

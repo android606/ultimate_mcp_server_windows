@@ -19,7 +19,7 @@ import aiofiles
 import aiofiles.os
 from pydantic import BaseModel
 
-from llm_gateway.config import get_config, GatewayConfig, FilesystemConfig
+from llm_gateway.config import FilesystemConfig, GatewayConfig, get_config
 from llm_gateway.exceptions import ToolError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
@@ -62,7 +62,9 @@ def get_filesystem_config() -> 'FilesystemConfig': # Use type hint from config m
     fs_config = cfg.filesystem
     if not fs_config: # Should not happen with default_factory, but check defensively
          logger.error("Filesystem configuration missing after load. Using defaults.", emoji_key="config")
-         from llm_gateway.config import FilesystemConfig # Local import to avoid circularity at top level
+         from llm_gateway.config import (
+             FilesystemConfig,  # Local import to avoid circularity at top level
+         )
          return FilesystemConfig()
     return fs_config
 
@@ -145,7 +147,7 @@ def get_allowed_directories() -> List[str]:
 
 
 # --- Path Validation ---
-async def validate_path(path: str, check_exists: Optional[bool] = None, check_parent_writable: bool = False, resolve_symlinks: bool = False) -> Union[str, Dict[str, Any]]:
+async def validate_path(path: str, check_exists: Optional[bool] = None, check_parent_writable: bool = False, resolve_symlinks: bool = False) -> str:
     """Validate a path for security and accessibility using async I/O.
 
     Performs several checks:
@@ -164,8 +166,7 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
         resolve_symlinks: If True, follows symlinks and returns their target path. If False, keeps the symlink path.
 
     Returns:
-        By default: The normalized, absolute, validated path string.
-        If resolve_symlinks=False and path is a symlink: Returns a dict with information about the symlink.
+        The normalized, absolute, validated path string.
 
     Raises:
         ToolInputError: If the path is invalid (format, permissions, existence violation,
@@ -223,8 +224,8 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
 
     # Filesystem checks using aiofiles.os
     current_validated_path = normalized_path # Start with normalized path
-    result = {}
     is_symlink = False
+    symlink_target_path = None
     
     try:
         # Use stat with follow_symlinks=False to check the item itself (similar to lstat)
@@ -233,16 +234,14 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
             path_exists_locally = True # stat succeeded, so the path entry itself exists
             is_symlink = os.path.stat.S_ISLNK(lstat_info.st_mode)
             
-            if is_symlink and not resolve_symlinks:
-                # If it's a symlink and we're not resolving symlinks, prepare to return info about the symlink
-                result["is_symlink"] = True
-                result["symlink_path"] = current_validated_path
+            if is_symlink:
                 try:
                     # Get the target for information purposes
                     symlink_target = await aiofiles.os.readlink(current_validated_path)
-                    result["symlink_target"] = symlink_target
+                    symlink_target_path = symlink_target
+                    logger.debug(f"Path '{path}' is a symlink pointing to '{symlink_target}'")
                 except OSError as link_err:
-                    result["symlink_target_error"] = str(link_err)
+                    logger.warning(f"Error reading symlink target for '{current_validated_path}': {link_err}")
             
         except FileNotFoundError:
              path_exists_locally = False
@@ -254,13 +253,12 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
 
 
         # Resolve symlink if it exists and re-validate
-        symlink_target_path = None
         if is_symlink and resolve_symlinks:
             try:
                 # Use synchronous os.path.realpath since aiofiles.os.path doesn't have it
                 real_path = os.path.realpath(current_validated_path)
                 real_normalized = os.path.normpath(real_path)
-                symlink_target_path = real_normalized
+                symlink_target_path = real_normalized  # noqa: F841
 
                 # Re-check if the *real* resolved path is within allowed directories
                 is_real_allowed = False
@@ -305,7 +303,7 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
             except Exception as e: # Catch other unexpected errors during link resolution
                 raise ToolError(f"Unexpected error resolving symbolic link for '{path}': {str(e)}", context={"path": path}) from e
         else:
-             # Not a link, so existence check result is based on the initial check
+             # Not a link or not resolving it, so existence check result is based on the initial check
              path_exists = path_exists_locally
 
 
@@ -314,13 +312,15 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
             raise ToolInputError(
                 f"Required path '{path}' (resolved to '{current_validated_path}') does not exist.",
                 param_name="path",
-                provided_value=path
+                provided_value=path,
+                details={"path": path, "resolved_path": current_validated_path, "error_type": "PATH_NOT_FOUND"}
             )
         elif check_exists is False and path_exists:
              raise ToolInputError(
                 f"Path '{path}' (resolved to '{current_validated_path}') already exists, but non-existence was required.",
                 param_name="path",
-                provided_value=path
+                provided_value=path,
+                details={"path": path, "resolved_path": current_validated_path, "error_type": "PATH_ALREADY_EXISTS"}
             )
         # else: check_exists is None, or condition met
 
@@ -368,16 +368,7 @@ async def validate_path(path: str, check_exists: Optional[bool] = None, check_pa
         logger.error(f"Unexpected error during path validation for {path}: {e}", exc_info=True)
         raise ToolError(f"An unexpected error occurred validating path: {str(e)}", context={"path": path}) from e
 
-    # Return symlink information if we found a symlink and aren't resolving it
-    if is_symlink and not resolve_symlinks:
-        # Add final validation result to the result dictionary
-        result["original_path"] = path
-        result["validated_path"] = current_validated_path
-        if symlink_target_path:
-            result["target_path"] = symlink_target_path
-        return result
-    
-    # Otherwise return the validated path string as before
+    # Always return the validated path string
     return current_validated_path
 
 # --- Helper Functions ---
@@ -767,12 +758,53 @@ def create_tool_response(content: Any, is_error: bool = False) -> Dict[str, Any]
     """
     formatted_content: List[Dict[str, Any]]
 
-    # Handle specific known dictionary structures first for better formatting
+    # When is_error=True, ensure we're returning a properly formatted error
+    if is_error:
+        # If content is a dictionary with error information, use that directly
+        if isinstance(content, dict) and "message" in content:
+            error_message = content.get("message", "Unknown error")
+            error_code = content.get("error_code", "TOOL_ERROR")
+            error_type = content.get("error_type", "ToolError")
+            
+            # Add the error properties directly to the response
+            response = {
+                "error": error_message,
+                "error_code": error_code,
+                "error_type": error_type,
+                "isError": True,
+                "success": False
+            }
+            
+            # Add details if available
+            if "details" in content:
+                response["details"] = content["details"]
+            
+            # Format the content text
+            if "context" in content:
+                context_str = json.dumps(content["context"], indent=2, default=str) if isinstance(content["context"], dict) else str(content["context"])
+                formatted_content = format_mcp_content(f"Error: {error_message}\nContext: {context_str}")
+            else:
+                formatted_content = format_mcp_content(f"Error: {error_message}")
+                
+            response["content"] = formatted_content
+            return response
+    
+    # Handle specific known dictionary structures for normal formatting
     if isinstance(content, dict):
         # Handle ProtectionTriggeredError specifically
         if is_error and content.get("protection_triggered") is True:
              # Format the protection error message clearly
              formatted_content = format_mcp_content(f"Operation Blocked by Safety Protection:\n{content.get('message', 'Reason unspecified.')}\nContext: {content.get('context', '{}')}")
+        # Handle general error messages with context
+        elif is_error and "message" in content:
+             # Format the error message clearly, including context if available
+             error_msg = content.get("message", "Unknown error")
+             context = content.get("context")
+             if context:
+                  context_str = json.dumps(context, indent=2, default=str) if isinstance(context, dict) else str(context)
+                  formatted_content = format_mcp_content(f"Error: {error_msg}\nContext: {context_str}")
+             else:
+                  formatted_content = format_mcp_content(f"Error: {error_msg}")
         elif 'files' in content and isinstance(content.get('files'), list) and 'succeeded' in content:
             # Format output from read_multiple_files
             blocks = []
@@ -951,8 +983,10 @@ async def _check_protection_heuristics(
     try:
         ctime_stddev = statistics.pstdev(creation_times) if num_valid_stats > 1 else 0.0
         mtime_stddev = statistics.pstdev(modification_times) if num_valid_stats > 1 else 0.0
-        if math.isnan(ctime_stddev): ctime_stddev = 0.0
-        if math.isnan(mtime_stddev): mtime_stddev = 0.0
+        if math.isnan(ctime_stddev): 
+            ctime_stddev = 0.0
+        if math.isnan(mtime_stddev): 
+            mtime_stddev = 0.0
     except statistics.StatisticsError as e:
          logger.warning(f"Could not calculate timestamp standard deviation: {e}", emoji_key="warning")
          ctime_stddev = 0.0
@@ -1221,9 +1255,26 @@ async def read_file(path: str) -> Dict[str, Any]:
             if await aiofiles.os.path.islink(validated_path):
                  # If it's a link, let read proceed, it might link to a file.
                  # The isfile check follows links, so if isfile failed, the target isn't a file.
-                 raise ToolInputError(f"Path '{path}' (resolved to link '{validated_path}') points to something that is not a regular file.")
+                 raise ToolInputError(
+                     f"Path '{path}' is a symbolic link that points to something that is not a regular file.",
+                     param_name="path", 
+                     provided_value=path,
+                     details={"path": path, "resolved_path": validated_path, "error_type": "INVALID_SYMLINK_TARGET"}
+                 )
+            elif await aiofiles.os.path.isdir(validated_path):
+                 raise ToolInputError(
+                     f"Path '{path}' is a directory, not a file. Use list_directory or directory_tree to view its contents.",
+                     param_name="path", 
+                     provided_value=path,
+                     details={"path": path, "resolved_path": validated_path, "error_type": "PATH_IS_DIRECTORY"}
+                 )
             else:
-                 raise ToolInputError(f"Path '{path}' (resolved to '{validated_path}') is not a regular file.")
+                 raise ToolInputError(
+                     f"Path '{path}' exists but is not a regular file. It may be a special file type (socket, device, etc.).",
+                     param_name="path", 
+                     provided_value=path,
+                     details={"path": path, "resolved_path": validated_path, "error_type": "PATH_NOT_REGULAR_FILE"}
+                 )
 
 
         content: Union[str, bytes]
@@ -1301,11 +1352,29 @@ async def read_file(path: str) -> Dict[str, Any]:
 
     except (ToolInputError, ToolError) as e:
         logger.error(f"Error in read_file for '{path}': {e}", emoji_key="error", details=getattr(e, 'context', None))
-        response_content = {"message": f"Error reading file '{path}': {str(e)}", "context": getattr(e, 'context', None)}
+        # Return a formatted error response with detailed info
+        error_type = e.__class__.__name__
+        error_details = getattr(e, 'details', {}) or {}
+        # Get the context from the error if available (used in base ToolError)
+        context = getattr(e, 'context', None)
+        if context and isinstance(context, dict):
+            error_details.update(context)
+        # Include error type and code for better error display
+        response_content = {
+            "message": str(e),
+            "error_code": getattr(e, 'error_code', 'TOOL_ERROR'),
+            "error_type": error_type,
+            "details": error_details
+        }
         is_response_error = True
     except Exception as e:
         logger.error(f"Unexpected error in read_file for '{path}': {e}", exc_info=True, emoji_key="error")
-        response_content = f"An unexpected error occurred while reading '{path}': {str(e)}"
+        response_content = {
+            "message": f"An unexpected error occurred while reading '{path}': {str(e)}",
+            "error_code": "UNEXPECTED_ERROR",
+            "error_type": type(e).__name__,
+            "details": {"error_class": type(e).__name__, "path": path}
+        }
         is_response_error = True
 
     # Use create_tool_response for consistent formatting of success/error messages.
@@ -2122,17 +2191,10 @@ async def delete_path(path: str) -> Dict[str, Any]:
     # We need to know if the original path is a symlink to handle it properly
     validation_result = await validate_path(path, check_exists=True, resolve_symlinks=False)
 
-    # Check if the result is a symlink description dictionary
-    is_symlink = False
-    symlink_path = None
-    if isinstance(validation_result, dict) and validation_result.get("is_symlink"):
-        is_symlink = True
-        symlink_path = validation_result.get("symlink_path")
-        logger.info(f"Detected path as symlink: {symlink_path} -> {validation_result.get('symlink_target')}", emoji_key="info")
-        validated_path = symlink_path
-    else:
-        # Not a symlink, normal validation result (path string)
-        validated_path = validation_result
+    # Check if the path is a symlink
+    is_symlink = await aiofiles.os.path.islink(path)
+    logger.info(f"Note: Deleting the symlink itself (not its target) at path: {path}")
+    validated_path = validation_result
 
     try:
         deleted_type = "unknown"
@@ -2141,7 +2203,7 @@ async def delete_path(path: str) -> Dict[str, Any]:
         # to avoid accidentally deleting the target
         if is_symlink:
             deleted_type = "symlink"
-            logger.info(f"Attempting to delete symlink: {validated_path}", emoji_key="delete")
+            logger.info(f"Deleting symlink: {validated_path}", emoji_key="delete")
             await aiofiles.os.remove(validated_path)
         
         # If not a symlink, proceed with regular directory or file deletion

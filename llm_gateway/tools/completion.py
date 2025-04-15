@@ -38,7 +38,7 @@ async def generate_completion(
         prompt: The input text prompt for the LLM.
         provider: The name of the LLM provider (e.g., "openai", "anthropic", "gemini"). Defaults to "openai".
                   Use `list_models` or `get_provider_status` to see available providers.
-        model: The specific model ID (e.g., "openai/gpt-4o-mini", "anthropic/claude-3-haiku-20240307").
+        model: The specific model ID (e.g., "openai/gpt-4.1-mini", "anthropic/claude-3-5-haiku-20241022").
                If None, the provider's default model is used. Use `list_models` to find available IDs.
         max_tokens: (Optional) Maximum number of tokens to generate in the response.
         temperature: (Optional) Controls response randomness (0.0=deterministic, 1.0=creative). Default 0.7.
@@ -164,7 +164,7 @@ async def stream_completion(
         prompt: The input text prompt for the LLM.
         provider: The name of the LLM provider (e.g., "openai", "anthropic", "gemini"). Defaults to "openai".
                   Use `list_models` or `get_provider_status` to see available providers.
-        model: The specific model ID (e.g., "openai/gpt-4o-mini", "anthropic/claude-3-haiku-20240307").
+        model: The specific model ID (e.g., "openai/gpt-4.1-mini", "anthropic/claude-3-5-haiku-20241022").
                If None, the provider's default model is used. Use `list_models` to find available IDs.
         max_tokens: (Optional) Maximum number of tokens to generate in the response.
         temperature: (Optional) Controls response randomness (0.0=deterministic, 1.0=creative). Default 0.7.
@@ -347,7 +347,7 @@ async def chat_completion(
                   Each dictionary must have "role" ("user", "assistant", or "system") and "content" (string).
                   Example: `[{"role": "user", "content": "Hello!"}, {"role": "assistant", "content": "Hi there!"}]`
         provider: The name of the LLM provider (e.g., "openai", "anthropic", "gemini"). Defaults to "openai".
-        model: The specific model ID (e.g., "openai/gpt-4o", "anthropic/claude-3-5-sonnet-20240620").
+        model: The specific model ID (e.g., "openai/gpt-4o", "anthropic/claude-3-7-sonnet-20250219").
                If None, the provider's default model is used. Use `list_models` to find available IDs.
         max_tokens: (Optional) Maximum number of tokens for the *assistant's* response.
         temperature: (Optional) Controls response randomness (0.0=deterministic, 1.0=creative). Default 0.7.
@@ -479,7 +479,7 @@ async def multi_completion(
     Args:
         prompt: The input text prompt to send to all specified models.
         providers: A list of dictionaries, each specifying a provider and model configuration.
-                   Example: `[{"provider": "openai", "model": "gpt-4o-mini"}, {"provider": "anthropic", "model": "claude-3-haiku-20240307", "max_tokens": 50}]`
+                   Example: `[{"provider": "openai", "model": "gpt-4.1-mini"}, {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "max_tokens": 50}]`
                    Each dict must contain at least "provider". "model" is optional (uses provider default).
                    Other valid parameters for `generate_completion` (like `max_tokens`, `temperature`) can be included.
         max_concurrency: (Optional) Maximum number of provider requests to run in parallel. Default 3.
@@ -490,9 +490,9 @@ async def multi_completion(
         A dictionary containing results from each provider, along with aggregate statistics:
         {
             "results": {
-                "openai/gpt-4o-mini": {        # Keyed by provider/model
+                "openai/gpt-4.1-mini": {        # Keyed by provider/model
                     "text": "Response from OpenAI...",
-                    "model": "openai/gpt-4o-mini",
+                    "model": "openai/gpt-4.1-mini",
                     "provider": "openai",
                     "tokens": { ... },
                     "cost": 0.000123,
@@ -500,9 +500,9 @@ async def multi_completion(
                     "success": true,
                     "error": null
                 },
-                "anthropic/claude-3-haiku-20240307": {
+                "anthropic/claude-3-5-haiku-20241022": {
                     "text": null,
-                    "model": "anthropic/claude-3-haiku-20240307",
+                    "model": "anthropic/claude-3-5-haiku-20241022",
                     "provider": "anthropic",
                     "tokens": null,
                     "cost": 0.0,

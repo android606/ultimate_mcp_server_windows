@@ -257,10 +257,42 @@ def format_error_response(error: Exception) -> Dict[str, Any]:
         Dictionary containing error information
     """
     if isinstance(error, ToolError):
+        # For ToolError instances, extract structured information
+        error_type = error.__class__.__name__
+        error_message = str(error)
+        error_details = error.details or {}
+        
+        # Include context in the message for better clarity in user-facing errors
+        context = getattr(error, 'context', None)
+        if context and isinstance(context, dict):
+            # Create a more specific error message based on error type
+            if isinstance(error, ToolInputError):
+                # For path validation errors, add more helpful information
+                if 'path' in context and error_message.endswith('does not exist.'):
+                    error_message = f"File not found: {context.get('path')}"
+                elif 'path' in context and 'is not a regular file' in error_message:
+                    if 'directory' in error_message.lower():
+                        error_message = f"Cannot read directory as file: {context.get('path')}. Use list_directory instead."
+                    else:
+                        error_message = f"Path exists but is not a file: {context.get('path')}"
+            
+            # Add context to details for more information
+            error_details["context"] = context
+        
+        # Look for error_type in details if available
+        if "error_type" in error_details:
+            error_type_from_details = error_details["error_type"]
+            # Use this in the response directly
+            response_error_type = error_type_from_details
+        else:
+            response_error_type = error_type
+            
+        # Create a standard error response that the demo can easily process
         return {
-            "error": str(error),
+            "error": error_message,
             "error_code": error.error_code,
-            "details": error.details,
+            "error_type": response_error_type,
+            "details": error_details,
             "success": False,
             "isError": True
         }
@@ -270,9 +302,11 @@ def format_error_response(error: Exception) -> Dict[str, Any]:
         if not error_message or error_message.strip() == "":
             error_message = f"Unknown error of type {type(error).__name__}"
             
+        # Match the same response structure for consistency
         return {
             "error": error_message,
             "error_code": "UNKNOWN_ERROR", 
+            "error_type": type(error).__name__,
             "details": {
                 "type": type(error).__name__,
                 "message": error_message,

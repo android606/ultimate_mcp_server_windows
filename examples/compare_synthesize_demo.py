@@ -17,13 +17,9 @@ from rich.table import Table
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway  # Use Gateway to get MCP
-from llm_gateway.tools.meta import MetaTools  # Import MetaTools
+from llm_gateway.tools.meta import compare_and_synthesize  # Add correct import
 from llm_gateway.utils import get_logger
-
-# --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-
-# ----------------------
 
 # Initialize logger
 logger = get_logger("example.compare_synthesize_v2")
@@ -35,7 +31,7 @@ async def setup_gateway_and_tools():
     """Set up the gateway and register tools."""
     global mcp
     logger.info("Initializing Gateway and MetaTools for enhanced demo...", emoji_key="start")
-    gateway = Gateway("compare-synthesize-demo-v2")
+    gateway = Gateway("compare-synthesize-demo-v2", register_tools=False)
 
     # Initialize providers (needed for the tool to function)
     try:
@@ -44,9 +40,13 @@ async def setup_gateway_and_tools():
         logger.critical(f"Failed to initialize providers: {e}. Check API keys.", emoji_key="critical", exc_info=True)
         sys.exit(1) # Exit if providers can't be initialized
 
-    # Create MetaTools instance, registering tools on the gateway's MCP
-    meta_tools = MetaTools(gateway) # Pass the gateway instance  # noqa: F841
+    # REMOVE MetaTools instance
+    # meta_tools = MetaTools(gateway) # Pass the gateway instance  # noqa: F841
     mcp = gateway.mcp # Store the MCP server instance
+    
+    # Manually register the required tool - NOW UNCOMMENTED
+    mcp.tool()(compare_and_synthesize) 
+    logger.info("Manually registered compare_and_synthesize tool.")
 
     # Verify tool registration
     tool_list = await mcp.list_tools()
@@ -191,8 +191,8 @@ async def run_comparison_demo():
     console.print(Rule("[bold green]Configurations[/bold green]"))
     console.print(f"[cyan]Prompt:[/cyan] {escape(prompt)}")
     initial_configs = [
-        {"provider": Provider.OPENAI.value, "model": "gpt-4o-mini", "parameters": {"temperature": 0.6, "max_tokens": 150}},
-        {"provider": Provider.ANTHROPIC.value, "model": "claude-3-5-haiku-latest", "parameters": {"temperature": 0.5, "max_tokens": 150}},
+        {"provider": Provider.OPENAI.value, "model": "gpt-4.1-mini", "parameters": {"temperature": 0.6, "max_tokens": 150}},
+        {"provider": Provider.ANTHROPIC.value, "model": "claude-3-5-haiku-20241022", "parameters": {"temperature": 0.5, "max_tokens": 150}},
         {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash-lite", "parameters": {"temperature": 0.7, "max_tokens": 150}},
         {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat", "parameters": {"temperature": 0.6, "max_tokens": 150}},
     ]
@@ -228,7 +228,7 @@ async def run_comparison_demo():
     console.print(weights_table)
 
     # --- Synthesis/Evaluation Model ---
-    synthesis_model_config = {"provider": Provider.OPENAI.value, "model": "gpt-4o"} 
+    synthesis_model_config = {"provider": Provider.OPENAI.value, "model": "gpt-4.1"} 
     console.print(f"[cyan]Synthesis/Evaluation Model:[/cyan] {escape(synthesis_model_config['provider'])}:{escape(synthesis_model_config['model'])}")
     console.print() # Spacing before demos start
 
@@ -310,7 +310,8 @@ async def run_comparison_demo():
 async def main():
     """Run the enhanced compare_and_synthesize demo."""
     await setup_gateway_and_tools()
-    await run_comparison_demo()
+    await run_comparison_demo() # UNCOMMENTED
+    # logger.info("Skipping run_comparison_demo() as the 'compare_and_synthesize' tool function is missing.") # Remove skip message
 
 if __name__ == "__main__":
     try:

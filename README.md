@@ -44,7 +44,7 @@ The primary design goal of LLM Gateway is to allow sophisticated AI agents like 
 ┌─────────────┐ ────────────────────────► ┌───────────────────┐         ┌──────────────┐
 │ Claude 3.7  │                           │   LLM Gateway     │ ───────►│ Gemini Flash │
 │   (Agent)   │ ◄──────────────────────── │    MCP Server     │ ◄───────│ DeepSeek     │
-└─────────────┘      returns results      └───────────────────┘         │ GPT-4o-mini  │
+└─────────────┘      returns results      └───────────────────┘         │ gpt-4.1-mini  │
                                                                         └──────────────┘
 ```
 
@@ -64,7 +64,7 @@ This delegation pattern can save 70-90% on API costs while maintaining output qu
 
 The most powerful use case is enabling advanced AI agents to delegate routine tasks to cheaper models:
 
-- Have Claude 3.7 use GPT-4o-mini for initial document summarization
+- Have Claude 3.7 use gpt-4.1-mini for initial document summarization
 - Let Claude use Gemini 2.0 Flash light for data extraction and transformation
 - Allow Claude to orchestrate a multi-stage workflow across different providers
 - Enable Claude to choose the right model for each specific sub-task
@@ -264,7 +264,7 @@ async def main():
         document=document,
         entity_types=["person", "organization", "location", "date"],
         provider="openai",
-        model="gpt-4o-mini"
+        model="gpt-4.1-mini"
     )
     total_cost += entities["cost"]
     
@@ -285,8 +285,8 @@ if __name__ == "__main__":
 responses = await client.tools.multi_completion(
     prompt="Explain the implications of quantum computing for cryptography.",
     providers=[
-        {"provider": "openai", "model": "gpt-4o-mini", "temperature": 0.3},
-        {"provider": "anthropic", "model": "claude-3-haiku-20240307", "temperature": 0.3},
+        {"provider": "openai", "model": "gpt-4.1-mini", "temperature": 0.3},
+        {"provider": "anthropic", "model": "claude-3-5-haiku-20241022", "temperature": 0.3},
         {"provider": "gemini", "model": "gemini-2.0-pro", "temperature": 0.3}
     ]
 )
@@ -314,7 +314,7 @@ workflow = [
         "name": "Entity Extraction",
         "operation": "extract_entities",
         "provider": "openai",
-        "model": "gpt-4o-mini",
+        "model": "gpt-4.1-mini",
         "input_from": "original", 
         "output_as": "entities"
     },
@@ -367,8 +367,8 @@ To get completions for the same prompt from multiple providers/models simultaneo
 multi_response = await client.tools.multi_completion(
     prompt="What are the main benefits of using the MCP protocol?",
     providers=[
-        {"provider": "openai", "model": "gpt-4o-mini"},
-        {"provider": "anthropic", "model": "claude-3-haiku-20240307"},
+        {"provider": "openai", "model": "gpt-4.1-mini"},
+        {"provider": "anthropic", "model": "claude-3-5-haiku-20241022"},
         {"provider": "gemini", "model": "gemini-2.0-flash-lite"}
     ],
     temperature=0.5
@@ -409,7 +409,7 @@ json_response = await client.tools.extract_json(
     document=text_with_data,
     json_schema=desired_schema,
     provider="openai", # Choose a provider capable of structured extraction
-    model="gpt-4o-mini"
+    model="gpt-4.1-mini"
 )
 
 if json_response["success"]:
@@ -430,7 +430,7 @@ rag_response = await client.tools.rag_query( # Assuming a tool name like rag_que
     # index_name="financial_reports",
     # top_k=3, 
     provider="anthropic",
-    model="claude-3-haiku-20240307" # Model to generate the answer based on context
+    model="claude-3-5-haiku-20241022" # Model to generate the answer based on context
 )
 
 if rag_response["success"]:
@@ -527,7 +527,7 @@ tournament_response = await client.tools.run_model_tournament(
     task_type="code_generation",
     prompt="Write a Python function to calculate the factorial of a number.",
     competitors=[
-        {"provider": "openai", "model": "gpt-4o-mini"},
+        {"provider": "openai", "model": "gpt-4.1-mini"},
         {"provider": "anthropic", "model": "claude-3-opus-20240229"}, # Higher-end model for comparison
         {"provider": "deepseek", "model": "deepseek-coder"}
     ],
@@ -695,7 +695,7 @@ Using LLM Gateway for delegation can yield significant cost savings:
 | Task | Claude 3.7 Direct | Delegated to Cheaper LLM | Savings |
 |------|-------------------|--------------------------|---------|
 | Summarizing 100-page document | $4.50 | $0.45 (Gemini Flash) | 90% |
-| Extracting data from 50 records | $2.25 | $0.35 (GPT-4o-mini) | 84% |
+| Extracting data from 50 records | $2.25 | $0.35 (gpt-4.1-mini) | 84% |
 | Generating 20 content ideas | $0.90 | $0.12 (DeepSeek) | 87% |
 | Processing 1,000 customer queries | $45.00 | $7.50 (Mixed delegation) | 83% |
 
@@ -821,7 +821,7 @@ When Claude delegates a task to LLM Gateway:
 ### Provider Integration
 
 - **Multi-Provider Support**: First-class support for:
-  - OpenAI (GPT-4o-mini, GPT-4o, GPT-4o mini)
+  - OpenAI (gpt-4.1-mini, GPT-4o, GPT-4o mini)
   - Anthropic (Claude 3.7 series)
   - Google (Gemini Pro, Gemini Flash, Gemini Flash Light)
   - DeepSeek (DeepSeek-Chat, DeepSeek-Reasoner)
@@ -996,7 +996,7 @@ To get a simple text completion from a chosen provider:
 response = await client.tools.completion(
     prompt="Write a short poem about a robot learning to dream.",
     provider="openai",  # Or "anthropic", "gemini", "deepseek"
-    model="gpt-4o-mini", # Specify the desired model
+    model="gpt-4.1-mini", # Specify the desired model
     max_tokens=100,
     temperature=0.7
 )
@@ -1041,7 +1041,7 @@ entity_response = await client.tools.extract_entities(
     document=text_to_analyze,
     entity_types=["organization", "date", "product", "location"],
     provider="openai",
-    model="gpt-4o-mini"
+    model="gpt-4.1-mini"
 )
 
 if entity_response["success"]:

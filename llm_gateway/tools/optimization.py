@@ -38,7 +38,7 @@ logger = get_logger("llm_gateway.tools.optimization")
 @with_error_handling
 async def estimate_cost(
     prompt: str,
-    model: str, # Expects full model ID like "openai/gpt-4o-mini"
+    model: str, # Expects full model ID like "openai/gpt-4.1-mini"
     max_tokens: Optional[int] = None,
     include_output: bool = True
 ) -> Dict[str, Any]:
@@ -49,7 +49,7 @@ async def estimate_cost(
 
     Args:
         prompt: The text prompt that would be sent to the model.
-        model: The full model identifier (e.g., "openai/gpt-4o-mini", "anthropic/claude-3-haiku-20240307").
+        model: The full model identifier (e.g., "openai/gpt-4.1-mini", "anthropic/claude-3-5-haiku-20241022").
                Cost data must be available for this model in `COST_PER_MILLION_TOKENS`.
         max_tokens: (Optional) The maximum number of tokens expected in the output. If None,
                       output tokens are estimated as roughly half the input prompt tokens.
@@ -73,7 +73,7 @@ async def estimate_cost(
                 "input": 0.50,
                 "output": 1.50
             },
-            "model": "openai/gpt-4o-mini",
+            "model": "openai/gpt-4.1-mini",
             "is_estimate": true
         }
 
@@ -142,7 +142,7 @@ async def estimate_cost(
 @with_error_handling
 async def compare_models(
     prompt: str,
-    models: List[str], # List of full model IDs like "openai/gpt-4o-mini"
+    models: List[str], # List of full model IDs like "openai/gpt-4.1-mini"
     max_tokens: Optional[int] = None,
     include_output: bool = True
 ) -> Dict[str, Any]:
@@ -152,7 +152,7 @@ async def compare_models(
 
     Args:
         prompt: The text prompt to use for cost comparison.
-        models: A list of full model identifiers (e.g., ["openai/gpt-4o-mini", "anthropic/claude-3-haiku-20240307"]).
+        models: A list of full model identifiers (e.g., ["openai/gpt-4.1-mini", "anthropic/claude-3-5-haiku-20241022"]).
         max_tokens: (Optional) Maximum output tokens to assume for cost estimation across all models.
                       If None, output is estimated individually per model based on input.
         include_output: (Optional) Whether to include estimated output costs in the comparison. Defaults to True.
@@ -161,11 +161,11 @@ async def compare_models(
         A dictionary containing the cost comparison results:
         {
             "models": {
-                "openai/gpt-4o-mini": {
+                "openai/gpt-4.1-mini": {
                     "cost": 0.000150,
                     "tokens": { "input": 200, "output": 100, "total": 300 }
                 },
-                "anthropic/claude-3-haiku-20240307": {
+                "anthropic/claude-3-5-haiku-20241022": {
                     "cost": 0.000087,
                     "tokens": { "input": 200, "output": 100, "total": 300 }
                 },
@@ -174,11 +174,11 @@ async def compare_models(
                 }
             },
             "ranking": [ # List of models ordered by cost (cheapest first), errors excluded
-                "anthropic/claude-3-haiku-20240307",
-                "openai/gpt-4o-mini"
+                "anthropic/claude-3-5-haiku-20241022",
+                "openai/gpt-4.1-mini"
             ],
-            "cheapest": "anthropic/claude-3-haiku-20240307", # Model with the lowest cost
-            "most_expensive": "openai/gpt-4o-mini",        # Model with the highest cost (among successful estimates)
+            "cheapest": "anthropic/claude-3-5-haiku-20241022", # Model with the lowest cost
+            "most_expensive": "openai/gpt-4.1-mini",        # Model with the highest cost (among successful estimates)
             "prompt_length_chars": 512, # Character length of the input prompt
             "max_tokens_assumed": 100 # Assumed output tokens (estimated or provided)
         }
@@ -278,7 +278,7 @@ async def recommend_model(
         {
             "recommendations": [
                 {
-                    "model": "anthropic/claude-3-haiku-20240307",
+                    "model": "anthropic/claude-3-5-haiku-20241022",
                     "estimated_cost": 0.000087,
                     "quality_score": 6,
                     "speed_score": 2,
@@ -286,7 +286,7 @@ async def recommend_model(
                     "reason": "Good balance of cost and speed, meets requirements."
                 },
                 {
-                    "model": "openai/gpt-4o-mini",
+                    "model": "openai/gpt-4.1-mini",
                     "estimated_cost": 0.000150,
                     "quality_score": 7,
                     "speed_score": 2,
@@ -336,13 +336,13 @@ async def recommend_model(
     model_capabilities = {
         # OpenAI models
         "openai/gpt-4o": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
-        "openai/gpt-4o-mini": ["reasoning", "coding", "knowledge", "instruction-following"],
+        "openai/gpt-4.1-mini": ["reasoning", "coding", "knowledge", "instruction-following"],
         
         # Anthropic models (corrected names)
         "anthropic/claude-3-opus-20240229": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
         "anthropic/claude-3-sonnet-20240229": ["reasoning", "coding", "knowledge", "instruction-following"],
-        "anthropic/claude-3-haiku-20240307": ["knowledge", "instruction-following"],
-        "anthropic/claude-3-5-sonnet-20240620": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
+        "anthropic/claude-3-5-haiku-20241022": ["knowledge", "instruction-following"],
+        "anthropic/claude-3-7-sonnet-20250219": ["reasoning", "coding", "knowledge", "instruction-following", "math"],
         
         # Other potential models (adjust based on actual availability/support)
         # "deepseek/deepseek-chat": ["coding", "knowledge", "instruction-following"],
@@ -353,11 +353,11 @@ async def recommend_model(
     
     model_speed = { # Lower is faster (latency score 1-5)
         "openai/gpt-4o": 3,
-        "openai/gpt-4o-mini": 2,
+        "openai/gpt-4.1-mini": 2,
         "anthropic/claude-3-opus-20240229": 5,
         "anthropic/claude-3-sonnet-20240229": 3,
-        "anthropic/claude-3-haiku-20240307": 2,
-        "anthropic/claude-3-5-sonnet-20240620": 3,
+        "anthropic/claude-3-5-haiku-20241022": 2,
+        "anthropic/claude-3-7-sonnet-20250219": 3,
         # "deepseek/deepseek-chat": 2,
         # "deepseek/deepseek-reasoner": 3,
         # "google/gemini-1.5-flash-latest": 1,
@@ -366,11 +366,11 @@ async def recommend_model(
     
     model_quality = { # Higher is better (quality score 1-10)
         "openai/gpt-4o": 9,
-        "openai/gpt-4o-mini": 7,
+        "openai/gpt-4.1-mini": 7,
         "anthropic/claude-3-opus-20240229": 10,
         "anthropic/claude-3-sonnet-20240229": 8,
-        "anthropic/claude-3-haiku-20240307": 6,
-        "anthropic/claude-3-5-sonnet-20240620": 9,
+        "anthropic/claude-3-5-haiku-20241022": 6,
+        "anthropic/claude-3-7-sonnet-20250219": 9,
         # "deepseek/deepseek-chat": 7,
         # "deepseek/deepseek-reasoner": 8,
         # "google/gemini-1.5-flash-latest": 5,

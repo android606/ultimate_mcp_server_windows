@@ -1,19 +1,20 @@
 """Embedding generation service for vector operations."""
 import asyncio
 import hashlib
-import json
 import os
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 import numpy as np
 from openai import AsyncOpenAI
-from tqdm.asyncio import tqdm
 
+from llm_gateway.config import get_config
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
+
+# Global dictionary to store embedding instances (optional)
+embedding_instances = {}
 
 
 class EmbeddingCache:
@@ -143,386 +144,164 @@ class EmbeddingCache:
 
 
 class EmbeddingService:
-    """Service for generating embeddings from text."""
-    
-    _instance = None
-    
-    def __new__(cls, *args, **kwargs):
-        """Create a singleton instance."""
-        if cls._instance is None:
-            cls._instance = super(EmbeddingService, cls).__new__(cls)
-            cls._instance._initialized = False
-        return cls._instance
-    
-    def __init__(self, api_key: Optional[str] = None, cache_dir: Optional[str] = None):
+    """Generic service to create embeddings using different providers."""
+    def __init__(self, provider_type: str = 'openai', model_name: str = 'text-embedding-3-small', api_key: Optional[str] = None, **kwargs):
         """Initialize the embedding service.
-        
+
         Args:
-            api_key: OpenAI API key
-            cache_dir: Directory to store embedding cache
+            provider_type: The type of embedding provider (e.g., 'openai').
+            model_name: The specific embedding model to use.
+            api_key: Optional API key. If not provided, attempts to load from config.
+            **kwargs: Additional provider-specific arguments.
         """
-        # Only initialize once for singleton
-        if self._initialized:
-            return
-            
-        # Get API key
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
-        if not self.api_key:
-            logger.warning(
-                "No OpenAI API key provided for embedding service",
-                emoji_key="warning"
-            )
-            
-        # Initialize client
-        self.client = AsyncOpenAI(api_key=self.api_key)
-        
-        # Create embedding cache
-        self.cache = EmbeddingCache(cache_dir)
-        
-        # Set default model
-        self.default_model = "text-embedding-3-small"
-        
-        # Track stats
-        self.total_embeddings = 0
-        self.cache_hits = 0
-        self.api_calls = 0
-        self.last_request_cost = 0.0
-        
-        self._initialized = True
-        
-        logger.info(
-            "Embedding service initialized",
-            emoji_key="provider"
-        )
-        
-    async def get_embedding(
-        self,
-        text: str,
-        model: Optional[str] = None,
-        use_cache: bool = True
-    ) -> np.ndarray:
-        """Get embedding for text.
-        
+        self.provider_type = provider_type.lower()
+        self.model_name = model_name
+        self.client = None
+        self.api_key = api_key
+        self.kwargs = kwargs
+
+        try:
+            config = get_config()
+            if self.provider_type == 'openai':
+                provider_config = config.providers.openai
+                # Use provided key first, then config key
+                self.api_key = self.api_key or provider_config.api_key
+                if not self.api_key:
+                    raise ValueError("OpenAI API key not provided or found in configuration.")
+                # Pass base_url and organization from config if available
+                openai_kwargs = {
+                    'api_key': self.api_key,
+                    'base_url': provider_config.base_url or self.kwargs.get('base_url'),
+                    'organization': provider_config.organization or self.kwargs.get('organization'),
+                    'timeout': provider_config.timeout or self.kwargs.get('timeout'),
+                }
+                # Filter out None values before passing to OpenAI client
+                openai_kwargs = {k: v for k, v in openai_kwargs.items() if v is not None}
+                
+                # Always use AsyncOpenAI
+                self.client = AsyncOpenAI(**openai_kwargs)
+                logger.info(f"Initialized AsyncOpenAI embedding client for model: {self.model_name}")
+
+            # TODO: Add elif blocks for other providers (e.g., Cohere, Hugging Face)
+            # elif self.provider_type == 'cohere':
+            #     provider_config = config.providers.cohere # Assuming Cohere config exists
+            #     self.api_key = self.api_key or provider_config.api_key
+            #     if not self.api_key:
+            #         raise ValueError(\"Cohere API key not provided or found in configuration.\")
+            #     import cohere
+            #     self.client = cohere.Client(self.api_key, ...)
+            #     logger.info(f\"Initialized Cohere embedding client for model: {self.model_name}\")
+
+            else:
+                raise ValueError(f"Unsupported embedding provider type: {self.provider_type}")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize embedding service for provider {self.provider_type}: {e}", exc_info=True)
+            raise RuntimeError(f"Embedding service initialization failed: {e}") from e
+
+
+    async def create_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Create embeddings for a list of texts.
+
         Args:
-            text: Text to embed
-            model: Embedding model name
-            use_cache: Whether to use the cache
-            
+            texts: A list of strings to embed.
+
         Returns:
-            Embedding vector
-            
+            A list of embedding vectors (each a list of floats).
+
         Raises:
-            Exception: If embedding generation fails
+            ValueError: If the provider type is unsupported or embedding fails.
+            RuntimeError: If the client is not initialized.
         """
-        model = model or self.default_model
-        self.total_embeddings += 1
-        
-        # Check cache if enabled
-        if use_cache:
-            cached_embedding = self.cache.get(text, model)
-            if cached_embedding is not None:
-                self.cache_hits += 1
-                self.last_request_cost = 0.0  # Cache hit, no cost
-                return cached_embedding
-        
-        # Generate embedding via API
-        start_time = time.time()
-        self.api_calls += 1
+        if self.client is None:
+            raise RuntimeError("Embedding client is not initialized.")
         
         try:
-            response = await self.client.embeddings.create(
-                model=model,
-                input=text,
-                encoding_format="float"
-            )
-            
-            # Extract embedding
-            embedding = np.array(response.data[0].embedding)
-            
-            # Calculate and update cost
-            # Cost calculation based on model and token count
-            token_count = len(text) / 4  # Rough estimate of token count
-            
-            # Set cost based on model
-            if model == "text-embedding-3-small":
-                # $0.02 per 1M tokens
-                self.last_request_cost = (token_count / 1_000_000) * 0.02
-            elif model == "text-embedding-3-large":
-                # $0.13 per 1M tokens
-                self.last_request_cost = (token_count / 1_000_000) * 0.13
-            elif model == "text-embedding-ada-002":
-                # $0.10 per 1M tokens
-                self.last_request_cost = (token_count / 1_000_000) * 0.10
-            else:
-                # Default cost estimate
-                self.last_request_cost = (token_count / 1_000_000) * 0.05
-            
-            # Log success
-            processing_time = time.time() - start_time
-            logger.debug(
-                f"Embedding generated ({len(embedding)} dimensions)",
-                emoji_key="provider",
-                model=model,
-                time=processing_time
-            )
-            
-            # Cache the result
-            if use_cache:
-                self.cache.set(text, model, embedding)
-                
-            return embedding
-            
-        except Exception as e:
-            # Log error
-            processing_time = time.time() - start_time
-            logger.error(
-                f"Failed to generate embedding: {str(e)}",
-                emoji_key="error",
-                model=model,
-                time=processing_time
-            )
-            raise
-            
-    async def get_embeddings(
-        self,
-        texts: List[str],
-        model: Optional[str] = None,
-        use_cache: bool = True,
-        batch_size: int = 100,
-        max_concurrency: int = 5
-    ) -> List[np.ndarray]:
-        """Get embeddings for multiple texts.
-        
-        Args:
-            texts: List of texts to embed
-            model: Embedding model name
-            use_cache: Whether to use the cache
-            batch_size: Maximum batch size for API calls
-            max_concurrency: Maximum number of concurrent API calls
-            
-        Returns:
-            List of embedding vectors
-            
-        Raises:
-            Exception: If embedding generation fails
-        """
-        model = model or self.default_model
-        self.total_embeddings += len(texts)
-        
-        # Create batch processing function
-        async def process_batch(batch_texts):
-            # Check cache for each text
-            embeddings = []
-            texts_to_embed = []
-            cache_indices = []
-            
-            # Check cache first
-            for i, text in enumerate(batch_texts):
-                if use_cache:
-                    cached_embedding = self.cache.get(text, model)
-                    if cached_embedding is not None:
-                        self.cache_hits += 1
-                        embeddings.append((i, cached_embedding))
-                    else:
-                        texts_to_embed.append(text)
-                        cache_indices.append(i)
-                else:
-                    texts_to_embed.append(text)
-                    cache_indices.append(i)
-            
-            # If all embeddings were cached, return them
-            if not texts_to_embed:
-                # Sort embeddings by original index
-                self.last_request_cost = 0.0  # All cache hits, no cost
-                return [emb for _, emb in sorted(embeddings, key=lambda x: x[0])]
-                
-            # Generate embeddings for remaining texts
-            start_time = time.time()
-            self.api_calls += 1
-            
-            try:
+            if self.provider_type == 'openai':
                 response = await self.client.embeddings.create(
-                    model=model,
-                    input=texts_to_embed,
-                    encoding_format="float"
+                    input=texts,
+                    model=self.model_name
                 )
-                
-                # Calculate and update cost
-                # Estimate total tokens in batch
-                total_tokens = sum(len(text) / 4 for text in texts_to_embed)
-                
-                # Set cost based on model
-                if model == "text-embedding-3-small":
-                    # $0.02 per 1M tokens
-                    self.last_request_cost = (total_tokens / 1_000_000) * 0.02
-                elif model == "text-embedding-3-large":
-                    # $0.13 per 1M tokens
-                    self.last_request_cost = (total_tokens / 1_000_000) * 0.13
-                elif model == "text-embedding-ada-002":
-                    # $0.10 per 1M tokens
-                    self.last_request_cost = (total_tokens / 1_000_000) * 0.10
-                else:
-                    # Default cost estimate
-                    self.last_request_cost = (total_tokens / 1_000_000) * 0.05
-                
-                # Process API response
-                for i, embedding_data in enumerate(response.data):
-                    original_idx = cache_indices[i]
-                    embedding = np.array(embedding_data.embedding)
-                    
-                    # Cache the result
-                    if use_cache:
-                        self.cache.set(texts_to_embed[i], model, embedding)
-                        
-                    embeddings.append((original_idx, embedding))
-                    
-                # Log success
-                processing_time = time.time() - start_time
-                logger.debug(
-                    f"Batch embedding generated ({len(texts_to_embed)} texts)",
-                    emoji_key="provider",
-                    model=model,
-                    time=processing_time
-                )
-                
-                # Sort embeddings by original index
-                return [emb for _, emb in sorted(embeddings, key=lambda x: x[0])]
-                
-            except Exception as e:
-                # Log error
-                processing_time = time.time() - start_time
-                logger.error(
-                    f"Failed to generate batch embeddings: {str(e)}",
-                    emoji_key="error",
-                    model=model,
-                    time=processing_time
-                )
-                raise
-        
-        # Split texts into batches
-        batches = [texts[i:i+batch_size] for i in range(0, len(texts), batch_size)]
-        
-        # Process batches with concurrency limit
-        semaphore = asyncio.Semaphore(max_concurrency)
-        
-        async def process_with_semaphore(batch):
-            async with semaphore:
-                return await process_batch(batch)
-                
-        # Create tasks for each batch
-        tasks = [process_with_semaphore(batch) for batch in batches]
-        
-        # Wait for all batches to complete
-        batch_results = await asyncio.gather(*tasks)
-        
-        # Flatten results
-        embeddings = []
-        for batch_result in batch_results:
-            embeddings.extend(batch_result)
-            
-        return embeddings
-        
-    def get_stats(self) -> Dict[str, Any]:
-        """Get service statistics.
-        
-        Returns:
-            Dictionary of statistics
-        """
-        return {
-            "total_embeddings": self.total_embeddings,
-            "cache_hits": self.cache_hits,
-            "api_calls": self.api_calls,
-            "cache_hit_ratio": self.cache_hits / max(1, self.total_embeddings),
-            "default_model": self.default_model,
-            "last_request_cost": self.last_request_cost,
-        }
-        
-    async def find_similar(
-        self,
-        query: str,
-        texts: List[str],
-        model: Optional[str] = None,
-        top_k: int = 3,
-        similarity_threshold: float = 0.7,
-        use_cache: bool = True
-    ) -> List[Dict[str, Any]]:
-        """Find texts similar to query.
-        
-        Args:
-            query: Query text
-            texts: List of texts to search
-            model: Embedding model name
-            top_k: Number of top matches to return
-            similarity_threshold: Minimum similarity score
-            use_cache: Whether to use the cache
-            
-        Returns:
-            List of similar texts with similarity scores
-            
-        Raises:
-            Exception: If similarity search fails
-        """
-        # Get embeddings
-        query_embedding = await self.get_embedding(query, model, use_cache)
-        text_embeddings = await self.get_embeddings(texts, model, use_cache)
-        
-        # Calculate similarities
-        similarities = []
-        for i, text_embedding in enumerate(text_embeddings):
-            # Cosine similarity
-            similarity = cosine_similarity(query_embedding, text_embedding)
-            similarities.append((i, similarity, texts[i]))
-            
-        # Sort by similarity (descending)
-        similarities.sort(key=lambda x: x[1], reverse=True)
-        
-        # Filter by threshold and limit to top_k
-        results = []
-        for i, similarity, text in similarities[:top_k]:
-            if similarity >= similarity_threshold:
-                results.append({
-                    "index": i,
-                    "text": text,
-                    "similarity": similarity,
-                })
-                
-        return results
-        
-    def reset_stats(self) -> None:
-        """Reset service statistics."""
-        self.total_embeddings = 0
-        self.cache_hits = 0
-        self.api_calls = 0
+                # Extract the embedding data
+                embeddings = [item.embedding for item in response.data]
+                logger.debug(f"Successfully created {len(embeddings)} embeddings using {self.model_name}.")
+                return embeddings
+
+            # TODO: Add elif blocks for other providers
+            # elif self.provider_type == 'cohere':
+            #     response = await self.client.embed(texts=texts, model=self.model_name)
+            #     return response.embeddings
+
+            else:
+                # This case should ideally be caught during initialization,
+                # but included for robustness.
+                raise ValueError(f"Unsupported provider type: {self.provider_type}")
+
+        except Exception as e:
+            logger.error(f"Failed to create embeddings using {self.provider_type} model {self.model_name}: {e}", exc_info=True)
+            # Re-raise the error or return an empty list/handle appropriately
+            raise ValueError(f"Embedding creation failed: {e}") from e
 
 
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Calculate cosine similarity between two vectors.
-    
+def get_embedding_service(provider_type: str = 'openai', model_name: str = 'text-embedding-3-small', **kwargs) -> EmbeddingService:
+    """Factory function to get or create an EmbeddingService instance.
+
     Args:
-        a: First vector
-        b: Second vector
-        
+        provider_type: The type of embedding provider.
+        model_name: The specific embedding model.
+        **kwargs: Additional arguments passed to the EmbeddingService constructor.
+
     Returns:
-        Cosine similarity (-1 to 1)
+        An initialized EmbeddingService instance.
     """
-    # Ensure vectors are normalized
-    a_norm = a / np.linalg.norm(a)
-    b_norm = b / np.linalg.norm(b)
-    return np.dot(a_norm, b_norm)
+    # Optional: Implement caching/singleton pattern for instances if desired
+    instance_key = (provider_type, model_name)
+    if instance_key in embedding_instances:
+        # TODO: Check if kwargs match cached instance? For now, assume they do.
+        logger.debug(f"Returning cached embedding service instance for {provider_type}/{model_name}")
+        return embedding_instances[instance_key]
+    else:
+        logger.debug(f"Creating new embedding service instance for {provider_type}/{model_name}")
+        instance = EmbeddingService(provider_type=provider_type, model_name=model_name, **kwargs)
+        embedding_instances[instance_key] = instance
+        return instance
 
 
-# Singleton instance getter
-def get_embedding_service(
-    api_key: Optional[str] = None,
-    cache_dir: Optional[str] = None
-) -> EmbeddingService:
-    """Get the embedding service singleton instance.
-    
-    Args:
-        api_key: OpenAI API key (defaults to environment variable)
-        cache_dir: Directory to store embedding cache
-        
-    Returns:
-        EmbeddingService singleton instance
-    """
-    return EmbeddingService(api_key, cache_dir)
+# Example usage (for testing)
+async def main():
+    # setup_logging(log_level="DEBUG") # Removed as logging is configured centrally
+    # Make sure OPENAI_API_KEY is set in your .env file or environment
+    os.environ['GATEWAY_FORCE_CONFIG_RELOAD'] = 'true' # Ensure latest config
+
+    try:
+        # Get the default OpenAI service
+        openai_service = get_embedding_service()
+
+        texts_to_embed = [
+            "The quick brown fox jumps over the lazy dog.",
+            "Quantum computing leverages quantum mechanics.",
+            "Paris is the capital of France."
+        ]
+
+        embeddings = await openai_service.create_embeddings(texts_to_embed)
+        print(f"Generated {len(embeddings)} embeddings.")
+        print(f"Dimension of first embedding: {len(embeddings[0])}")
+        # print(f"First embedding (preview): {embeddings[0][:10]}...")
+
+        # Example of specifying a different model (if available and configured)
+        # try:
+        #     ada_service = get_embedding_service(model_name='text-embedding-ada-002')
+        #     ada_embeddings = await ada_service.create_embeddings(["Test with Ada model"]) 
+        #     print(\"\nSuccessfully used Ada model.\")
+        # except Exception as e:
+        #     print(f\"\nCould not use Ada model (may need different API key/config): {e}\")
+
+    except Exception as e:
+        print(f"An error occurred during the example: {e}")
+    finally:
+        if 'GATEWAY_FORCE_CONFIG_RELOAD' in os.environ:
+             del os.environ['GATEWAY_FORCE_CONFIG_RELOAD']
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())

@@ -1,30 +1,27 @@
 #!/usr/bin/env python
 """Document processing examples for LLM Gateway."""
 import asyncio
-import json
 import sys
-import traceback
 from pathlib import Path
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from decouple import config as decouple_config
 from mcp.server.fastmcp import FastMCP
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
 
 from llm_gateway.constants import Provider
 from llm_gateway.tools.document import DocumentTools
 from llm_gateway.utils import get_logger
+
+# --- Import display utilities ---
+from llm_gateway.utils.display import display_text_content_result
+
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.markup import escape
-from rich import box
-# --- Import display utilities ---
-from llm_gateway.utils.display import parse_and_display_result, display_text_content_result
+
 # ----------------------
 
 # Initialize logger
@@ -158,9 +155,12 @@ async def demonstrate_document_processing():
         # Handle potential TextContent objects within chunks list
         string_chunks = []
         for chunk in chunks:
-            if hasattr(chunk, 'text'): string_chunks.append(chunk.text)
-            elif isinstance(chunk, str): string_chunks.append(chunk)
-            else: string_chunks.append(str(chunk))
+            if hasattr(chunk, 'text'): 
+                string_chunks.append(chunk.text)
+            elif isinstance(chunk, str): 
+                string_chunks.append(chunk)
+            else: 
+                string_chunks.append(str(chunk))
 
         logger.info(f"Chunked document into {len(string_chunks)} chunks.", emoji_key="success")
         if string_chunks:
@@ -186,7 +186,7 @@ async def demonstrate_document_processing():
         "summary_length": "short", # concise, short, detailed
         "format": "paragraph", # bullet_points, paragraph
         "provider": Provider.OPENAI.value,
-        "model": "gpt-4o-mini"
+        "model": "gpt-4.1-mini"
     }
     summary_response = await safe_tool_call("summarize_document", summary_args)
 
@@ -207,7 +207,7 @@ async def demonstrate_document_processing():
         "document": sample_document,
         "entity_types": ["person", "organization", "location"], # Standard entity types
         "provider": Provider.OPENAI.value,
-        "model": "gpt-4o" # Use a more capable model for potentially better extraction
+        "model": "gpt-4.1" # Use a more capable model for potentially better extraction
     }
     entity_response = await safe_tool_call("extract_entities", entity_args)
 
@@ -229,7 +229,7 @@ async def demonstrate_document_processing():
         "num_questions": 3,
         "question_types": ["factual", "conceptual"],
         "provider": Provider.OPENAI.value,
-        "model": "gpt-4o-mini"
+        "model": "gpt-4.1-mini"
     }
     # Use generate_qa_pairs instead of generate_qa
     qa_response = await safe_tool_call("generate_qa_pairs", qa_args)

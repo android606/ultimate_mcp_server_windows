@@ -7,21 +7,19 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Third-party imports
+# These imports need to be below sys.path modification, which is why they have noqa comments
+from rich import box  # noqa: E402
+from rich.markup import escape  # noqa: E402
+from rich.panel import Panel  # noqa: E402
+from rich.rule import Rule  # noqa: E402
+from rich.table import Table  # noqa: E402
 
-from rich import box
-from rich.markup import escape
-from rich.panel import Panel
-from rich.rule import Rule
-from rich.table import Table
-
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger
-
-# --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
-
-# ----------------------
+# Project imports
+from llm_gateway.constants import Provider  # noqa: E402
+from llm_gateway.core.server import Gateway  # noqa: E402
+from llm_gateway.utils import get_logger  # noqa: E402
+from llm_gateway.utils.logging.console import console  # noqa: E402
 
 # Initialize logger
 logger = get_logger("example.multi_provider")
@@ -31,7 +29,10 @@ async def run_provider_comparison():
     console.print(Rule("[bold blue]Multi-Provider Completion Comparison[/bold blue]"))
     logger.info("Starting multi-provider comparison demo", emoji_key="start")
     
-    gateway = Gateway("multi-provider-demo")
+    # Create Gateway instance - this handles provider initialization
+    gateway = Gateway("multi-provider-demo", register_tools=False)
+    
+    # Initialize providers
     logger.info("Initializing providers...", emoji_key="provider")
     await gateway._initialize_providers()
     
@@ -40,10 +41,10 @@ async def run_provider_comparison():
     
     # Use model names directly if providers are inferred or handled by get_provider
     configs = [
-        {"provider": Provider.OPENAI.value, "model": "gpt-4o-mini"},
-        {"provider": Provider.ANTHROPIC.value, "model": "claude-3-5-haiku-latest"}, # Use a valid Claude model
-        {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash-lite"}, # Use a valid Gemini model
-        {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat"} # Use a valid DeepSeek model
+        {"provider": Provider.OPENAI.value, "model": "gpt-4.1-mini"},
+        {"provider": Provider.ANTHROPIC.value, "model": "claude-3-5-haiku-20241022"}, 
+        {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash-lite"}, 
+        {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat"} 
     ]
     
     results_data = []

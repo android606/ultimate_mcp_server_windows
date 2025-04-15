@@ -8,19 +8,20 @@ from pathlib import Path
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from decouple import config as decouple_config
+from rich import box
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
 
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.vector import get_embedding_service, get_vector_db_service
 from llm_gateway.utils import get_logger
+
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
-from rich.panel import Panel
-from rich.table import Table
-from rich.rule import Rule
-from rich.markup import escape
-from rich import box
+
 # ----------------------
 
 # Initialize logger
@@ -32,15 +33,14 @@ async def demonstrate_vector_operations():
     console.print(Rule("[bold blue]Vector Database Operations Demo[/bold blue]"))
     logger.info("Starting vector database demonstration", emoji_key="start")
     
-    api_key = decouple_config("OPENAI_API_KEY", default=None)
-    if not api_key:
-        logger.critical("OpenAI API key is required for this demo.", emoji_key="critical")
-        console.print("[bold red]Error:[/bold red] OpenAI API key not found.")
-        return False
-    
-    embedding_service = get_embedding_service(api_key=api_key)
+    embedding_service = get_embedding_service()
     vector_db = get_vector_db_service()
     
+    if not embedding_service or not hasattr(embedding_service, 'client'):
+        logger.critical("Failed to initialize embedding service. Is OPENAI_API_KEY configured correctly?", emoji_key="critical")
+        console.print("[bold red]Error:[/bold red] Embedding service (likely OpenAI) failed to initialize. Check API key.")
+        return False
+
     console.print(f"[dim]Vector DB Storage Path: {vector_db.base_dir}[/dim]")
     
     collection_name = "semantic_search_demo_rich"
@@ -99,7 +99,7 @@ async def demonstrate_vector_operations():
         search_time = time.time() - search_start_time
         logger.success(f"Search completed in {search_time:.3f}s", emoji_key="success")
         
-        results_table = Table(title=f"Search Results for: \"{escape(query)}\"", box=box.ROUNDED)
+        results_table = Table(title=f'Search Results for: "{escape(query)}"', box=box.ROUNDED)
         results_table.add_column("#", style="dim", justify="right")
         results_table.add_column("Score", style="green", justify="right")
         results_table.add_column("Domain", style="cyan")
@@ -136,7 +136,7 @@ async def demonstrate_vector_operations():
         f_search_time = time.time() - f_search_start_time
         logger.success(f"Filtered search completed in {f_search_time:.3f}s", emoji_key="success")
         
-        f_results_table = Table(title=f"Filtered Results (domain=machine_learning) for: \"{escape(filter_query)}\"", box=box.ROUNDED)
+        f_results_table = Table(title=f'Filtered Results (domain=machine_learning) for: "{escape(filter_query)}"', box=box.ROUNDED)
         f_results_table.add_column("#", style="dim", justify="right")
         f_results_table.add_column("Score", style="green", justify="right")
         f_results_table.add_column("Domain", style="cyan")
@@ -196,15 +196,14 @@ async def demonstrate_llm_with_vector_retrieval():
     console.print(Rule("[bold blue]Retrieval-Augmented Generation (RAG) Demo[/bold blue]"))
     logger.info("Starting RAG demo", emoji_key="start")
     
-    api_key = decouple_config("OPENAI_API_KEY", default=None)
-    if not api_key:
-        logger.critical("OpenAI API key is required for RAG demo.", emoji_key="critical")
-        console.print("[bold red]Error:[/bold red] OpenAI API key not found.")
-        return False
-    
     vector_db = get_vector_db_service()
-    provider = get_provider(Provider.OPENAI.value, api_key=api_key)
-    await provider.initialize()
+    # Let get_provider handle key loading internally AND await it
+    provider = await get_provider(Provider.OPENAI.value) 
+    
+    if not provider:
+        logger.critical("OpenAI provider failed to initialize for RAG demo. Is OPENAI_API_KEY configured?", emoji_key="critical")
+        console.print("[bold red]Error:[/bold red] OpenAI provider failed to initialize. Check API key.")
+        return False
     
     # Re-create collection and add docs for this demo part
     collection_name = "rag_demo_collection_rich"
@@ -269,7 +268,7 @@ Answer:"""
         gen_start_time = time.time()
         result = await provider.generate_completion(
             prompt=prompt,
-            model="gpt-4o-mini", # Use a capable model
+            model="gpt-4.1-mini", # Use a capable model
             temperature=0.2, # Lower temperature for factual answer
             max_tokens=200
         )

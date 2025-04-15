@@ -640,7 +640,7 @@ async def summarize_document(
     Args:
         document: The text content to summarize.
         provider: The name of the LLM provider (e.g., "openai", "anthropic"). Defaults to "openai".
-        model: The specific model ID (e.g., "openai/gpt-4o-mini"). Uses provider default if None.
+        model: The specific model ID (e.g., "openai/gpt-4.1-mini"). Uses provider default if None.
         max_length: (Optional) Target maximum length for the summary (in tokens).
         summary_format: (Optional) Desired format for the summary (e.g., "paragraph", "bullet points"). Default "paragraph".
         is_chunk: (Internal Use/Optional) Set to True if the input `document` is a chunk of a larger document.

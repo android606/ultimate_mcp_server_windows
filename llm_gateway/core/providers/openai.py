@@ -1,12 +1,13 @@
 """OpenAI provider implementation."""
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 from openai import AsyncOpenAI
 
-from llm_gateway.constants import Provider
+from llm_gateway.constants import DEFAULT_MODELS, Provider, COST_PER_MILLION_TOKENS
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
 from llm_gateway.utils import get_logger
+from llm_gateway.config import get_config
 
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("llm_gateway.providers.openai")
@@ -319,12 +320,12 @@ class OpenAIProvider(BaseProvider):
                     "description": "Most capable GPT-4 model",
                 },
                 {
-                    "id": "gpt-4o-mini",
+                    "id": "gpt-4.1-mini",
                     "provider": self.provider_name,
                     "description": "Smaller, efficient GPT-4 model",
                 },
                 {
-                    "id": "gpt-4o-mini",
+                    "id": "gpt-4.1-mini",
                     "provider": self.provider_name,
                     "description": "Fast and cost-effective GPT model",
                 },
@@ -349,7 +350,7 @@ class OpenAIProvider(BaseProvider):
             pass
             
         # Otherwise return hard-coded default
-        return "gpt-4o-mini"
+        return "gpt-4.1-mini"
         
     async def check_api_key(self) -> bool:
         """Check if the OpenAI API key is valid.

@@ -601,7 +601,7 @@ async def generate_database_documentation(
 
 @with_tool_metrics
 @with_error_handling
-@with_retry(attempts=2, delay=1) # Retry connection once on failure
+@with_retry(max_retries=2, delay=1) # Use max_retries instead of attempts
 async def connect_to_database(
     connection_string: str,
     connection_id: Optional[str] = None,
@@ -3031,9 +3031,9 @@ async def create_database_index(
 
 @with_tool_metrics
 @with_error_handling
-@with_retry(attempts=2, delay=0.5, exceptions=(OperationalError,)) # Retry test on operational errors
+@with_retry(max_retries=2, delay=0.5, exceptions=(OperationalError,)) # Use max_retries instead of attempts
 async def test_connection(connection_id: str) -> Dict[str, Any]:
-    """Tests if a database connection is valid and responsive.
+    """Tests the database connection by executing a simple query.
 
     Use this tool to verify that a connection is still active and properly functioning,
     especially after periods of inactivity.

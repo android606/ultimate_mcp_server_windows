@@ -154,11 +154,17 @@ class KnowledgeBaseRetriever:
         
         try:
             # Generate embedding directly with our embedding service
-            query_embedding = await self.embedding_service.get_embedding(
-                text=query,
-                model=embedding_model
+            # Call create_embeddings with a list and get the first result
+            query_embeddings = await self.embedding_service.create_embeddings(
+                texts=[query],
+                # model=embedding_model # Model is set during service init
             )
-            logger.debug(f"Generated query embedding with model: {embedding_model or 'default'}, dimension: {len(query_embedding)}")
+            if not query_embeddings:
+                logger.error(f"Failed to generate embedding for query: {query}")
+                return { "status": "error", "message": "Failed to generate query embedding" }
+            query_embedding = query_embeddings[0]
+            
+            logger.debug(f"Generated query embedding with model: {self.embedding_service.model_name}, dimension: {len(query_embedding)}")
             
             # Use correct query method based on collection type
             if hasattr(collection, 'query') and not hasattr(collection, 'search_by_text'):

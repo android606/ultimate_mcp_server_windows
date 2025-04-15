@@ -106,7 +106,7 @@ class RAGEngine:
         # Fallback to default models for RAG
         return {
             "provider": "openai",
-            "model": "gpt-4o-mini"
+            "model": "gpt-4.1-mini"
         }
     
     async def _track_rag_metrics(

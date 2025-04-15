@@ -572,7 +572,7 @@ async def handle_sampling_message(
             type="text",
             text="Hello, world! from model",
         ),
-        model="gpt-4o-mini",
+        model="gpt-4.1-mini",
         stopReason="endTurn",
     )
 

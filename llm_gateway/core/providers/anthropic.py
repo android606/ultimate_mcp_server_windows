@@ -1,12 +1,13 @@
 """Anthropic (Claude) provider implementation."""
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
 from anthropic import AsyncAnthropic
 
-from llm_gateway.constants import Provider
+from llm_gateway.constants import DEFAULT_MODELS, Provider, COST_PER_MILLION_TOKENS
 from llm_gateway.core.providers.base import BaseProvider, ModelResponse
 from llm_gateway.utils import get_logger
+from llm_gateway.config import get_config
 
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("llm_gateway.providers.anthropic")
@@ -265,12 +266,12 @@ class AnthropicProvider(BaseProvider):
             
         models = [
             {
-                "id": "claude-3-7-sonnet-latest",
+                "id": "claude-3-7-sonnet-20250219",
                 "provider": self.provider_name,
                 "description": "Updated, improved sonnet model",
             },
             {
-                "id": "claude-3-5-haiku-latest",
+                "id": "claude-3-5-haiku-20241022",
                 "provider": self.provider_name,
                 "description": "Latest and fastest Claude model",
             },

@@ -78,7 +78,7 @@ async def run_rag_demo():
     console.print()
     
     # Initialize Gateway for proper provider and API key management
-    gateway = Gateway("rag-example")
+    gateway = Gateway("rag-example", register_tools=False)
     await gateway._initialize_providers()
     
     # Get knowledge base services directly
@@ -336,7 +336,7 @@ async def run_rag_demo():
         if provider_key == "gemini":
             model = "gemini-2.0-flash-lite"
         elif provider_key == "openai":
-            model = "gpt-4o-mini"
+            model = "gpt-4.1-mini"
         elif provider_key == "anthropic":
             model = "claude-3-haiku-latest"
         else:

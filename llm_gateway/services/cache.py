@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from llm_gateway.config import get_config
 from llm_gateway.utils import get_logger
 
 logger = get_logger(__name__)
@@ -31,10 +32,9 @@ class CacheService:
         Args:
             cache_dir: Directory to store cache files
         """
-        self.cache_dir = cache_dir or os.environ.get(
-            "CACHE_DIR", 
-            str(Path.home() / ".llm_gateway" / "cache")
-        )
+        config = get_config()
+        cache_config = config.cache
+        self.cache_dir = cache_config.directory
         
         # Create cache directory if it doesn't exist
         os.makedirs(self.cache_dir, exist_ok=True)
