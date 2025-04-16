@@ -206,3 +206,4 @@ demo_database.db
 models/
 test_input.wav
 browser_demo_outputs/
+examples/redline_outputs

@@ -527,13 +527,18 @@ async def process_model_task(
         Model task result with response text and metrics
     """
     start_task_time = time.monotonic()
-    # Infer provider from model_id format 'provider/model_name'
-    provider_id = model_id.split('/')[0] if '/' in model_id else None
+    # Infer provider from model_id format 'provider:model_name' or 'provider/model_name'
+    provider_id = None
+    if ':' in model_id:
+        provider_id = model_id.split(':')[0]
+    elif '/' in model_id: # Keep backward compatibility if '/' is used
+        provider_id = model_id.split('/')[0]
+        
     if not provider_id:
          logger.warning(f"[MODEL TASK] Could not infer provider from model_id: {model_id}. Attempting call without explicit provider.")
     
     try:
-        logger.info(f"[MODEL TASK] Processing model {model_id} for round {round_num}")
+        logger.info(f"[MODEL TASK] Processing model {model_id} for round {round_num} (Provider: {provider_id})")
             
         # Generate prompt based on tournament type and round
         if round_num == 0:
@@ -550,7 +555,7 @@ async def process_model_task(
         completion_result_dict = await generate_completion(
             prompt=prompt,
             model=model_id,
-            provider=provider_id 
+            provider=provider_id # Pass the inferred provider
             # Add other params like max_tokens, temperature if needed/available
         )
 

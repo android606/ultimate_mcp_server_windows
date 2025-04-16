@@ -263,7 +263,7 @@ async def poll_tournament_status(tournament_id: str, storage_path: Optional[str]
     while True:
         status_input = {"tournament_id": tournament_id}
         status_result = await gateway.mcp.call_tool("get_tournament_status", status_input)
-        status_data = process_mcp_result(status_result)
+        status_data = await process_mcp_result(status_result)
         
         if "error" in status_data:
             # If tournament manager couldn't find the tournament but we have the storage path,
@@ -500,7 +500,7 @@ async def run_tournament_demo(tracker: CostTracker):
     try:
         logger.info("Creating tournament...", emoji_key="processing")
         create_result = await gateway.mcp.call_tool("create_tournament", create_input)
-        create_data = process_mcp_result(create_result)
+        create_data = await process_mcp_result(create_result)
         
         if "error" in create_data:
             error_msg = create_data.get("error", "Unknown error")
@@ -529,7 +529,7 @@ async def run_tournament_demo(tracker: CostTracker):
             logger.info("Fetching final results...", emoji_key="results")
             results_input = {"tournament_id": tournament_id}
             final_results = await gateway.mcp.call_tool("get_tournament_results", results_input)
-            results_data = process_mcp_result(final_results)
+            results_data = await process_mcp_result(final_results)
 
             if "error" not in results_data:
                 # Use the imported display function for tournament results

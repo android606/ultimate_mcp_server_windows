@@ -29,6 +29,7 @@ class TaskType(str, Enum):
     DOWNLOAD = "download"
     UPLOAD = "upload"
     DOCUMENT_PROCESSING = "document_processing"
+    DOCUMENT = "document"
 
 
 class LogLevel(str, Enum):
@@ -130,6 +131,7 @@ EMOJI_MAP = {
     "download": "⬇️",
     "upload": "⬆️",
     "document_processing": "📄",
+    "document": "📄",
     "translation": "🔄",
     "qa": "❓",
     

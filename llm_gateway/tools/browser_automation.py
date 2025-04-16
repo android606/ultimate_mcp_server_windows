@@ -689,13 +689,17 @@ async def _perform_web_search(
     """
     logger.info(f"Performing web search on {engine} for: '{query}' (requesting top {num_results})")
     search_results = []
+    selector_based_success = False
+
     try:
+        # --- STEP 1: Try Selector-Based Approach --- 
+        logger.debug(f"Attempting selector-based search on {engine}...")
         # Define engine specifics (copied/adapted from multi_engine_search_summary)
         search_urls = {"google": "https://www.google.com", "bing": "https://www.bing.com", "duckduckgo": "https://duckduckgo.com"}
         search_selectors = {"google": "textarea[name='q']", "bing": "input[name='q']", "duckduckgo": "input[name='q']"}
-        results_selectors = {"google": "div.g", "bing": "li.b_algo", "duckduckgo": "article.result"}
+        results_selectors = {"google": "div.g", "bing": "li.b_algo", "duckduckgo": "article.result"} 
         link_selectors = {"google": "a[href]", "bing": "h2 > a", "duckduckgo": "a.result__a"}
-        title_selectors = {"google": "h3", "bing": "h2", "duckduckgo": "h2 > a.result__a"}
+        title_selectors = {"google": "h3", "bing": "h2", "duckduckgo": "h2 > a.result__a"} 
         snippet_selectors = {"google": "div[data-sncf~='1'], .VwiC3b", "bing": ".b_caption p", "duckduckgo": ".result__snippet"}
 
         engine_key = engine.lower()
@@ -707,17 +711,25 @@ async def _perform_web_search(
         snippet_selector = snippet_selectors.get(engine_key, snippet_selectors["google"])
 
         # Execute search using low-level tools
-        await browser_navigate(url=search_url, wait_until="domcontentloaded", capture_snapshot=False)
-        await browser_type(selector=search_selector, text=query, press_enter=True, capture_snapshot=False)
-        await browser_wait(wait_type="selector", value=results_selector, timeout=15000, capture_snapshot=False)
+        nav_res = await browser_navigate(url=search_url, wait_until="domcontentloaded", capture_snapshot=False)
+        if not nav_res.get("success"): raise ToolError(f"Navigation failed: {nav_res.get('error')}")
+        
+        type_res = await browser_type(selector=search_selector, text=query, press_enter=True, capture_snapshot=False)
+        if not type_res.get("success"): raise ToolError(f"Typing failed: {type_res.get('error')}")
+
+        logger.info(f"Waiting for results selector: {results_selector}") 
+        # Ensure we use the correct variable holding the engine-specific selector
+        wait_res = await browser_wait(wait_type="selector", value=results_selector, timeout=15000, capture_snapshot=False) # Reduced timeout slightly
+        if not wait_res.get("success"): raise ToolError(f"Waiting for results failed: {wait_res.get('error')}")
+        
         await asyncio.sleep(2.0) # Let results settle
 
-        # Extract results via JS
+        # Extract results via JS 
         script = f"""
         () => {{
             const results = [];
             const resultElements = document.querySelectorAll('{results_selector}');
-            const numToExtract = {num_results}; // Get requested number
+            const numToExtract = {num_results}; 
             console.log(`Found ${{resultElements.length}} potential results for '{results_selector}' on {engine_key}`);
             for (let i = 0; i < resultElements.length && results.length < numToExtract; i++) {{
                 const el = resultElements[i];
@@ -728,7 +740,7 @@ async def _perform_web_search(
                     const url = linkEl?.href;
                     let title = titleEl?.innerText?.trim() || linkEl?.innerText?.trim();
                     let snippet = snippetEl?.innerText?.trim();
-                    if (url && url.startsWith('http') && title && !url.includes('/search?q=') && !url.includes('google.com/url?q=')) {{
+                    if (url && url.startsWith('http') && title && !url.includes('duckduckgo.com/y.js')) {{ 
                         title = title.replace(/^Cached - /i, '').trim();
                         snippet = snippet ? snippet.substring(0, 500) + (snippet.length > 500 ? '...' : '') : '';
                         results.push({{ url: url, title: title, snippet: snippet || '' }});
@@ -740,13 +752,58 @@ async def _perform_web_search(
         extract_res = await browser_execute_javascript(script=script)
         if extract_res.get("success") and isinstance(extract_res.get("result"), list):
             search_results = extract_res["result"]
-            logger.info(f"Successfully extracted {len(search_results)} results from {engine}.")
+            if search_results:
+                 logger.info(f"Successfully extracted {len(search_results)} results from {engine} using selectors.")
+                 selector_based_success = True
+            else:
+                 logger.warning(f"Selector-based JS extraction returned 0 results from {engine}.")
         else:
-            logger.warning(f"Failed to extract results via JS from {engine}: {extract_res.get('error')}")
+            logger.warning(f"Failed to extract results via JS from {engine} using selectors: {extract_res.get('error')}")
+            # If JS extraction fails even after waiting, trigger fallback
+            raise ToolError("Selector-based JS extraction failed")
 
-    except (ToolError, ToolInputError, Exception) as search_err:
-        logger.error(f"Error performing search on {engine} for '{query}': {type(search_err).__name__}: {search_err}", exc_info=False)
-        # Don't raise, just return empty list or partial results if any were collected before error
+    except (ToolError, ToolInputError, Exception) as selector_err:
+        logger.warning(f"Selector-based search failed: {type(selector_err).__name__}: {selector_err}. Falling back to LLM-guided search.")
+        
+        # --- STEP 2: LLM-Guided Fallback --- 
+        try:
+            # We might be on the search engine homepage or results page depending on where the error occurred.
+            page_id, current_page_obj = await _ensure_page()
+            logger.info(f"LLM Fallback: Getting page state for {current_page_obj.url}")
+            page_state = await _get_simplified_page_state_for_llm()
+            if page_state.get("error"):
+                 raise ToolError(f"LLM Fallback failed: Could not get page state - {page_state['error']}")
+            
+            # TODO: Implement LLM calls to find input, type, click submit, wait, get results
+            # This requires significant changes, including potentially using a different LLM model
+            # and carefully crafting prompts. For now, we'll just log the failure and return empty.
+            
+            # --- LLM Task 1: Find search input & type (Placeholder) ---
+            logger.warning("LLM Fallback: Search input identification not implemented.")
+            # llm_input_res = await _call_browser_llm(...) 
+            # await browser_type(selector=llm_input_res['element_id'], ...)
+            
+            # --- LLM Task 2: Find submit & click (Placeholder) ---
+            logger.warning("LLM Fallback: Submit button identification not implemented.")
+            # llm_submit_res = await _call_browser_llm(...)
+            # await browser_click(selector=llm_submit_res['element_id'], ...)
+            
+            # --- LLM Task 3: Wait & Extract Results (Placeholder) ---
+            logger.warning("LLM Fallback: Results extraction not implemented.")
+            # await asyncio.sleep(5) # Crude wait
+            # page_state_results = await _get_simplified_page_state_for_llm()
+            # llm_results_res = await _call_browser_llm(...) 
+            # search_results = llm_results_res.get('results', [])
+            
+            # For now, return empty results if fallback is triggered
+            search_results = [] 
+            logger.error("LLM-guided search fallback is not fully implemented. Returning empty results.")
+            
+        except Exception as llm_fallback_err:
+            logger.error(f"Error during LLM-guided search fallback: {type(llm_fallback_err).__name__}: {llm_fallback_err}", exc_info=True)
+            search_results = [] # Ensure empty results on fallback error
+            
+    # Return results from either selector path or LLM fallback (currently empty for fallback)
     return search_results
 
 async def _select_relevant_urls_llm(
@@ -3671,26 +3728,9 @@ async def browser_pdf(
             "preferCSSPageSize": prefer_css_page_size
         }
         
-        if full_page:
-            # Full page PDF (default)
-            logger.info(
-                f"Generating PDF of full page: {page_title or page_url}",
-                emoji_key="pdf"
-            )
-            await page.pdf(pdf_options)
-        else:
-            # Viewport-only PDF
-            logger.info(
-                f"Generating PDF of viewport: {page_title or page_url}",
-                emoji_key="pdf"
-            )
-            # For viewport only, we need to get the viewport size
-            # and set the width and height in the PDF options
-            viewport_size = page.viewport_size
-            pdf_options["width"] = viewport_size["width"]
-            pdf_options["height"] = viewport_size["height"]
-            await page.pdf(pdf_options)
-        
+        # Correctly pass options using keyword argument expansion
+        await page.pdf(**pdf_options)
+
         # Get file info
         file_size = file_path.stat().st_size
         
@@ -5115,15 +5155,21 @@ async def find_and_download_pdfs(
 
         search_urls = {"google": "https://www.google.com", "bing": "https://www.bing.com", "duckduckgo": "https://duckduckgo.com"}
         search_selectors = {"google": "textarea[name='q']", "bing": "input[name='q']", "duckduckgo": "input[name='q']"}
-        wait_selectors = {"google": "#search", "bing": "#b_results", "duckduckgo": "#links"}
-        search_url = search_urls.get(search_engine, search_urls["google"])
-        search_selector = search_selectors.get(search_engine, search_selectors["google"])
-        wait_selector = wait_selectors.get(search_engine, wait_selectors["google"])
+        wait_selectors = {"google": "#search", "bing": "#b_results", "duckduckgo": "article.result"} # Correct DDG selector here too
+        search_url = search_urls.get(engine_key, search_urls["google"])
+        search_selector = search_selectors.get(engine_key, search_selectors["google"])
+        # wait_selector variable is removed or ignored
 
         # Use low-level browser tools
+        logger.info(f"Navigating to {search_url} for search...")
         await browser_navigate(url=search_url, wait_until="domcontentloaded")
+        logger.info(f"Typing search query '{search_query}' into {search_selector}...")
         await browser_type(selector=search_selector, text=search_query, press_enter=True, capture_snapshot=False)
-        await browser_wait(wait_type="selector", value=wait_selector, timeout=15000)
+        
+        # Determine the correct wait selector directly in the call
+        actual_wait_selector = wait_selectors.get(search_engine.lower(), wait_selectors["google"])
+        logger.info(f"Waiting for search results using selector: {actual_wait_selector}...") 
+        await browser_wait(wait_type="selector", value=actual_wait_selector, timeout=20000) # Use the determined selector
         await asyncio.sleep(1.5) # Allow results to potentially render
 
         # --- 4. Target Site Identification ---

@@ -10,7 +10,7 @@ of the generic `find_and_download_pdfs` tool for specific tasks.
 # --- Instruction Pack 1: Academic Papers (arXiv) ---
 ACADEMIC_PAPER_INSTRUCTIONS = {
     "search_phase": {
-        "search_query_template": "site:arxiv.org {topic} pre-print paper",
+        "search_query_template": "site:arxiv.org {topic} pdf",
         "target_site_identification_prompt": """Analyze the search results summary for "{search_term}".
 Identify the URL that is most likely the main arXiv search results page or a specific relevant paper's abstract page on arXiv.org for the topic. Prioritize URLs starting with 'https://arxiv.org/'.
 
@@ -20,7 +20,8 @@ Search Results Summary:
 ---
 
 Respond ONLY with a valid JSON object: {{"target_url": "URL_or_null"}}.""",
-        "search_engine": "google"
+        "search_engine": "duckduckgo",
+        "num_search_results_per_query": 5 # Limit initial results
     },
     "exploration_phase": {
         "exploration_goal_prompt": "Explore the arXiv website for the topic '{topic}'. Identify direct PDF download links for relevant research papers. Look for links labeled 'PDF', 'Download PDF', or links ending in .pdf within abstract pages.",

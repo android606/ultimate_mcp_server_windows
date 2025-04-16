@@ -317,7 +317,7 @@ async def get_tournament_results(
             ) from ve
 
         # Make sure to request TournamentData which should contain results
-        tournament_data: Optional[TournamentData] = tournament_manager.get_tournament_results(input_data.tournament_id)
+        tournament_data: Optional[TournamentData] = tournament_manager.get_tournament(input_data.tournament_id, force_reload=True)
 
         if not tournament_data:
             # Check if the tournament exists but just has no results yet (e.g., PENDING)
@@ -349,8 +349,8 @@ async def get_tournament_results(
     except Exception as e:
         logger.error(f"Error getting tournament results for {tournament_id}: {e}", exc_info=True)
         raise ToolError(
-            status_code=500,
-            detail=f"Internal server error retrieving tournament results: {str(e)}"
+            f"Internal server error retrieving tournament results: {str(e)}",
+            500 # status_code
         ) from e
 
 @with_tool_metrics

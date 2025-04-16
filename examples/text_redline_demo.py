@@ -31,12 +31,17 @@ from llm_gateway.core.server import Gateway
 
 # Import our text redline tool
 from llm_gateway.tools.text_redline_tools import compare_documents_redline, create_html_redline
+from llm_gateway.tools.filesystem import write_file
+from llm_gateway.exceptions import ToolError
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.display import CostTracker
 from llm_gateway.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.text_redline")
+
+# Define output directory
+OUTPUT_DIR = Path(__file__).parent / "redline_outputs"
 
 # Sample HTML documents for demonstration
 ORIGINAL_HTML = """<!DOCTYPE html>
@@ -250,7 +255,8 @@ async def demonstrate_basic_redline():
                 modified_html=MODIFIED_HTML,
                 detect_moves=True,
                 include_css=True,
-                add_navigation=True
+                add_navigation=True,
+                output_format="html"
             )
             
             # Mark task as complete
@@ -275,22 +281,21 @@ async def demonstrate_basic_redline():
             console.print(stats_table)
             
             # Display a preview of the redline HTML
-            # Extract just a portion for display to keep it manageable
-            html_preview = result["redline_html"]
+            html_preview_full = result["redline_html"]
             
             # Find the body tag and extract a portion
-            body_start = html_preview.find("<body")
+            body_start = html_preview_full.find("<body")
             if body_start > 0:
-                body_end = html_preview.find("</body>", body_start)
+                body_end = html_preview_full.find("</body>", body_start)
                 if body_end > 0:
-                    content = html_preview[body_start:body_end]
+                    content = html_preview_full[body_start:body_end]
                     # Further trim if too long
                     if len(content) > 1000:
                         content = content[:1000] + "...(truncated)..."
                 else:
-                    content = html_preview[:1000] + "...(truncated)..."
+                    content = html_preview_full[:1000] + "...(truncated)..."
             else:
-                content = html_preview[:1000] + "...(truncated)..."
+                content = html_preview_full[:1000] + "...(truncated)..."
             
             # Create a syntax object with HTML highlighting
             syntax = Syntax(content, "html", theme="monokai", line_numbers=True)
@@ -308,10 +313,25 @@ async def demonstrate_basic_redline():
             original_size = len(ORIGINAL_HTML)
             modified_size = len(MODIFIED_HTML)
             
+            # --- Save the full redline HTML ---
+            output_filename = "basic_html_redline.html"
+            output_path = OUTPUT_DIR / output_filename
+            try:
+                # Make sure the output path is absolute for write_file validation
+                abs_output_path = str(output_path.resolve())
+                await write_file(path=abs_output_path, content=html_preview_full)
+                logger.info(f"Saved full redline HTML to: {abs_output_path}", emoji_key="save")
+                save_message = f"Full redline saved to [cyan]{output_path}[/cyan]"
+            except (ToolError, Exception) as save_err:
+                logger.warning(f"Failed to save redline to {output_path}: {save_err}", emoji_key="warning")
+                save_message = f"[yellow]Warning: Failed to save redline to {output_path} ({save_err})[/yellow]"
+            # --- End Save ---
+            
             console.print(Panel(
                 f"The redline shows [bold cyan]{total_changes}[/bold cyan] changes between documents.\n"
                 f"Original document size: [yellow]{original_size}[/yellow] characters\n"
                 f"Modified document size: [yellow]{modified_size}[/yellow] characters\n"
+                f"{save_message}\n"
                 f"In a real application, this HTML would be displayed in a browser with full styling and navigation.",
                 title="[bold]Summary[/bold]",
                 border_style="blue",
@@ -366,12 +386,14 @@ async def demonstrate_advanced_redline_features():
     configs = [
         {
             "name": "With Move Detection",
+            "filename_suffix": "adv_html_moves_enabled.html",
             "detect_moves": True,
             "ignore_whitespace": True,
             "output_format": "html"
         },
         {
             "name": "Without Move Detection",
+            "filename_suffix": "adv_html_moves_disabled.html",
             "detect_moves": False,
             "ignore_whitespace": True,
             "output_format": "html"
@@ -391,6 +413,7 @@ async def demonstrate_advanced_redline_features():
         tasks = {config["name"]: progress.add_task(f"[cyan]Processing {config['name']}...", total=1) for config in configs}
         
         results = {}
+        save_statuses = {}
         
         # Process each configuration
         for config in configs:
@@ -404,7 +427,9 @@ async def demonstrate_advanced_redline_features():
                     modified_html=MODIFIED_HTML,
                     detect_moves=config["detect_moves"],
                     ignore_whitespace=config["ignore_whitespace"],
-                    output_format=config["output_format"]
+                    output_format=config["output_format"],
+                    include_css=True,
+                    add_navigation=True
                 )
                 
                 # Store result
@@ -418,6 +443,19 @@ async def demonstrate_advanced_redline_features():
                     emoji_key="success",
                     stats=result["stats"]
                 )
+                
+                # --- Save the full redline HTML ---
+                output_filename = config["filename_suffix"]
+                output_path = OUTPUT_DIR / output_filename
+                try:
+                    abs_output_path = str(output_path.resolve())
+                    await write_file(path=abs_output_path, content=result["redline_html"])
+                    logger.info(f"Saved {config_name} redline HTML to: {abs_output_path}", emoji_key="save")
+                    save_statuses[config_name] = f"Saved to [cyan]{output_path}[/cyan]"
+                except (ToolError, Exception) as save_err:
+                    logger.warning(f"Failed to save {config_name} redline to {output_path}: {save_err}", emoji_key="warning")
+                    save_statuses[config_name] = f"[yellow]Failed to save to {output_path}[/yellow]"
+                # --- End Save ---
                 
             except Exception as e:
                 progress.update(task_id, description=f"[bold red]Error processing {config_name}[/bold red]", completed=1)
@@ -462,6 +500,11 @@ async def demonstrate_advanced_redline_features():
                 border_style="green" if "With Move" in name else "yellow",
                 padding=(1, 2)
             )
+            
+            # Add save status to the panel group
+            if name in save_statuses and hasattr(panel.renderable, "renderables"):
+                panel.renderable.renderables.append(Text(save_statuses[name], justify="center"))
+            
             comparison_panels.append(panel)
         
         # Display the panels in columns
@@ -511,18 +554,21 @@ async def demonstrate_multi_format_redline():
     formats = [
         {
             "name": "HTML Format",
+            "filename_suffix": "multi_html_redline.html",
             "original": ORIGINAL_HTML,
             "modified": MODIFIED_HTML,
             "format": "html"
         },
         {
             "name": "Markdown Format",
+            "filename_suffix": "multi_markdown_redline.html",
             "original": ORIGINAL_MD,
             "modified": MODIFIED_MD,
             "format": "markdown"
         },
         {
             "name": "Plain Text Format",
+            "filename_suffix": "multi_text_redline.html",
             "original": ORIGINAL_TEXT,
             "modified": MODIFIED_TEXT,
             "format": "text"
@@ -557,6 +603,7 @@ async def demonstrate_multi_format_redline():
     ) as progress:
         tasks = {}
         results = {}
+        save_statuses = {}
         
         for fmt in formats:
             task_id = progress.add_task(f"[cyan]Processing {fmt['name']}...", total=1)
@@ -564,14 +611,17 @@ async def demonstrate_multi_format_redline():
             
             try:
                 # Use create_html_redline for HTML, compare_documents_redline for others
+                output_html_for_save = True
                 if fmt["format"] == "html":
                     result = await create_html_redline(
                         original_html=fmt["original"],
                         modified_html=fmt["modified"],
                         detect_moves=True,
                         include_css=True,
-                        output_format="fragment"  # Use fragment for display
+                        add_navigation=True,
+                        output_format="html"
                     )
+                    redline_content = result.get("redline_html")
                 else:
                     result = await compare_documents_redline(
                         original_text=fmt["original"],
@@ -581,7 +631,11 @@ async def demonstrate_multi_format_redline():
                         output_format="html",
                         diff_level="word"
                     )
-                
+                    redline_content = result.get("redline")
+
+                if not redline_content:
+                    raise ValueError("Redline content generation failed or returned empty.")
+
                 # Store result
                 results[fmt["name"]] = result
                 
@@ -591,9 +645,22 @@ async def demonstrate_multi_format_redline():
                 logger.info(
                     f"Generated redline for {fmt['name']}",
                     emoji_key="success",
-                    stats=result["stats"] if "stats" in result else {"format": fmt["format"]}
+                    stats=result.get("stats", {})
                 )
                 
+                # --- Save the full redline HTML ---
+                output_filename = fmt["filename_suffix"]
+                output_path = OUTPUT_DIR / output_filename
+                try:
+                    abs_output_path = str(output_path.resolve())
+                    await write_file(path=abs_output_path, content=redline_content)
+                    logger.info(f"Saved {fmt['name']} redline HTML to: {abs_output_path}", emoji_key="save")
+                    save_statuses[fmt["name"]] = f"Saved to [cyan]{output_path}[/cyan]"
+                except (ToolError, Exception) as save_err:
+                    logger.warning(f"Failed to save {fmt['name']} redline to {output_path}: {save_err}", emoji_key="warning")
+                    save_statuses[fmt["name"]] = f"[yellow]Failed to save to {output_path}[/yellow]"
+                # --- End Save ---
+
             except Exception as e:
                 progress.update(task_id, description=f"[bold red]Error processing {fmt['name']}[/bold red]", completed=1)
                 logger.error(f"Error with {fmt['name']}: {str(e)}", emoji_key="error")
@@ -649,6 +716,10 @@ async def demonstrate_multi_format_redline():
                 border_style=color,
                 padding=(1, 2)
             )
+            
+            # Add save status to the panel group
+            if name in save_statuses and hasattr(panel.renderable, "renderables"):
+                panel.renderable.renderables.append(Text(save_statuses[name], justify="center"))
         
         comparison_panels.append(panel)
     
@@ -919,11 +990,26 @@ The updated report should still be brief (10-15 lines) but reflect these changes
                 padding=(1, 2)
             ))
             
+            # --- Save the full redline HTML ---
+            output_filename = "llm_generated_redline.html"
+            output_path = OUTPUT_DIR / output_filename
+            save_message = ""
+            try:
+                abs_output_path = str(output_path.resolve())
+                await write_file(path=abs_output_path, content=redline_html)
+                logger.info(f"Saved LLM redline HTML to: {abs_output_path}", emoji_key="save")
+                save_message = f"Full redline saved to [cyan]{output_path}[/cyan]"
+            except (ToolError, Exception) as save_err:
+                logger.warning(f"Failed to save LLM redline to {output_path}: {save_err}", emoji_key="warning")
+                save_message = f"[yellow]Warning: Failed to save LLM redline to {output_path} ({save_err})[/yellow]"
+            # --- End Save ---
+            
             console.print(Panel(
                 f"The redline shows [bold cyan]{stats['total_changes']}[/bold cyan] changes between versions:\n"
                 f"- [blue]{stats['insertions']}[/blue] insertions\n"
                 f"- [red]{stats['deletions']}[/red] deletions\n"
                 f"- [green]{stats['moves']}[/green] moved blocks\n\n"
+                f"{save_message}\n\n"
                 f"This demonstrates how the redline tool can be combined with LLMs to generate and compare document versions.",
                 title="[bold]LLM Redline Integration Summary[/bold]",
                 border_style="blue",
@@ -948,11 +1034,19 @@ The updated report should still be brief (10-15 lines) but reflect these changes
 async def main():
     """Run the text redline tool demonstration."""
     console.print(Panel(
-        Text("📝 Text Redline Tool Demonstration 📝", style="bold white on blue").center(),
+        Text("📝 Text Redline Tool Demonstration 📝", style="bold white on blue", justify="center"),
         box=box.DOUBLE_EDGE,
         padding=(1, 0)
     ))
     
+    # Ensure output directory exists (synchronous is fine here before async loop starts)
+    try:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Ensured output directory exists: {OUTPUT_DIR}")
+    except OSError as e:
+        # Log error but don't necessarily stop the demo, write_file will fail later
+        logger.error(f"Could not create output directory {OUTPUT_DIR}: {e}", emoji_key="error")
+
     logger.info("Starting Text Redline Tool Demonstration", emoji_key="start")
     
     # Initialize cost tracker

@@ -710,23 +710,22 @@ async def demo_search_interaction():
         search_successful = False
         for selector in search_selectors:
             try:
-                # Check if element exists before trying to type
-                element_check = await browser_get_text(selector=selector)
-                if element_check.get("success", False):
-                    type_result = await browser_type(  # noqa: F841
-                        selector=selector,
-                        text=search_query,
-                        delay=20,  # Slow typing for visibility
-                        press_enter=True  # Press Enter to submit search
-                    )
-                    search_successful = True
-                    break
+                # Directly try to type, relying on Playwright's ability to find the element
+                type_result = await browser_type(  # noqa: F841
+                    selector=selector,
+                    text=search_query,
+                    delay=20,  # Slow typing for visibility
+                    press_enter=True  # Press Enter to submit search
+                )
+                search_successful = True
+                logger.info(f"Successfully used selector '{selector}' for search input.", emoji_key="success")
+                break # Exit loop once successful
             except Exception as e:
                 logger.debug(f"Selector {selector} failed: {e}", emoji_key="debug")
                 continue
                 
         if not search_successful:
-            logger.warning("Could not find search input element. Trying JavaScript input approach.", emoji_key="warning")
+            logger.warning("Could not find search input element using standard selectors. Trying JavaScript input approach.", emoji_key="warning")
             # Fallback: Use JavaScript to find and fill the search box
             js_search_result = await browser_execute_javascript(
                 script=f"""() => {{
@@ -749,7 +748,7 @@ async def demo_search_interaction():
         await browser_wait(
             wait_type="selector",
             value="#links",  # <-- FIX: DuckDuckGo's search results container
-            timeout=10000
+            timeout=20000 # <-- Increased timeout
         )
     finally:
         pass  # No progress.update needed
@@ -1369,7 +1368,7 @@ async def demo_network_monitoring():
     
     await browser_navigate(
         url="https://httpbin.org/forms/post",
-        wait_until="networkidle"
+        wait_until="networkidle" # Wait for initial requests to settle
     )
     
     # Interact with the form to trigger a request
@@ -1378,21 +1377,27 @@ async def demo_network_monitoring():
         text="LLM Gateway Test User"
     )
     
-    await browser_select(
-        selector="select[name='size']",
-        values="medium",
-        by="value"
+    # FIX: Use browser_click for radio button instead of browser_select
+    logger.info("Selecting size 'Medium' using radio button")
+    await browser_click(
+        selector="input[type='radio'][name='size'][value='medium']",
+        capture_snapshot=False # No need for snapshot here
     )
     
+    # Select topping (checkbox interaction is likely correct)
     await browser_checkbox(
         selector="input[value='cheese']",
-        check=True
+        check=True,
+        capture_snapshot=False # No need for snapshot here
     )
     
     # Submit the form which will trigger an API request
+    # FIX: Use a potentially more robust selector for the button
+    logger.info("Clicking submit button")
     await browser_click(
-        selector="button[type='submit']",
-        delay=100
+        selector="form button", # More specific selector for the button within the form
+        delay=100,
+        capture_snapshot=False # No need for snapshot here
     )
     
     # Wait a bit for all requests to complete
@@ -1401,12 +1406,13 @@ async def demo_network_monitoring():
     # Retrieve the monitored requests
     network_results = await browser_execute_javascript(
         script="""() => {
-            // Return the collected requests
+            // Return the collected requests, handle if undefined
+            const requests = window.monitoredRequests || [];
             return {
-                total: window.monitoredRequests.length,
-                requests: window.monitoredRequests
+                total: requests.length,
+                requests: requests
             };
-        }"""
+        }""" # <-- FIX: Handle undefined window.monitoredRequests
     )
     
     display_result("Monitored Network Requests", network_results)
@@ -1565,6 +1571,14 @@ async def demo_file_upload():
     console.print(Rule("[bold blue]File Upload Demo[/bold blue]"))
     logger.info("Demonstrating file upload capabilities", emoji_key=TaskType.UPLOAD.value)
     
+    # Navigate to the correct upload page first
+    logger.info("Navigating to file upload demo page...", emoji_key="navigation")
+    nav_result = await browser_navigate(
+        url="https://the-internet.herokuapp.com/upload",
+        wait_until="load"
+    )
+    display_result("Navigated to Upload Page", nav_result)
+
     # Create a dummy file for uploading
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt") as temp_file:
         temp_file.write("This is a test file created by LLM Gateway Browser Automation.\n")

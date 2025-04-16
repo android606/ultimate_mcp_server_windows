@@ -266,7 +266,7 @@ def _repair_json(text: str, aggressive=False) -> str:
     
     return result
 
-def parse_result(result: Any) -> Dict[str, Any]:
+async def parse_result(result: Any) -> Dict[str, Any]:
     """Parse the result from a tool call into a usable dictionary.
     
     Handles various return types from MCP tools, including TextContent objects,
@@ -314,11 +314,45 @@ def parse_result(result: Any) -> Dict[str, Any]:
             try:
                 # Try to parse the potentially extracted/cleaned text as JSON
                 return json.loads(json_str)
-            except json.JSONDecodeError:
-                # Return the raw cleaned text if not JSON
-                # Log the string that failed parsing for debugging
-                logger.warning(f"Content could not be parsed as JSON: {json_str[:100]}...", emoji_key="warning")
-                return {"text": json_str} # Return the cleaned (potentially extracted) text
+            except json.JSONDecodeError as e:
+                # If parsing fails, try LLM repair
+                logger.warning(f"Initial JSON parsing failed: {e}. Attempting LLM repair...", emoji_key="warning")
+                try:
+                    # Local import to minimize scope/potential circular dependency issues
+                    from llm_gateway.tools.completion import generate_completion
+                    
+                    repair_prompt = (
+                        f"The following text is supposed to be JSON but failed parsing. "
+                        f"Please extract the valid JSON data from it and return *only* the raw JSON string, nothing else. "
+                        f"If it\'s impossible to extract valid JSON, return an empty JSON object {{}}. "
+                        f"Problematic text:\n\n```\n{json_str}\n```"
+                    )
+                    
+                    llm_repair_result = await generate_completion(
+                        prompt=repair_prompt,
+                        provider="openai", # Use openai as requested
+                        model="gpt-4.1-mini", # Use gpt-4.1-mini as requested
+                        temperature=0.0 # Be deterministic for extraction
+                    )
+                    
+                    if llm_repair_result.get("success"):
+                        llm_json_text = llm_repair_result.get("text", "")
+                        try:
+                            # Try parsing the LLM response
+                            repaired_json = json.loads(llm_json_text)
+                            logger.info("LLM repair successful.", emoji_key="success")
+                            return repaired_json
+                        except json.JSONDecodeError as llm_e:
+                            logger.error(f"LLM repair attempt failed. LLM response could not be parsed as JSON: {llm_e}. LLM response: {llm_json_text[:100]}...", emoji_key="error")
+                            return {"error": f"LLM repair failed: LLM response was not valid JSON ({llm_e})", "raw_content": json_str, "llm_response": llm_json_text}
+                    else:
+                        llm_error = llm_repair_result.get("error", "Unknown LLM error")
+                        logger.error(f"LLM repair attempt failed: LLM call failed: {llm_error}", emoji_key="error")
+                        return {"error": f"LLM repair failed: LLM call error ({llm_error})", "raw_content": json_str}
+                        
+                except Exception as repair_ex:
+                    logger.error(f"LLM repair attempt failed with exception: {repair_ex}", emoji_key="error", exc_info=True)
+                    return {"error": f"LLM repair failed with exception: {repair_ex}", "raw_content": json_str}
 
         # Handle other potential types or return error if no text was found/parsed
         else:
@@ -329,7 +363,7 @@ def parse_result(result: Any) -> Dict[str, Any]:
         logger.warning(f"Error parsing result: {str(e)}", emoji_key="warning")
         return {"error": f"Error parsing result: {str(e)}"}
 
-def process_mcp_result(result: Any) -> Dict[str, Any]:
+async def process_mcp_result(result: Any) -> Dict[str, Any]:
     """Process result from MCP tool call, handling both list and dictionary formats.
     
     This is a more user-friendly alias for parse_result that provides the same functionality.
@@ -340,4 +374,4 @@ def process_mcp_result(result: Any) -> Dict[str, Any]:
     Returns:
         Processed dictionary containing the result data
     """
-    return parse_result(result) 
+    return await parse_result(result) 

@@ -231,17 +231,25 @@ def parse_model_string(model_string: str) -> Tuple[str, str]:
         Tuple of (provider_name, model_name)
         If no provider prefix is found, provider_name will be None
     """
+    separator = None
     if '/' in model_string:
+        separator = '/'
+    elif ':' in model_string:
+        separator = ':'
+        
+    if separator:
         # Try to extract provider prefix
-        parts = model_string.split('/', 1)
+        parts = model_string.split(separator, 1)
         if len(parts) == 2:
             provider_prefix, model_name = parts
             
             # Check if the prefix is a valid provider name
-            if provider_prefix.lower() in [p.value.lower() for p in Provider]:
+            # Use list comprehension for cleaner check against Provider enum values
+            valid_providers = [p.value.lower() for p in Provider]
+            if provider_prefix.lower() in valid_providers:
                 return provider_prefix.lower(), model_name
     
-    # No valid provider prefix found
+    # No valid provider prefix found or no separator
     return None, model_string
 
 

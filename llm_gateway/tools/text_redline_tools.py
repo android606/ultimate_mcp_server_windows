@@ -101,7 +101,7 @@ del:hover, .diff-delete:hover {
 """
 
 # --- XSLT for transforming xmldiff output to readable HTML ---
-XMLDIFF_XSLT = """<?xml version="1.0" encoding="UTF-8"?>
+XMLDIFF_XSLT = b"""<?xml version="1.0" encoding="UTF-8"?>
 <xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform"
                 xmlns:diff="http://namespaces.shoobx.com/diff">
   <xsl:template match="@diff:delete">
@@ -461,52 +461,29 @@ def _generate_redline(
         normalize=formatting.WS_BOTH if detect_moves else formatting.WS_NONE,
         pretty_print=True,
         text_tags=('p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'td', 'th', 'div', 'span', 'a'),
-        formatting_tags=formatting_tags or [],
-        diff_tag='diff',
-        diff_attr_prefix='diff:'
+        formatting_tags=formatting_tags or []
     )
-    
-    # Track statistics
-    insertions = 0
-    deletions = 0
-    moves = 0
     
     # Generate diff
     try:
-        if detect_moves:
-            # Use detailed diff with move detection
-            diff_tree = main.diff_trees(
-                original_doc, 
-                modified_doc,
-                formatter=formatter,
-                ratio_mode=True  # Better for prose comparison
-            )
-            
-            # Count operations for statistics
-            for action in diff_tree:
-                action_type = action[0]
-                if action_type == 'insert':
-                    insertions += 1
-                elif action_type == 'delete':
-                    deletions += 1
-                elif action_type == 'move':
-                    moves += 1
-                    
-            # Generate string output with diff markings
-            diff_html = formatter.format(diff_tree, original_doc)
-            
-        else:
-            # Simpler diff without move detection
-            diff_html = main.diff_trees(
-                original_doc, 
-                modified_doc,
-                formatter=formatter
-            )
-            
-            # Count inserted and deleted attributes in output for statistics
-            insertions = diff_html.count('diff:insert')
-            deletions = diff_html.count('diff:delete')
-            moves = 0
+        # Convert lxml trees back to strings for diff_texts
+        original_string = etree.tostring(original_doc, encoding='unicode')
+        modified_string = etree.tostring(modified_doc, encoding='unicode')
+
+        # Use diff_texts which handles diffing and formatting
+        diff_html = main.diff_texts(
+            original_string,
+            modified_string,
+            formatter=formatter
+        )
+
+        # Count statistics based on the resulting HTML string
+        insertions = diff_html.count('diff:insert')
+        deletions = diff_html.count('diff:delete')
+        # Move detection might be implicit in diff_texts output or handled by XSLT
+        # Let's count move attributes if they appear
+        moves = diff_html.count('diff:move') 
+
     except Exception as e:
         logger.error(f"xmldiff processing failed: {str(e)}", exc_info=True)
         raise ToolError(
