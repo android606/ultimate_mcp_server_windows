@@ -251,7 +251,7 @@ async def run_comparison_demo(tracker: CostTracker):
             **common_args,
             "response_format": "best",
             "include_reasoning": True, # Show why it was selected
-            # "synthesis_model": synthesis_model_config # Optionally specify
+            "synthesis_model": synthesis_model_config # Explicitly specify model to avoid OpenRouter
         })
         print_result("Response Format: 'best' (with reasoning)", result)
         # Track cost
@@ -306,7 +306,7 @@ async def run_comparison_demo(tracker: CostTracker):
             **common_args,
             "response_format": "synthesis",
             "synthesis_strategy": "conservative",
-            "synthesis_model": synthesis_model_config,
+            "synthesis_model": synthesis_model_config, # Explicitly specify
             "include_reasoning": False, # Hide the synthesis strategy explanation
         })
         print_result("Response Format: 'synthesis' (Conservative, No Reasoning)", result)
@@ -334,7 +334,7 @@ async def run_comparison_demo(tracker: CostTracker):
             **common_args,
             "response_format": "ranked",
             "include_reasoning": True, # Show reasoning for ranks
-            "synthesis_model": synthesis_model_config,
+            "synthesis_model": synthesis_model_config, # Explicitly specify
         })
         print_result("Response Format: 'ranked' (with reasoning)", result)
         # Track cost
@@ -361,7 +361,7 @@ async def run_comparison_demo(tracker: CostTracker):
             **common_args,
             "response_format": "analysis",
             # No reasoning needed for analysis format, it's inherent
-            "synthesis_model": synthesis_model_config,
+            "synthesis_model": synthesis_model_config, # Explicitly specify
         })
         print_result("Response Format: 'analysis'", result)
         # Track cost

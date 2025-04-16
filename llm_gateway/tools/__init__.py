@@ -1,7 +1,42 @@
 """MCP Tools for LLM Gateway."""
 
 import inspect
-from typing import Any, Dict, Type
+from typing import Any, Dict
+
+from llm_gateway.tools.base import (
+    BaseTool,  # Keep BaseTool in case other modules use it
+    register_tool,
+    with_error_handling,
+    with_retry,
+    with_tool_metrics,
+)
+from llm_gateway.utils import get_logger
+
+from .audio_transcription import (
+    chat_with_transcript,
+    extract_audio_transcript_key_points,
+    transcribe_audio,
+)
+
+# Import browser automation tools
+from .browser_automation import (
+    browser_checkbox,
+    browser_click,
+    browser_close,
+    browser_execute_javascript,
+    browser_get_attributes,
+    browser_get_text,
+    browser_init,
+    browser_navigate,
+    browser_screenshot,
+    browser_select,
+    browser_type,
+    browser_wait,
+    execute_web_workflow,
+    extract_structured_data_from_pages,
+    find_and_download_pdfs,
+    multi_engine_search_summary,
+)
 
 # Import base decorators/classes that might be used by other tool modules
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
@@ -13,6 +48,15 @@ from .document import (
     summarize_document,
 )
 from .entity_relation_graph import extract_entity_graph
+
+# Import new standalone functions from extraction.py
+from .extraction import (
+    extract_code_from_response,
+    extract_json,
+    extract_key_value_pairs,
+    extract_semantic_schema,
+    extract_table,
+)
 from .filesystem import (
     create_directory,
     directory_tree,
@@ -26,48 +70,27 @@ from .filesystem import (
     search_files,
     write_file,
 )
-
-# Import browser automation tools
-from .browser_automation import (
-    browser_init,
-    browser_navigate,
-    browser_click,
-    browser_type,
-    browser_screenshot,
-    browser_close,
-    browser_select,
-    browser_checkbox,
-    browser_get_text,
-    browser_get_attributes,
-    browser_execute_javascript,
-    browser_wait,
-    execute_web_workflow,
-    extract_structured_data_from_pages,
-    find_and_download_pdfs,
-    multi_engine_search_summary,
+from .html_to_markdown import (
+    batch_format_texts,
+    clean_and_format_text_as_markdown,
+    detect_content_type,
+    optimize_markdown_formatting,
 )
-
-# Import new standalone functions from extraction.py
-from .extraction import (
-    extract_code_from_response,
-    extract_json,
-    extract_key_value_pairs,
-    extract_semantic_schema,
-    extract_table,
-)
+from .marqo_fused_search import marqo_fused_search
 from .meta import (
     get_llm_instructions,
     get_tool_info,
     get_tool_recommendations,
 )
+from .meta_api_tool import register_api_meta_tools
 
 # Import OCR tools from ocr_tools.py
 from .ocr_tools import (
-    extract_text_from_pdf,
-    process_image_ocr,
-    enhance_ocr_text,
     analyze_pdf_structure,
     batch_process_documents,
+    enhance_ocr_text,
+    extract_text_from_pdf,
+    process_image_ocr,
 )
 
 # Import standalone functions from optimization.py
@@ -78,7 +101,6 @@ from .optimization import (
     recommend_model,
 )
 from .provider import get_provider_status, list_models
-
 from .rag import (
     add_documents,
     create_knowledge_base,
@@ -87,14 +109,28 @@ from .rag import (
     list_knowledge_bases,
     retrieve_context,
 )
-
-from .marqo_fused_search import marqo_fused_search
-
+from .sql_database_interactions import (
+    analyze_column_statistics,
+    connect_to_database,
+    create_database_index,
+    create_database_view,
+    disconnect_from_database,
+    discover_database_schema,
+    execute_parameterized_query,
+    execute_query,
+    execute_query_with_pagination,
+    execute_transaction,
+    find_related_tables,
+    generate_database_documentation,
+    get_database_status,
+    get_table_details,
+    test_connection,
+)
+from .text_classification import text_classification
 from .text_redline_tools import (
     compare_documents_redline,
     create_html_redline,
 )
-
 from .tournament import (
     cancel_tournament,
     create_tournament,
@@ -102,46 +138,6 @@ from .tournament import (
     get_tournament_status,
     list_tournaments,
 )
-
-from .text_classification import text_classification
-
-from .meta_api_tool import register_api_meta_tools
-
-from .sql_database_interactions import (
-    connect_to_database,
-    disconnect_from_database,
-    discover_database_schema,
-    execute_query,
-    generate_database_documentation,
-    get_table_details,
-    find_related_tables,
-    analyze_column_statistics,
-    execute_parameterized_query,
-    create_database_view,
-    create_database_index,
-    test_connection,
-    execute_transaction,
-    execute_query_with_pagination,
-    get_database_status,
-)
-
-from .audio_transcription import (
-    transcribe_audio,
-    extract_audio_transcript_key_points,
-    chat_with_transcript,
-)
-
-from llm_gateway.utils import get_logger
-
-from llm_gateway.tools.base import (
-    BaseTool,  # Keep BaseTool in case other modules use it
-    register_tool, 
-    with_error_handling,
-    with_retry,
-    with_tool_metrics,
-)
-
-
 
 __all__ = [
     # Base decorators/classes
@@ -208,6 +204,12 @@ __all__ = [
     "analyze_pdf_structure",
     "batch_process_documents",
     
+    # HTML to Markdown tools
+    "clean_and_format_text_as_markdown",
+    "detect_content_type",
+    "batch_format_texts",
+    "optimize_markdown_formatting",
+
     # Text Redline tools
     "compare_documents_redline",
     "create_html_redline",
@@ -264,7 +266,6 @@ __all__ = [
 
 logger = get_logger("llm_gateway.tools")
 
-# Removed TOOL_REGISTRY
 
 # --- Tool Registration --- 
 
@@ -326,6 +327,12 @@ STANDALONE_TOOL_FUNCTIONS = [
     analyze_pdf_structure,
     batch_process_documents,
 
+    # HTML to Markdown tools
+    clean_and_format_text_as_markdown,
+    detect_content_type,
+    batch_format_texts,
+    optimize_markdown_formatting,
+
     # Text Redline tools
     compare_documents_redline,
     create_html_redline,
@@ -373,11 +380,6 @@ STANDALONE_TOOL_FUNCTIONS = [
     find_and_download_pdfs,
     multi_engine_search_summary,
 ]
-
-# Registry of tool classes (for tools still using the class pattern) - Should be empty
-CLASS_BASED_TOOL_REGISTRY: Dict[str, Type[BaseTool]] = {
-    # Removed: "optimization": OptimizationTools,
-}
 
 
 def register_all_tools(mcp_server) -> Dict[str, Any]:
@@ -455,7 +457,10 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
         "register_excel_spreadsheet_tools" in included_tools or 
         (not included_tools and "register_excel_spreadsheet_tools" not in excluded_tools)):
         try:
-            from llm_gateway.tools.excel_spreadsheet_automation import register_excel_spreadsheet_tools, WINDOWS_EXCEL_AVAILABLE
+            from llm_gateway.tools.excel_spreadsheet_automation import (
+                WINDOWS_EXCEL_AVAILABLE,
+                register_excel_spreadsheet_tools,
+            )
             if WINDOWS_EXCEL_AVAILABLE:
                 register_excel_spreadsheet_tools(mcp_server)
                 logger.info("Registered Excel spreadsheet tools", emoji_key="⚙️")

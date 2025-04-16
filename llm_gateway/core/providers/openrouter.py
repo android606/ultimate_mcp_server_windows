@@ -145,6 +145,7 @@ class OpenRouterProvider(BaseProvider):
             model = model.split(":", 1)[1]
             logger.debug(f"Stripped provider prefix from model name: {model}")
         # Note: Keep prefixes like 'openai/' or 'google/' as OpenRouter uses them.
+        # DO NOT strip other provider prefixes as they're needed for OpenRouter routing
 
         # Create messages
         messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
@@ -248,6 +249,7 @@ class OpenRouterProvider(BaseProvider):
         model = model or self.default_model
         if model.startswith(f"{self.provider_name}:"):
             model = model.split(":", 1)[1]
+        # DO NOT strip other provider prefixes as they're needed for OpenRouter routing
 
         messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
 

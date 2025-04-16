@@ -59,20 +59,17 @@ def extract_provider_model(model_identifier: str) -> tuple[str | None, str]:
     known_providers = [p.value for p in Provider] # Get list of known providers
     if '/' in model_identifier:
         parts = model_identifier.split('/', 1)
-        # Check if the first part is a known provider
-        if len(parts) == 2 and parts[0] in known_providers and parts[1]:
+        # Patch: If the model is an OpenRouter model like 'mistralai/mistral-nemo', treat as openrouter
+        if model_identifier.startswith('mistralai/') or model_identifier == 'mistralai/mistral-nemo':
+            provider = Provider.OPENROUTER.value
+            model_name_only = model_identifier
+        elif len(parts) == 2 and parts[0] in known_providers and parts[1]:
             provider = parts[0]
             model_name_only = parts[1]
             # Handle potential nested OpenRouter names like openrouter/mistralai/mistral-7b
-            # In this case, model_name_only should remain "mistralai/mistral-7b"
             # The current split('/', 1) already achieves this.
         else:
             # It has a slash, but doesn't match known provider format
-            # Could be an OpenRouter model passed without the openrouter/ prefix? e.g. "mistralai/mistral-nemo"
-            # Let's try inferring OpenRouter if the first part isn't a known provider
-            # but the structure looks like provider/model.
-            # OR maybe it's just an invalid format.
-            # For simplicity, let's only recognize known prefixes directly.
             logger.warning(f"Invalid or unknown provider prefix in '{model_identifier}'. Cannot extract provider reliably.")
             return None, model_identifier # Return original identifier if prefix is invalid
 

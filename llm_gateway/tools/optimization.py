@@ -377,73 +377,6 @@ async def recommend_model(
         logger.info(f"Measured speed file not found at {filepath}. Speed data will be 0.")
     # --- End Load Measured Speed Data ---
 
-    # --- Pre-calculate model metadata lookups ---
-    # Combine all known prefixed model names from metadata sources
-    all_prefixed_metadata_keys = set(model_capabilities.keys()) | set(model_speed_fallback.keys()) | set(model_quality.keys())
-
-    # Create a map from short names (e.g., "gpt-4.1-mini") to prefixed names (e.g., "openai/gpt-4.1-mini")
-    # Handle potential ambiguities (same short name from different providers)
-    short_to_prefixed_map: Dict[str, Optional[str]] = {}
-    ambiguous_short_names = set()
-
-    for key in all_prefixed_metadata_keys:
-        if '/' in key:
-            short_name = key.split('/')[-1]
-            if short_name in short_to_prefixed_map:
-                # Ambiguity detected
-                if short_name not in ambiguous_short_names:
-                     logger.warning(f"Ambiguous short model name '{short_name}' found. Maps to '{short_to_prefixed_map[short_name]}' and '{key}'. Will require full name for this model.")
-                     short_to_prefixed_map[short_name] = None # Mark as ambiguous
-                     ambiguous_short_names.add(short_name)
-            elif short_name not in ambiguous_short_names:
-                 short_to_prefixed_map[short_name] = key # Store unique mapping
-
-    # Helper function to find the prefixed name for a cost key (using pre-calculated map)
-    _prefixed_name_cache = {}
-    def _get_prefixed_name_for_cost_key(cost_key: str) -> Optional[str]:
-        if cost_key in _prefixed_name_cache:
-            return _prefixed_name_cache[cost_key]
-
-        # If the key is already prefixed, use it directly
-        if '/' in cost_key:
-             if cost_key in all_prefixed_metadata_keys:
-                 _prefixed_name_cache[cost_key] = cost_key
-                 return cost_key
-             else:
-                  # Even if prefixed, if it's not in our known metadata, treat as unknown for consistency
-                  logger.warning(f"Prefixed cost key '{cost_key}' not found in any known metadata (capabilities, quality, speed).")
-                  _prefixed_name_cache[cost_key] = None
-                  return None
-
-        # Look up the short name in the pre-calculated map
-        prefixed_name = short_to_prefixed_map.get(cost_key)
-
-        if prefixed_name is not None: # Found unique mapping
-            _prefixed_name_cache[cost_key] = prefixed_name
-            return prefixed_name
-        elif cost_key in ambiguous_short_names: # Known ambiguous name
-            logger.warning(f"Cannot resolve ambiguous short name '{cost_key}'. Please use the full 'provider/model_name' identifier.")
-            _prefixed_name_cache[cost_key] = None
-            return None
-        else: # Short name not found in any metadata
-             logger.warning(f"Short name cost key '{cost_key}' not found in any known model metadata. Cannot determine provider/full name.")
-             _prefixed_name_cache[cost_key] = None
-             return None
-    # --- End Pre-calculation ---
-
-    # Use a simple placeholder text based on length for cost estimation
-    sample_text = "a" * expected_input_length
-    required_capabilities = required_capabilities or []
-
-    # Rough estimate for output length if not provided
-    if expected_output_length is None:
-        # Adjust this heuristic as needed (e.g., summarization shortens, generation might lengthen)
-        estimated_output_length_chars = expected_input_length // 4
-    else:
-         estimated_output_length_chars = expected_output_length
-    # Estimate max_tokens based on character length (very rough)
-    estimated_max_tokens = estimated_output_length_chars // 3
-
     # --- Model Metadata (Updated based on provided images) ---
     model_capabilities = {
         # OpenAI models
@@ -520,6 +453,73 @@ async def recommend_model(
         "openrouter/mistralai/mistral-nemo": 7 # Estimate based on Mistral family
     }
     # --- End Model Metadata --- 
+
+    # --- Pre-calculate model metadata lookups ---
+    # Combine all known prefixed model names from metadata sources
+    all_prefixed_metadata_keys = set(model_capabilities.keys()) | set(model_speed_fallback.keys()) | set(model_quality.keys())
+
+    # Create a map from short names (e.g., "gpt-4.1-mini") to prefixed names (e.g., "openai/gpt-4.1-mini")
+    # Handle potential ambiguities (same short name from different providers)
+    short_to_prefixed_map: Dict[str, Optional[str]] = {}
+    ambiguous_short_names = set()
+
+    for key in all_prefixed_metadata_keys:
+        if '/' in key:
+            short_name = key.split('/')[-1]
+            if short_name in short_to_prefixed_map:
+                # Ambiguity detected
+                if short_name not in ambiguous_short_names:
+                     logger.warning(f"Ambiguous short model name '{short_name}' found. Maps to '{short_to_prefixed_map[short_name]}' and '{key}'. Will require full name for this model.")
+                     short_to_prefixed_map[short_name] = None # Mark as ambiguous
+                     ambiguous_short_names.add(short_name)
+            elif short_name not in ambiguous_short_names:
+                 short_to_prefixed_map[short_name] = key # Store unique mapping
+
+    # Helper function to find the prefixed name for a cost key (using pre-calculated map)
+    _prefixed_name_cache = {}
+    def _get_prefixed_name_for_cost_key(cost_key: str) -> Optional[str]:
+        if cost_key in _prefixed_name_cache:
+            return _prefixed_name_cache[cost_key]
+
+        # If the key is already prefixed, use it directly
+        if '/' in cost_key:
+             if cost_key in all_prefixed_metadata_keys:
+                 _prefixed_name_cache[cost_key] = cost_key
+                 return cost_key
+             else:
+                  # Even if prefixed, if it's not in our known metadata, treat as unknown for consistency
+                  logger.warning(f"Prefixed cost key '{cost_key}' not found in any known metadata (capabilities, quality, speed).")
+                  _prefixed_name_cache[cost_key] = None
+                  return None
+
+        # Look up the short name in the pre-calculated map
+        prefixed_name = short_to_prefixed_map.get(cost_key)
+
+        if prefixed_name is not None: # Found unique mapping
+            _prefixed_name_cache[cost_key] = prefixed_name
+            return prefixed_name
+        elif cost_key in ambiguous_short_names: # Known ambiguous name
+            logger.warning(f"Cannot resolve ambiguous short name '{cost_key}'. Please use the full 'provider/model_name' identifier.")
+            _prefixed_name_cache[cost_key] = None
+            return None
+        else: # Short name not found in any metadata
+             logger.warning(f"Short name cost key '{cost_key}' not found in any known model metadata. Cannot determine provider/full name.")
+             _prefixed_name_cache[cost_key] = None
+             return None
+    # --- End Pre-calculation ---
+
+    # Use a simple placeholder text based on length for cost estimation
+    sample_text = "a" * expected_input_length
+    required_capabilities = required_capabilities or []
+
+    # Rough estimate for output length if not provided
+    if expected_output_length is None:
+        # Adjust this heuristic as needed (e.g., summarization shortens, generation might lengthen)
+        estimated_output_length_chars = expected_input_length // 4
+    else:
+         estimated_output_length_chars = expected_output_length
+    # Estimate max_tokens based on character length (very rough)
+    estimated_max_tokens = estimated_output_length_chars // 3
 
     candidate_models_data = []
     excluded_models_reasons = {}

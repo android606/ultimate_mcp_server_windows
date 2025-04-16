@@ -395,7 +395,6 @@ def load_config(
         config_logger.error(f"Failed to create necessary directories: {e}")
 
     _config = loaded_config
-    config_logger.info("Configuration loaded and environment variables applied via decouple.")
     config_logger.debug(f"Effective allowed directories: {loaded_config.filesystem.allowed_directories}")
     config_logger.debug(f"Effective Agent Memory DB path: {loaded_config.agent_memory.db_path}")
     config_logger.debug(f"Effective Prompt Templates directory: {loaded_config.prompt_templates_directory}")
@@ -418,10 +417,6 @@ def get_config() -> GatewayConfig:
     force_reload = decouple_config.get("GATEWAY_FORCE_CONFIG_RELOAD", default='false').lower() == 'true'
 
     if _config is None or force_reload:
-        if force_reload:
-             config_logger.info("Forcing configuration reload due to GATEWAY_FORCE_CONFIG_RELOAD=true.")
-        else:
-             config_logger.info("Configuration not yet loaded. Loading now...")
         try:
             _config = load_config() # load_config now handles internal state update
         except Exception as e:

@@ -280,6 +280,31 @@ def display_task_analysis(title: str, result: Any):
     # Display execution stats
     _display_stats(result, console)
 
+# Move _get_provider_for_model above run_delegate_task_demo
+def _get_provider_for_model(model_name: str) -> str:
+    """Helper to determine provider from model name."""
+    # Accept both 'provider/model' and legacy short names
+    model_lower = model_name.lower()
+    if '/' in model_lower:
+        # e.g., 'gemini/gemini-2.0-flash' or 'anthropic/claude-3-7-sonnet-20250219'
+        return model_lower.split('/')[0]
+    elif ':' in model_lower:
+        return model_lower.split(':')[0]
+    elif model_lower.startswith("gpt-"):
+        return Provider.OPENAI.value
+    elif model_lower.startswith("claude-"):
+        return Provider.ANTHROPIC.value
+    elif model_lower.startswith("gemini-"):
+        return Provider.GEMINI.value
+    elif model_lower.startswith("deepseek-"):
+        return "deepseek"
+    elif model_lower.startswith("grok-"):
+        return "grok"
+    elif model_lower.startswith("o1-") or model_lower.startswith("o3-"):
+        return Provider.OPENAI.value
+    else:
+        raise ValueError(f"Unknown model prefix for model: {model_name}")
+
 # --- Demo Functions ---
 
 async def run_analyze_task_demo():
@@ -298,7 +323,7 @@ async def run_analyze_task_demo():
         output_len_chars = 200 # Estimate output size
 
         result = await mcp.call_tool("recommend_model", {
-            "task_description": task_description,
+            "task_type": "summarization",  # Added to match required argument
             "expected_input_length": input_len_chars,
             "expected_output_length": output_len_chars,
             # Can add other recommend_model params like required_capabilities, max_cost
@@ -561,17 +586,4 @@ async def main():
 
 if __name__ == "__main__":
     exit_code = asyncio.run(main())
-    sys.exit(exit_code)
-
-def _get_provider_for_model(model_name: str) -> str:
-    """Helper to determine provider from model name."""
-    # Handle potential prefixes like 'openai:' or just model names like 'gpt-4o'
-    model_lower = model_name.lower()
-    if ':' in model_lower:
-        return model_lower.split(':')[0]
-    elif model_lower.startswith("gpt-"):
-        return Provider.OPENAI.value
-    elif model_lower.startswith("claude-"):
-        return Provider.ANTHROPIC.value
-    else:
-        raise ValueError(f"Unknown model prefix for model: {model_name}") 
+    sys.exit(exit_code) 

@@ -71,8 +71,8 @@ async def _ensure_browser(
         browser_type = getattr(playwright, browser_name.lower())
         if not browser_type:
             raise ToolError(
-                status_code=400,
-                detail=f"Unsupported browser type: {browser_name}. Use 'chromium', 'firefox', or 'webkit'."
+                f"Unsupported browser type: {browser_name}. Use 'chromium', 'firefox', or 'webkit'.",
+                http_status_code=400
             )
         
         launch_options = {
@@ -97,9 +97,9 @@ async def _ensure_browser(
             except Exception as e:
                 if "executable doesn't exist" in str(e).lower():
                     raise ToolError(
-                        status_code=500,
-                        detail=f"Browser {browser_name} is not installed. Use browser_install tool to install it."
-                    ) from e
+                         f"Browser {browser_name} is not installed. Use browser_install tool to install it.",
+                         http_status_code=500
+                     ) from e
                 raise
                 
         logger.info(
@@ -248,8 +248,8 @@ async def _find_element_by_ref(page: Page, ref: str) -> ElementHandle:
         # In real implementation, the snapshot would add data-ref attributes
         # Since we can't do that in this demo, we'll raise an error
         raise ToolError(
-            status_code=404,
-            detail=f"Element with ref {ref} not found. This function relies on proper snapshot implementation."
+            message=f"Element with ref {ref} not found. This function relies on proper snapshot implementation.",
+            http_status_code=404
         )
     
     return element
@@ -337,7 +337,7 @@ async def browser_close() -> Dict[str, Any]:
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -397,8 +397,8 @@ async def browser_install(
         if process.returncode != 0:
             error_output = stderr.decode()
             raise ToolError(
-                status_code=500,
-                detail=f"Browser installation failed: {error_output}"
+                message=f"Browser installation failed: {error_output}",
+                http_status_code=500
             )
         
         processing_time = time.time() - start_time
@@ -420,7 +420,7 @@ async def browser_install(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 async def _get_simplified_page_state_for_llm(max_elements: int = 75) -> Dict[str, Any]:
     """
@@ -1523,7 +1523,7 @@ async def browser_get_console_logs() -> Dict[str, Any]:
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 
 # --- Browser Control Tools ---
@@ -1582,7 +1582,7 @@ async def browser_init(
         context.set_default_timeout(default_timeout)
         
         # Get browser version
-        version = await browser.version()
+        version = browser.version
         
         processing_time = time.time() - start_time
         
@@ -1600,8 +1600,8 @@ async def browser_init(
             raise
             
         raise ToolError(
-            status_code=500,
-            detail=f"Failed to initialize browser: {str(e)}"
+            message=f"Failed to initialize browser: {str(e)}",
+            http_status_code=500
         ) from e
 
 @with_tool_metrics
@@ -1712,15 +1712,15 @@ async def browser_navigate(
         )
         
         if "net::ERR_NAME_NOT_RESOLVED" in str(e):
-            raise ToolError(status_code=404, detail=f"Could not resolve host: {url}") from e
+            raise ToolError(f"Could not resolve host: {url}", http_status_code=404) from e
         elif "net::ERR_CONNECTION_REFUSED" in str(e):
-            raise ToolError(status_code=502, detail=f"Connection refused: {url}") from e
+            raise ToolError(f"Connection refused: {url}", http_status_code=502) from e
         elif "Timeout" in str(e):
-            raise ToolError(status_code=408, detail=f"Navigation timed out after {timeout}ms: {url}") from e
+            raise ToolError(f"Navigation timed out after {timeout}ms: {url}", http_status_code=408) from e
         elif "ERR_ABORTED" in str(e):
-            raise ToolError(status_code=499, detail=f"Navigation was aborted: {url}") from e
+            raise ToolError(f"Navigation was aborted: {url}", http_status_code=499) from e
         else:
-            raise ToolError(status_code=500, detail=error_msg) from e
+            raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -1763,8 +1763,8 @@ async def browser_back(
         response: Optional[Response] = await page.go_back()
         if not response:
             raise ToolError(
-                status_code=400,
-                detail="Could not navigate back - no previous page in history"
+                message="Could not navigate back - no previous page in history",
+                http_status_code=400
             )
         
         # Get navigation results
@@ -1773,8 +1773,8 @@ async def browser_back(
         # If URLs are the same, navigation didn't actually happen
         if final_url == current_url:
             raise ToolError(
-                status_code=400,
-                detail="Could not navigate back - no previous page in history"
+                message="Could not navigate back - no previous page in history",
+                http_status_code=400
             )
             
         title = await page.title()
@@ -1815,7 +1815,7 @@ async def browser_back(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -1858,18 +1858,19 @@ async def browser_forward(
         response: Optional[Response] = await page.go_forward()
         if not response:
             raise ToolError(
-                status_code=400,
-                detail="Could not navigate forward - no next page in history"
+                message="Could not navigate forward - no next page in history",
+                http_status_code=400
             )
         
         # Get navigation results
         final_url = page.url
         
+        
         # If URLs are the same, navigation didn't actually happen
         if final_url == current_url:
             raise ToolError(
-                status_code=400,
-                detail="Could not navigate forward - no next page in history"
+                message="Could not navigate forward - no next page in history",
+                http_status_code=400
             )
             
         title = await page.title()
@@ -1910,7 +1911,7 @@ async def browser_forward(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -1985,7 +1986,7 @@ async def browser_reload(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -2066,7 +2067,7 @@ async def browser_screenshot(
                 f"Taking {'full page' if full_page else 'viewport'} screenshot",
                 emoji_key="camera"
             )
-            screenshot_bytes = await page.screenshot(screenshot_options)
+            screenshot_bytes = await page.screenshot(**screenshot_options)
         
         # Convert to base64
         screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
@@ -2125,7 +2126,7 @@ async def browser_screenshot(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -2154,7 +2155,7 @@ async def browser_click(
                   clicks at the element's center.
         position_y: (Optional) Y-coordinate relative to the element to click at. If omitted,
                   clicks at the element's center.
-        modifiers: (Optional) Keyboard modifiers to press during click. Options: "Alt", "Control", 
+        modifiers: (Optional) Keyboard modifiers to press during click. Options: "Alt", "Control",
                  "Meta", "Shift". Example: ["Control", "Shift"].
         force: (Optional) Whether to bypass actionability checks (visibility, enabled state, etc.)
               Default: False.
@@ -2173,7 +2174,7 @@ async def browser_click(
         ToolInputError: If the selector doesn't match any elements.
     """
     start_time = time.time()
-    
+
     # Validate selector
     if not selector or not isinstance(selector, str):
         raise ToolInputError(
@@ -2181,7 +2182,7 @@ async def browser_click(
             param_name="selector",
             provided_value=selector
         )
-    
+
     # Validate button
     valid_buttons = ["left", "right", "middle"]
     if button not in valid_buttons:
@@ -2190,7 +2191,7 @@ async def browser_click(
             param_name="button",
             provided_value=button
         )
-    
+
     # Validate click_count
     if click_count < 1:
         raise ToolInputError(
@@ -2198,7 +2199,7 @@ async def browser_click(
             param_name="click_count",
             provided_value=click_count
         )
-    
+
     # Validate modifiers
     valid_modifiers = ["Alt", "Control", "Meta", "Shift"]
     if modifiers:
@@ -2209,11 +2210,11 @@ async def browser_click(
                     param_name="modifiers",
                     provided_value=modifiers
                 )
-    
+
     try:
         # Get current page
         _, page = await _ensure_page()
-        
+
         # Check if element exists
         element = await page.query_selector(selector)
         if not element:
@@ -2222,12 +2223,12 @@ async def browser_click(
                 param_name="selector",
                 provided_value=selector
             )
-        
+
         # Get element description for better logging
         element_description = await page.evaluate("""(selector) => {
             const element = document.querySelector(selector);
             if (!element) return 'Unknown element';
-            
+
             // Try various properties to get a useful description
             const text = element.innerText?.trim();
             const alt = element.getAttribute('alt')?.trim();
@@ -2237,35 +2238,35 @@ async def browser_click(
             const placeholder = element instanceof HTMLInputElement ? element.placeholder : null;
             const tagName = element.tagName.toLowerCase();
             const type = element instanceof HTMLInputElement ? element.type : null;
-            
+
             // Construct description
             let description = tagName;
             if (type) description += `[type="${type}"]`;
-            
+
             if (text && text.length <= 50) description += ` with text '${text}'`;
             else if (ariaLabel) description += ` with aria-label '${ariaLabel}'`;
             else if (title) description += ` with title '${title}'`;
             else if (alt) description += ` with alt '${alt}'`;
             else if (value) description += ` with value '${value}'`;
             else if (placeholder) description += ` with placeholder '${placeholder}'`;
-            
+
             return description;
         }""", selector)
-        
+
         # Prepare click options
         click_options = {
             "button": button,
-            "clickCount": click_count,
+            "click_count": click_count,
             "delay": delay,
             "force": force
         }
-        
+
         if modifiers:
             click_options["modifiers"] = modifiers
-            
+
         if position_x is not None and position_y is not None:
             click_options["position"] = {"x": position_x, "y": position_y}
-        
+
         # Click element
         logger.info(
             f"Clicking on {element_description} ({selector})",
@@ -2273,56 +2274,56 @@ async def browser_click(
             button=button,
             click_count=click_count
         )
-        
+
         await page.click(selector, **click_options)
-        
+
         # Capture snapshot if requested
         snapshot_data = None
         if capture_snapshot:
             # Wait a bit for any animations or page changes to complete
             await asyncio.sleep(0.5)
-            
+
             snapshot_data = await _capture_snapshot(page)
             page_id = _current_page_id or "unknown"
             _snapshot_cache[page_id] = snapshot_data
-        
+
         processing_time = time.time() - start_time
-        
+
         result = {
             "success": True,
             "element_description": element_description,
             "processing_time": processing_time
         }
-        
+
         if snapshot_data:
             result["snapshot"] = snapshot_data
-            
+
         logger.success(
             f"Successfully clicked {element_description}",
             emoji_key=TaskType.BROWSER.value,
             time=processing_time
         )
-        
+
         return result
-        
+
     except Exception as e:
         if isinstance(e, (ToolError, ToolInputError)):
             raise
-            
+
         error_msg = f"Click operation failed: {str(e)}"
         logger.error(
             error_msg,
             emoji_key="error",
             selector=selector
         )
-        
+
         if "TimeoutError" in str(e):
             raise ToolError(
-                status_code=408,
-                detail=f"Timeout while clicking on element: {selector}" 
+                message=f"Timeout while clicking on element: {selector}", # FIX: Use message
+                http_status_code=408
             ) from e
-        
-        raise ToolError(status_code=500, detail=error_msg) from e
+
+        raise ToolError(message=error_msg, http_status_code=500) from e
  
 @with_tool_metrics
 @with_error_handling
@@ -2362,7 +2363,7 @@ async def browser_type(
         ToolInputError: If the selector doesn't match any elements or matches a non-typeable element.
     """
     start_time = time.time()
-    
+
     # Validate selector
     if not selector or not isinstance(selector, str):
         raise ToolInputError(
@@ -2370,19 +2371,12 @@ async def browser_type(
             param_name="selector",
             provided_value=selector
         )
-    
+
     # Validate text
-    if not isinstance(text, str):
-        raise ToolInputError(
-            "Text must be a string",
-            param_name="text",
-            provided_value=text
-        )
-    
     try:
         # Get current page
         _, page = await _ensure_page()
-        
+
         # Check if element exists and is typeable
         element = await page.query_selector(selector)
         if not element:
@@ -2391,14 +2385,14 @@ async def browser_type(
                 param_name="selector",
                 provided_value=selector
             )
-        
+
         # Get element description for better logging
         element_description = await page.evaluate("""(selector) => {
             const element = document.querySelector(selector);
             if (!element) return 'Unknown element';
-            
+
             // Try various properties to get a useful description
-            const label = element.labels && element.labels.length > 0 ? 
+            const label = element.labels && element.labels.length > 0 ?
                           element.labels[0].textContent?.trim() : null;
             const ariaLabel = element.getAttribute('aria-label')?.trim();
             const name = element.getAttribute('name')?.trim();
@@ -2406,40 +2400,40 @@ async def browser_type(
             const id = element.id ? element.id : null;
             const tagName = element.tagName.toLowerCase();
             const type = element instanceof HTMLInputElement ? element.type : null;
-            
+
             // Construct description
             let description = tagName;
             if (type) description += `[type="${type}"]`;
-            
+
             if (label) description += ` with label '${label}'`;
             else if (ariaLabel) description += ` with aria-label '${ariaLabel}'`;
             else if (placeholder) description += ` with placeholder '${placeholder}'`;
             else if (name) description += ` with name '${name}'`;
             else if (id) description += ` with id '${id}'`;
-            
+
             return description;
         }""", selector)
-        
+
         # Check if element is typeable
         is_typeable = await page.evaluate("""(selector) => {
             const element = document.querySelector(selector);
             if (!element) return false;
-            
+
             const tagName = element.tagName.toLowerCase();
             const isInput = tagName === 'input' && !['checkbox', 'radio', 'file', 'button', 'submit', 'reset', 'image'].includes(element.type);
             const isTextarea = tagName === 'textarea';
             const isContentEditable = element.hasAttribute('contenteditable') && element.getAttribute('contenteditable') !== 'false';
-            
+
             return isInput || isTextarea || isContentEditable;
         }""", selector)
-        
+
         if not is_typeable:
             raise ToolInputError(
                 f"Element is not typeable: {element_description}",
                 param_name="selector",
                 provided_value=selector
             )
-        
+
         # Clear field if requested
         if clear_first:
             await page.evaluate("""(selector) => {
@@ -2452,68 +2446,68 @@ async def browser_type(
                     }
                 }
             }""", selector)
-        
+
         # Type text
         logger.info(
             f"Typing text into {element_description}: {text if len(text) < 30 else text[:27] + '...'}",
             emoji_key="keyboard",
             text_length=len(text)
         )
-        
+
         await page.type(selector, text, delay=delay)
-        
+
         # Press Enter if requested
         if press_enter:
             await page.press(selector, "Enter")
-        
+
         # Capture snapshot if requested
         snapshot_data = None
         if capture_snapshot:
             # Wait a bit for any animations or page changes to complete
             await asyncio.sleep(0.5)
-            
+
             snapshot_data = await _capture_snapshot(page)
             page_id = _current_page_id or "unknown"
             _snapshot_cache[page_id] = snapshot_data
-        
+
         processing_time = time.time() - start_time
-        
+
         result = {
             "success": True,
             "element_description": element_description,
             "text": text,
             "processing_time": processing_time
         }
-        
+
         if snapshot_data:
             result["snapshot"] = snapshot_data
-            
+
         logger.success(
             f"Successfully typed text into {element_description}",
             emoji_key=TaskType.BROWSER.value,
             time=processing_time
         )
-        
+
         return result
-        
+
     except Exception as e:
         if isinstance(e, (ToolError, ToolInputError)):
             raise
-            
+
         error_msg = f"Type operation failed: {str(e)}"
         logger.error(
             error_msg,
             emoji_key="error",
             selector=selector
         )
-        
+
         if "TimeoutError" in str(e):
             raise ToolError(
-                status_code=408,
-                detail=f"Timeout while typing into element: {selector}"
+                message=f"Timeout while typing into element: {selector}",
+                http_status_code=408
             ) from e
-        
-        raise ToolError(status_code=500, detail=error_msg) from e
+
+        raise ToolError(message=error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -2710,7 +2704,7 @@ async def browser_select(
             selector=selector
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -2888,7 +2882,7 @@ async def browser_checkbox(
             selector=selector
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -2944,7 +2938,8 @@ async def browser_get_text(
             )
         
         # Get text content
-        text_content = await page.evaluate("""(selector, trim, includeHidden) => {
+        text_content = await page.evaluate("""args => {
+            const { selector, trim, includeHidden } = args; // <-- FIX: Destructure single argument
             const element = document.querySelector(selector);
             if (!element) return '';
             
@@ -2958,7 +2953,7 @@ async def browser_get_text(
             }
             
             return trim ? text.trim() : text;
-        }""", selector, trim, include_hidden)
+        }""", {"selector": selector, "trim": trim, "includeHidden": include_hidden}) # <-- FIX: Pass args as dict
         
         # Get element description and inner HTML
         element_info = await page.evaluate("""(selector) => {
@@ -3022,7 +3017,7 @@ async def browser_get_text(
             selector=selector
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -3163,7 +3158,7 @@ async def browser_get_attributes(
             selector=selector
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -3369,11 +3364,11 @@ async def browser_download_file(
         
         if "TimeoutError" in str(e):
             raise ToolError(
-                status_code=408,
-                detail=f"Download timed out after {timeout}ms"
+                message=f"Download timed out after {timeout}ms",
+                http_status_code=408
             ) from e
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -3551,7 +3546,7 @@ async def browser_upload_file(
             selector=selector
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -3745,7 +3740,7 @@ async def browser_pdf(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -3845,7 +3840,7 @@ async def browser_tab_new(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -3884,8 +3879,8 @@ async def browser_tab_close(
     # Validate inputs
     if not _pages:
         raise ToolError(
-            status_code=400,
-            detail="No browser tabs are open"
+            message="No browser tabs are open",
+            http_status_code=400
         )
     
     if tab_index is not None:
@@ -3981,7 +3976,7 @@ async def browser_tab_close(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -4079,7 +4074,7 @@ async def browser_tab_list() -> Dict[str, Any]:
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -4118,8 +4113,8 @@ async def browser_tab_select(
     # Validate inputs
     if not _pages:
         raise ToolError(
-            status_code=400,
-            detail="No browser tabs are open"
+            message="No browser tabs are open",
+            http_status_code=400
         )
     
     if not isinstance(tab_index, int) or tab_index < 1 or tab_index > len(_pages):
@@ -4220,7 +4215,7 @@ async def browser_tab_select(
             emoji_key="error"
         )
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -4343,11 +4338,11 @@ async def browser_execute_javascript(
         
         if "TimeoutError" in str(e):
             raise ToolError(
-                status_code=408,
-                detail=f"Script execution timed out after {timeout}ms"
+                message=f"Script execution timed out after {timeout}ms",
+                http_status_code=408
             ) from e
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -4514,11 +4509,11 @@ async def browser_wait(
         
         if "TimeoutError" in str(e):
             raise ToolError(
-                status_code=408,
-                detail=f"Wait operation timed out after {timeout}ms: {wait_type}={value}"
+                message=f"Wait operation timed out after {timeout}ms: {wait_type}={value}",
+                http_status_code=408
             ) from e
         
-        raise ToolError(status_code=500, detail=error_msg) from e
+        raise ToolError(error_msg, http_status_code=500) from e
     
 
 # --- High-Level Abstract Tools ---
@@ -4723,7 +4718,7 @@ Available Actions JSON format (Respond ONLY with one of these):
                     if not store_as: raise ValueError("Missing 'store_as' for read_value")
 
                     locator = await _find_element_locator_for_workflow(current_page, element_id, elements)
-                    if not locator: raise ToolError(f"Could not reliably locate element {element_id} for reading.")
+                    if not locator: raise ToolError(f"Could not reliably locate element {element_id} for reading.", http_status_code=400)
                     logger.info(f"Executing read_value from element {element_id}, storing as '{store_as}'")
                     value_read = await locator.input_value(timeout=5000) if await locator.evaluate("el => ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)", timeout=5000) else await locator.text_content(timeout=5000)
                     value_read = value_read.strip() if value_read else ""
@@ -4912,7 +4907,7 @@ async def extract_structured_data_from_pages(
         global _browser_instance
         if not _browser_instance or not _browser_instance.is_connected():
              init_res = await browser_init(**browser_init_options)
-             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}", http_status_code=500)
              browser_was_initialized_by_tool = True
 
         # --- 1. Determine Target URLs ---
@@ -4982,7 +4977,7 @@ async def extract_structured_data_from_pages(
         raise # Re-raise critical setup/validation errors
     except Exception as e:
         logger.critical(f"Unexpected critical error during structured data extraction: {type(e).__name__}: {e}", exc_info=True)
-        raise ToolError(f"Unexpected critical error: {e}") from e
+        raise ToolError(f"Unexpected critical error: {e}", http_status_code=500) from e
     finally:
         # Close browser ONLY if this tool initialized it
         if browser_was_initialized_by_tool:
@@ -5097,7 +5092,7 @@ async def find_and_download_pdfs(
             # Use await directly on the tool function
             dir_result = await create_directory(path=str(topic_output_dir))
             if not dir_result.get("success"):
-                raise ToolError(f"Failed to create output dir '{topic_output_dir}': {dir_result.get('error')}")
+                raise ToolError(f"Failed to create output dir '{topic_output_dir}': {dir_result.get('error')}", http_status_code=500)
             logger.info(f"Output directory ensured: {topic_output_dir}")
         except Exception as fs_err:
             # Catch errors from the filesystem tool call itself
@@ -5694,8 +5689,6 @@ async def monitor_web_data_points(
                     return {url: {"page_error": page_error_msg}}
 
                 # --- Extract and Evaluate Data Points (iteratively on the same page) ---
-                if not page_obj_for_target: raise ToolError("Internal error: Page object unavailable after navigation.")
-
                 for dp_def in data_points:
                     dp_name = dp_def.get("name")
                     if not dp_name or not isinstance(dp_name, str):
@@ -5894,13 +5887,13 @@ async def research_and_synthesize_report(
         global _browser_instance
         if not _browser_instance or not _browser_instance.is_connected():
              init_res = await browser_init(**final_browser_opts)
-             if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
+             if not init_res.get("success"):
+                 raise ToolError(f"Browser init failed: {init_res.get('error')}")
              browser_was_initialized_by_tool = True
 
         # --- 1. Search Phase ---
         seen_urls = set()
         logger.info(f"Starting search phase using {len(search_queries)} queries on {search_engine}...")
-        # ... (rest of search phase logic remains the same) ...
         for query_template in search_queries:
             try: query = query_template.format(topic=topic)
             except KeyError: raise ToolInputError(f"Search query template '{query_template}' missing '{{topic}}' placeholder.")
@@ -5924,7 +5917,6 @@ async def research_and_synthesize_report(
 
 
         # --- 2. Site Selection Phase ---
-        # *** FIX: Use the correct model extracted from instructions ***
         logger.info(f"Starting site selection phase (LLM: {site_selection_llm_model})...")
         try:
             selected_urls_to_visit = await _select_relevant_urls_llm(
@@ -5938,14 +5930,12 @@ async def research_and_synthesize_report(
              raise ToolError(f"Site selection failed: {select_err}") from select_err
 
         # --- 3. Information Extraction Phase ---
-        # *** FIX: Use the correct model extracted from instructions ***
         logger.info(f"Starting information extraction from {len(selected_urls_to_visit)} URLs (LLM: {extraction_llm_model}, Max Concurrency: {final_max_concurrent})...")
         semaphore = asyncio.Semaphore(final_max_concurrent)
         tasks = []
 
         async def extraction_task_wrapper(url):
             async with semaphore:
-                # *** FIX: Pass correct model ***
                 return await _extract_info_from_url_llm(url, extraction_prompt_or_schema, topic, extraction_llm_model)
 
         tasks = [extraction_task_wrapper(url) for url in selected_urls_to_visit]
@@ -5975,9 +5965,7 @@ async def research_and_synthesize_report(
              raise ToolError("Information extraction phase failed for all selected URLs.", error_code="EXTRACTION_FAILED_ALL")
         logger.info(f"Successfully extracted information snippets from {len(extracted_snippets)} URLs.")
 
-
         # --- 4. Synthesis Phase ---
-        # *** FIX: Use the correct model extracted from instructions ***
         logger.info(f"Synthesizing final report (Format: {report_format_desc}, LLM: {synthesis_llm_model})...")
         try:
             final_report = await _synthesize_report_llm(
@@ -5991,15 +5979,12 @@ async def research_and_synthesize_report(
 
 
     except (ToolInputError, ToolError) as e:
-         # ... (Error handling remains the same) ...
          logger.error(f"Error during research & synthesis for '{topic}': {type(e).__name__}: {e}", exc_info=True)
          return { "success": False, "topic": topic, "error": str(e), "report": None, "processed_urls": selected_urls_to_visit, "successful_extractions": len(extracted_snippets), "errors": errors_dict, "message": f"Research process failed: {e}" }
     except Exception as e:
-         # ... (Error handling remains the same) ...
          logger.critical(f"Unexpected critical error during research & synthesis for '{topic}': {type(e).__name__}: {e}", exc_info=True)
          return { "success": False, "topic": topic, "error": f"Unexpected critical error: {str(e)}", "report": None, "processed_urls": selected_urls_to_visit, "successful_extractions": len(extracted_snippets), "errors": errors_dict, "message": f"Research process failed critically: {type(e).__name__}" }
     finally:
-        # ... (Browser closing logic remains the same) ...
         if browser_was_initialized_by_tool:
             logger.info("Closing browser instance initialized by research_and_synthesize_report tool.")
             await browser_close()

@@ -258,10 +258,6 @@ async def demonstrate_cost_optimization(tracker: CostTracker):
                 top_rec = recs[0]
                 other_recs_str = ", ".join([escape(r["model"]) for r in recs[1:]]) if len(recs) > 1 else "None"
                 
-                # Calculate score if missing (library versions may differ)
-                # NOTE: recommend_model now includes score, quality_score, speed_score, estimated_cost
-                # This fallback score calculation is likely unnecessary but kept for safety.
-                # Use the correct keys from the recommendation result.
                 cost_key = "estimated_cost"
                 quality_key = "quality_score"
                 speed_key = "speed_score"
@@ -352,14 +348,7 @@ def _get_provider_for_model(model_name: str) -> str:
         known_providers = [p.value for p in Provider]
         if provider in known_providers:
             return provider
-        # Handle OpenRouter's nested structure specifically if needed, though the general check above might suffice
-        # elif provider == Provider.OPENROUTER.value:
-        #     return Provider.OPENROUTER.value
         else:
-            # Check if it's an OpenRouter model *without* the openrouter prefix but with another slash
-            # e.g., just "mistralai/mistral-nemo" was passed. Infer OpenRouter.
-            # This might be too broad; relying on the explicit prefix is safer.
-            # Let's stick to the explicit prefix check above.
             logger.warning(f"Unknown or ambiguous provider prefix in '{model_name}'")
             return None
             
@@ -372,7 +361,7 @@ def _get_provider_for_model(model_name: str) -> str:
         return Provider.DEEPSEEK.value
     elif model_name.startswith("gemini-"):
         return Provider.GEMINI.value
-    elif model_name.startswith("grok-"): # Added Grok check
+    elif model_name.startswith("grok-"):
         return Provider.GROK.value
         
     # Add specific non-prefixed model checks if needed

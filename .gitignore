@@ -205,3 +205,4 @@ cache/disk_cache/cache.db-wal
 demo_database.db
 models/
 test_input.wav
+browser_demo_outputs/

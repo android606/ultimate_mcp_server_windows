@@ -17,7 +17,6 @@ from rich.table import Table
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.analytics.metrics import get_metrics_tracker
-from llm_gateway.services.analytics.reporting import AnalyticsReporting
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.display import display_analytics_metrics
 

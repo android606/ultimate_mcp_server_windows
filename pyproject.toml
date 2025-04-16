@@ -86,6 +86,10 @@ dependencies = [
     "xmldiff", # for redlines
     "lxml", # XML parser
     "faster-whisper", # Audio transcripts
+    "html2text",
+    "readability-lxml",
+    "markdownify",
+    "trafilatura"
 ]
 
 [project.optional-dependencies]

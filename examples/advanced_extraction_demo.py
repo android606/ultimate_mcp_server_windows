@@ -3,15 +3,14 @@
 import asyncio
 import json
 import os
+import re
 import sys
 import time
-import re
 from pathlib import Path
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
@@ -20,7 +19,7 @@ from rich.traceback import Traceback
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import parse_and_display_result, CostTracker
+from llm_gateway.utils.display import CostTracker, parse_and_display_result
 from llm_gateway.utils.logging.console import console
 from llm_gateway.utils.parsing import extract_json_from_markdown
 

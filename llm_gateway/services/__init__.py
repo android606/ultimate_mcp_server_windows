@@ -1,11 +1,4 @@
 """Services for LLM Gateway."""
-# Keep only high-level service getters or core classes if needed
-# from llm_gateway.services.analytics import get_analytics_service # Keep if used by other services here
-# from llm_gateway.services.cache import CacheService, get_cache_service, with_cache # Keep if used by other services here
-# from llm_gateway.services.document import get_document_processor # Keep if used by other services here
-# from llm_gateway.services.knowledge_base import get_knowledge_base_manager, get_knowledge_base_retriever # REMOVE THESE
-# from llm_gateway.services.prompts import PromptRepository, PromptTemplate, get_prompt_repository, get_prompt_service, render_prompt, render_prompt_template # Keep if used by other services here
-# from llm_gateway.services.vector import VectorDatabaseService, get_embedding_service, get_vector_db_service # Keep if used by other services here
 
 # Example: Only keep get_analytics_service if get_rag_engine needs it directly
 from llm_gateway.services.analytics import get_analytics_service
@@ -15,25 +8,8 @@ from llm_gateway.services.analytics import get_analytics_service
 __all__ = [
     "get_analytics_service", # Only keep if it's fundamental/used here
     "get_rag_engine",        # get_rag_engine is defined below
-    # Remove others unless absolutely necessary for this top-level init
-    # "CacheService",
-    # "get_cache_service",
-    # "with_cache",
-    # "VectorDatabaseService",
-    # "get_vector_db_service",
-    # "PromptRepository",
-    # "get_prompt_repository",
-    # "PromptTemplate",
-    # "get_document_processor",
-    # "get_prompt_service",
-    # "get_embedding_service",
-    # "get_knowledge_base_manager",
-    # "get_knowledge_base_retriever"
 ]
 
-# Initialize global service instances
-# _knowledge_base_manager = None # Move initialization logic if needed
-# _knowledge_base_retriever = None # Move initialization logic if needed
 _rag_engine = None
 
 def get_rag_engine():

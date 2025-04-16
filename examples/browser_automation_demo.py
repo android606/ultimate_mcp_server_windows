@@ -2,11 +2,12 @@
 """Browser automation demonstration using LLM Gateway's Playwright tools."""
 import argparse
 import asyncio
+import json
 import os
 import sys
 import tempfile
-import json
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -21,6 +22,24 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
+# --- Import Instruction Packs ---
+from examples.web_automation_instruction_packs import (
+    ACADEMIC_PAPER_INSTRUCTIONS,
+    COMPETITIVE_ANALYSIS_INSTRUCTIONS,
+    CONTACT_FORM_WORKFLOW_INSTRUCTIONS,
+    ECOMMERCE_PRODUCT_EXTRACTION_INSTRUCTIONS,
+    GOVERNMENT_REPORT_INSTRUCTIONS,
+    JOB_POSTING_EXTRACTION_INSTRUCTIONS,
+    LEGAL_DOCUMENT_INSTRUCTIONS,
+    MARKET_TREND_RESEARCH_INSTRUCTIONS,
+    ORDER_STATUS_WORKFLOW_INSTRUCTIONS,
+    PRODUCT_MANUAL_INSTRUCTIONS,
+    PRODUCT_MONITORING_INSTRUCTIONS,
+    SIMPLE_SEARCH_SUMMARY_INSTRUCTIONS,
+    TECHNICAL_SEARCH_SUMMARY_INSTRUCTIONS,
+    WEBSITE_SECTION_MONITORING_INSTRUCTIONS,
+)
+from llm_gateway.constants import TaskType
 from llm_gateway.tools.browser_automation import (
     browser_checkbox,
     browser_click,
@@ -40,39 +59,16 @@ from llm_gateway.tools.browser_automation import (
     browser_type,
     browser_upload_file,
     browser_wait,
-    find_and_download_pdfs,
-    multi_engine_search_summary,
-    extract_structured_data_from_pages,
     execute_web_workflow,
+    extract_structured_data_from_pages,
+    find_and_download_pdfs,
     monitor_web_data_points,
+    multi_engine_search_summary,
     research_and_synthesize_report,
 )
 from llm_gateway.utils import get_logger
-
-# --- Import Instruction Packs ---
-from examples.web_automation_instruction_packs import (
-    ACADEMIC_PAPER_INSTRUCTIONS,
-    GOVERNMENT_REPORT_INSTRUCTIONS,
-    PRODUCT_MANUAL_INSTRUCTIONS,
-    LEGAL_DOCUMENT_INSTRUCTIONS,
-    SIMPLE_SEARCH_SUMMARY_INSTRUCTIONS,
-    TECHNICAL_SEARCH_SUMMARY_INSTRUCTIONS,
-    JOB_POSTING_EXTRACTION_INSTRUCTIONS,
-    ECOMMERCE_PRODUCT_EXTRACTION_INSTRUCTIONS,
-    ORDER_STATUS_WORKFLOW_INSTRUCTIONS,
-    CONTACT_FORM_WORKFLOW_INSTRUCTIONS,
-    PRODUCT_MONITORING_INSTRUCTIONS,
-    WEBSITE_SECTION_MONITORING_INSTRUCTIONS,
-    MARKET_TREND_RESEARCH_INSTRUCTIONS,
-    COMPETITIVE_ANALYSIS_INSTRUCTIONS  
-)
-
-# --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
 
-# ----------------------
-
-# Initialize logger
 logger = get_logger("example.browser_automation")
 
 # Config
@@ -86,7 +82,6 @@ DEMO_SITES = {
 SAVE_DIR = Path("./browser_demo_outputs")
 
 # Import TaskType
-from llm_gateway.constants import TaskType
 
 # Add a class to track demo session information for reporting
 class DemoSession:
@@ -357,92 +352,30 @@ async def demo_browser_initialization():
     return result
 
 
-async def demo_navigation_basics():
+async def demo_navigation_basics(progress=None, task_id=None):
     """Demonstrate basic navigation and page interaction."""
     console.print(Rule("[bold blue]Navigation Basics Demo[/bold blue]"))
     logger.info("Demonstrating basic navigation", emoji_key="navigation")
     
-    # Create progress tracker for this demo
-    progress, task_id = create_demo_progress_tracker()
-    progress.update(task_id, total=4, description="[bold cyan]Navigation demo starting...[/bold cyan]")
+    # If no progress tracker is provided, create one
+    own_progress = False
+    if progress is None or task_id is None:
+        progress, task_id = create_demo_progress_tracker()
+        progress.update(task_id, total=4, description="[bold cyan]Navigation demo starting...[/bold cyan]")
+        own_progress = True
     
-    demo_start_time = time.time()
+    demo_start_time = time.time()  # noqa: F841
     demo_actions = 0
     
-    with progress:
-        # Navigate to Wikipedia page on AI
-        progress.update(task_id, description="[cyan]Navigating to Wikipedia AI page...[/cyan]", advance=0)
-        result = await browser_navigate(
-            url=DEMO_SITES["wikipedia"],
-            wait_until="load",
-            timeout=30000,
-            capture_snapshot=True
-        )
-        
-        display_result("Navigated to Wikipedia AI Page", result, include_snapshot=True)
-        demo_session.add_action("navigation", "Navigated to Wikipedia AI Page", result)
-        demo_actions += 1
-        progress.update(task_id, advance=1)
-        
-        # Take a screenshot of the page
-        progress.update(task_id, description="[cyan]Taking screenshot...[/cyan]")
-        screenshot_result = await browser_screenshot(
-            full_page=False,
-            quality=80
-        )
-        
-        # Save the screenshot to file
-        screenshot_path = None
-        if screenshot_result.get("data"):
-            import base64
-            screenshot_path = SAVE_DIR / "wikipedia_ai_screenshot.jpg"
-            try:
-                with open(screenshot_path, "wb") as f:
-                    f.write(base64.b64decode(screenshot_result["data"]))
-                screenshot_result["file_path"] = str(screenshot_path)
-                screenshot_result["file_name"] = screenshot_path.name
-                logger.success(f"Screenshot saved to {screenshot_path}", emoji_key="file")
-                demo_session.add_screenshot("Wikipedia AI Page", str(screenshot_path))
-            except Exception as e:
-                logger.error(f"Failed to save screenshot: {e}", emoji_key="error")
-        
-        display_result("Page Screenshot", screenshot_result)
-        demo_session.add_action("screenshot", "Wikipedia AI Page Screenshot", screenshot_result, 
-                               screenshots={"Wikipedia AI": str(screenshot_path)} if screenshot_path else None)
-        demo_actions += 1
-        progress.update(task_id, advance=1)
-        
-        # Get text from a specific element (Wikipedia article lead paragraph)
-        progress.update(task_id, description="[cyan]Extracting text content...[/cyan]")
-        text_result = await browser_get_text(
-            selector="div.mw-parser-output > p:nth-child(4)"
-        )
-        
-        display_result("Article Lead Paragraph", text_result)
-        demo_session.add_action("get_text", "Wikipedia AI Lead Paragraph", text_result)
-        demo_actions += 1
-        progress.update(task_id, advance=1)
-        
-        # Click on a link (e.g., the Machine Learning link)
-        progress.update(task_id, description="[cyan]Clicking on Machine Learning link...[/cyan]")
-        click_result = await browser_click(
-            selector="a[title='Machine learning']",
-            capture_snapshot=True
-        )
-        
-        display_result("Clicked on Machine Learning Link", click_result, include_snapshot=True)
-        demo_session.add_action("click", "Clicked on Machine Learning Link", click_result)
-        demo_actions += 1
-        progress.update(task_id, advance=1, description="[bold green]Navigation demo completed![/bold green]")
+    if own_progress:
+        with progress:
+            result = await _run_navigation_steps(progress, task_id, demo_actions)
+    else:
+        result = await _run_navigation_steps(progress, task_id, demo_actions)
     
-    # Record demo stats
-    demo_duration = time.time() - demo_start_time
-    demo_session.add_demo_stats("Navigation Basics", {
-        "duration": demo_duration,
-        "actions": demo_actions,
-        "success": True
-    })
-    
+    return result
+
+def _get_navigation_results(result, screenshot_result, text_result, click_result, demo_duration):
     return {
         "navigation": result,
         "screenshot": screenshot_result,
@@ -450,6 +383,71 @@ async def demo_navigation_basics():
         "click": click_result,
         "duration": demo_duration
     }
+
+async def _run_navigation_steps(progress, task_id, demo_actions):
+    # Navigate to Wikipedia page on AI
+    progress.update(task_id, description="[cyan]Navigating to Wikipedia AI page...[/cyan]", advance=0)
+    result = await browser_navigate(
+        url=DEMO_SITES["wikipedia"],
+        wait_until="load",
+        timeout=30000,
+        capture_snapshot=True
+    )
+    display_result("Navigated to Wikipedia AI Page", result, include_snapshot=True)
+    demo_session.add_action("navigation", "Navigated to Wikipedia AI Page", result)
+    demo_actions += 1
+    progress.update(task_id, advance=1)
+    # Take a screenshot of the page
+    progress.update(task_id, description="[cyan]Taking screenshot...[/cyan]")
+    screenshot_result = await browser_screenshot(
+        full_page=False,
+        quality=80
+    )
+    screenshot_path = None
+    if screenshot_result.get("data"):
+        import base64
+        screenshot_path = SAVE_DIR / "wikipedia_ai_screenshot.jpg"
+        try:
+            with open(screenshot_path, "wb") as f:
+                f.write(base64.b64decode(screenshot_result["data"]))
+            screenshot_result["file_path"] = str(screenshot_path)
+            screenshot_result["file_name"] = screenshot_path.name
+            logger.success(f"Screenshot saved to {screenshot_path}", emoji_key="file")
+            demo_session.add_screenshot("Wikipedia AI Page", str(screenshot_path))
+        except Exception as e:
+            logger.error(f"Failed to save screenshot: {e}", emoji_key="error")
+    display_result("Page Screenshot", screenshot_result)
+    demo_session.add_action("screenshot", "Wikipedia AI Page Screenshot", screenshot_result, 
+                           screenshots={"Wikipedia AI": str(screenshot_path)} if screenshot_path else None)
+    demo_actions += 1
+    progress.update(task_id, advance=1)
+    # Get text from a specific element (Wikipedia article lead paragraph)
+    progress.update(task_id, description="[cyan]Extracting text content...[/cyan]")
+    text_result = await browser_get_text(
+        selector="div.mw-parser-output > p:nth-child(4)"
+    )
+    display_result("Article Lead Paragraph", text_result)
+    demo_session.add_action("get_text", "Wikipedia AI Lead Paragraph", text_result)
+    demo_actions += 1
+    progress.update(task_id, advance=1)
+    # Click on a link (e.g., the Machine Learning link)
+    progress.update(task_id, description="[cyan]Clicking on Machine Learning link...[/cyan]")
+    click_result = await browser_click(
+        selector="a[title='Machine learning']",
+        capture_snapshot=True
+    )
+    display_result("Clicked on Machine Learning Link", click_result, include_snapshot=True)
+    demo_session.add_action("click", "Clicked on Machine Learning Link", click_result)
+    demo_actions += 1
+    progress.update(task_id, advance=1, description="[bold green]Navigation demo completed![/bold green]")
+    # Record demo stats
+    demo_duration = time.time() - progress.tasks[task_id].start_time if hasattr(progress.tasks[task_id], 'start_time') else time.time()
+    demo_session.add_demo_stats("Navigation Basics", {
+        "duration": demo_duration,
+        "actions": demo_actions,
+        "success": True
+    })
+    return _get_navigation_results(result, screenshot_result, text_result, click_result, demo_duration)
 
 
 async def demo_form_interaction():
@@ -689,9 +687,9 @@ async def demo_search_interaction():
     console.print(Rule("[bold blue]Search Interaction Demo[/bold blue]"))
     logger.info("Demonstrating search interaction", emoji_key="search")
     
-    # Navigate to Google
+    # Navigate to DuckDuckGo
     result = await browser_navigate(
-        url=DEMO_SITES["search_engine"],
+        url="https://duckduckgo.com", # <-- FIX: Changed URL
         wait_until="load",
         timeout=30000
     )
@@ -699,70 +697,62 @@ async def demo_search_interaction():
     display_result("Navigated to Search Engine", result)
     
     # Enter a search query
-    # Note: Google's search input selector may change; adjust if needed
     search_query = "LLM Gateway Browser Automation"
     
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True
-    ) as progress:
-        progress_task = progress.add_task("[cyan]Searching...", total=None)
+    print("[cyan]Searching...[/cyan]")
+    try:
+        # Try different selectors for DuckDuckGo's search input
+        search_selectors = [
+            "#search_form_input_homepage", # DDG homepage input
+            "input[name='q']"            # General query input
+        ]
         
-        try:
-            # Try different selectors for Google's search input
-            search_selectors = [
-                "textarea[name='q']",  # Current Google search box
-                "input[name='q']",     # Alternative/older Google search box
-                "[name='q']"           # Fallback selector
-            ]
-            
-            search_successful = False
-            for selector in search_selectors:
-                try:
-                    # Check if element exists before trying to type
-                    element_check = await browser_get_text(selector=selector)
-                    if element_check.get("success", False):
-                        type_result = await browser_type(  # noqa: F841
-                            selector=selector,
-                            text=search_query,
-                            delay=20,  # Slow typing for visibility
-                            press_enter=True  # Press Enter to submit search
-                        )
-                        search_successful = True
-                        break
-                except Exception as e:
-                    logger.debug(f"Selector {selector} failed: {e}", emoji_key="debug")
-                    continue
-                    
-            if not search_successful:
-                logger.warning("Could not find search input element. Trying JavaScript input approach.", emoji_key="warning")
-                # Fallback: Use JavaScript to find and fill the search box
-                js_search_result = await browser_execute_javascript(
-                    script=f"""() => {{
-                        const searchInput = document.querySelector('[name="q"]');
-                        if (searchInput) {{
-                            searchInput.value = "{search_query}";
-                            const form = searchInput.closest('form');
-                            if (form) form.submit();
-                            return {{ success: true, method: "js-submit" }};
-                        }}
-                        return {{ success: false, error: "Could not find search input" }};
-                    }}"""
-                )
+        search_successful = False
+        for selector in search_selectors:
+            try:
+                # Check if element exists before trying to type
+                element_check = await browser_get_text(selector=selector)
+                if element_check.get("success", False):
+                    type_result = await browser_type(  # noqa: F841
+                        selector=selector,
+                        text=search_query,
+                        delay=20,  # Slow typing for visibility
+                        press_enter=True  # Press Enter to submit search
+                    )
+                    search_successful = True
+                    break
+            except Exception as e:
+                logger.debug(f"Selector {selector} failed: {e}", emoji_key="debug")
+                continue
                 
-                if not js_search_result.get("result", {}).get("success", False):
-                    logger.error("All methods to interact with search failed", emoji_key="error")
-                    raise Exception("Failed to interact with search input")
-            
-            # Wait for search results to load
-            await browser_wait(
-                wait_type="selector",
-                value="#search",  # Google's search results container
-                timeout=10000
+        if not search_successful:
+            logger.warning("Could not find search input element. Trying JavaScript input approach.", emoji_key="warning")
+            # Fallback: Use JavaScript to find and fill the search box
+            js_search_result = await browser_execute_javascript(
+                script=f"""() => {{
+                    const searchInput = document.querySelector('input[name="q"]'); // <-- FIX: DDG selector
+                    if (searchInput) {{
+                        searchInput.value = "{search_query}";
+                        const form = searchInput.closest('form');
+                        if (form) form.submit();
+                        return {{ success: true, method: "js-submit" }};
+                    }}
+                    return {{ success: false, error: "Could not find search input" }};
+                }}"""
             )
-        finally:
-            progress.update(progress_task, completed=True)
+            
+            if not js_search_result.get("result", {}).get("success", False):
+                logger.error("All methods to interact with search failed", emoji_key="error")
+                raise Exception("Failed to interact with search input")
+        
+        # Wait for search results to load
+        await browser_wait(
+            wait_type="selector",
+            value="#links",  # <-- FIX: DuckDuckGo's search results container
+            timeout=10000
+        )
+    finally:
+        pass  # No progress.update needed
     
     # Take a screenshot of search results
     screenshot_result = await browser_screenshot(
@@ -790,22 +780,21 @@ async def demo_search_interaction():
         script="""() => {
             // Extract search results
             const results = [];
-            const resultElements = document.querySelectorAll('#search .g');
+            const resultElements = document.querySelectorAll('article.result'); // <-- FIX: DDG result selector
             
             resultElements.forEach((result, index) => {
                 // Process only the first 5 results
                 if (index >= 5) return;
                 
                 // Extract components of a result
-                const titleElement = result.querySelector('h3');
-                const linkElement = result.querySelector('a');
-                const snippetElement = result.querySelector('.VwiC3b');
+                const linkElement = result.querySelector('a.result__a'); // <-- FIX: DDG link/title selector
+                const snippetElement = result.querySelector('.result__snippet'); // <-- FIX: DDG snippet selector
                 
-                if (titleElement && linkElement) {
+                if (linkElement) { // Title might be within linkElement
                     results.push({
-                        title: titleElement.textContent,
+                        title: linkElement.textContent.trim(), // <-- FIX: Get text from link
                         url: linkElement.href,
-                        snippet: snippetElement ? snippetElement.textContent : null
+                        snippet: snippetElement ? snippetElement.textContent.trim() : null
                     });
                 }
             });
@@ -1052,8 +1041,11 @@ async def demo_tab_management():
     
     console.print(comparison_table)
     
-    # Close tabs except the first one
-    for i, _tab_id in enumerate(tab_ids[1:], start=2):  # Start at index 2 (1-based)
+    # Get the current number of tabs
+    updated_tabs_result = await browser_tab_list()
+    total_tabs = updated_tabs_result.get("total_tabs", len(tab_ids))
+    # Close tabs from the last to the second (keep the first tab open)
+    for i in range(total_tabs, 1, -1):
         close_result = await browser_tab_close(tab_index=i)
         display_result(f"Closed Tab {i}", close_result)
     
@@ -1116,42 +1108,36 @@ async def demo_authentication_workflow():
     console.print(credentials_table)
     
     # Handle the login process
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True
-    ) as progress:
-        progress_task = progress.add_task("[cyan]Logging in...", total=None)
+    print("[cyan]Logging in...[/cyan]")
+    try:
+        # Enter username
+        username_result = await browser_type(  # noqa: F841
+            selector="#username",
+            text=username,
+            delay=15  # Slow typing for visibility
+        )
         
-        try:
-            # Enter username
-            username_result = await browser_type(  # noqa: F841
-                selector="#username",
-                text=username,
-                delay=15  # Slow typing for visibility
-            )
-            
-            # Enter password
-            password_result = await browser_type(  # noqa: F841
-                selector="#password",
-                text=password,
-                delay=15  # Slow typing for visibility
-            )
-            
-            # Click the login button
-            login_result = await browser_click(  # noqa: F841
-                selector="button[type='submit']",
-                delay=100  # Add a delay before click
-            )
-            
-            # Wait for login to complete - look for success message
-            await browser_wait(
-                wait_type="selector",
-                value=".flash.success",
-                timeout=5000
-            )
-        finally:
-            progress.update(progress_task, completed=True)
+        # Enter password
+        password_result = await browser_type(  # noqa: F841
+            selector="#password",
+            text=password,
+            delay=15  # Slow typing for visibility
+        )
+        
+        # Click the login button
+        login_result = await browser_click(  # noqa: F841
+            selector="button[type='submit']",
+            delay=100  # Add a delay before click
+        )
+        
+        # Wait for login to complete - look for success message
+        await browser_wait(
+            wait_type="selector",
+            value=".flash.success",
+            timeout=5000
+        )
+    finally:
+        pass  # No progress.update needed
     
     # Take a screenshot after successful login
     screenshot_after = await browser_screenshot(
@@ -1508,13 +1494,8 @@ async def demo_network_monitoring():
     # Navigate to a page with a JSON API endpoint
     console.print("\n[cyan]Navigating to JSON data endpoint...[/cyan]")
     
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True
-    ) as progress:
-        progress_task = progress.add_task("[cyan]Waiting for JSON response...", total=None)
-        
+    print("[cyan]Waiting for JSON response...[/cyan]")
+    try:
         # Navigate to JSON endpoint
         await browser_navigate(
             url="https://httpbin.org/json",
@@ -1536,8 +1517,8 @@ async def demo_network_monitoring():
                 break
                 
             await asyncio.sleep(0.5)
-        
-        progress.update(progress_task, completed=True)
+    finally:
+        pass  # No progress.update needed
     
     # Check if we got data
     json_data_result = await browser_execute_javascript(
@@ -1718,6 +1699,81 @@ async def demo_file_upload():
         "temp_files_cleaned": 3
     }
 
+
+async def demo_structured_data_extraction_jobs(args):
+    """Runs the structured data extraction demo for job postings."""
+    console.print(Rule("[bold magenta]Demo: Extract Job Posting Details (Dynamic Crawl)[/bold magenta]"))
+    # Note: The effectiveness depends heavily on Google's changing layout and the selectors
+    # defined in JOB_POSTING_EXTRACTION_INSTRUCTIONS
+    console.print("[yellow]Note: Job Posting demo uses selectors for Google search results which may break if Google changes its layout.[/yellow]")
+
+    # Make a copy and set the LLM model from args
+    instructions = JOB_POSTING_EXTRACTION_INSTRUCTIONS.copy()
+    instructions["extraction_details"]["extraction_llm_model"] = args.model
+
+    result = await extract_structured_data_from_pages(
+        instructions=instructions,
+        browser_options={"headless": args.headless},
+        max_concurrent_pages=2 # Lower concurrency for demo stability
+    )
+    display_result("Job Posting Extraction Result", result) # Use existing display function
+    demo_session.add_action("extract_structured_data", "Job Postings (Dynamic)", result) # Log action
+    return result
+
+async def demo_structured_data_extraction_products(args):
+    """Runs the structured data extraction demo for product pages."""
+    console.print(Rule("[bold magenta]Demo: Extract E-commerce Product Details (URL List)[/bold magenta]"))
+
+    # IMPORTANT: Provide actual, valid product page URLs here for the demo!
+    product_urls = [
+        # "https://www.amazon.com/dp/B08H75RTZ8/", # Example Kindle Paperwhite - Replace/Add Real URLs
+        # "https://www.bestbuy.com/site/sony-wh1000xm5-wireless-noise-cancelling-over-the-ear-headphones-black/6505725.p?skuId=6505725" # Example Sony XM5 - Replace/Add Real URLs
+        # Add 1-3 valid product URLs from major e-commerce sites
+    ]
+
+    if not product_urls:
+        console.print("[yellow]Skipping E-commerce Product Demo: No URLs provided in the script's `product_urls` list.[/yellow]")
+        return {"success": True, "message": "Skipped: No product URLs provided in demo script."}
+
+    # Create a copy and inject the URLs and LLM model for the demo run
+    instructions = ECOMMERCE_PRODUCT_EXTRACTION_INSTRUCTIONS.copy()
+    instructions["data_source"]["urls"] = product_urls
+    instructions["extraction_details"]["extraction_llm_model"] = args.model
+
+    result = await extract_structured_data_from_pages(
+        instructions=instructions,
+        browser_options={"headless": args.headless},
+        max_concurrent_pages=2
+    )
+    display_result("E-commerce Product Extraction Result", result)
+    demo_session.add_action("extract_structured_data", "E-commerce Products (List)", result)
+    return result
+
+async def demo_workflow_contact_form(args):
+    """Runs the web workflow demo for submitting a contact form."""
+    console.print(Rule("[bold blue]Demo: Execute Contact Form Submission Workflow[/bold blue]"))
+
+    # Provide input data for the contact form
+    contact_input = {
+        # Keys here MUST match the keys expected by input_data_mapping in the instructions pack
+        "user_name": "Test User via LLM Gateway",
+        "user_email": "test@example.com",
+        "user_message": "This is a test message sent by the execute_web_workflow tool. Time: " + datetime.now().isoformat()
+    }
+
+    # Make a copy and set the LLM model from args
+    instructions = CONTACT_FORM_WORKFLOW_INSTRUCTIONS.copy()
+    instructions["llm_model"] = args.model
+
+    result = await execute_web_workflow(
+        instructions=instructions,
+        input_data=contact_input,
+        browser_options={"headless": args.headless}
+        # max_steps is defined within the instruction pack
+    )
+    display_result("Contact Form Workflow Result", result)
+    demo_session.add_action("execute_web_workflow", "Contact Form Submission", result)
+    return result
 
 async def generate_session_report(format: str = "html") -> str:
     """Generate a comprehensive report of the demo session.
@@ -2646,6 +2702,10 @@ async def parse_arguments() -> argparse.Namespace:
         help="Run competitor analysis research demo"
     )
 
+    ai_demo_group.add_argument( "--extract-jobs", dest="extract_jobs", action="store_true", help="Run job posting extraction demo")
+    ai_demo_group.add_argument( "--extract-products", dest="extract_products", action="store_true", help="Run e-commerce product extraction demo")
+    ai_demo_group.add_argument( "--workflow-contact", dest="workflow_contact", action="store_true", help="Run contact form workflow demo")
+
     # LLM configuration
     llm_group = parser.add_argument_group("LLM Configuration")
     llm_group.add_argument(
@@ -2979,7 +3039,13 @@ async def main():
                     
                     # Run the demo
                     try:
-                        result = await demo_func()
+                        if demo_name == "Navigation Basics":
+                            # Use the shared progress context for navigation basics
+                            task_id = overall_progress.add_task(f"[cyan]{demo_name} Steps", total=4)
+                            result = await demo_func(progress=overall_progress, task_id=task_id)
+                            overall_progress.remove_task(task_id)
+                        else:
+                            result = await demo_func()
                         all_results[demo_name.lower().replace(" ", "_")] = result
                         
                         # Record success

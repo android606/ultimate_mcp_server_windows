@@ -5,6 +5,7 @@ import json
 import os
 import pickle
 import time
+from enum import Enum
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set, Tuple
@@ -127,6 +128,9 @@ class CacheService:
             elif isinstance(value, list):
                 # Normalize lists (assume they contain simple types)
                 result[key] = sorted(value) if all(isinstance(x, (str, int, float)) for x in value) else value
+            elif isinstance(value, Enum):
+                # Handle Enum values by converting to string
+                result[key] = value.value
             else:
                 # Keep other types as is
                 result[key] = value

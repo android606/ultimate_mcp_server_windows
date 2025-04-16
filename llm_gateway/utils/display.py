@@ -1198,7 +1198,7 @@ async def safe_tool_call(tool_func, args_dict, description=""):
                                  info_str += f" [red](Error: {escape(entry['error'])})[/red]"
                             icon = "📄" if etype == "file" else "📁" if etype == "directory" else "🔗" if etype=="symlink" else "❓"
                             table.add_row(f"{icon} {escape(name)}", etype, info_str)
-                       with Capture() as capture: # Use Capture from rich.console
+                       with Capture(console) as capture: # Use Capture from rich.console
                             console.print(table)
                        output_content += capture.get()
                        if result.get("warnings"):
@@ -1258,7 +1258,7 @@ async def safe_tool_call(tool_func, args_dict, description=""):
 
                        rich_tree_root = Tree(f"📁 [bold cyan]{escape(os.path.basename(result['path']))}[/bold cyan]")
                        build_rich_tree_display(rich_tree_root, result["tree"])
-                       with Capture() as capture: # Use Capture from rich.console
+                       with Capture(console) as capture: # Use Capture from rich.console
                            console.print(rich_tree_root)
                        output_content += capture.get()
                  # Handle 'directories' from list_allowed_directories
@@ -1312,7 +1312,7 @@ async def safe_tool_call(tool_func, args_dict, description=""):
                       for k, v in result.items():
                            if k not in skip_keys:
                                info_table.add_row(escape(k), pretty_repr(v))
-                      with Capture() as capture: # Use Capture from rich.console
+                      with Capture(console) as capture: # Use Capture from rich.console
                            console.print(info_table)
                       output_content += capture.get()
 

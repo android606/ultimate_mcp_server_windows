@@ -949,8 +949,8 @@ Provide ONLY the corrected text with no explanations or comments.
 
 @with_cache(ttl=24 * 60 * 60) # Cache for 24 hours
 @with_tool_metrics
-@with_error_handling
 @with_retry(max_retries=3, retry_delay=1)
+@with_error_handling
 async def extract_text_from_pdf(
     file_path: str,
     extraction_method: str = "hybrid",
@@ -1171,8 +1171,8 @@ async def extract_text_from_pdf(
 
 @with_cache(ttl=24 * 60 * 60) # Cache for 24 hours
 @with_tool_metrics
-@with_error_handling
 @with_retry(max_retries=3, retry_delay=1)
+@with_error_handling
 async def extract_text_from_pdf_bytes(
     pdf_bytes: bytes,
     extraction_method: str = "hybrid",
@@ -1382,8 +1382,8 @@ async def extract_text_from_pdf_bytes(
 
 @with_cache(ttl=24 * 60 * 60) # Cache for 24 hours
 @with_tool_metrics
-@with_error_handling
 @with_retry(max_retries=2, retry_delay=1)
+@with_error_handling
 async def process_image_ocr(
     image_path: Optional[str] = None,
     image_data: Optional[str] = None,
@@ -1526,8 +1526,8 @@ async def process_image_ocr(
 
 @with_cache(ttl=24 * 60 * 60) # Cache for 24 hours
 @with_tool_metrics
+@with_retry(max_retries=2, retry_delay=1)
 @with_error_handling
-@with_retry(max_retries=3, retry_delay=1)
 async def enhance_ocr_text(
     ocr_text: str,
     reformat_as_markdown: bool = False,
@@ -1622,6 +1622,7 @@ async def enhance_ocr_text(
         raise ToolError(f"Failed to enhance OCR text: {str(e)}") from e
 
 @with_tool_metrics
+@with_retry(max_retries=2, retry_delay=1.0)
 @with_error_handling
 async def analyze_pdf_structure(
     file_path: str,
@@ -1921,6 +1922,7 @@ async def analyze_pdf_structure(
         raise ToolError(f"Failed to analyze PDF structure: {str(e)}") from e
 
 @with_tool_metrics
+@with_retry(max_retries=2, retry_delay=1.0)
 @with_error_handling
 async def batch_process_documents(
     folder_path: str,

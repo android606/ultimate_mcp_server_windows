@@ -1,87 +1,107 @@
 {
     "claude-3-5-haiku-20241022": {
-        "total_time_s": 8.153,
-        "output_tokens": 449,
-        "output_tokens_per_second": 55.07
+        "total_time_s": 9.794,
+        "output_tokens": 494,
+        "output_tokens_per_second": 50.44
     },
     "claude-3-7-sonnet-20250219": {
-        "total_time_s": 8.499,
-        "output_tokens": 470,
-        "output_tokens_per_second": 55.3
+        "total_time_s": 8.25,
+        "output_tokens": 474,
+        "output_tokens_per_second": 57.46
     },
     "claude-3-opus-20240229": {
-        "total_time_s": 20.012,
-        "output_tokens": 555,
-        "output_tokens_per_second": 27.73
+        "total_time_s": 17.192,
+        "output_tokens": 537,
+        "output_tokens_per_second": 31.24
     },
     "claude-3-sonnet-20240229": {
-        "total_time_s": 9.85,
-        "output_tokens": 538,
-        "output_tokens_per_second": 54.62
+        "total_time_s": 9.851,
+        "output_tokens": 546,
+        "output_tokens_per_second": 55.42
     },
     "deepseek-chat": {
-        "total_time_s": 24.575,
-        "output_tokens": 427,
-        "output_tokens_per_second": 17.38
+        "total_time_s": 26.372,
+        "output_tokens": 454,
+        "output_tokens_per_second": 17.22
     },
     "deepseek-reasoner": {
-        "total_time_s": 58.444,
-        "output_tokens": 1141,
-        "output_tokens_per_second": 19.52
+        "total_time_s": 70.077,
+        "output_tokens": 1090,
+        "output_tokens_per_second": 15.55
     },
     "gemini-2.0-flash": {
-        "total_time_s": 2.437,
-        "output_tokens": 517,
-        "output_tokens_per_second": 212.18
+        "total_time_s": 2.75,
+        "output_tokens": 516,
+        "output_tokens_per_second": 187.61
     },
     "gemini-2.0-flash-lite": {
-        "total_time_s": 3.034,
-        "output_tokens": 493,
-        "output_tokens_per_second": 162.48
+        "total_time_s": 2.993,
+        "output_tokens": 516,
+        "output_tokens_per_second": 172.4
     },
     "gemini-2.0-flash-thinking-exp-01-21": {
-        "total_time_s": 5.484,
-        "output_tokens": 447,
-        "output_tokens_per_second": 81.51
+        "total_time_s": 6.829,
+        "output_tokens": 523,
+        "output_tokens_per_second": 76.59
     },
     "gemini-2.5-pro-exp-03-25": {
-        "total_time_s": 20.042,
-        "output_tokens": 555,
-        "output_tokens_per_second": 27.69
+        "total_time_s": 17.726,
+        "output_tokens": 599,
+        "output_tokens_per_second": 33.79
     },
     "gpt-4.1": {
-        "total_time_s": 8.749,
-        "output_tokens": 473,
-        "output_tokens_per_second": 54.06
+        "total_time_s": 8.363,
+        "output_tokens": 455,
+        "output_tokens_per_second": 54.4
     },
     "gpt-4.1-mini": {
-        "total_time_s": 6.092,
-        "output_tokens": 486,
-        "output_tokens_per_second": 79.77
+        "total_time_s": 7.792,
+        "output_tokens": 485,
+        "output_tokens_per_second": 62.25
     },
     "gpt-4.1-nano": {
-        "total_time_s": 1.403,
-        "output_tokens": 393,
-        "output_tokens_per_second": 280.09
+        "total_time_s": 2.467,
+        "output_tokens": 370,
+        "output_tokens_per_second": 149.98
     },
     "gpt-4o": {
-        "total_time_s": 10.336,
-        "output_tokens": 413,
-        "output_tokens_per_second": 39.96
+        "total_time_s": 8.644,
+        "output_tokens": 422,
+        "output_tokens_per_second": 48.82
     },
     "gpt-4o-mini": {
-        "total_time_s": 9.946,
-        "output_tokens": 427,
-        "output_tokens_per_second": 42.93
+        "total_time_s": 8.371,
+        "output_tokens": 389,
+        "output_tokens_per_second": 46.47
+    },
+    "grok-3-fast-latest": {
+        "total_time_s": 5.944,
+        "output_tokens": 402,
+        "output_tokens_per_second": 67.63
+    },
+    "grok-3-latest": {
+        "total_time_s": 8.564,
+        "output_tokens": 407,
+        "output_tokens_per_second": 47.53
+    },
+    "grok-3-mini-fast-latest": {
+        "total_time_s": 4.48,
+        "output_tokens": 353,
+        "output_tokens_per_second": 78.8
+    },
+    "grok-3-mini-latest": {
+        "total_time_s": 6.947,
+        "output_tokens": 374,
+        "output_tokens_per_second": 53.83
     },
     "o1-preview": {
-        "total_time_s": 8.358,
-        "output_tokens": 713,
-        "output_tokens_per_second": 85.31
+        "total_time_s": 7.78,
+        "output_tokens": 813,
+        "output_tokens_per_second": 104.5
     },
     "o3-mini": {
-        "total_time_s": 4.569,
-        "output_tokens": 509,
-        "output_tokens_per_second": 111.4
+        "total_time_s": 9.584,
+        "output_tokens": 635,
+        "output_tokens_per_second": 66.25
     }
 }

@@ -1244,6 +1244,18 @@ async def _execute_comparison_synthesis(
         )
         
         try:
+            # Extract provider from model string if it contains a provider prefix
+            # This ensures we're using the correct provider (e.g., openai) and not defaulting to openrouter
+            if '/' in synth_model:
+                extracted_provider, extracted_model = synth_model.split('/', 1)
+                # Only use the extracted provider if it's a known provider
+                if extracted_provider in [Provider.OPENAI.value, Provider.ANTHROPIC.value, 
+                                        Provider.GEMINI.value, Provider.DEEPSEEK.value, 
+                                        Provider.GROK.value, Provider.OPENROUTER.value]:
+                    synth_provider = extracted_provider
+                    synth_model = extracted_model
+                    logger.info(f"Extracted provider '{synth_provider}' and model '{synth_model}' from '{synth_provider}/{synth_model}'")
+            
             # Use standardized generate_completion instead of provider_instance.generate_completion
             completion_result = await generate_completion(
                 prompt=meta_prompt,
@@ -1264,7 +1276,7 @@ async def _execute_comparison_synthesis(
             fallback_provider = Provider.ANTHROPIC.value
             fallback_model = "claude-3-7-sonnet-20250219"
             # Avoid retrying with the same model if it was the fallback
-            if synth_model == f"{fallback_provider}/{fallback_model}":
+            if synth_model == fallback_model and synth_provider == fallback_provider:
                  logger.error("Fallback model also failed or was the primary model. Cannot proceed.")
                  raise ProviderError(f"Synthesis failed with both primary and fallback models: {e}", provider=synth_provider, model=synth_model, cause=e) from e
 

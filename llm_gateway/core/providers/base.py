@@ -220,6 +220,31 @@ class BaseProvider(abc.ABC):
         return result, processing_time
 
 
+def parse_model_string(model_string: str) -> Tuple[str, str]:
+    """Parse a model string that might include a provider prefix.
+    
+    Args:
+        model_string: A model string, possibly including a provider prefix
+                     (e.g., "openai/gpt-4.1-mini", "anthropic/claude-3-opus")
+                     
+    Returns:
+        Tuple of (provider_name, model_name)
+        If no provider prefix is found, provider_name will be None
+    """
+    if '/' in model_string:
+        # Try to extract provider prefix
+        parts = model_string.split('/', 1)
+        if len(parts) == 2:
+            provider_prefix, model_name = parts
+            
+            # Check if the prefix is a valid provider name
+            if provider_prefix.lower() in [p.value.lower() for p in Provider]:
+                return provider_prefix.lower(), model_name
+    
+    # No valid provider prefix found
+    return None, model_string
+
+
 async def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     """Factory function to get an initialized provider instance by name.
     
@@ -235,6 +260,17 @@ async def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     """
     cfg = get_config()
     provider_name = provider_name.lower().strip()
+    
+    # If a model was provided, check if it has a provider prefix
+    # This helps with models like "openai/gpt-4.1-mini" to ensure they go to the right provider
+    if 'model' in kwargs and isinstance(kwargs['model'], str):
+        extracted_provider, extracted_model = parse_model_string(kwargs['model'])
+        if extracted_provider:
+            # If we have a provider prefix in the model string, use that provider
+            # and update the model name to remove the prefix
+            provider_name = extracted_provider
+            kwargs['model'] = extracted_model
+            logger.debug(f"Extracted provider '{provider_name}' and model '{extracted_model}' from model string")
     
     from llm_gateway.core.providers.anthropic import AnthropicProvider
     from llm_gateway.core.providers.deepseek import DeepSeekProvider

@@ -21,8 +21,9 @@ from llm_gateway.config import get_config, load_config
 from llm_gateway.constants import Provider
 from llm_gateway.core.state_store import StateStore
 
-# --- Import the trigger function ---
-from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
+# --- Import the trigger function directly instead of the whole module---
+# from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
+# Import the function later when needed to avoid circular import
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.logging import logger
 
@@ -250,6 +251,8 @@ class Gateway:
         # It checks cache and potentially calls an LLM.
         self.logger.info("Initiating dynamic docstring generation for Marqo tool...")
         try:
+            # Import the function here to avoid circular imports
+            from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
             await trigger_dynamic_docstring_generation()
             self.logger.info("Dynamic docstring generation/loading complete.")
         except Exception as e:
@@ -271,6 +274,8 @@ class Gateway:
         self.logger.info("Lifespan context initialized, MCP server ready to handle requests")
         
         try:
+            # Import and call trigger_dynamic_docstring_generation again
+            from llm_gateway.tools.marqo_fused_search import trigger_dynamic_docstring_generation
             await trigger_dynamic_docstring_generation()
             logger.info("Dynamic docstring generation/loading complete.")
             yield context

@@ -4,7 +4,7 @@ import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from llm_gateway.constants import Provider, TaskType
-from llm_gateway.core.providers.base import get_provider
+from llm_gateway.core.providers.base import get_provider, parse_model_string
 from llm_gateway.exceptions import ProviderError, ToolInputError
 from llm_gateway.services.cache import with_cache
 from llm_gateway.tools.base import with_error_handling, with_retry, with_tool_metrics
@@ -76,6 +76,14 @@ async def generate_completion(
             
     start_time = time.time()
     
+    # Check if model contains a provider prefix (e.g., "openai/gpt-4.1-mini")
+    if model:
+        extracted_provider, extracted_model = parse_model_string(model)
+        if extracted_provider:
+            provider = extracted_provider  # Override provider with the one from the model string
+            model = extracted_model  # Use the model name without the provider prefix
+            logger.debug(f"Using provider '{provider}' and model '{model}' extracted from model string")
+    
     # Get provider instance
     try:
         # Use provider name directly, get_provider handles splitting if needed
@@ -142,6 +150,7 @@ async def generate_completion(
         ) from e
 
 @with_tool_metrics
+@with_error_handling
 async def stream_completion(
     prompt: str,
     provider: str = Provider.OPENAI.value,
@@ -203,6 +212,14 @@ async def stream_completion(
     #     "audience": ["assistant", "user"],  # Useful for both assistant and user
     #     "priority": 0.8  # High priority but not required (generate_completion is the primary tool)
     # }
+    
+    # Check if model contains a provider prefix (e.g., "openai/gpt-4.1-mini")
+    if model:
+        extracted_provider, extracted_model = parse_model_string(model)
+        if extracted_provider:
+            provider = extracted_provider  # Override provider with the one from the model string
+            model = extracted_model  # Use the model name without the provider prefix
+            logger.debug(f"Using provider '{provider}' and model '{model}' extracted from model string")
     
     # Get provider instance
     try:
@@ -315,8 +332,8 @@ async def stream_completion(
 
 
 @with_cache(ttl=24 * 60 * 60) # Cache results for 24 hours
-@with_retry(max_retries=2, retry_delay=1.0) # Retry up to 2 times on failure
 @with_tool_metrics
+@with_retry(max_retries=2, retry_delay=1.0) # Retry up to 2 times on failure
 @with_error_handling
 async def chat_completion(
     messages: List[Dict[str, Any]],
@@ -391,6 +408,14 @@ async def chat_completion(
         processed_messages = [{"role": "system", "content": system_prompt}] + messages
     else:
         processed_messages = messages
+        
+    # Check if model contains a provider prefix (e.g., "openai/gpt-4.1-mini")
+    if model:
+        extracted_provider, extracted_model = parse_model_string(model)
+        if extracted_provider:
+            provider = extracted_provider  # Override provider with the one from the model string
+            model = extracted_model  # Use the model name without the provider prefix
+            logger.debug(f"Using provider '{provider}' and model '{model}' extracted from model string")
 
     # Get provider instance
     try:
@@ -459,7 +484,7 @@ async def chat_completion(
 # but it's complex due to multiple parallel requests. Added caching.
 @with_cache(ttl=7 * 24 * 60 * 60) # Cache results for 7 days
 @with_tool_metrics
-# @with_error_handling # Error handling is done per-provider inside the function
+@with_error_handling # Error handling should be used
 async def multi_completion(
     prompt: str,
     providers: List[Dict[str, Any]],

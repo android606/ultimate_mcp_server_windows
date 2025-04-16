@@ -237,7 +237,7 @@ class LocalTextTools(BaseTool):
 
 
     @tool(name="run_ripgrep", description="Run the ripgrep (rg) command to search text patterns in files or directories.")
-    @with_tool_metrics(task_type=TaskType.DATA_PROCESSING)
+    @with_tool_metrics
     @with_error_handling
     async def run_ripgrep(
         self,
@@ -312,7 +312,7 @@ class LocalTextTools(BaseTool):
         return await self._run_command("rg", args_str, input_data, input_file, input_dir, timeout)
 
     @tool(name="run_awk", description="Run the awk command for pattern scanning and processing language.")
-    @with_tool_metrics(task_type=TaskType.DATA_PROCESSING)
+    @with_tool_metrics
     @with_error_handling
     async def run_awk(
         self,
@@ -370,7 +370,7 @@ class LocalTextTools(BaseTool):
         return await self._run_command("awk", args_str, input_data, input_file, None, timeout) 
 
     @tool(name="run_sed", description="Run the sed command for stream editing text.")
-    @with_tool_metrics(task_type=TaskType.DATA_PROCESSING)
+    @with_tool_metrics
     @with_error_handling
     async def run_sed(
         self,
@@ -431,7 +431,7 @@ class LocalTextTools(BaseTool):
         return await self._run_command("sed", args_str, input_data, input_file, None, timeout)
 
     @tool(name="run_jq", description="Run the jq command for processing JSON data.")
-    @with_tool_metrics(task_type=TaskType.DATA_PROCESSING)
+    @with_tool_metrics
     @with_error_handling
     async def run_jq(
         self,

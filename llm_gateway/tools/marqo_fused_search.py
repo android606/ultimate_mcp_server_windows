@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field, field_validator
 from llm_gateway.clients import CompletionClient
 from llm_gateway.constants import Provider
 from llm_gateway.exceptions import ToolExecutionError, ToolInputError
-from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
+from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 
 logger = get_logger("llm_gateway.tools.marqo_fused_search")
 

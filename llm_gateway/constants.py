@@ -25,7 +25,7 @@ class TaskType(str, Enum):
     QA = "qa"
     DATABASE = "database"
     QUERY = "query"
-    BROWSER_AUTOMATION = "browser_automation"
+    BROWSER = "browser"
     DOWNLOAD = "download"
     UPLOAD = "upload"
     DOCUMENT_PROCESSING = "document_processing"

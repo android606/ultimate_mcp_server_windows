@@ -1,5 +1,7 @@
 #!/usr/bin/env python
-"""Entity relationship graph extraction and visualization demo using LLM Gateway."""
+# -*- coding: utf-8 -*-
+"""Entity relationship graph extraction and visualization demo using LLM Gateway (New Version)."""
+
 import asyncio
 import json
 import os
@@ -9,12 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Add project root to path for imports when running as script
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-# Third-party imports
+import networkx as nx
 from rich import box
-from rich.console import Console
 from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -23,25 +21,33 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.tree import Tree
 
-# Project imports
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.tools.entity_relation_graph import (
-    COMMON_SCHEMAS,
-    GraphStrategy,
-    OutputFormat,
-    VisualizationFormat,
-    extract_entity_graph,
-)
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.logging.console import console
+try:
+    project_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(project_root))
+    from llm_gateway.constants import Provider
+    from llm_gateway.tools.entity_relation_graph import (
+        COMMON_SCHEMAS,
+        HAS_NETWORKX,
+        HAS_VISUALIZATION_LIBS,
+        GraphStrategy,
+        OutputFormat,
+        VisualizationFormat,
+        extract_entity_graph,
+    )
+    from llm_gateway.utils import get_logger
+    from llm_gateway.utils.logging.console import console
+except ImportError as e:
+    print(f"Error importing LLM Gateway modules: {e}")
+    print("Please ensure the script is run from the correct directory or the project path is set correctly.")
+    sys.exit(1)
 
 # Initialize logger
-logger = get_logger("example.entity_relation_graph")
+logger = get_logger("example.entity_graph") # Updated logger name
 
-# Setup
-SAMPLE_DIR = Path(__file__).parent / "sample"
-OUTPUT_DIR = Path(__file__).parent / "output"
+# Setup Directories
+SCRIPT_DIR = Path(__file__).resolve().parent
+SAMPLE_DIR = SCRIPT_DIR / "sample"
+OUTPUT_DIR = SCRIPT_DIR / "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 class TextDomain(Enum):
@@ -50,10 +56,12 @@ class TextDomain(Enum):
     ACADEMIC = "academic"
     LEGAL = "legal"
     MEDICAL = "medical"
+    GENERAL = "general" # Added for cases without a specific domain schema
 
 # Console instances
 main_console = console
-detail_console = Console(width=100, highlight=True)
+# Keep detail_console if needed, but wasn't used in original provided script
+# detail_console = Console(width=100, highlight=True)
 
 def display_header(title: str) -> None:
     """Display a section header."""
@@ -64,336 +72,512 @@ def display_header(title: str) -> None:
 def display_dataset_info(dataset_path: Path, title: str) -> None:
     """Display information about a dataset."""
     if not dataset_path.exists():
-        main_console.print(f"[red]Dataset file {dataset_path} not found![/red]")
+        main_console.print(f"[bold red]Error:[/bold red] Dataset file not found: {dataset_path}")
         return
-        
-    with open(dataset_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    
-    # Count entities/characters for display
-    char_count = len(content)
-    word_count = len(content.split())
-    sentence_count = len([s for s in content.split(".") if s.strip()])
-    
-    # Preview of the content (first 200 chars)
-    preview = content[:200] + "..." if len(content) > 200 else content
-    
-    main_console.print(Panel(
-        f"[bold cyan]Dataset:[/bold cyan] {dataset_path.name}\n"
-        f"[bold cyan]Size:[/bold cyan] {char_count} characters, {word_count} words, ~{sentence_count} sentences\n\n"
-        f"[bold cyan]Preview:[/bold cyan]\n{escape(preview)}",
-        title=title,
-        border_style="cyan",
-        expand=False
-    ))
+
+    try:
+        with open(dataset_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # Count entities/characters for display
+        char_count = len(content)
+        word_count = len(content.split())
+        # Simple sentence count (approximate)
+        sentence_count = content.count('.') + content.count('?') + content.count('!')
+        if sentence_count == 0 and char_count > 0:
+            sentence_count = 1 # At least one sentence if there's text
+
+        # Preview of the content (first 300 chars)
+        preview = escape(content[:300] + "..." if len(content) > 300 else content)
+
+        main_console.print(Panel(
+            f"[bold cyan]Dataset:[/bold cyan] {dataset_path.name}\n"
+            f"[bold cyan]Size:[/bold cyan] {char_count:,} characters | {word_count:,} words | ~{sentence_count:,} sentences\n\n"
+            f"[bold cyan]Preview:[/bold cyan]\n{preview}",
+            title=title,
+            border_style="cyan",
+            expand=False
+        ))
+    except Exception as e:
+        main_console.print(f"[bold red]Error reading dataset file {dataset_path.name}:[/bold red] {e}")
+
 
 def display_extraction_params(params: Dict[str, Any]) -> None:
-    """Display extraction parameters."""
+    """Display extraction parameters passed to the tool."""
     param_table = Table(title="Extraction Parameters", box=box.ROUNDED, show_header=True, header_style="bold magenta")
-    param_table.add_column("Parameter", style="cyan")
+    param_table.add_column("Parameter", style="cyan", no_wrap=True)
     param_table.add_column("Value", style="green")
-    
-    # Add key parameters to table
-    for key, value in params.items():
-        # Format enums and lists nicely
-        if isinstance(value, Enum):
-            value_str = value.value
-        elif isinstance(value, list):
-            value_str = ", ".join(str(v) for v in value)
-        elif isinstance(value, bool):
-            value_str = "[green]Yes[/green]" if value else "[red]No[/red]"
-        elif value is None:
-            value_str = "[dim italic]None[/dim italic]"
-        else:
-            value_str = str(value)
-            
-        param_table.add_row(key, value_str)
-    
+
+    # Filter parameters to display relevant ones
+    display_keys = [
+        "provider", "model", "strategy", "domain", "output_format", "visualization_format",
+        "include_evidence", "include_attributes", "include_positions", "include_temporal_info",
+        "normalize_entities", "max_entities", "max_relations", "min_confidence", "enable_reasoning",
+        "language" # Added language if used
+    ]
+
+    for key in display_keys:
+        if key in params:
+            value = params[key]
+            # Format enums and lists nicely
+            if isinstance(value, Enum):
+                value_str = value.value
+            elif isinstance(value, list):
+                value_str = escape(", ".join(str(v) for v in value)) if value else "[dim italic]Empty List[/dim italic]"
+            elif isinstance(value, bool):
+                value_str = "[green]Yes[/green]" if value else "[red]No[/red]"
+            elif value is None:
+                value_str = "[dim italic]None[/dim italic]"
+            else:
+                value_str = escape(str(value))
+
+            param_table.add_row(key, value_str)
+
     main_console.print(param_table)
 
 def display_entity_stats(result: Dict[str, Any]) -> None:
-    """Display statistics about extracted entities."""
-    entities = result.get("entities", [])
+    """Display statistics about extracted entities and relationships."""
+    metadata = result.get("metadata", {})
+    entities = result.get("entities", []) # Get entities directly for type counting if metadata missing
     relationships = result.get("relationships", [])
-    
-    if not entities:
+
+    entity_count = metadata.get("entity_count", len(entities))
+    relationship_count = metadata.get("relationship_count", len(relationships))
+
+    if entity_count == 0:
         main_console.print("[yellow]No entities found in extraction result.[/yellow]")
         return
-    
-    # Count entity types
-    entity_types = {}
-    for entity in entities:
-        ent_type = entity.get("type", "Unknown")
-        entity_types[ent_type] = entity_types.get(ent_type, 0) + 1
-    
-    # Count relationship types
-    rel_types = {}
-    for rel in relationships:
-        rel_type = rel.get("type", "Unknown")
-        rel_types[rel_type] = rel_types.get(rel_type, 0) + 1
-    
+
+    # Use metadata if available, otherwise count manually
+    entity_types_meta = metadata.get("entity_types")
+    rel_types_meta = metadata.get("relation_types")
+
+    entity_type_counts = {}
+    if entity_types_meta:
+        for etype in entity_types_meta:
+             # Count occurrences in the actual entity list for accuracy
+             entity_type_counts[etype] = sum(1 for e in entities if e.get("type") == etype)
+    else: # Fallback if metadata key is missing
+        for entity in entities:
+            ent_type = entity.get("type", "Unknown")
+            entity_type_counts[ent_type] = entity_type_counts.get(ent_type, 0) + 1
+
+    rel_type_counts = {}
+    if rel_types_meta:
+        for rtype in rel_types_meta:
+             rel_type_counts[rtype] = sum(1 for r in relationships if r.get("type") == rtype)
+    else: # Fallback
+        for rel in relationships:
+            rel_type = rel.get("type", "Unknown")
+            rel_type_counts[rel_type] = rel_type_counts.get(rel_type, 0) + 1
+
     # Create entity stats table
-    stats_table = Table(title="Extraction Statistics", box=box.ROUNDED, show_header=True)
+    stats_table = Table(title="Extraction Statistics", box=box.ROUNDED, show_header=True, header_style="bold blue")
     stats_table.add_column("Metric", style="cyan")
     stats_table.add_column("Count", style="green", justify="right")
-    
-    stats_table.add_row("Total Entities", str(len(entities)))
-    stats_table.add_row("Total Relationships", str(len(relationships)))
-    
+
+    stats_table.add_row("Total Entities", str(entity_count))
+    stats_table.add_row("Total Relationships", str(relationship_count))
+
     # Add entity type counts
-    for ent_type, count in sorted(entity_types.items(), key=lambda x: x[1], reverse=True):
-        stats_table.add_row(f"Entity Type: {ent_type}", str(count))
-    
+    stats_table.add_section()
+    for ent_type, count in sorted(entity_type_counts.items(), key=lambda x: x[1], reverse=True):
+        stats_table.add_row(f"Entity Type: [italic]{escape(ent_type)}[/italic]", str(count))
+
     # Add relationship type counts (top 5)
-    for rel_type, count in sorted(rel_types.items(), key=lambda x: x[1], reverse=True)[:5]:
-        stats_table.add_row(f"Relationship Type: {rel_type}", str(count))
-    
+    if rel_type_counts:
+        stats_table.add_section()
+        for rel_type, count in sorted(rel_type_counts.items(), key=lambda x: x[1], reverse=True)[:5]:
+            stats_table.add_row(f"Relationship Type: [italic]{escape(rel_type)}[/italic]", str(count))
+        if len(rel_type_counts) > 5:
+             stats_table.add_row("[dim]... (other relationship types)[/dim]", "")
+
+
     main_console.print(stats_table)
 
+
 def display_graph_metrics(result: Dict[str, Any]) -> None:
-    """Display graph metrics if available."""
-    metrics = result.get("metrics", {})
+    """Display graph metrics if available in metadata."""
+    # Metrics are now nested under metadata
+    metrics = result.get("metadata", {}).get("metrics", {})
     if not metrics:
-        return
-        
-    metrics_table = Table(title="Graph Metrics", box=box.ROUNDED, show_header=True)
+        # Check the top level as a fallback for older structure compatibility if needed
+        metrics = result.get("metrics", {})
+        if not metrics:
+            main_console.print("[dim]No graph metrics calculated (requires networkx).[/dim]")
+            return
+
+    metrics_table = Table(title="Graph Metrics", box=box.ROUNDED, show_header=True, header_style="bold blue")
     metrics_table.add_column("Metric", style="cyan")
     metrics_table.add_column("Value", style="green", justify="right")
-    
+
     # Add metrics to table
     for key, value in metrics.items():
         if isinstance(value, (int, float)):
-            formatted_value = f"{value:.4f}" if isinstance(value, float) else str(value)
+            # Improved formatting
+            if isinstance(value, float):
+                if 0.0001 < abs(value) < 10000:
+                    formatted_value = f"{value:.4f}"
+                else:
+                    formatted_value = f"{value:.3e}" # Scientific notation for very small/large
+            else:
+                 formatted_value = f"{value:,}" # Add commas for integers
             metrics_table.add_row(key.replace("_", " ").title(), formatted_value)
-    
+        elif value is not None:
+             metrics_table.add_row(key.replace("_", " ").title(), escape(str(value)))
+
+
     main_console.print(metrics_table)
 
+
 def display_entities_table(result: Dict[str, Any], limit: int = 10) -> None:
-    """Display extracted entities in a table."""
+    """Display extracted entities in a table, sorted appropriately."""
     entities = result.get("entities", [])
     if not entities:
         main_console.print("[yellow]No entities found to display.[/yellow]")
         return
-        
-    # Sort entities by centrality if available, otherwise by mentions count
-    if "centrality" in entities[0]:
-        entities = sorted(entities, key=lambda x: x.get("centrality", 0), reverse=True)
-    elif "mentions" in entities[0]:
-        entities = sorted(entities, key=lambda x: len(x.get("mentions", [])), reverse=True)
-    
+
+    # Sorting based on available metrics from _add_graph_metrics
+    # The new tool adds 'degree' and 'centrality'
+    sort_key = "name" # Default sort
+    if entities and isinstance(entities[0], dict):
+        if "centrality" in entities[0] and any(e.get("centrality", 0) > 0 for e in entities):
+            entities.sort(key=lambda x: x.get("centrality", 0.0), reverse=True)
+            sort_key = "centrality"
+        elif "degree" in entities[0] and any(e.get("degree", 0) > 0 for e in entities):
+             entities.sort(key=lambda x: x.get("degree", 0.0), reverse=True)
+             sort_key = "degree"
+        elif "mentions" in entities[0] and any(e.get("mentions") for e in entities):
+            entities.sort(key=lambda x: len(x.get("mentions", [])), reverse=True)
+            sort_key = "mentions"
+        else:
+             entities.sort(key=lambda x: x.get("name", "").lower()) # Fallback to name
+
+
     # Limit to top entities
     display_entities = entities[:limit]
-    
-    entity_table = Table(title=f"Top {limit} Entities", box=box.ROUNDED, show_header=True)
-    entity_table.add_column("ID", style="dim")
-    entity_table.add_column("Name", style="cyan")
-    entity_table.add_column("Type", style="green")
-    
+
+    title = f"Top {limit} Entities"
+    if sort_key != "name":
+        title += f" (Sorted by {sort_key.capitalize()})"
+
+    entity_table = Table(title=title, box=box.ROUNDED, show_header=True, header_style="bold blue")
+    entity_table.add_column("ID", style="dim", width=8)
+    entity_table.add_column("Name", style="cyan", max_width=40)
+    entity_table.add_column("Type", style="green", max_width=20)
+
     # Add columns for additional information if available
-    has_centrality = any("centrality" in entity for entity in display_entities)
-    has_mentions = any("mentions" in entity for entity in display_entities)
-    has_attributes = any("attributes" in entity for entity in display_entities)
-    
+    has_degree = any(e.get("degree", 0) > 0 for e in display_entities)
+    has_centrality = any(e.get("centrality", 0) > 0 for e in display_entities)
+    has_mentions = any(e.get("mentions") for e in display_entities)
+    has_attributes = any(e.get("attributes") for e in display_entities)
+
+    if has_degree:
+        entity_table.add_column("Degree", style="magenta", justify="right", width=8)
     if has_centrality:
-        entity_table.add_column("Centrality", style="magenta", justify="right")
+        entity_table.add_column("Centrality", style="magenta", justify="right", width=10)
     if has_mentions:
-        entity_table.add_column("Mentions", style="yellow", justify="right")
+        entity_table.add_column("Mentions", style="yellow", justify="right", width=8)
     if has_attributes:
-        entity_table.add_column("Attributes", style="blue")
-    
+        entity_table.add_column("Attributes", style="blue", max_width=50)
+
     # Add rows for each entity
     for entity in display_entities:
         row = [
-            entity.get("id", ""),
-            entity.get("name", ""),
-            entity.get("type", "Unknown")
+            escape(entity.get("id", "")),
+            escape(entity.get("name", "")),
+            escape(entity.get("type", "Unknown"))
         ]
-        
+
+        if has_degree:
+            degree = entity.get("degree", 0.0)
+            row.append(f"{degree:.3f}")
         if has_centrality:
-            centrality = entity.get("centrality", 0)
-            row.append(f"{centrality:.4f}" if isinstance(centrality, float) else "N/A")
-            
+            centrality = entity.get("centrality", 0.0)
+            row.append(f"{centrality:.4f}")
         if has_mentions:
-            mentions = entity.get("mentions", [])
-            row.append(str(len(mentions)))
-            
+            mentions_count = len(entity.get("mentions", []))
+            row.append(str(mentions_count))
         if has_attributes:
             attributes = entity.get("attributes", {})
-            attr_str = ", ".join(f"{k}: {v}" for k, v in attributes.items())
-            row.append(attr_str[:50] + ("..." if len(attr_str) > 50 else ""))
-        
+            # Format attributes more readably
+            attr_str = "; ".join(f"{k}={v}" for k, v in attributes.items() if v) # Ignore empty values
+            row.append(escape(attr_str[:45] + ("..." if len(attr_str) > 45 else "")))
+
         entity_table.add_row(*row)
-    
+
     main_console.print(entity_table)
-    
+
     if len(entities) > limit:
         main_console.print(f"[dim italic]...and {len(entities) - limit} more entities[/dim italic]")
 
+
 def display_relationships_table(result: Dict[str, Any], limit: int = 10) -> None:
-    """Display extracted relationships in a table."""
+    """Display extracted relationships in a table, sorted by confidence."""
     relationships = result.get("relationships", [])
-    entities = {entity["id"]: entity for entity in result.get("entities", [])}
-    
+    # Create entity map for quick name lookups
+    entity_map = {entity["id"]: entity for entity in result.get("entities", []) if isinstance(entity, dict) and "id" in entity}
+
     if not relationships:
         main_console.print("[yellow]No relationships found to display.[/yellow]")
         return
-        
-    # Sort relationships by confidence
-    relationships = sorted(relationships, key=lambda x: x.get("confidence", 0), reverse=True)
-    
+
+    # Sort relationships by confidence (new tool ensures confidence exists)
+    relationships.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+
     # Limit to top relationships
     display_relationships = relationships[:limit]
-    
-    rel_table = Table(title=f"Top {limit} Relationships", box=box.ROUNDED, show_header=True)
-    rel_table.add_column("Type", style="cyan")
-    rel_table.add_column("Source", style="green")
-    rel_table.add_column("Target", style="green")
-    rel_table.add_column("Confidence", style="magenta", justify="right")
-    
-    # Check if we have evidence
-    has_evidence = any("evidence" in rel for rel in display_relationships)
+
+    rel_table = Table(title=f"Top {limit} Relationships (Sorted by Confidence)", box=box.ROUNDED, show_header=True, header_style="bold blue")
+    rel_table.add_column("Source", style="cyan", max_width=30)
+    rel_table.add_column("Type", style="green", max_width=25)
+    rel_table.add_column("Target", style="cyan", max_width=30)
+    rel_table.add_column("Conf.", style="magenta", justify="right", width=6)
+
+    # Check if we have evidence or temporal info
+    has_evidence = any(r.get("evidence") for r in display_relationships)
+    has_temporal = any(r.get("temporal") for r in display_relationships)
+
     if has_evidence:
-        rel_table.add_column("Evidence", style="yellow")
-    
+        rel_table.add_column("Evidence", style="yellow", max_width=40)
+    if has_temporal:
+         rel_table.add_column("Temporal", style="blue", max_width=20)
+
+
     # Add rows for each relationship
     for rel in display_relationships:
         source_id = rel.get("source", "")
         target_id = rel.get("target", "")
-        
-        # Get entity names if available
-        source_name = entities.get(source_id, {}).get("name", source_id)
-        target_name = entities.get(target_id, {}).get("name", target_id)
-        
+
+        # Get entity names if available, fallback to ID
+        source_name = entity_map.get(source_id, {}).get("name", source_id)
+        target_name = entity_map.get(target_id, {}).get("name", target_id)
+
         row = [
-            rel.get("type", "Unknown"),
-            source_name,
-            target_name,
-            f"{rel.get('confidence', 0):.2f}" if "confidence" in rel else "N/A",
+            escape(source_name),
+            escape(rel.get("type", "Unknown")),
+            escape(target_name),
+            f"{rel.get('confidence', 0.0):.2f}",
         ]
-        
+
         if has_evidence:
             evidence = rel.get("evidence", "")
-            row.append(evidence[:50] + ("..." if len(evidence) > 50 else ""))
-        
+            row.append(escape(evidence[:35] + ("..." if len(evidence) > 35 else "")))
+        if has_temporal:
+             temporal = rel.get("temporal", {})
+             temp_str = "; ".join(f"{k}={v}" for k, v in temporal.items())
+             row.append(escape(temp_str[:18] + ("..." if len(temp_str) > 18 else "")))
+
+
         rel_table.add_row(*row)
-    
+
     main_console.print(rel_table)
-    
+
     if len(relationships) > limit:
         main_console.print(f"[dim italic]...and {len(relationships) - limit} more relationships[/dim italic]")
 
-def display_entity_graph_tree(result: Dict[str, Any], max_depth: int = 2, max_children: int = 3) -> None:
-    """Display a tree representation of the entity graph."""
+
+def display_entity_graph_tree(result: Dict[str, Any], max_depth: int = 2, max_children: int = 5) -> None:
+    """Display a tree representation of the entity graph, starting from the most central node."""
     entities = result.get("entities", [])
     relationships = result.get("relationships", [])
-    
-    if not entities or not relationships:
-        main_console.print("[yellow]Cannot display graph tree: insufficient data.[/yellow]")
+    entity_map = {entity["id"]: entity for entity in entities if isinstance(entity, dict) and "id" in entity}
+
+
+    if not entities or not relationships or not HAS_NETWORKX: # Tree view less useful without sorting/structure
+        if not HAS_NETWORKX:
+             main_console.print("[yellow]Cannot display graph tree: NetworkX library not available for centrality sorting.[/yellow]")
+        else:
+             main_console.print("[yellow]Cannot display graph tree: insufficient data.[/yellow]")
         return
-        
-    # Sort entities by centrality if available
-    if "centrality" in entities[0]:
-        entities = sorted(entities, key=lambda x: x.get("centrality", 0), reverse=True)
-    
+
+    # Sort entities by centrality (assuming metrics were calculated)
+    entities.sort(key=lambda x: x.get("centrality", 0.0), reverse=True)
+
     # Get most central entity as root
+    if not entities:
+        return # Should not happen if check above passed, but safety
     root_entity = entities[0]
     root_id = root_entity["id"]
-    
+
     # Create rich Tree
-    tree = Tree(f"[bold cyan]{root_entity.get('name', root_id)}[/bold cyan] ([italic]{root_entity.get('type', 'Unknown')}[/italic])")
-    
-    # Track visited entities to prevent cycles
-    visited = {root_id}
-    
-    # Recursively build tree
-    def add_children(parent_tree, parent_id, depth, path):
+    tree = Tree(
+        f"[bold cyan]{escape(root_entity.get('name', root_id))}[/bold cyan] "
+        f"([dim italic]ID: {escape(root_id)}, Type: {escape(root_entity.get('type', 'Unknown'))}[/dim italic])"
+    )
+
+    # Keep track of edges explored to represent the tree structure
+    explored_edges = set()
+
+    # Recursively build tree using BFS approach for levels
+    queue = [(root_id, tree, 0)] # (entity_id, parent_tree_node, current_depth)
+    visited_nodes_in_tree = {root_id} # Prevent cycles *within this tree rendering*
+
+    while queue:
+        current_id, parent_node, depth = queue.pop(0)
+
         if depth >= max_depth:
-            return
-            
-        # Find relationships where parent is source
-        outgoing = [r for r in relationships if r.get("source") == parent_id and r.get("target") not in path]
-        
-        # Sort by confidence if available
-        if outgoing and "confidence" in outgoing[0]:
-            outgoing = sorted(outgoing, key=lambda x: x.get("confidence", 0), reverse=True)
-        
-        # Limit number of children
-        for rel in outgoing[:max_children]:
+            continue
+
+        # Find outgoing relationships
+        outgoing_rels = [
+            r for r in relationships
+            if r.get("source") == current_id
+            and (current_id, r.get("target"), r.get("type")) not in explored_edges
+        ]
+        outgoing_rels.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+
+        # Find incoming relationships
+        incoming_rels = [
+             r for r in relationships
+             if r.get("target") == current_id
+             and (r.get("source"), current_id, r.get("type")) not in explored_edges
+        ]
+        incoming_rels.sort(key=lambda x: x.get("confidence", 0.0), reverse=True)
+
+
+        # Add outgoing children
+        children_count = 0
+        for rel in outgoing_rels:
+            if children_count >= max_children:
+                parent_node.add("[dim italic]... (more outgoing)[/dim]")
+                break
+
             target_id = rel.get("target")
-            target_entity = next((e for e in entities if e.get("id") == target_id), None)
-            
-            if not target_entity:
-                continue
-                
-            visited.add(target_id)
-            target_name = target_entity.get("name", target_id)
-            rel_type = rel.get("type", "related to")
-            
-            # Add branch with relationship type and entity
-            branch_text = f"[green]{rel_type}[/green] → [cyan]{target_name}[/cyan] ([italic]{target_entity.get('type', 'Unknown')}[/italic])"
-            branch = parent_tree.add(branch_text)
-            
-            # Recursively add children
-            new_path = path + [target_id]
-            add_children(branch, target_id, depth + 1, new_path)
-    
-    # Start building the tree
-    add_children(tree, root_id, 0, [root_id])
-    
-    main_console.print(Panel(tree, title="Entity Graph Tree View", border_style="blue"))
+            if target_id and target_id not in visited_nodes_in_tree: # Avoid cycles in display
+                 target_entity = entity_map.get(target_id)
+                 if target_entity:
+                     edge_sig = (current_id, target_id, rel.get("type"))
+                     explored_edges.add(edge_sig)
+                     visited_nodes_in_tree.add(target_id)
+
+                     rel_type = escape(rel.get("type", "related to"))
+                     conf = rel.get("confidence", 0.0)
+                     target_name = escape(target_entity.get("name", target_id))
+                     target_type = escape(target_entity.get("type", "Unknown"))
+
+                     branch_text = (
+                         f"-[[green]{rel_type}[/green] ({conf:.1f})]-> "
+                         f"[cyan]{target_name}[/cyan] ([dim italic]{target_type}[/dim italic])"
+                     )
+                     branch = parent_node.add(branch_text)
+                     queue.append((target_id, branch, depth + 1))
+                     children_count += 1
+
+
+        # Add incoming children (optional, can make tree busy)
+        # Comment out this block if you only want outgoing relationships in the tree
+        # children_count = 0
+        # for rel in incoming_rels:
+        #     if children_count >= max_children // 2: # Show fewer incoming
+        #         parent_node.add("[dim italic]... (more incoming)[/dim]")
+        #         break
+        #     source_id = rel.get("source")
+        #     if source_id and source_id not in visited_nodes_in_tree:
+        #          source_entity = entity_map.get(source_id)
+        #          if source_entity:
+        #              edge_sig = (source_id, current_id, rel.get("type"))
+        #              explored_edges.add(edge_sig)
+        #              visited_nodes_in_tree.add(source_id)
+        #
+        #              rel_type = escape(rel.get("type", "related to"))
+        #              conf = rel.get("confidence", 0.0)
+        #              source_name = escape(source_entity.get("name", source_id))
+        #              source_type = escape(source_entity.get("type", "Unknown"))
+        #
+        #              branch_text = (
+        #                  f"<-[[red]{rel_type}[/red] ({conf:.1f})]- "
+        #                  f"[magenta]{source_name}[/magenta] ([dim italic]{source_type}[/dim italic])"
+        #              )
+        #              branch = parent_node.add(branch_text)
+        #              queue.append((source_id, branch, depth + 1))
+        #              children_count += 1
+
+
+    main_console.print(Panel(tree, title=f"Entity Graph Tree View (Root: {escape(root_entity.get('name', ''))})", border_style="blue"))
+
 
 def display_extraction_summary(result: Dict[str, Any]) -> None:
-    """Display a summary of the extraction results."""
-    model = result.get("model", "Unknown")
+    """Display a summary of the extraction performance and cost."""
+    metadata = result.get("metadata", {})
     provider = result.get("provider", "Unknown")
+    model = result.get("model", "Unknown")
     tokens = result.get("tokens", {})
-    cost = result.get("cost", 0)
-    time = result.get("processing_time", 0)
-    
+    cost = result.get("cost", 0.0) # Cost is now float
+    processing_time = result.get("processing_time", 0.0) # Time is now float
+    strategy = metadata.get("processing_strategy", "Unknown")
+    schema_used = metadata.get("schema_used", "Unknown")
+
+
     summary_table = Table(box=box.ROUNDED, show_header=False, title="Extraction Summary")
-    summary_table.add_column("Metric", style="cyan")
+    summary_table.add_column("Metric", style="cyan", no_wrap=True)
     summary_table.add_column("Value", style="green")
-    
-    summary_table.add_row("Provider", provider)
-    summary_table.add_row("Model", model)
-    summary_table.add_row("Input Tokens", str(tokens.get("input", "N/A")))
-    summary_table.add_row("Output Tokens", str(tokens.get("output", "N/A")))
-    summary_table.add_row("Total Tokens", str(tokens.get("total", "N/A")))
-    summary_table.add_row("Cost", f"${cost:.6f}" if isinstance(cost, (int, float)) else "N/A")
-    summary_table.add_row("Processing Time", f"{time:.2f} seconds" if isinstance(time, (int, float)) else "N/A")
-    
+
+    summary_table.add_row("Provider", escape(provider))
+    summary_table.add_row("Model", escape(model))
+    summary_table.add_row("Strategy", escape(strategy))
+    summary_table.add_row("Schema Used", escape(schema_used))
+    summary_table.add_row("Input Tokens", f"{tokens.get('input', 0):,}")
+    summary_table.add_row("Output Tokens", f"{tokens.get('output', 0):,}")
+    summary_table.add_row("Total Tokens", f"{tokens.get('total', 0):,}")
+    summary_table.add_row("Cost", f"${cost:.6f}")
+    summary_table.add_row("Processing Time", f"{processing_time:.2f} seconds")
+
     main_console.print(summary_table)
 
+
 def save_visualization(result: Dict[str, Any], domain: str, strategy: str, output_dir: Path) -> Optional[str]:
-    """Save visualization to file and return path."""
-    visualization = result.get("visualization", {})
-    if not visualization:
+    """Save visualization file based on the format present in the result."""
+    visualization = result.get("visualization") # Visualization data is now under this key
+    if not visualization or not isinstance(visualization, dict):
+        main_console.print("[dim]No visualization data found in the result.[/dim]")
         return None
-        
-    # Get visualization content based on format
-    html_content = visualization.get("html")
-    svg_content = visualization.get("svg")
-    dot_content = visualization.get("dot")
-    
-    # Save to appropriate file
-    timestamp = int(time.time())
-    if html_content:
-        output_path = output_dir / f"graph_{domain}_{strategy}_{timestamp}.html"
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        return str(output_path)
-    elif svg_content:
-        output_path = output_dir / f"graph_{domain}_{strategy}_{timestamp}.svg"
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(svg_content)
-        return str(output_path)
-    elif dot_content:
-        output_path = output_dir / f"graph_{domain}_{strategy}_{timestamp}.dot"
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(dot_content)
-        return str(output_path)
-        
-    return None
+
+    content = None
+    extension = None
+    file_path = None
+
+    # Check for different visualization formats
+    if "html" in visualization:
+        content = visualization["html"]
+        extension = "html"
+    elif "svg" in visualization:
+        content = visualization["svg"]
+        extension = "svg"
+    elif "png_url" in visualization: # Assuming PNG might save file directly and return URL
+        file_path = visualization["png_url"].replace("file://", "")
+        extension = "png"
+    elif "dot" in visualization:
+        content = visualization["dot"]
+        extension = "dot"
+
+    if file_path: # If path was returned directly (like maybe for PNG)
+         if Path(file_path).exists():
+             return file_path
+         else:
+             main_console.print(f"[red]Visualization file path provided but not found: {file_path}[/red]")
+             return None
+
+    if content and extension:
+        timestamp = int(time.time())
+        # Sanitize domain and strategy for filename
+        safe_domain = domain.replace(" ", "_").lower()
+        safe_strategy = strategy.replace(" ", "_").lower()
+        output_path = output_dir / f"graph_{safe_domain}_{safe_strategy}_{timestamp}.{extension}"
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            return str(output_path)
+        except Exception as e:
+            main_console.print(f"[bold red]Error saving visualization file {output_path}:[/bold red] {e}")
+            return None
+    elif "error" in visualization:
+         main_console.print(f"[yellow]Visualization generation failed:[/yellow] {visualization['error']}")
+         return None
+    else:
+        main_console.print("[dim]Unsupported or missing visualization format in result.[/dim]")
+        return None
+
 
 async def run_entity_extraction(
     text: str,
@@ -401,426 +585,420 @@ async def run_entity_extraction(
     strategy: GraphStrategy,
     model: str,
     output_format: OutputFormat = OutputFormat.JSON,
-    visualization_format: VisualizationFormat = VisualizationFormat.HTML,
-    provider: str = Provider.ANTHROPIC.value
-) -> Dict[str, Any]:
-    """Run entity graph extraction with progress indicator."""
-    # Setup extraction parameters based on domain
+    visualization_format: VisualizationFormat = VisualizationFormat.HTML, # Keep HTML for demo vis
+    provider: str = Provider.ANTHROPIC.value # Example provider
+) -> Optional[Dict[str, Any]]:
+    """Run entity graph extraction with progress indicator and display params."""
+    # Setup extraction parameters
     params = {
         "text": text,
-        "provider": provider,
+        "provider": provider, # Pass provider name string
         "model": model,
-        "strategy": strategy.value,
-        "output_format": output_format.value,
-        "visualization_format": visualization_format.value,
-        "include_evidence": True,
-        "include_attributes": True,
-        "include_positions": True,
-        "include_temporal_info": True,
-        "normalize_entities": True,
-        "max_entities": 50,
-        "max_relations": 100,
-        "min_confidence": 0.5,
-        "enable_reasoning": True
+        "strategy": strategy, # Pass enum directly
+        "output_format": output_format, # Pass enum directly
+        "visualization_format": visualization_format, # Pass enum directly
+        # --- Include Flags (consider new defaults) ---
+        "include_evidence": True, # Explicitly keep True for demo
+        "include_attributes": True, # Explicitly keep True for demo
+        "include_positions": False, # Change to False to match new default (saves tokens)
+        "include_temporal_info": True, # Explicitly keep True for demo
+        # --- Control Flags ---
+        "normalize_entities": True, # Keep True (new default)
+        "enable_reasoning": False, # Keep False for demo speed (can be enabled)
+        # --- Limits ---
+        "max_entities": 75,  # Adjusted limits for demo
+        "max_relations": 150,
+        "min_confidence": 0.55, # Slightly higher confidence
+        # --- Optional ---
+        "language": None, # Specify if needed, e.g., "Spanish"
+        "domain": None, # Set below if applicable
+        #"custom_prompt": None, # Add if testing custom prompts
+        #"system_prompt": None, # Add if testing system prompts
+        #"additional_params": {"temperature": 0.2} # Example
     }
-    
-    # Add domain-specific schema if available
-    if domain is not None and domain.value in COMMON_SCHEMAS:
+
+    # Add domain value string if applicable and not GENERAL
+    if domain != TextDomain.GENERAL and domain.value in COMMON_SCHEMAS:
         params["domain"] = domain.value
-    
-    # Display parameters
+
+    # Display parameters being used
     display_extraction_params(params)
-    
+
     # Run extraction with progress spinner
+    result = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         console=main_console,
-        transient=True
+        transient=False # Keep progress visible after completion
     ) as progress:
-        task = progress.add_task(f"Extracting entity graph using {strategy.value} strategy...", total=None)
-        
+        task_desc = f"Extracting graph ({domain.value}/{strategy.value}/{model})..."
+        task = progress.add_task(task_desc, total=None)
+
         try:
-            result = await extract_entity_graph(**params)
-            progress.update(task, completed=True, description="Entity graph extraction complete!")
+            start_time = time.monotonic()
+            # Pass enums directly now, the tool handles conversion if needed
+            result = await extract_entity_graph(**params) # type: ignore
+            end_time = time.monotonic()
+            duration = end_time - start_time
+            progress.update(task, completed=100, description=f"[green]Extraction complete ({duration:.2f}s)[/green]")
             return result
         except Exception as e:
-            progress.update(task, completed=True, description=f"Entity graph extraction failed: {str(e)}")
-            raise
+            logger.error(f"Extraction failed during run_entity_extraction: {e}", exc_info=True)
+            progress.update(task, completed=100, description=f"[bold red]Extraction failed: {escape(str(e))}[/bold red]")
+            # Optionally re-raise or just return None
+            # raise # Uncomment to stop the demo on failure
+            return None # Allow demo to continue
 
-async def demonstrate_business_extraction():
-    """Demonstrate entity graph extraction for business text."""
-    display_header("Business Domain Entity Graph Extraction")
-    
-    # Load business article
-    business_path = SAMPLE_DIR / "article.txt"
-    display_dataset_info(business_path, "Business News Article")
-    
-    with open(business_path, "r", encoding="utf-8") as f:
-        business_text = f.read()
-    
-    # Extract entity graph using standard strategy
-    main_console.print("[bold]Running Standard Extraction Strategy[/bold]")
-    
+
+# --- Demonstration Functions (Updated calls to run_entity_extraction) ---
+
+async def demonstrate_domain_extraction(
+        domain: TextDomain,
+        sample_file: str,
+        strategy: GraphStrategy,
+        model: str = "claude-3-5-sonnet-20240620", # Default model for demos
+        provider: str = Provider.ANTHROPIC.value
+    ):
+    """Helper function to demonstrate extraction for a specific domain."""
+    domain_name = domain.value.capitalize()
+    display_header(f"{domain_name} Domain Entity Graph Extraction ({strategy.value} strategy)")
+
+    sample_path = SAMPLE_DIR / sample_file
+    display_dataset_info(sample_path, f"{domain_name} Sample Text")
+
+    if not sample_path.exists():
+        return # Skip if file missing
+
+    with open(sample_path, "r", encoding="utf-8") as f:
+        text_content = f.read()
+
     try:
         result = await run_entity_extraction(
-            text=business_text,
-            domain=TextDomain.BUSINESS,
-            strategy=GraphStrategy.STANDARD,
-            model="claude-3-5-haiku-20241022",
-            visualization_format=VisualizationFormat.HTML
+            text=text_content,
+            domain=domain,
+            strategy=strategy,
+            model=model,
+            provider=provider,
+            visualization_format=VisualizationFormat.HTML # Request HTML for viewing
         )
-        
-        # Display results
-        display_entity_stats(result)
-        display_graph_metrics(result)
-        display_entities_table(result)
-        display_relationships_table(result)
-        display_entity_graph_tree(result)
-        
-        # Save visualization if available
-        vis_path = save_visualization(result, "business", "standard", OUTPUT_DIR)
-        if vis_path:
-            main_console.print(f"\n[green]✓[/green] Visualization saved to: [blue]{vis_path}[/blue]")
-        
-        # Display summary
-        display_extraction_summary(result)
-        
-    except Exception as e:
-        main_console.print(f"[bold red]Error:[/bold red] {str(e)}")
 
-async def demonstrate_academic_extraction():
-    """Demonstrate entity graph extraction for academic text."""
-    display_header("Academic Domain Entity Graph Extraction")
-    
-    # Load academic paper
-    academic_path = SAMPLE_DIR / "research_paper.txt"
-    display_dataset_info(academic_path, "Academic Research Paper")
-    
-    with open(academic_path, "r", encoding="utf-8") as f:
-        academic_text = f.read()
-    
-    # Extract entity graph using multistage strategy
-    main_console.print("[bold]Running Multistage Extraction Strategy[/bold]")
-    
-    try:
-        result = await run_entity_extraction(
-            text=academic_text,
-            domain=TextDomain.ACADEMIC,
-            strategy=GraphStrategy.MULTISTAGE,
-            model="claude-3-5-haiku-20241022",
-            visualization_format=VisualizationFormat.HTML
-        )
-        
-        # Display results
-        display_entity_stats(result)
-        display_graph_metrics(result)
-        display_entities_table(result)
-        display_relationships_table(result)
-        display_entity_graph_tree(result)
-        
-        # Save visualization if available
-        vis_path = save_visualization(result, "academic", "multistage", OUTPUT_DIR)
-        if vis_path:
-            main_console.print(f"\n[green]✓[/green] Visualization saved to: [blue]{vis_path}[/blue]")
-        
-        # Display summary
-        display_extraction_summary(result)
-        
-    except Exception as e:
-        main_console.print(f"[bold red]Error:[/bold red] {str(e)}")
+        if result and result.get("success", False):
+            # Display results
+            display_entity_stats(result)
+            if HAS_NETWORKX: # Only display metrics if networkx is installed
+                 display_graph_metrics(result)
+            display_entities_table(result)
+            display_relationships_table(result)
+            if HAS_NETWORKX: # Tree view also requires networkx
+                 display_entity_graph_tree(result)
 
-async def demonstrate_legal_extraction():
-    """Demonstrate entity graph extraction for legal text."""
-    display_header("Legal Domain Entity Graph Extraction")
-    
-    # Load legal contract
-    legal_path = SAMPLE_DIR / "legal_contract.txt"
-    display_dataset_info(legal_path, "Legal Contract")
-    
-    with open(legal_path, "r", encoding="utf-8") as f:
-        legal_text = f.read()
-    
-    # Extract entity graph using structured strategy
-    main_console.print("[bold]Running Structured Extraction Strategy[/bold]")
-    
-    try:
-        result = await run_entity_extraction(
-            text=legal_text,
-            domain=TextDomain.LEGAL,
-            strategy=GraphStrategy.STRUCTURED,
-            model="claude-3-5-haiku-20241022",
-            visualization_format=VisualizationFormat.HTML
-        )
-        
-        # Display results
-        display_entity_stats(result)
-        display_graph_metrics(result)
-        display_entities_table(result)
-        display_relationships_table(result)
-        display_entity_graph_tree(result)
-        
-        # Save visualization if available
-        vis_path = save_visualization(result, "legal", "structured", OUTPUT_DIR)
-        if vis_path:
-            main_console.print(f"\n[green]✓[/green] Visualization saved to: [blue]{vis_path}[/blue]")
-        
-        # Display summary
-        display_extraction_summary(result)
-        
-    except Exception as e:
-        main_console.print(f"[bold red]Error:[/bold red] {str(e)}")
+            # Save visualization if available
+            vis_path = save_visualization(result, domain.value, strategy.value, OUTPUT_DIR)
+            if vis_path:
+                main_console.print(f"\n[green]✓[/green] Visualization saved to: [blue link=file://{vis_path}]{vis_path}[/blue]")
+            elif "visualization" in result and "error" in result["visualization"]:
+                 main_console.print(f"[yellow]Visualization generation failed: {result['visualization']['error']}[/yellow]")
 
-async def demonstrate_medical_extraction():
-    """Demonstrate entity graph extraction for medical text."""
-    display_header("Medical Domain Entity Graph Extraction")
-    
-    # Load medical case
-    medical_path = SAMPLE_DIR / "medical_case.txt"
-    display_dataset_info(medical_path, "Medical Case Report")
-    
-    with open(medical_path, "r", encoding="utf-8") as f:
-        medical_text = f.read()
-    
-    # Extract entity graph using strict schema strategy
-    main_console.print("[bold]Running Strict Schema Extraction Strategy[/bold]")
-    
-    try:
-        result = await run_entity_extraction(
-            text=medical_text,
-            domain=TextDomain.MEDICAL,
-            strategy=GraphStrategy.STRICT_SCHEMA,
-            model="claude-3-5-haiku-20241022",
-            visualization_format=VisualizationFormat.HTML
-        )
-        
-        # Display results
-        display_entity_stats(result)
-        display_graph_metrics(result)
-        display_entities_table(result)
-        display_relationships_table(result)
-        display_entity_graph_tree(result)
-        
-        # Save visualization if available
-        vis_path = save_visualization(result, "medical", "strict_schema", OUTPUT_DIR)
-        if vis_path:
-            main_console.print(f"\n[green]✓[/green] Visualization saved to: [blue]{vis_path}[/blue]")
-        
-        # Display summary
-        display_extraction_summary(result)
-        
+
+            # Display summary
+            display_extraction_summary(result)
+        elif result:
+             main_console.print(f"[bold red]Extraction reported failure:[/bold red] {result.get('error', 'Unknown error')}")
+        # If result is None, run_entity_extraction already printed the error
+
     except Exception as e:
-        main_console.print(f"[bold red]Error:[/bold red] {str(e)}")
+        # Catch errors not caught by run_entity_extraction's try/except
+        main_console.print(f"[bold red]Error during {domain_name} demonstration:[/bold red] {escape(str(e))}")
+        logger.error(f"Unhandled error in {domain_name} demo: {e}", exc_info=True)
+
 
 async def demonstrate_strategy_comparison():
     """Compare different extraction strategies on the same text."""
     display_header("Strategy Comparison")
-    
+
     # Load business article for comparison
-    business_path = SAMPLE_DIR / "article.txt"
-    display_dataset_info(business_path, "Business News Article (For Strategy Comparison)")
-    
-    with open(business_path, "r", encoding="utf-8") as f:
-        business_text = f.read()
-    
+    comparison_file = "article.txt"
+    comparison_path = SAMPLE_DIR / comparison_file
+    display_dataset_info(comparison_path, f"{comparison_file} (For Strategy Comparison)")
+
+    if not comparison_path.exists():
+        return
+
+    with open(comparison_path, "r", encoding="utf-8") as f:
+        comparison_text = f.read()
+
     # Define strategies to compare
-    strategies = [
-        (GraphStrategy.STANDARD, "Standard (Default)"),
-        (GraphStrategy.MULTISTAGE, "Multistage (Entities First)"),
-        (GraphStrategy.CHUNKED, "Chunked (For Large Texts)"),
-        (GraphStrategy.STRUCTURED, "Structured (Example-based)")
+    strategies_to_compare = [
+        (GraphStrategy.STANDARD, "Standard"),
+        (GraphStrategy.MULTISTAGE, "Multistage"),
+        (GraphStrategy.CHUNKED, "Chunked"), # Will process full text if short, or chunk if long
+        (GraphStrategy.STRUCTURED, "Structured"), # Needs examples from domain
+        (GraphStrategy.STRICT_SCHEMA, "Strict Schema") # Needs domain
     ]
-    
+
     # Setup comparison table
-    comparison_table = Table(title="Strategy Comparison Results", box=box.ROUNDED, show_header=True)
+    comparison_table = Table(title="Strategy Comparison Results", box=box.ROUNDED, show_header=True, header_style="bold magenta")
     comparison_table.add_column("Strategy", style="cyan")
     comparison_table.add_column("Entities", style="green", justify="right")
-    comparison_table.add_column("Relationships", style="green", justify="right")
+    comparison_table.add_column("Rels", style="green", justify="right")
     comparison_table.add_column("Time (s)", style="yellow", justify="right")
     comparison_table.add_column("Tokens", style="magenta", justify="right")
     comparison_table.add_column("Cost ($)", style="blue", justify="right")
-    
+
+    # Use a slightly smaller model for faster comparison if needed
+    comparison_model = "claude-3-haiku-20240307"
+    comparison_provider = Provider.ANTHROPIC.value
+    comparison_domain = TextDomain.BUSINESS
+
     # Compare each strategy
-    for strategy, desc in strategies:
-        main_console.print(f"\n[bold]Running {desc} Strategy[/bold]")
-        
+    for strategy, desc in strategies_to_compare:
+        main_console.print(f"\n[bold underline]Running {desc} Strategy[/bold underline]")
+
+        # Use full text for chunking demo, maybe excerpt for others if needed for speed?
+        # Let's use full text for all to see chunking effect properly
+        text_to_use = comparison_text
+
+        result = None # Define result outside try block
         try:
-            # Only run on a portion of the text to save time in the comparison
-            text_excerpt = business_text[:2000]  # First 2000 chars
-            
             result = await run_entity_extraction(
-                text=text_excerpt,
-                domain=TextDomain.BUSINESS,
+                text=text_to_use,
+                domain=comparison_domain, # Business domain has examples/schema
                 strategy=strategy,
-                model="claude-3-5-haiku-20241022",
-                visualization_format=VisualizationFormat.NONE  # Skip visualization for comparison
+                model=comparison_model,
+                provider=comparison_provider,
+                visualization_format=VisualizationFormat.NONE # Skip visualization for comparison
             )
-            
-            # Extract metrics for comparison
-            entity_count = len(result.get("entities", []))
-            rel_count = len(result.get("relationships", []))
-            processing_time = result.get("processing_time", 0)
-            token_count = result.get("tokens", {}).get("total", 0)
-            cost = result.get("cost", 0)
-            
-            # Add to comparison table
-            comparison_table.add_row(
-                desc,
-                str(entity_count),
-                str(rel_count),
-                f"{processing_time:.2f}",
-                str(token_count),
-                f"{cost:.6f}"
-            )
-            
-            # Display stats for this strategy
-            display_entity_stats(result)
-            
+
+            if result and result.get("success", False):
+                # Extract metrics for comparison
+                entity_count = result.get("metadata", {}).get("entity_count", 0)
+                rel_count = result.get("metadata", {}).get("relationship_count", 0)
+                processing_time = result.get("processing_time", 0.0)
+                token_count = result.get("tokens", {}).get("total", 0)
+                cost = result.get("cost", 0.0)
+
+                # Add to comparison table
+                comparison_table.add_row(
+                    desc,
+                    str(entity_count),
+                    str(rel_count),
+                    f"{processing_time:.2f}",
+                    f"{token_count:,}",
+                    f"{cost:.6f}"
+                )
+                # Display brief stats for this strategy
+                display_entity_stats(result)
+            else:
+                 error_msg = result.get("error", "Extraction failed") if result else "Extraction returned None"
+                 main_console.print(f"[bold red]Error with {desc} strategy:[/bold red] {escape(error_msg)}")
+                 comparison_table.add_row(desc, "[red]ERR[/red]", "[red]ERR[/red]", "N/A", "N/A", "N/A")
+
+
         except Exception as e:
-            main_console.print(f"[bold red]Error with {desc} strategy:[/bold red] {str(e)}")
-            # Add error row to comparison table
-            comparison_table.add_row(desc, "ERROR", "ERROR", "N/A", "N/A", "N/A")
-    
+            logger.error(f"Unhandled error comparing strategy {desc}: {e}", exc_info=True)
+            main_console.print(f"[bold red]Unhandled Error with {desc} strategy:[/bold red] {escape(str(e))}")
+            comparison_table.add_row(desc, "[red]CRASH[/red]", "[red]CRASH[/red]", "N/A", "N/A", "N/A")
+
+
     # Display final comparison table
+    main_console.print(Rule("Comparison Summary"))
     main_console.print(comparison_table)
 
+
 async def demonstrate_output_formats():
-    """Demonstrate different output formats."""
-    display_header("Output Format Comparison")
-    
+    """Demonstrate different output formats using a sample text."""
+    display_header("Output Format Demonstration")
+
     # Load academic paper for output format demo
-    academic_path = SAMPLE_DIR / "research_paper.txt"
-    display_dataset_info(academic_path, "Academic Paper (For Output Formats)")
-    
-    with open(academic_path, "r", encoding="utf-8") as f:
-        academic_text = f.read()
-    
+    format_file = "research_paper.txt"
+    format_path = SAMPLE_DIR / format_file
+    display_dataset_info(format_path, f"{format_file} (For Output Formats)")
+
+    if not format_path.exists():
+        return
+
+    with open(format_path, "r", encoding="utf-8") as f:
+        format_text = f.read()
+
     # Define output formats to demonstrate
-    formats = [
+    # Exclude NetworkX if library not installed
+    formats_to_demonstrate = [
         (OutputFormat.JSON, "Standard JSON"),
-        (OutputFormat.NETWORKX, "NetworkX Graph"),
-        (OutputFormat.CYTOSCAPE, "Cytoscape.js Format"),
-        (OutputFormat.NEO4J, "Neo4j Cypher Queries")
+        (OutputFormat.CYTOSCAPE, "Cytoscape.js"),
+        (OutputFormat.NEO4J, "Neo4j Cypher"),
+        (OutputFormat.RDF, "RDF Triples"),
+        (OutputFormat.D3, "D3.js nodes/links"),
     ]
-    
-    main_console.print("[bold yellow]Note:[/bold yellow] This demonstrates how the extracted data can be formatted for different applications.")
-    
+    if HAS_NETWORKX:
+        formats_to_demonstrate.insert(1, (OutputFormat.NETWORKX, "NetworkX Object"))
+
+
+    main_console.print("[bold yellow]Note:[/bold yellow] This demonstrates how extracted data can be formatted.")
+
+    # Use a short excerpt for speed
+    text_excerpt = format_text[:2000]
+    base_model = "claude-3-haiku-20240307" # Faster model for formats
+    base_provider = Provider.ANTHROPIC.value
+    base_domain = TextDomain.ACADEMIC
+
     # Extract with each output format
-    for fmt, desc in formats:
-        main_console.print(f"\n[bold]Demonstrating {desc} Output Format[/bold]")
-        
+    for fmt, desc in formats_to_demonstrate:
+        main_console.print(f"\n[bold underline]Demonstrating {desc} Output Format[/bold underline]")
+
+        result = None # Define outside try block
         try:
-            # Only run on a portion of the text to save time
-            text_excerpt = academic_text[:1500]  # First 1500 chars
-            
             result = await run_entity_extraction(
                 text=text_excerpt,
-                domain=TextDomain.ACADEMIC,
-                strategy=GraphStrategy.STANDARD,  # Use standard strategy for all
-                model="claude-3-5-haiku-20241022",
-                output_format=fmt,
-                visualization_format=VisualizationFormat.NONE  # Skip visualization for this demo
+                domain=base_domain,
+                strategy=GraphStrategy.STANDARD, # Use standard strategy
+                model=base_model,
+                provider=base_provider,
+                output_format=fmt, # Specify the output format
+                visualization_format=VisualizationFormat.NONE # No viz needed here
             )
-            
-            # Display format-specific output
-            if fmt == OutputFormat.JSON:
-                # Display a subset of the JSON
-                json_subset = {
-                    "entities": result.get("entities", [])[:3],
-                    "relationships": result.get("relationships", [])[:3]
-                }
-                main_console.print(Panel(
-                    Syntax(json.dumps(json_subset, indent=2), "json", theme="monokai", line_numbers=True),
-                    title=f"Sample of {desc} Output",
-                    border_style="green"
-                ))
-                
-            elif fmt == OutputFormat.NETWORKX:
-                # Just show the fact that we have a NetworkX graph object
-                has_graph = "graph" in result
-                main_console.print(Panel(
-                    f"[green]✓[/green] NetworkX graph object created: {has_graph}\n"
-                    f"With {len(result.get('entities', []))} nodes and {len(result.get('relationships', []))} edges.\n\n"
-                    "This format enables graph algorithms like:\n"
-                    "- Centrality analysis\n"
-                    "- Path finding\n"
-                    "- Community detection\n"
-                    "- Network visualization",
-                    title=f"{desc} Output",
-                    border_style="green"
-                ))
-                
-            elif fmt == OutputFormat.CYTOSCAPE:
-                # Show sample of Cytoscape.js format
-                if "cytoscape" in result:
-                    cyto_data = result["cytoscape"]
-                    sample = {
-                        "nodes": cyto_data.get("nodes", [])[:2],
-                        "edges": cyto_data.get("edges", [])[:2]
+
+            if not result or not result.get("success", False):
+                 error_msg = result.get("error", "Extraction failed") if result else "Extraction returned None"
+                 main_console.print(f"[bold red]Error extracting data for {desc} format:[/bold red] {escape(error_msg)}")
+                 continue # Skip displaying output for this format
+
+
+            # Display format-specific output key
+            output_key = fmt.value # Default key matches enum value
+            if fmt == OutputFormat.NETWORKX: 
+                output_key = "graph"
+            if fmt == OutputFormat.NEO4J: 
+                output_key = "neo4j_queries"
+            if fmt == OutputFormat.RDF: 
+                output_key = "rdf_triples"
+            if fmt == OutputFormat.D3: 
+                output_key = "d3"
+            if fmt == OutputFormat.CYTOSCAPE: 
+                output_key = "cytoscape"
+
+            if output_key in result:
+                data_to_display = result[output_key]
+                display_title = f"Sample of {desc} Output (`{output_key}` key)"
+
+                if fmt == OutputFormat.JSON:
+                    # Display a subset of the standard JSON keys
+                    json_subset = {
+                        "entities": result.get("entities", [])[:2],
+                        "relationships": result.get("relationships", [])[:2],
+                        "metadata": {k:v for k,v in result.get("metadata",{}).items() if k in ["entity_count", "relationship_count","processing_strategy"]}
                     }
-                    main_console.print(Panel(
-                        Syntax(json.dumps(sample, indent=2), "json", theme="monokai", line_numbers=True),
-                        title=f"Sample of {desc} Output",
-                        border_style="green"
-                    ))
+                    output_content = Syntax(json.dumps(json_subset, indent=2), "json", theme="default", line_numbers=True, word_wrap=True)
+                elif fmt == OutputFormat.NETWORKX:
+                    graph_obj = result["graph"]
+                    info = (
+                         f"[green]✓[/green] NetworkX graph object created: {isinstance(graph_obj, nx.DiGraph)}\n"
+                         f"Nodes: {graph_obj.number_of_nodes()}, Edges: {graph_obj.number_of_edges()}\n\n"
+                         "[italic]Allows graph algorithms (centrality, paths, etc.)[/italic]"
+                    )
+                    output_content = info # Simple text panel
+                elif fmt == OutputFormat.CYTOSCAPE:
+                     sample = {
+                         "nodes": data_to_display.get("nodes", [])[:2],
+                         "edges": data_to_display.get("edges", [])[:2]
+                     }
+                     output_content = Syntax(json.dumps(sample, indent=2), "json", theme="default", line_numbers=True, word_wrap=True)
+                elif fmt == OutputFormat.NEO4J:
+                    queries = data_to_display
+                    sample_queries = queries[:3] # Show first few queries
+                    output_content = Syntax("\n\n".join(sample_queries) + "\n...", "cypher", theme="default", line_numbers=True, word_wrap=True)
+                elif fmt == OutputFormat.RDF:
+                     triples = data_to_display
+                     sample_triples = ['("{}", "{}", "{}")'.format(*t) for t in triples[:5]] # Format first few
+                     output_content = Syntax("\n".join(sample_triples) + "\n...", "turtle", theme="default", line_numbers=True, word_wrap=True) # Turtle isn't perfect but ok
+                elif fmt == OutputFormat.D3:
+                     sample = {
+                         "nodes": data_to_display.get("nodes", [])[:2],
+                         "links": data_to_display.get("links", [])[:2]
+                     }
+                     output_content = Syntax(json.dumps(sample, indent=2), "json", theme="default", line_numbers=True, word_wrap=True)
                 else:
-                    main_console.print("[yellow]Cytoscape.js format not available in result.[/yellow]")
-                    
-            elif fmt == OutputFormat.NEO4J:
-                # Show sample of Neo4j Cypher queries
-                if "neo4j_queries" in result:
-                    queries = result["neo4j_queries"]
-                    sample_queries = queries[:3] if len(queries) > 3 else queries
-                    main_console.print(Panel(
-                        Syntax("\n\n".join(sample_queries), "cypher", theme="monokai", line_numbers=True),
-                        title=f"Sample of {desc} Output (Cypher Queries)",
-                        border_style="green"
-                    ))
-                else:
-                    main_console.print("[yellow]Neo4j queries not available in result.[/yellow]")
-            
+                     # Fallback for unexpected formats
+                     output_content = escape(str(data_to_display)[:500] + "...")
+
+
+                main_console.print(Panel(
+                    output_content,
+                    title=display_title,
+                    border_style="green",
+                    expand=False
+                ))
+
+            else:
+                 main_console.print(f"[yellow]Output key '{output_key}' not found in result for {desc} format.[/yellow]")
+
+
         except Exception as e:
-            main_console.print(f"[bold red]Error with {desc} format:[/bold red] {str(e)}")
+            logger.error(f"Unhandled error demonstrating format {desc}: {e}", exc_info=True)
+            main_console.print(f"[bold red]Unhandled Error with {desc} format:[/bold red] {escape(str(e))}")
+
 
 async def main():
     """Run entity relation graph extraction demonstrations."""
     try:
         # Display welcome message
-        main_console.print(Rule("[bold magenta]Entity Relationship Graph Extraction Demo[/bold magenta]"))
+        main_console.print(Rule("[bold magenta]Entity Relationship Graph Extraction Demo (v2 Tool)[/bold magenta]"))
         main_console.print(
-            "[bold]This demonstrates the entity_relation_graph tool for extracting and visualizing "
-            "knowledge graphs from text across different domains.[/bold]\n"
+            "[bold]This demonstrates the refactored `entity_graph` tool for extracting and visualizing "
+            "knowledge graphs from text across different domains and using various strategies.[/bold]\n"
         )
-        
-        # Initialize the Gateway (needed for setup, not directly used in this demo)
-        Gateway("entity-graph-demo", register_tools=True)
-        
+
+        # Check for dependencies needed by the demo display itself
+        if not HAS_VISUALIZATION_LIBS:
+             main_console.print("[yellow]Warning:[/yellow] `networkx`, `pyvis`, or `matplotlib` not installed.")
+             main_console.print("Graph metrics, tree view, and some visualizations may be unavailable.")
+        if not HAS_NETWORKX:
+             main_console.print("[yellow]Warning:[/yellow] `networkx` not installed. Graph metrics and tree view disabled.")
+
+
+        # Initialize the Gateway (optional, depends if Gateway context is needed for config/logging)
+        # If the tool functions standalone, this might not be strictly necessary for the demo.
+        # gateway = Gateway("entity-graph-demo", register_tools=True)
+        # logger.info("LLM Gateway initialized (optional for demo).")
+
+
         # Check if sample directory exists
-        if not SAMPLE_DIR.exists():
-            main_console.print(f"[bold red]Error:[/bold red] Sample directory {SAMPLE_DIR} not found!")
+        if not SAMPLE_DIR.exists() or not any(SAMPLE_DIR.iterdir()):
+            main_console.print(f"[bold red]Error:[/bold red] Sample directory '{SAMPLE_DIR}' not found or is empty!")
+            main_console.print("Please create the 'sample' directory next to this script and add text files (e.g., article.txt).")
             return 1
-            
-        # Run demonstrations
-        await demonstrate_business_extraction()
-        await demonstrate_academic_extraction()
-        await demonstrate_legal_extraction()
-        await demonstrate_medical_extraction()
+
+        # --- Run Demonstrations ---
+        # Define models to use - maybe select based on availability or speed
+        # Using Sonnet as a balance, Haiku for comparisons/formats
+        default_model = "claude-3-5-sonnet-20240620"
+        default_provider = Provider.ANTHROPIC.value # String like "anthropic"
+
+        # 1. Domain Examples (using appropriate strategies)
+        await demonstrate_domain_extraction(TextDomain.BUSINESS, "article.txt", GraphStrategy.STANDARD, model=default_model, provider=default_provider)
+        await demonstrate_domain_extraction(TextDomain.ACADEMIC, "research_paper.txt", GraphStrategy.MULTISTAGE, model=default_model, provider=default_provider)
+        await demonstrate_domain_extraction(TextDomain.LEGAL, "legal_contract.txt", GraphStrategy.STRUCTURED, model=default_model, provider=default_provider)
+        await demonstrate_domain_extraction(TextDomain.MEDICAL, "medical_case.txt", GraphStrategy.STRICT_SCHEMA, model=default_model, provider=default_provider)
+
+        # 2. Strategy Comparison
         await demonstrate_strategy_comparison()
+
+        # 3. Output Format Demonstration
         await demonstrate_output_formats()
-        
+
         main_console.print(Rule("[bold green]Entity Relationship Graph Extraction Demo Complete[/bold green]"))
-        main_console.print(
-            f"\n[bold]Visualizations have been saved to: [blue]{OUTPUT_DIR}[/blue][/bold]\n"
-            "Open the HTML files in a web browser to explore the interactive entity graphs."
-        )
-        
+        # Split the print into two simpler statements to avoid rich markup issues
+        main_console.print(f"\n[bold]Visualizations and outputs have been saved to:[/bold] {OUTPUT_DIR}")
+        main_console.print("Open any HTML files in a web browser to explore interactive graphs.")
+
         return 0
-        
+
     except Exception as e:
-        logger.error(f"Demo failed: {str(e)}", emoji_key="error", exc_info=True)
-        main_console.print(f"[bold red]Demo failed with error:[/bold red] {str(e)}")
+        # Catch-all for unexpected errors during setup or top-level execution
+        logger.critical(f"Demo failed catastrophically: {e}", exc_info=True)
+        main_console.print(f"[bold red]Critical Demo Error:[/bold red] {escape(str(e))}")
         return 1
 
 if __name__ == "__main__":
     exit_code = asyncio.run(main())
-    sys.exit(exit_code) 
+    sys.exit(exit_code)

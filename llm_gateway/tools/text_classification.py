@@ -23,9 +23,9 @@ class ClassificationStrategy(Enum):
     ENSEMBLE = "ensemble"        # Combine multiple providers/models
     SEMANTIC = "semantic"        # Use semantic similarity
 
+@with_cache(ttl=24 * 60 * 60)  # Cache results for 24 hours
 @with_tool_metrics
 @with_retry(max_retries=2, retry_delay=1.0)
-@with_cache(ttl=24 * 60 * 60)  # Cache results for 24 hours
 @with_error_handling
 async def text_classification(
     text: str,
