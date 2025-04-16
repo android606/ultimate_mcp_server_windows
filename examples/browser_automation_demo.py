@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import tempfile
+import json
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -39,8 +40,32 @@ from llm_gateway.tools.browser_automation import (
     browser_type,
     browser_upload_file,
     browser_wait,
+    find_and_download_pdfs,
+    multi_engine_search_summary,
+    extract_structured_data_from_pages,
+    execute_web_workflow,
+    monitor_web_data_points,
+    research_and_synthesize_report,
 )
 from llm_gateway.utils import get_logger
+
+# --- Import Instruction Packs ---
+from examples.web_automation_instruction_packs import (
+    ACADEMIC_PAPER_INSTRUCTIONS,
+    GOVERNMENT_REPORT_INSTRUCTIONS,
+    PRODUCT_MANUAL_INSTRUCTIONS,
+    LEGAL_DOCUMENT_INSTRUCTIONS,
+    SIMPLE_SEARCH_SUMMARY_INSTRUCTIONS,
+    TECHNICAL_SEARCH_SUMMARY_INSTRUCTIONS,
+    JOB_POSTING_EXTRACTION_INSTRUCTIONS,
+    ECOMMERCE_PRODUCT_EXTRACTION_INSTRUCTIONS,
+    ORDER_STATUS_WORKFLOW_INSTRUCTIONS,
+    CONTACT_FORM_WORKFLOW_INSTRUCTIONS,
+    PRODUCT_MONITORING_INSTRUCTIONS,
+    WEBSITE_SECTION_MONITORING_INSTRUCTIONS,
+    MARKET_TREND_RESEARCH_INSTRUCTIONS,
+    COMPETITIVE_ANALYSIS_INSTRUCTIONS  
+)
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -2135,7 +2160,6 @@ def escape_html(text: str) -> str:
             .replace('"', "&quot;")
             .replace("'", "&#39;"))
 
-
 async def cleanup():
     """Cleanup browser resources and generate final report."""
     console.print(Rule("[bold blue]Cleanup[/bold blue]"))
@@ -2160,6 +2184,357 @@ async def cleanup():
     
     return result
 
+# Demo High Level Functions
+
+async def demo_search_summary_with_instructions(
+    query: str,
+    instructions: Dict,
+    llm_model: str,
+    demo_title: str,
+    headless: bool = True
+):
+    """Generic function to run the multi_engine_search_summary demo."""
+    console.print(Rule(f"[bold yellow]Demo: {demo_title} ('{query}')[/bold yellow]"))
+
+    result = await multi_engine_search_summary(
+        query=query,
+        instructions=instructions, # Pass the specific instructions
+        llm_model=llm_model,
+        browser_options={"headless": headless},
+        max_concurrent_summaries=3 # Example concurrency limit
+    )
+
+    # Display result
+    console.print(Panel(
+        Syntax(json.dumps(result, indent=2, default=str), "json", theme="default", line_numbers=True),
+        title=f"Result: {demo_title} ('{query}')",
+        border_style="blue" if result.get("success") else "red"
+    ))
+    status_color = "green" if result.get("success") else "red"
+    console.print(f"[bold {status_color}]Finished '{demo_title}' for '{query}'.[/bold {status_color}]")
+    console.print("-" * 80)
+    await asyncio.sleep(1)
+    return result
+
+async def demo_pdf_finder_with_instructions(
+    topic: str,
+    instructions: Dict, # Pass the specific instruction pack
+    output_base_dir: str,
+    llm_model: str,
+    demo_title: str,
+    steps: int = 15,
+    headless: bool = True
+):
+    """Generic function to run the find_and_download_pdfs demo."""
+    console.print(Rule(f"[bold cyan]Demo: {demo_title} ({topic})[/bold cyan]"))
+
+    # Create the base output directory if it doesn't exist
+    Path(output_base_dir).mkdir(parents=True, exist_ok=True)
+
+    result = await find_and_download_pdfs(
+        topic=topic,
+        instructions=instructions,
+        output_directory=output_base_dir, # Tool will create topic subdir
+        llm_model=llm_model,
+        max_exploration_steps=steps,
+        browser_options={"headless": headless}
+    )
+
+    # Display result
+    console.print(Panel(
+        Syntax(json.dumps(result, indent=2, default=str), "json", theme="default", line_numbers=True),
+        title=f"Result: {demo_title} ({topic})",
+        border_style="blue" if result.get("success") else "red"
+    ))
+    status_color = "green" if result.get("success") else "red"
+    console.print(f"[bold {status_color}]Finished '{demo_title}' for '{topic}'.[/bold {status_color}]")
+    console.print("-" * 80)
+    await asyncio.sleep(1) # Pause between demos
+    return result
+
+async def demo_structured_data_extraction(
+    instructions: Dict,
+    demo_title: str,
+    llm_model_override: Optional[str] = None, # Allow overriding model for demo if needed
+    headless: bool = True
+):
+    """Generic function to run the extract_structured_data_from_pages demo."""
+    console.print(Rule(f"[bold magenta]Demo: {demo_title}[/bold magenta]"))
+
+    # If source URLs are needed, they must be populated in the instructions *before* calling
+    # Example: instructions["data_source"]["urls"] = ["http://...", "http://..."]
+
+    # Determine the LLM model to use
+    # Priority: Override > Instructions > Default within tool
+    model_to_use = llm_model_override or instructions.get("extraction_details", {}).get("extraction_llm_model")
+    if not model_to_use:
+         # Fallback if not specified anywhere (should be required in instructions ideally)
+         model_to_use = "openai/gpt-4.1-mini"
+         logger.warning(f"LLM model not specified for {demo_title}, defaulting to {model_to_use}")
+         # Update instructions dict if needed, though tool expects it internally
+         if "extraction_details" in instructions:
+              instructions["extraction_details"]["extraction_llm_model"] = model_to_use
+
+    result = await extract_structured_data_from_pages(
+        instructions=instructions,
+        # llm_model is now specified within instructions["extraction_details"]
+        browser_options={"headless": headless},
+        max_concurrent_pages=3 # Example concurrency limit for demo
+    )
+
+    # Display result
+    console.print(Panel(
+        Syntax(json.dumps(result, indent=2, default=str), "json", theme="default", line_numbers=True),
+        title=f"Result: {demo_title}",
+        border_style="blue" if result.get("success") else "red"
+    ))
+    status_color = "green" if result.get("success") else "red"
+    console.print(f"[bold {status_color}]Finished '{demo_title}'.[/bold {status_color}]")
+    console.print("-" * 80)
+    await asyncio.sleep(1)
+    return result
+
+async def demo_web_workflow(
+    instructions: Dict,
+    input_data: Optional[Dict],
+    demo_title: str,
+    headless: bool = True
+):
+    """Generic function to run the execute_web_workflow demo."""
+    console.print(Rule(f"[bold blue]Demo: {demo_title}[/bold blue]"))
+
+    # Note: llm_model is specified *inside* the instructions dict for this tool
+    result = await execute_web_workflow(
+        instructions=instructions,
+        input_data=input_data,
+        browser_options={"headless": headless}
+        # max_steps is also typically defined within instructions
+    )
+
+    # Display result
+    console.print(Panel(
+        Syntax(json.dumps(result, indent=2, default=str), "json", theme="default", line_numbers=True),
+        title=f"Result: {demo_title}",
+        border_style="blue" if result.get("success") else "red"
+    ))
+    status_color = "green" if result.get("success") else "red"
+    console.print(f"[bold {status_color}]Finished '{demo_title}'.[/bold {status_color}]")
+    console.print("-" * 80)
+    await asyncio.sleep(1)
+    return result
+
+async def demo_data_point_monitoring(
+    instructions: Dict,
+    previous_values: Optional[Dict],
+    demo_title: str,
+    headless: bool = True
+):
+    """Generic function to run the monitor_web_data_points demo."""
+    console.print(Rule(f"[bold yellow]Demo: {demo_title}[/bold yellow]"))
+
+    # Pass previous values if available
+    result = await monitor_web_data_points(
+        instructions=instructions,
+        previous_values=previous_values,
+        # LLM model, browser options, concurrency are inside instructions
+    )
+
+    # Display result
+    console.print(Panel(
+        Syntax(json.dumps(result, indent=2, default=str), "json", theme="default", line_numbers=True),
+        title=f"Result: {demo_title}",
+        border_style="blue" if result.get("success") else "red"
+    ))
+    status_color = "green" if result.get("success") else "red"
+    console.print(f"[bold {status_color}]Finished '{demo_title}'.[/bold {status_color}]")
+    console.print("-" * 80)
+    await asyncio.sleep(1)
+    return result # Return the full result which includes current values
+
+async def demo_research_synthesis(
+    topic: str,
+    instructions: Dict,
+    demo_title: str,
+    # Model is now inside instructions, but allow override for demo flexibility
+    llm_model_override: Optional[str] = None,
+    headless: bool = True
+):
+    """Generic function to run the research_and_synthesize_report demo."""
+    console.print(Rule(f"[bold green]Demo: {demo_title} ('{topic}')[/bold green]"))
+
+    # Override models in instructions if specified via CLI arg for demo purposes
+    instructions_copy = instructions.copy() # Modify a copy
+    if llm_model_override:
+        if "extraction_phase" in instructions_copy and isinstance(instructions_copy["extraction_phase"], dict):
+            instructions_copy["extraction_phase"]["extraction_llm_model"] = llm_model_override
+        if "synthesis_phase" in instructions_copy and isinstance(instructions_copy["synthesis_phase"], dict):
+            instructions_copy["synthesis_phase"]["synthesis_llm_model"] = llm_model_override
+        # Also need to potentially override the selection model if we add that config later
+
+    result = await research_and_synthesize_report(
+        topic=topic,
+        instructions=instructions_copy, # Pass the potentially modified instructions
+        browser_options={"headless": headless},
+        max_concurrent_extractions=2 # Lower concurrency for demo stability
+    )
+
+    # Display result
+    console.print(Panel(
+        Syntax(json.dumps(result, indent=2, default=str), "json", theme="default", line_numbers=True),
+        title=f"Result: {demo_title} ('{topic}')",
+        border_style="blue" if result.get("success") else "red"
+    ))
+    status_color = "green" if result.get("success") else "red"
+    console.print(f"[bold {status_color}]Finished '{demo_title}' for '{topic}'.[/bold {status_color}]")
+    console.print("-" * 80)
+    await asyncio.sleep(1)
+    return result
+
+
+#  # --- Run Demos Using Instruction Packs ---
+
+#         # 1. Academic Paper Demo
+#         if "academic" in args.demos_to_run:
+#             all_results["academic_papers"] = await demo_pdf_finder_with_instructions(
+#                 topic="Quantum Computing Algorithms",
+#                 instructions=ACADEMIC_PAPER_INSTRUCTIONS,
+#                 output_base_dir=args.output_dir,
+#                 llm_model=args.model,
+#                 demo_title="Find Academic Papers (arXiv)",
+#                 steps=args.max_steps,
+#                 headless=args.headless
+#             )
+
+#         # 2. Government Report Demo
+#         if "government" in args.demos_to_run:
+#             all_results["gov_reports"] = await demo_pdf_finder_with_instructions(
+#                 topic="UK AI Safety Summit Outcomes",
+#                 instructions=GOVERNMENT_REPORT_INSTRUCTIONS,
+#                 output_base_dir=args.output_dir,
+#                 llm_model=args.model,
+#                 demo_title="Find Government Reports",
+#                 steps=args.max_steps,
+#                 headless=args.headless
+#             )
+
+#         # 3. Product Manual Demo
+#         if "manual" in args.demos_to_run:
+#             all_results["product_manuals"] = await demo_pdf_finder_with_instructions(
+#                 topic="Raspberry Pi 5",
+#                 instructions=PRODUCT_MANUAL_INSTRUCTIONS,
+#                 output_base_dir=args.output_dir,
+#                 llm_model=args.model,
+#                 demo_title="Find Product Manuals",
+#                 steps=args.max_steps,
+#                 headless=args.headless
+#             )
+
+#         # 4. Legal Document Demo (Example)
+#         if "legal" in args.demos_to_run:
+#              all_results["legal_docs"] = await demo_pdf_finder_with_instructions(
+#                  topic="OpenAI lawsuit motion dismiss", # Example topic
+#                  instructions=LEGAL_DOCUMENT_INSTRUCTIONS,
+#                  output_base_dir=args.output_dir,
+#                  llm_model=args.model, # May need a more capable model for legal
+#                  demo_title="Find Legal Documents",
+#                  steps=args.max_steps,
+#                  headless=args.headless
+#              )
+#  # --- Run NEW Search Summary Demos ---
+#         if "simple_search" in args.demos_to_run:
+#             await demo_search_summary_with_instructions(
+#                 query="Best family vacation destinations in Europe",
+#                 instructions=SIMPLE_SEARCH_SUMMARY_INSTRUCTIONS,
+#                 llm_model=args.model,
+#                 demo_title="Simple Search Summary",
+#                 headless=args.headless
+#             )
+
+#         if "tech_search" in args.demos_to_run:
+#             await demo_search_summary_with_instructions(
+#                 query="Playwright vs Selenium web scraping performance",
+#                 instructions=TECHNICAL_SEARCH_SUMMARY_INSTRUCTIONS,
+#                 llm_model=args.model,
+#                 demo_title="Technical Search Summary",
+#                 headless=args.headless
+#             )
+
+#  # --- Run NEW Workflow Demos ---
+#         if "all" in args.demos_to_run or "workflow_login" in args.demos_to_run:
+#              # Provide the necessary input data for the login workflow
+#              login_input = {"username": "tomsmith", "password": "SuperSecretPassword!"}
+#              await demo_web_workflow(
+#                  instructions=ORDER_STATUS_WORKFLOW_INSTRUCTIONS,
+#                  input_data=login_input,
+#                  demo_title="Execute Login Workflow (the-internet.herokuapp.com)",
+#                  headless=args.headless
+#              )
+
+#  # --- Run NEW Monitoring Demos ---
+#         if "all" in args.demos_to_run or "monitor_product" in args.demos_to_run:
+#              # IMPORTANT: You might need to update the URL and Selectors in
+#              # PRODUCT_MONITORING_INSTRUCTIONS to match a live product page!
+#              console.print("[yellow]Note: Product Monitoring Demo uses selectors that might break if the website changes.[/yellow]")
+#              product_instructions = PRODUCT_MONITORING_INSTRUCTIONS.copy() # Use a copy
+#              # Ensure the llm_model is set if overridden by args
+#              product_instructions["llm_config"]["model"] = args.model
+
+#              monitor_result = await demo_data_point_monitoring(
+#                  instructions=product_instructions,
+#                  # Pass the *current* state for change detection
+#                  previous_values=monitor_state["previous_values"],
+#                  demo_title="Monitor Product Price/Availability",
+#                  headless=args.headless
+#              )
+#              # Update the state with the *new* current values for the next run
+#              if monitor_result.get("success") and monitor_result.get("results"):
+#                  for url, data_points in monitor_result["results"].items():
+#                       if isinstance(data_points, dict) and "page_error" not in data_points:
+#                            for dp_name, dp_data in data_points.items():
+#                                 if isinstance(dp_data, dict) and "current_value" in dp_data and dp_data.get("error") is None:
+#                                      state_key = f"{url}::{dp_name}"
+#                                      monitor_state["previous_values"][state_key] = dp_data["current_value"]
+#                  # In a real app: save monitor_state["previous_values"] to disk/db here
+
+#         if "all" in args.demos_to_run or "monitor_news" in args.demos_to_run:
+#              # IMPORTANT: Selectors for news sites are highly volatile!
+#              console.print("[yellow]Note: News Monitoring Demo uses selectors that might break if the website changes.[/yellow]")
+#              news_instructions = WEBSITE_SECTION_MONITORING_INSTRUCTIONS.copy()
+#              news_instructions["llm_config"]["model"] = args.model # Set model
+
+#              monitor_result_news = await demo_data_point_monitoring(
+#                  instructions=news_instructions,
+#                  previous_values=monitor_state["previous_values"],
+#                  demo_title="Monitor Google News Headlines",
+#                  headless=args.headless
+#              )
+#              # Update state
+#              if monitor_result_news.get("success") and monitor_result_news.get("results"):
+#                   # Similar logic as above to update previous_values in monitor_state
+#                    for url, data_points in monitor_result_news["results"].items():
+#                        if isinstance(data_points, dict) and "page_error" not in data_points:
+#                            for dp_name, dp_data in data_points.items():
+#                                 if isinstance(dp_data, dict) and "current_value" in dp_data and dp_data.get("error") is None:
+#                                      state_key = f"{url}::{dp_name}"
+
+#  # --- Run NEW Research & Synthesis Demos ---
+#         if "all" in args.demos_to_run or "research_trends" in args.demos_to_run:
+#             await demo_research_synthesis(
+#                 topic="AI Agent Orchestration Frameworks",
+#                 instructions=MARKET_TREND_RESEARCH_INSTRUCTIONS,
+#                 demo_title="Research Market Trends",
+#                 llm_model_override=args.model, # Pass CLI model if needed
+#                 headless=args.headless
+#             )
+
+#         if "all" in args.demos_to_run or "research_competitors" in args.demos_to_run:
+#             await demo_research_synthesis(
+#                 topic="Notion productivity app", # Example product
+#                 instructions=COMPETITIVE_ANALYSIS_INSTRUCTIONS,
+#                 demo_title="Research Competitor Snippets",
+#                 llm_model_override=args.model,
+#                 headless=args.headless
+#             )
 
 async def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for the demo script."""
@@ -2168,43 +2543,118 @@ async def parse_arguments() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
-    # Demo selection arguments
-    demo_group = parser.add_argument_group("Demo Selection")
-    demo_group.add_argument(
+    # Basic demo type selector
+    demo_type_group = parser.add_argument_group("Demo Type Selection")
+    demo_type_group.add_argument(
         "--all", action="store_true",
-        help="Run all demos (default if no specific demo is selected)"
+        help="Run all low-level browser demos (default if no specific demo is selected)"
     )
-    demo_group.add_argument(
+    demo_type_group.add_argument(
+        "--all-high-level", action="store_true",
+        help="Run all high-level AI-powered demos"
+    )
+    
+    # Low-level browser demos
+    browser_demo_group = parser.add_argument_group("Low-Level Browser Demos")
+    browser_demo_group.add_argument(
         "--basics", action="store_true",
         help="Run basic navigation demo"
     )
-    demo_group.add_argument(
+    browser_demo_group.add_argument(
         "--forms", action="store_true",
         help="Run form interaction demo"
     )
-    demo_group.add_argument(
+    browser_demo_group.add_argument(
         "--javascript", action="store_true",
         help="Run JavaScript execution demo"
     )
-    demo_group.add_argument(
+    browser_demo_group.add_argument(
         "--tabs", action="store_true",
         help="Run tab management demo"
     )
-    demo_group.add_argument(
+    browser_demo_group.add_argument(
         "--auth", action="store_true",
         help="Run authentication workflow demo"
     )
-    demo_group.add_argument(
+    browser_demo_group.add_argument(
         "--search", action="store_true",
         help="Run search interaction demo"
     )
-    demo_group.add_argument(
+    browser_demo_group.add_argument(
         "--file-upload", action="store_true",
         help="Run file upload demo"
     )
-    demo_group.add_argument(
+    browser_demo_group.add_argument(
         "--network", action="store_true",
         help="Run network monitoring demo"
+    )
+
+    # High-level AI-powered demos
+    ai_demo_group = parser.add_argument_group("High-Level AI-Powered Demos")
+    
+    # Document finder demos
+    ai_demo_group.add_argument(
+        "--academic", action="store_true",
+        help="Run academic paper finder demo"
+    )
+    ai_demo_group.add_argument(
+        "--government", action="store_true",
+        help="Run government report finder demo"
+    )
+    ai_demo_group.add_argument(
+        "--manual", action="store_true",
+        help="Run product manual finder demo"
+    )
+    ai_demo_group.add_argument(
+        "--legal", action="store_true",
+        help="Run legal document finder demo"
+    )
+    
+    # Search summary demos
+    ai_demo_group.add_argument(
+        "--simple-search", action="store_true",
+        help="Run simple search summary demo"
+    )
+    ai_demo_group.add_argument(
+        "--tech-search", action="store_true",
+        help="Run technical search summary demo"
+    )
+    
+    # Workflow demos
+    ai_demo_group.add_argument(
+        "--workflow-login", action="store_true",
+        help="Run login workflow demo"
+    )
+    
+    # Monitoring demos
+    ai_demo_group.add_argument(
+        "--monitor-product", action="store_true",
+        help="Run product price/availability monitoring demo"
+    )
+    ai_demo_group.add_argument(
+        "--monitor-news", action="store_true",
+        help="Run news headline monitoring demo"
+    )
+    
+    # Research demos
+    ai_demo_group.add_argument(
+        "--research-trends", action="store_true",
+        help="Run market trends research demo"
+    )
+    ai_demo_group.add_argument(
+        "--research-competitors", action="store_true",
+        help="Run competitor analysis research demo"
+    )
+
+    # LLM configuration
+    llm_group = parser.add_argument_group("LLM Configuration")
+    llm_group.add_argument(
+        "--model", type=str, default="openai/gpt-4o-mini",
+        help="LLM model to use for AI-powered demos"
+    )
+    llm_group.add_argument(
+        "--max-steps", type=int, default=15,
+        help="Maximum exploration steps for document finder demos"
     )
 
     # Browser configuration
@@ -2235,15 +2685,69 @@ async def parse_arguments() -> argparse.Namespace:
     
     args = parser.parse_args()
     
-    # If no specific demo is selected, default to running all
+    # If no specific demo is selected, default to running all low-level demos
     if not any([
         args.all, args.basics, args.forms, args.javascript, 
-        args.tabs, args.auth, args.search, args.file_upload, args.network
+        args.tabs, args.auth, args.search, args.file_upload, args.network,
+        args.all_high_level, args.academic, args.government, args.manual, args.legal,
+        args.simple_search, args.tech_search, args.workflow_login,
+        args.monitor_product, args.monitor_news, args.research_trends, args.research_competitors
     ]):
         args.all = True
     
+    # Create a list of demos to run for easier handling in main()
+    args.demos_to_run = []
+    
+    # Add low-level demos
+    if args.all:
+        args.demos_to_run.extend(["basics", "forms", "javascript", "tabs", "auth", "search", "file-upload", "network"])
+    else:
+        if args.basics:
+            args.demos_to_run.append("basics")
+        if args.forms:
+            args.demos_to_run.append("forms")
+        if args.javascript:
+            args.demos_to_run.append("javascript")
+        if args.tabs:
+            args.demos_to_run.append("tabs")
+        if args.auth:
+            args.demos_to_run.append("auth")
+        if args.search:
+            args.demos_to_run.append("search")
+        if args.file_upload:
+            args.demos_to_run.append("file-upload")
+        if args.network:
+            args.demos_to_run.append("network")
+    
+    # Add high-level demos
+    if args.all_high_level:
+        args.demos_to_run.extend(["academic", "government", "manual", "legal", "simple-search", "tech-search", 
+                                 "workflow-login", "monitor-product", "monitor-news", "research-trends", "research-competitors"])
+    else:
+        if args.academic:
+            args.demos_to_run.append("academic")
+        if args.government:
+            args.demos_to_run.append("government")
+        if args.manual:
+            args.demos_to_run.append("manual")
+        if args.legal:
+            args.demos_to_run.append("legal")
+        if args.simple_search:
+            args.demos_to_run.append("simple-search")
+        if args.tech_search:
+            args.demos_to_run.append("tech-search")
+        if args.workflow_login:
+            args.demos_to_run.append("workflow-login")
+        if args.monitor_product:
+            args.demos_to_run.append("monitor-product")
+        if args.monitor_news:
+            args.demos_to_run.append("monitor-news")
+        if args.research_trends:
+            args.demos_to_run.append("research-trends")
+        if args.research_competitors:
+            args.demos_to_run.append("research-competitors")
+    
     return args
-
 
 async def main():
     """Run browser automation demonstrations based on command-line arguments."""
@@ -2253,6 +2757,12 @@ async def main():
     # Update configuration based on arguments
     global SAVE_DIR
     SAVE_DIR = Path(args.output_dir)
+    
+    # Initialize monitor state for monitoring demos
+    monitor_state = {"previous_values": {}}
+    
+    # Store results from all demos
+    all_results = {}
     
     console.print(Rule("[bold magenta]Browser Automation Demonstration[/bold magenta]"))
     logger.info("Starting browser automation demo", emoji_key="start")
@@ -2270,34 +2780,175 @@ async def main():
             default_timeout=args.timeout
         )
         
-        # Run selected demos
-        demos_to_run = []
+        # Organize demos into categories for display and execution
+        low_level_demos = []
+        high_level_demos = []
         
-        if args.all or args.basics:
-            demos_to_run.append(("Navigation Basics", demo_navigation_basics))
-            
-        if args.all or args.forms:
-            demos_to_run.append(("Form Interaction", demo_form_interaction))
-            
-        if args.all or args.javascript:
-            demos_to_run.append(("JavaScript Execution", demo_javascript_execution))
-            
-        if args.all or args.tabs:
-            demos_to_run.append(("Tab Management", demo_tab_management))
-            
-        if args.all or args.auth:
-            demos_to_run.append(("Authentication Workflow", demo_authentication_workflow))
-            
-        if args.all or args.search:
-            demos_to_run.append(("Search Interaction", demo_search_interaction))
-            
-        if args.all or args.file_upload:
-            demos_to_run.append(("File Upload", demo_file_upload))
-            
-        if args.all or args.network:
-            demos_to_run.append(("Network Monitoring", demo_network_monitoring))
+        # Collect low-level demos
+        if "basics" in args.demos_to_run:
+            low_level_demos.append(("Navigation Basics", demo_navigation_basics))
+        if "forms" in args.demos_to_run:
+            low_level_demos.append(("Form Interaction", demo_form_interaction))
+        if "javascript" in args.demos_to_run:
+            low_level_demos.append(("JavaScript Execution", demo_javascript_execution))
+        if "tabs" in args.demos_to_run:
+            low_level_demos.append(("Tab Management", demo_tab_management))
+        if "auth" in args.demos_to_run:
+            low_level_demos.append(("Authentication Workflow", demo_authentication_workflow))
+        if "search" in args.demos_to_run:
+            low_level_demos.append(("Search Interaction", demo_search_interaction))
+        if "file-upload" in args.demos_to_run:
+            low_level_demos.append(("File Upload", demo_file_upload))
+        if "network" in args.demos_to_run:
+            low_level_demos.append(("Network Monitoring", demo_network_monitoring))
         
-        # Create overall progress bar
+        # Collect high-level demos
+        # Document finder demos
+        if "academic" in args.demos_to_run:
+            high_level_demos.append((
+                "Academic Paper Finder", 
+                lambda: demo_pdf_finder_with_instructions(
+                    topic="Quantum Computing Algorithms",
+                    instructions=ACADEMIC_PAPER_INSTRUCTIONS,
+                    output_base_dir=args.output_dir,
+                    llm_model=args.model,
+                    demo_title="Find Academic Papers (arXiv)",
+                    steps=args.max_steps,
+                    headless=args.headless
+                )
+            ))
+        if "government" in args.demos_to_run:
+            high_level_demos.append((
+                "Government Report Finder", 
+                lambda: demo_pdf_finder_with_instructions(
+                    topic="UK AI Safety Summit Outcomes",
+                    instructions=GOVERNMENT_REPORT_INSTRUCTIONS,
+                    output_base_dir=args.output_dir,
+                    llm_model=args.model,
+                    demo_title="Find Government Reports",
+                    steps=args.max_steps,
+                    headless=args.headless
+                )
+            ))
+        if "manual" in args.demos_to_run:
+            high_level_demos.append((
+                "Product Manual Finder", 
+                lambda: demo_pdf_finder_with_instructions(
+                    topic="Raspberry Pi 5",
+                    instructions=PRODUCT_MANUAL_INSTRUCTIONS,
+                    output_base_dir=args.output_dir,
+                    llm_model=args.model,
+                    demo_title="Find Product Manuals",
+                    steps=args.max_steps,
+                    headless=args.headless
+                )
+            ))
+        if "legal" in args.demos_to_run:
+            high_level_demos.append((
+                "Legal Document Finder", 
+                lambda: demo_pdf_finder_with_instructions(
+                    topic="OpenAI lawsuit motion dismiss",
+                    instructions=LEGAL_DOCUMENT_INSTRUCTIONS,
+                    output_base_dir=args.output_dir,
+                    llm_model=args.model,
+                    demo_title="Find Legal Documents",
+                    steps=args.max_steps,
+                    headless=args.headless
+                )
+            ))
+        
+        # Search summary demos
+        if "simple-search" in args.demos_to_run:
+            high_level_demos.append((
+                "Simple Search Summary", 
+                lambda: demo_search_summary_with_instructions(
+                    query="Best family vacation destinations in Europe",
+                    instructions=SIMPLE_SEARCH_SUMMARY_INSTRUCTIONS,
+                    llm_model=args.model,
+                    demo_title="Simple Search Summary",
+                    headless=args.headless
+                )
+            ))
+        if "tech-search" in args.demos_to_run:
+            high_level_demos.append((
+                "Technical Search Summary", 
+                lambda: demo_search_summary_with_instructions(
+                    query="Playwright vs Selenium web scraping performance",
+                    instructions=TECHNICAL_SEARCH_SUMMARY_INSTRUCTIONS,
+                    llm_model=args.model,
+                    demo_title="Technical Search Summary",
+                    headless=args.headless
+                )
+            ))
+        
+        # Workflow demos
+        if "workflow-login" in args.demos_to_run:
+            high_level_demos.append((
+                "Login Workflow", 
+                lambda: demo_web_workflow(
+                    instructions=ORDER_STATUS_WORKFLOW_INSTRUCTIONS,
+                    input_data={"username": "tomsmith", "password": "SuperSecretPassword!"},
+                    demo_title="Execute Login Workflow (the-internet.herokuapp.com)",
+                    headless=args.headless
+                )
+            ))
+        
+        # Monitoring demos
+        if "monitor-product" in args.demos_to_run:
+            high_level_demos.append((
+                "Product Price/Availability Monitor", 
+                lambda: demo_data_point_monitoring(
+                    instructions={
+                        **PRODUCT_MONITORING_INSTRUCTIONS,
+                        "llm_config": {"model": args.model}
+                    },
+                    previous_values=monitor_state["previous_values"],
+                    demo_title="Monitor Product Price/Availability",
+                    headless=args.headless
+                )
+            ))
+        if "monitor-news" in args.demos_to_run:
+            high_level_demos.append((
+                "News Headlines Monitor", 
+                lambda: demo_data_point_monitoring(
+                    instructions={
+                        **WEBSITE_SECTION_MONITORING_INSTRUCTIONS,
+                        "llm_config": {"model": args.model}
+                    },
+                    previous_values=monitor_state["previous_values"],
+                    demo_title="Monitor Google News Headlines",
+                    headless=args.headless
+                )
+            ))
+        
+        # Research & synthesis demos
+        if "research-trends" in args.demos_to_run:
+            high_level_demos.append((
+                "Market Trends Research", 
+                lambda: demo_research_synthesis(
+                    topic="AI Agent Orchestration Frameworks",
+                    instructions=MARKET_TREND_RESEARCH_INSTRUCTIONS,
+                    demo_title="Research Market Trends",
+                    llm_model_override=args.model,
+                    headless=args.headless
+                )
+            ))
+        if "research-competitors" in args.demos_to_run:
+            high_level_demos.append((
+                "Competitor Analysis", 
+                lambda: demo_research_synthesis(
+                    topic="Notion productivity app",
+                    instructions=COMPETITIVE_ANALYSIS_INSTRUCTIONS,
+                    demo_title="Research Competitor Snippets",
+                    llm_model_override=args.model,
+                    headless=args.headless
+                )
+            ))
+        
+        # Calculate total number of demos
+        total_demo_count = len(low_level_demos) + len(high_level_demos)
+        
+        # Create overall progress bar for all demos
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -2307,50 +2958,109 @@ async def main():
         ) as overall_progress:
             total_demo_task = overall_progress.add_task(
                 "[bold blue]Running Browser Automation Demos[/bold blue]",
-                total=len(demos_to_run)
+                total=total_demo_count
             )
             
-            # Run the selected demos
-            for i, (demo_name, demo_func) in enumerate(demos_to_run):
-                overall_progress.update(
-                    total_demo_task, 
-                    description=f"[bold blue]Running Demo {i+1}/{len(demos_to_run)}: {demo_name}[/bold blue]",
-                    advance=0
-                )
+            # First run low-level demos if any are selected
+            if low_level_demos:
+                console.print(Rule("[bold cyan]Running Low-Level Browser Demos[/bold cyan]"))
                 
-                console.print(Rule(f"[bold green]Running Demo: {demo_name}[/bold green]"))
-                
-                # Record start time for this demo
-                demo_start_time = time.time()
-                
-                # Run the demo
-                try:
-                    result = await demo_func()  # noqa: F841
+                for i, (demo_name, demo_func) in enumerate(low_level_demos):
+                    overall_progress.update(
+                        total_demo_task, 
+                        description=f"[bold blue]Running Demo {i+1}/{len(low_level_demos)}: {demo_name}[/bold blue]",
+                        advance=0
+                    )
                     
-                    # Record success
-                    demo_duration = time.time() - demo_start_time
-                    if demo_name not in demo_session.demo_stats:
-                        # Only add if not already added by the demo function
+                    console.print(Rule(f"[bold green]Running Demo: {demo_name}[/bold green]"))
+                    
+                    # Record start time for this demo
+                    demo_start_time = time.time()
+                    
+                    # Run the demo
+                    try:
+                        result = await demo_func()
+                        all_results[demo_name.lower().replace(" ", "_")] = result
+                        
+                        # Record success
+                        demo_duration = time.time() - demo_start_time
+                        if demo_name not in demo_session.demo_stats:
+                            # Only add if not already added by the demo function
+                            demo_session.add_demo_stats(demo_name, {
+                                "duration": demo_duration,
+                                "success": True,
+                                "actions": 0  # We don't know how many actions
+                            })
+                            
+                    except Exception as e:
+                        logger.error(f"Demo {demo_name} failed: {e}", emoji_key="error", exc_info=True)
+                        console.print(f"[bold red]Demo Error:[/bold red] {escape(str(e))}")
+                        
+                        # Record failure
+                        demo_duration = time.time() - demo_start_time
                         demo_session.add_demo_stats(demo_name, {
                             "duration": demo_duration,
-                            "success": True,
-                            "actions": 0  # We don't know how many actions
+                            "success": False,
+                            "error": str(e)
                         })
-                        
-                except Exception as e:
-                    logger.error(f"Demo {demo_name} failed: {e}", emoji_key="error", exc_info=True)
-                    console.print(f"[bold red]Demo Error:[/bold red] {escape(str(e))}")
                     
-                    # Record failure
-                    demo_duration = time.time() - demo_start_time
-                    demo_session.add_demo_stats(demo_name, {
-                        "duration": demo_duration,
-                        "success": False,
-                        "error": str(e)
-                    })
+                    # Update progress
+                    overall_progress.update(total_demo_task, advance=1)
+            
+            # Now run high-level demos if any are selected
+            if high_level_demos:
+                console.print(Rule("[bold yellow]Running High-Level AI-Powered Demos[/bold yellow]"))
                 
-                # Update progress
-                overall_progress.update(total_demo_task, advance=1)
+                for i, (demo_name, demo_func) in enumerate(high_level_demos):
+                    overall_progress.update(
+                        total_demo_task, 
+                        description=f"[bold yellow]Running Demo {i+1}/{len(high_level_demos)}: {demo_name}[/bold yellow]",
+                        advance=0
+                    )
+                    
+                    console.print(Rule(f"[bold green]Running Demo: {demo_name}[/bold green]"))
+                    
+                    # Record start time for this demo
+                    demo_start_time = time.time()
+                    
+                    # Run the demo
+                    try:
+                        result = await demo_func()
+                        all_results[demo_name.lower().replace(" ", "_")] = result
+                        
+                        # For monitoring demos, update monitor state
+                        if "monitor" in demo_name.lower() and result.get("success") and result.get("results"):
+                            for url, data_points in result["results"].items():
+                                if isinstance(data_points, dict) and "page_error" not in data_points:
+                                    for dp_name, dp_data in data_points.items():
+                                        if isinstance(dp_data, dict) and "current_value" in dp_data and dp_data.get("error") is None:
+                                            state_key = f"{url}::{dp_name}"
+                                            monitor_state["previous_values"][state_key] = dp_data["current_value"]
+                        
+                        # Record success
+                        demo_duration = time.time() - demo_start_time
+                        if demo_name not in demo_session.demo_stats:
+                            # Only add if not already added by the demo function
+                            demo_session.add_demo_stats(demo_name, {
+                                "duration": demo_duration,
+                                "success": True,
+                                "actions": 0  # We don't know how many actions
+                            })
+                            
+                    except Exception as e:
+                        logger.error(f"Demo {demo_name} failed: {e}", emoji_key="error", exc_info=True)
+                        console.print(f"[bold red]Demo Error:[/bold red] {escape(str(e))}")
+                        
+                        # Record failure
+                        demo_duration = time.time() - demo_start_time
+                        demo_session.add_demo_stats(demo_name, {
+                            "duration": demo_duration,
+                            "success": False,
+                            "error": str(e)
+                        })
+                    
+                    # Update progress
+                    overall_progress.update(total_demo_task, advance=1)
             
     except Exception as e:
         logger.critical(f"Demo failed: {str(e)}", emoji_key="critical", exc_info=True)
@@ -2364,8 +3074,8 @@ async def main():
         except Exception as e:
             logger.error(f"Cleanup failed: {str(e)}", emoji_key="error")
     
-    logger.success("Browser Automation Demo Completed Successfully", emoji_key="complete")
-    console.print(Rule("[bold magenta]Browser Automation Demo Complete[/bold magenta]"))
+    # Final summary could go here if desired
+    console.print(Rule("[bold magenta]Demo Run Complete[/bold magenta]", style="magenta"))
     
     # Show final statistics
     total_duration = demo_session.total_duration
@@ -2384,6 +3094,7 @@ async def main():
     
     console.print(stats_table)
     
+    logger.success("Browser Automation Demo Completed Successfully", emoji_key="complete")
     return 0
 
 

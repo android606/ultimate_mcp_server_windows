@@ -203,3 +203,5 @@ logs
 cache/disk_cache/cache.db-shm
 cache/disk_cache/cache.db-wal
 demo_database.db
+models/
+test_input.wav

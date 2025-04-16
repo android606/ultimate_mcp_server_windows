@@ -36,7 +36,6 @@ from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.tools.completion import chat_completion 
 from llm_gateway.tools.filesystem import create_directory
 from llm_gateway.utils import get_logger
-from llm_gateway.config import get_config
 
 logger = get_logger("llm_gateway.tools.playwright")
 
@@ -4528,68 +4527,75 @@ async def browser_wait(
 @with_error_handling
 async def execute_web_workflow(
     instructions: Dict[str, Any],
-    input_data: Optional[Dict[str, Any]] = None,
-    llm_model: str = "openai/gpt-4.1-mini",
-    max_steps: int = 15, # Default steps for a workflow
+    input_data: Optional[Dict[str, Any]] = None, # Concrete values for the workflow
     browser_options: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    Executes a sequence of browser interactions guided by an LLM to achieve a specific goal.
-
-    Uses LLM decisions based on page state and instructions to perform actions like
-    clicking, typing (using provided input_data), reading values, and determining completion.
+    Executes a sequence of browser interactions guided by an LLM to achieve a specific goal,
+    configured entirely via the `instructions` dictionary.
 
     Args:
         instructions: Dictionary defining the workflow:
-            start_url: (str) Initial URL.
-            workflow_goal_prompt: (str) High-level objective for the LLM.
-            input_data_mapping: (Optional[Dict[str, str]]) Maps abstract names (e.g., "user_email") used in prompts/actions to keys in the `input_data` parameter.
-            element_finding_hints: (Optional[List[str]]) Keywords/descriptions of important elements to help LLM identify targets.
-            available_actions: (List[str]) Explicit list of actions the LLM can request (e.g., ["click", "type", "read_value", "finish_success", "finish_failure"]).
-            success_condition_prompt: (Optional[str]) LLM prompt to evaluate if goal is met based on page state (requests {"goal_met": true/false}).
-            max_steps: (Optional[int]) Workflow-specific step limit (overrides main arg).
-        input_data: (Optional[Dict[str, Any]]) Dictionary containing concrete values (like username, password, search terms) referenced by `input_data_mapping`.
-        llm_model: (Optional) LLM model for guidance. Default "openai/gpt-4.1-mini".
-        max_steps: (Optional) Overall maximum LLM-guided interaction steps. Default 15.
+            start_url: (str) Required. Initial URL.
+            workflow_goal_prompt: (str) Required. High-level objective for the LLM.
+            available_actions: (List[str]) Required. Explicit list of actions LLM can request
+                               (e.g., ["click", "type", "read_value", "scroll", "go_back", "finish_success", "finish_failure"]).
+            llm_model: (str) Required. LLM model identifier ('provider/model_name') for guidance.
+            max_steps: (Optional[int]) Max interaction steps. Default: 15.
+            input_data_mapping: (Optional[Dict[str, str]]) Maps abstract names (e.g., "user_email")
+                                used in prompts/actions to keys in the `input_data` parameter.
+            element_finding_hints: (Optional[List[str]]) Keywords/descriptions of elements to help LLM.
+            success_condition_prompt: (Optional[str]) LLM prompt to evaluate if goal is met (must request JSON {"goal_met": true/false}).
+            step_prompts: (Optional[List[Dict]]) Sequence of prompts for multi-stage goals. Each dict: {"step_name": "...", "step_instruction_prompt": "..."}. (Advanced use).
+        input_data: (Optional[Dict[str, Any]]) Dictionary containing concrete values (like credentials, form data) referenced indirectly via `input_data_mapping`.
         browser_options: (Optional) Options for browser_init (e.g., {"headless": True}).
 
     Returns:
         Dictionary summarizing the outcome:
         {
             "success": true/false,
-            "final_status": "Goal achieved: Order status 'Shipped' extracted." | "Max steps reached." | "Failed: Login incorrect.",
+            "final_status": "Goal achieved: ..." | "Max steps reached." | "Failed: ...",
             "steps_taken": int,
-            "extracted_data": { "key": "value", ... }, # Data extracted by 'read_value' actions
+            "extracted_data": { "key": "value", ... }, # Data from 'read_value' actions
             "error": Optional[str],
             "message": "Workflow summary message."
         }
     """
     start_time = time.monotonic()
-    logger.info(f"Starting web workflow execution with LLM {llm_model}")
 
     # --- Validate Instructions & Inputs ---
     if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
-    if not isinstance(instructions.get('start_url'), str) or not instructions['start_url']: raise ToolInputError("instructions['start_url'] (string) is required.")
-    if not isinstance(instructions.get('workflow_goal_prompt'), str) or not instructions['workflow_goal_prompt']: raise ToolInputError("instructions['workflow_goal_prompt'] (string) is required.")
-    if not isinstance(instructions.get('available_actions'), list) or not instructions['available_actions']: raise ToolInputError("instructions['available_actions'] (list) is required.")
-    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("llm_model must be 'provider/model_name'.")
+    # Required instruction keys
+    start_url = instructions.get("start_url")
+    goal_prompt = instructions.get("workflow_goal_prompt")
+    available_actions = instructions.get("available_actions")
+    llm_model = instructions.get("llm_model") # Get model from instructions
+    if not isinstance(start_url, str) or not start_url: raise ToolInputError("instructions['start_url'] (string) is required.")
+    if not isinstance(goal_prompt, str) or not goal_prompt: raise ToolInputError("instructions['workflow_goal_prompt'] (string) is required.")
+    if not isinstance(available_actions, list) or not available_actions: raise ToolInputError("instructions['available_actions'] (list) is required.")
+    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("instructions['llm_model'] ('provider/model_name') is required.")
+
+    # Optional instruction keys
+    workflow_max_steps = instructions.get("max_steps", 15) # Default max_steps
+    if not isinstance(workflow_max_steps, int) or workflow_max_steps < 1: raise ToolInputError("'max_steps' must be a positive integer.")
     input_data_map = instructions.get("input_data_mapping", {})
     if not isinstance(input_data_map, dict): raise ToolInputError("instructions['input_data_mapping'] must be a dictionary.")
-    input_values = input_data if isinstance(input_data, dict) else {} # Ensure input_data is a dict
+    hints = instructions.get("element_finding_hints", [])
+    if not isinstance(hints, list): raise ToolInputError("instructions['element_finding_hints'] must be a list.")
+    success_condition_prompt = instructions.get("success_condition_prompt")
+    if success_condition_prompt and not isinstance(success_condition_prompt, str): raise ToolInputError("instructions['success_condition_prompt'] must be a string if provided.")
+    step_prompts = instructions.get("step_prompts") # Advanced feature
+    if step_prompts and not isinstance(step_prompts, list): raise ToolInputError("instructions['step_prompts'] must be a list if provided.")
+
+    input_values = input_data if isinstance(input_data, dict) else {}
+    logger.info(f"Starting web workflow execution with LLM {llm_model}. Goal: '{goal_prompt[:50]}...'")
 
     # --- Setup ---
     browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
-    workflow_max_steps = instructions.get("max_steps", max_steps) # Allow override
-    start_url = instructions['start_url']
-    goal_prompt = instructions['workflow_goal_prompt']
-    available_actions = instructions['available_actions']
-    hints = instructions.get("element_finding_hints", [])
-    success_condition_prompt = instructions.get("success_condition_prompt")
-
     steps_taken = 0
     final_status = "Not started"
     action_history = []
-    workflow_results = {} # To store data read by "read_value"
+    workflow_results = {} # Store data read by "read_value"
     browser_was_initialized_by_tool = False
 
     try:
@@ -4606,21 +4612,25 @@ async def execute_web_workflow(
         await asyncio.sleep(2.0) # Wait for page settle
 
         # --- 3. Main Interaction Loop ---
-        system_prompt = f"""You are an AI assistant controlling a web browser to achieve a specific goal.
+        # Construct base system prompt incorporating goal and available actions
+        system_prompt = f"""You are an AI assistant controlling a web browser to achieve this goal:
 Goal: {goal_prompt}
-Available Actions: {available_actions}
-
-You will receive the current page state (URL, title, text summary, interactive elements with IDs like 'el_N').
-Analyze the state and the goal. Decide the *single best next action* to take.
-If typing, use the 'text_ref' parameter mapped to available `input_data_keys`.
-If reading a value, specify `store_as` key for the result.
-If finishing, specify `result_ref` pointing to a stored key if needed.
-
-Respond ONLY with a valid JSON object for your chosen action. Example:
-{{"action": "type", "params": {{"element_id": "el_12", "text_ref": "user_email"}}}}
-{{"action": "click", "params": {{"element_id": "el_5"}}}}
-{{"action": "read_value", "params": {{"element_id": "el_45", "store_as": "order_status"}}}}
-{{"action": "finish_success", "params": {{"reason": "Found status", "result_ref": "order_status"}}}}"""
+Available Actions JSON format (Respond ONLY with one of these):
+"""
+        # Dynamically list available actions in the system prompt
+        action_examples = {
+            "click": '{"action": "click", "params": {"element_id": "el_N"}} /* Click element by ID */',
+            "type": '{"action": "type", "params": {"element_id": "el_N", "text_ref": "<input_key>" | "text": "<literal_value>"}} /* Type data */',
+            "read_value": '{"action": "read_value", "params": {"element_id": "el_N", "store_as": "<result_key>"}} /* Read element value/text */',
+            "scroll": '{"action": "scroll", "params": {"direction": "down" | "up"}}',
+            "go_back": '{"action": "go_back", "params": {}}',
+            "finish_success": '{"action": "finish_success", "params": {"reason": "<why>", "result_ref": "<optional_result_key>"}}',
+            "finish_failure": '{"action": "finish_failure", "params": {"reason": "<why>"}}'
+            # Add more examples if needed for other custom actions
+        }
+        for act in available_actions:
+             system_prompt += f"- {action_examples.get(act, act + ' (No example defined)')}\n" # Add examples if available
+        system_prompt += "\nAnalyze page state (URL, title, summary, elements with IDs), goal, and history. Choose the SINGLE best JSON action."
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -4638,22 +4648,25 @@ Respond ONLY with a valid JSON object for your chosen action. Example:
 
             # Construct LLM User Prompt
             prompt_context = f"Current URL: {page_state['url']}\nTitle: {page_state['title']}\nSummary:\n{page_state['text_summary']}\n"
-            prompt_context += f"\nWorkflow Goal: {goal_prompt}\n"
+            prompt_context += f"\nOverall Goal: {goal_prompt}\n"
+            # Add specific step instruction if using step_prompts (advanced)
+            current_step_prompt = ""
+            if step_prompts and step < len(step_prompts):
+                 current_step_prompt = step_prompts[step].get("step_instruction_prompt", "")
+                 if current_step_prompt:
+                     prompt_context += f"\nCurrent Step Instruction: {current_step_prompt}\n"
+
             if workflow_results: prompt_context += f"Data collected so far: {json.dumps(workflow_results)}\n"
-            if input_values: prompt_context += f"Available input data keys: {list(input_values.keys())}\n"
+            if input_values: prompt_context += f"Available input data keys for 'text_ref': {list(input_values.keys())}\n"
             if hints: prompt_context += f"Element Hints: {hints}\n"
 
             prompt_context += "\nVisible Elements:\n"
             elements = page_state.get('elements', [])
             if not elements: prompt_context += "- None found.\n"
             else:
-                 for el in elements: prompt_context += f"- {el.get('id')}: {el.get('tag')} (Type:{el.get('type')}) Text:'{el.get('text')}'\n" # Simplified element list
+                 for el in elements: prompt_context += f"- {el.get('id')}: {el.get('tag')} (Type:{el.get('type')}) Text:'{el.get('text')}'\n"
 
-            # Add summarized history (optional, can get complex)
-            # summary_history = [f"Step {h['step']}: {h.get('llm_action','?')} on {h['url'][:50]}" for h in action_history[-3:]] # Last 3 steps
-            # if summary_history: prompt_context += f"\nRecent Actions: {'; '.join(summary_history)}\n"
-
-            prompt_context += "\nWhat is the single best JSON action to take next based on the goal and current state?"
+            prompt_context += "\nWhat is the single best JSON action to take next to progress towards the goal?"
             messages.append({"role": "user", "content": prompt_context})
             if len(messages) > 12: messages = [messages[0]] + messages[-11:] # Limit context history
 
@@ -4661,7 +4674,7 @@ Respond ONLY with a valid JSON object for your chosen action. Example:
             llm_action = await _call_browser_llm(messages, llm_model, f"workflow step {steps_taken} for '{goal_prompt[:30]}...'")
             if not llm_action or llm_action.get("action") == "error":
                 final_status = f"LLM guidance failed: {llm_action.get('error', 'No action')}. Aborting."; logger.error(final_status); break
-            messages.append({"role": "assistant", "content": json.dumps(llm_action)}) # Store LLM response
+            messages.append({"role": "assistant", "content": json.dumps(llm_action)})
 
             action_name = llm_action.get("action")
             action_params = llm_action.get("params", {})
@@ -4678,69 +4691,67 @@ Respond ONLY with a valid JSON object for your chosen action. Example:
                     locator = await _find_element_locator_for_workflow(current_page, element_id, elements)
                     if not locator: raise ToolError(f"Could not reliably locate element {element_id} chosen by LLM.")
                     logger.info(f"Executing click on element identified as {element_id}")
-                    await locator.click(timeout=15000) # Use locator's click
-                    await asyncio.sleep(3.0) # Wait generously after click
+                    await locator.click(timeout=15000)
+                    await asyncio.sleep(3.0)
 
                 elif action_name == "type":
                     element_id = action_params.get("element_id")
-                    text_ref = action_params.get("text_ref") # Key from input_data to type
-                    literal_text = action_params.get("text") # Allow literal text too
+                    text_ref = action_params.get("text_ref")
+                    literal_text = action_params.get("text")
                     if not element_id: raise ValueError("Missing 'element_id' for type")
                     if not text_ref and literal_text is None: raise ValueError("Missing 'text_ref' or 'text' for type")
-                    if text_ref and literal_text is not None: raise ValueError("Provide either 'text_ref' or 'text', not both")
+                    if text_ref and literal_text is not None: raise ValueError("Provide either 'text_ref' or 'text'")
 
                     text_to_type = ""
-                    if literal_text is not None:
-                         text_to_type = str(literal_text) # Ensure string
+                    if literal_text is not None: text_to_type = str(literal_text)
                     elif text_ref:
-                         mapped_key = input_data_map.get(text_ref, text_ref) # Use mapping if available
-                         if mapped_key not in input_values: raise ValueError(f"Input data key '{mapped_key}' (from ref '{text_ref}') not found in provided input_data.")
-                         text_to_type = str(input_values[mapped_key]) # Get value from input_data
+                         mapped_key = input_data_map.get(text_ref, text_ref)
+                         if mapped_key not in input_values: raise ValueError(f"Input data key '{mapped_key}' (from ref '{text_ref}') not found.")
+                         text_to_type = str(input_values[mapped_key])
 
                     locator = await _find_element_locator_for_workflow(current_page, element_id, elements)
                     if not locator: raise ToolError(f"Could not reliably locate element {element_id} for typing.")
-                    logger.info(f"Executing type into element {element_id} (text ref: '{text_ref or 'literal'}')")
-                    await locator.fill("") # Clear first
-                    await locator.type(text_to_type, delay=50) # Add small delay
+                    logger.info(f"Executing type into element {element_id}")
+                    await locator.fill("")
+                    await locator.type(text_to_type, delay=50)
                     action_history[-1]['typed_ref'] = text_ref or 'literal'
 
                 elif action_name == "read_value":
                     element_id = action_params.get("element_id")
-                    store_as = action_params.get("store_as") # Key to store the result under
+                    store_as = action_params.get("store_as")
                     if not element_id: raise ValueError("Missing 'element_id' for read_value")
                     if not store_as: raise ValueError("Missing 'store_as' for read_value")
 
                     locator = await _find_element_locator_for_workflow(current_page, element_id, elements)
                     if not locator: raise ToolError(f"Could not reliably locate element {element_id} for reading.")
                     logger.info(f"Executing read_value from element {element_id}, storing as '{store_as}'")
-                    # Try reading different ways: text content, value attribute
-                    value_read = await locator.input_value(timeout=5000) if await locator.evaluate("el => el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'", timeout=5000) else await locator.text_content(timeout=5000)
+                    value_read = await locator.input_value(timeout=5000) if await locator.evaluate("el => ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)", timeout=5000) else await locator.text_content(timeout=5000)
                     value_read = value_read.strip() if value_read else ""
                     workflow_results[store_as] = value_read
                     action_history[-1]['read_result'] = {store_as: value_read}
                     logger.info(f"Stored '{store_as}': '{value_read[:50]}...'")
 
-                elif action_name == "scroll": # Simple scroll added
+                elif action_name == "scroll":
                      direction = action_params.get("direction", "down")
                      scroll_amount = 600 if direction == "down" else -600
-                     logger.info(f"Scrolling {direction}")
-                     await browser_execute_javascript(f"window.scrollBy(0, {scroll_amount})")
-                     await asyncio.sleep(1.5)
+                     logger.info(f"Scrolling {direction}"); await browser_execute_javascript(f"window.scrollBy(0, {scroll_amount})"); await asyncio.sleep(1.5)
+
+                elif action_name == "go_back":
+                     logger.info("Navigating back"); await browser_back(capture_snapshot=False); await asyncio.sleep(1.5)
 
                 elif action_name == "finish_success":
                     reason = action_params.get('reason', 'Goal achieved')
-                    result_ref = action_params.get('result_ref') # Optional key to return from workflow_results
-                    final_result_value = workflow_results.get(result_ref) if result_ref else workflow_results # Return specific key or all results
+                    result_ref = action_params.get('result_ref')
+                    final_result_value = workflow_results.get(result_ref) if result_ref else workflow_results
                     final_status = f"Goal achieved: {reason}"
                     logger.success(final_status)
-                    # Package result and return
                     processing_time = time.monotonic() - start_time
-                    return {
+                    return { # Successful exit
                         "success": True, "final_status": final_status, "steps_taken": steps_taken,
                         "extracted_data": final_result_value, "error": None,
-                        "message": f"Workflow completed successfully in {steps_taken} steps. {reason}",
+                        "message": f"Workflow completed successfully: {reason}",
                         "processing_time": processing_time
-                    } # Successful exit
+                    }
 
                 elif action_name == "finish_failure":
                     reason = action_params.get('reason', 'Goal could not be met')
@@ -4750,25 +4761,28 @@ Respond ONLY with a valid JSON object for your chosen action. Example:
                     return { # Failure exit
                         "success": False, "final_status": final_status, "steps_taken": steps_taken,
                         "extracted_data": workflow_results, "error": reason,
-                        "message": f"Workflow failed after {steps_taken} steps. Reason: {reason}",
+                        "message": f"Workflow failed: {reason}",
                         "processing_time": processing_time
-                    } # Failure exit
+                    }
 
                 else:
-                    # Should be caught by initial check against available_actions
-                    raise ValueError(f"Internal error: Unsupported action '{action_name}' attempted.")
+                    raise ValueError(f"Internal error: Unsupported action '{action_name}' selected by LLM.")
+
+                # Optional: Add success condition check here if prompt provided
+                if success_condition_prompt:
+                    # TODO: Implement LLM call to check success condition based on current page_state
+                    pass
 
             except (ToolError, ValueError, Exception) as exec_err:
                  final_status = f"Action '{action_name}' failed: {type(exec_err).__name__}: {exec_err}. Aborting."; logger.error(final_status, exc_info=True)
-                 action_history[-1]["error"] = str(exec_err); break # Exit loop on error
+                 action_history[-1]["error"] = str(exec_err); break
 
-        # Loop finished without explicit success/failure action from LLM
+        # Loop finished without explicit success/failure
         if steps_taken == workflow_max_steps: final_status = f"Max steps ({workflow_max_steps}) reached."; logger.warning(final_status)
-        else: final_status = final_status if final_status != "Not started" else "Workflow ended without explicit finish action."
+        else: final_status = final_status if final_status != "Not started" else "Workflow ended unexpectedly."
 
-        # Return failure if max steps reached or loop ended unexpectedly
         processing_time = time.monotonic() - start_time
-        return {
+        return { # Return failure if loop completes without finish action
             "success": False, "final_status": final_status, "steps_taken": steps_taken,
             "extracted_data": workflow_results, "error": final_status,
             "message": f"Workflow stopped after {steps_taken} steps. Status: {final_status}",
@@ -4776,12 +4790,12 @@ Respond ONLY with a valid JSON object for your chosen action. Example:
         }
 
     except (ToolInputError, ToolError) as e:
-         logger.error(f"Error during web workflow setup or critical failure: {type(e).__name__}: {e}", exc_info=True)
+         logger.error(f"Error during web workflow setup or execution: {type(e).__name__}: {e}", exc_info=True)
          final_status = final_status if final_status != "Not started" else f"Setup Failed: {e}"
          return { # Return error structure
              "success": False, "final_status": final_status, "steps_taken": steps_taken,
              "extracted_data": workflow_results, "error": str(e),
-             "message": f"Workflow failed during setup or critical step: {e}",
+             "message": f"Workflow failed: {e}",
              "processing_time": time.monotonic() - start_time
          }
     except Exception as e:
@@ -4799,30 +4813,36 @@ Respond ONLY with a valid JSON object for your chosen action. Example:
             logger.info("Closing browser instance initialized by execute_web_workflow tool.")
             await browser_close()
 
+
 @with_tool_metrics
 @with_error_handling
 async def extract_structured_data_from_pages(
     instructions: Dict[str, Any],
-    llm_model: str = "openai/gpt-4.1-mini",
+    # llm_model parameter removed - should be specified in instructions
     browser_options: Optional[Dict[str, Any]] = None,
     max_concurrent_pages: int = 5 # Concurrency limit for processing pages
 ) -> Dict[str, Any]:
     """
-    Visits multiple web pages (provided directly or found dynamically) and extracts
-    structured data from each using LLM guidance based on provided instructions.
+    Visits multiple web pages (provided directly or found dynamically via instructions)
+    and extracts structured data from each using LLM guidance based on provided instructions.
 
     Args:
         instructions: Dictionary controlling the process:
-            source_urls: (Optional[List[str]]) List of URLs to process directly.
-            url_finding_instructions: (Optional[Dict]) Instructions for dynamic URL discovery:
-                start_url: (str) URL of the listing page.
-                list_item_selector: (str) CSS selector for links to target pages.
-                next_page_selector: (Optional[str]) CSS selector for the 'next page' element.
-                max_pages_to_crawl: (Optional[int]) Max pagination steps (default 5).
-            extraction_schema_or_prompt: (Union[str, Dict]) LLM prompt describing fields to extract or a JSON schema. Must instruct LLM to output ONLY JSON.
-            output_format: (Optional[str]) "json_list" (default) or "csv_string".
-            error_handling: (Optional[str]) "skip" (default) or "include_error". How to handle page-level errors.
-        llm_model: (Optional) LLM model for extraction. Default "openai/gpt-4.1-mini".
+            data_source: (dict) Required. Defines where to get URLs.
+                source_type: (str) Required. "list" or "dynamic_crawl".
+                urls: (Optional[List[str]]) Required if source_type is "list".
+                crawl_config: (Optional[Dict]) Required if source_type is "dynamic_crawl".
+                    start_url: (str) Required. URL of the first listing page.
+                    list_item_selector: (str) Required. CSS selector for links to target pages.
+                    next_page_selector: (Optional[str]) CSS selector for the 'next page' element.
+                    max_pages_to_crawl: (Optional[int]) Max pagination steps (default 5).
+                    max_urls_limit: (Optional[int]) Stop crawling after finding this many URLs (default 100).
+            extraction_details: (dict) Required. Defines how to extract data.
+                schema_or_prompt: (Union[str, Dict]) Required. LLM prompt describing fields OR JSON schema. Must instruct LLM to output ONLY JSON.
+                extraction_llm_model: (str) Required. LLM model identifier (provider/model) for extraction.
+            output_config: (dict) Required. Defines output format.
+                format: (Optional[str]) "json_list" (default) or "csv_string".
+                error_handling: (Optional[str]) "skip" (default) or "include_error". How to handle page-level errors.
         browser_options: (Optional) Options for browser_init (e.g., {"headless": True}).
         max_concurrent_pages: (Optional) Max number of pages to process in parallel. Default 5.
 
@@ -4838,25 +4858,47 @@ async def extract_structured_data_from_pages(
         }
 
     Raises:
-        ToolInputError: For invalid instructions or parameters.
-        ToolError: For critical errors (e.g., browser init, initial URL finding).
+        ToolInputError: For invalid instructions structure or parameters.
+        ToolError: For critical errors (e.g., browser init, dynamic URL finding failure).
     """
     start_time = time.monotonic()
-    logger.info(f"Starting structured data extraction with LLM: {llm_model}")
 
-    # --- Validate Instructions ---
+    # --- Validate Instructions Structure ---
     if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
-    source_urls = instructions.get("source_urls")
-    url_finding_instr = instructions.get("url_finding_instructions")
-    extraction_schema_or_prompt = instructions.get("extraction_schema_or_prompt")
-    output_format = instructions.get("output_format", "json_list").lower()
-    error_handling = instructions.get("error_handling", "skip").lower()
+    data_source = instructions.get("data_source")
+    extraction_details = instructions.get("extraction_details")
+    output_config = instructions.get("output_config")
+    if not isinstance(data_source, dict): raise ToolInputError("instructions['data_source'] (dict) is required.")
+    if not isinstance(extraction_details, dict): raise ToolInputError("instructions['extraction_details'] (dict) is required.")
+    if not isinstance(output_config, dict): raise ToolInputError("instructions['output_config'] (dict) is required.")
 
-    if not (source_urls or url_finding_instr): raise ToolInputError("Either 'source_urls' or 'url_finding_instructions' must be provided.")
-    if source_urls and url_finding_instr: raise ToolInputError("Provide either 'source_urls' or 'url_finding_instructions', not both.")
-    if not extraction_schema_or_prompt: raise ToolInputError("'extraction_schema_or_prompt' is required.")
-    if output_format not in ["json_list", "csv_string"]: raise ToolInputError("output_format must be 'json_list' or 'csv_string'.")
-    if error_handling not in ["skip", "include_error"]: raise ToolInputError("error_handling must be 'skip' or 'include_error'.")
+    # Validate data_source
+    source_type = data_source.get("source_type")
+    if source_type not in ["list", "dynamic_crawl"]: raise ToolInputError("data_source['source_type'] must be 'list' or 'dynamic_crawl'.")
+    if source_type == "list":
+        source_urls = data_source.get("urls")
+        if not isinstance(source_urls, list) or not source_urls: raise ToolInputError("data_source['urls'] (non-empty list) is required when source_type is 'list'.")
+        if not all(isinstance(u, str) for u in source_urls): raise ToolInputError("All items in data_source['urls'] must be strings.")
+    elif source_type == "dynamic_crawl":
+        crawl_config = data_source.get("crawl_config")
+        if not isinstance(crawl_config, dict): raise ToolInputError("data_source['crawl_config'] (dict) is required when source_type is 'dynamic_crawl'.")
+        if not isinstance(crawl_config.get("start_url"), str) or not crawl_config["start_url"]: raise ToolInputError("crawl_config['start_url'] (string) is required.")
+        if not isinstance(crawl_config.get("list_item_selector"), str) or not crawl_config["list_item_selector"]: raise ToolInputError("crawl_config['list_item_selector'] (string) is required.")
+        # Optional crawl params have defaults in the helper
+
+    # Validate extraction_details
+    extraction_schema_or_prompt = extraction_details.get("schema_or_prompt")
+    llm_model = extraction_details.get("extraction_llm_model") # Get model from instructions now
+    if not extraction_schema_or_prompt: raise ToolInputError("extraction_details['schema_or_prompt'] is required.")
+    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("extraction_details['extraction_llm_model'] ('provider/model_name') is required.")
+
+    # Validate output_config
+    output_format = output_config.get("format", "json_list").lower()
+    error_handling = output_config.get("error_handling", "skip").lower()
+    if output_format not in ["json_list", "csv_string"]: raise ToolInputError("output_config['format'] must be 'json_list' or 'csv_string'.")
+    if error_handling not in ["skip", "include_error"]: raise ToolInputError("output_config['error_handling'] must be 'skip' or 'include_error'.")
+
+    logger.info(f"Starting structured data extraction with LLM: {llm_model}")
 
     # --- Setup ---
     browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
@@ -4866,7 +4908,7 @@ async def extract_structured_data_from_pages(
     target_urls = []
 
     try:
-        # Initialize Browser (if needed)
+        # --- Initialize Browser ---
         global _browser_instance
         if not _browser_instance or not _browser_instance.is_connected():
              init_res = await browser_init(**browser_init_options)
@@ -4874,66 +4916,71 @@ async def extract_structured_data_from_pages(
              browser_was_initialized_by_tool = True
 
         # --- 1. Determine Target URLs ---
-        if source_urls:
-            if not isinstance(source_urls, list) or not all(isinstance(u, str) for u in source_urls):
-                 raise ToolInputError("'source_urls' must be a list of strings.")
-            target_urls = source_urls
+        if source_type == "list":
+            target_urls = source_urls # Already validated
             logger.info(f"Processing {len(target_urls)} URLs provided directly.")
-        else: # Find URLs dynamically
-             # url_finding_instr is guaranteed to be a dict here by initial validation
-             target_urls = await _find_urls_dynamically(url_finding_instr)
-             if not target_urls:
-                  logger.warning("Dynamic URL finding returned no URLs.")
-                  # Return success with empty data if no URLs found? Or error? Let's return success.
+        else: # dynamic_crawl
+            # Pass the validated crawl_config to the helper
+            max_urls_limit = crawl_config.get("max_urls_limit", 100)
+            target_urls = await _find_urls_dynamically(crawl_config, max_urls=max_urls_limit)
+            if not target_urls:
+                 logger.warning("Dynamic URL finding returned no URLs.")
 
         # --- 2. Process URLs Concurrently ---
-        if target_urls:
-            logger.info(f"Extracting data from {len(target_urls)} URLs concurrently (max: {max_concurrent_pages})...")
-            semaphore = asyncio.Semaphore(max_concurrent_pages)
-            tasks = []
+        if not target_urls:
+             logger.info("No target URLs to process.")
+             # Return success with empty results
+             return {
+                 "success": True, "extracted_data": [], "processed_urls_count": 0,
+                 "successful_extractions_count": 0, "errors": {},
+                 "message": "No target URLs found or provided.", "processing_time": time.monotonic() - start_time
+             }
 
-            async def task_wrapper(url):
-                async with semaphore:
-                    return await _extract_data_from_single_page(url, extraction_schema_or_prompt, llm_model)
+        logger.info(f"Extracting data from {len(target_urls)} URLs concurrently (max: {max_concurrent_pages})...")
+        semaphore = asyncio.Semaphore(max_concurrent_pages)
+        tasks = []
 
-            tasks = [task_wrapper(url) for url in target_urls]
-            results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
+        async def task_wrapper(url):
+            async with semaphore:
+                # Pass parameters explicitly to the helper
+                return await _extract_data_from_single_page(url, extraction_schema_or_prompt, llm_model)
 
-            # Process results from concurrent tasks
-            for i, result_or_exc in enumerate(results_from_gather):
-                processed_url = target_urls[i] # URL corresponding to this result/exception
-                if isinstance(result_or_exc, Exception):
-                    err_msg = f"Task for {processed_url} raised exception: {type(result_or_exc).__name__}: {str(result_or_exc)}"
-                    logger.error(err_msg, exc_info=False) # Log exception but maybe not full trace always
-                    if error_handling == "include_error": errors_dict[processed_url] = str(result_or_exc)
-                    # Consider adding error entry to all_extracted_data if format requires it? Sticking to errors_dict.
-                elif isinstance(result_or_exc, dict):
-                    if "data" in result_or_exc:
-                        all_extracted_data.append(result_or_exc["data"])
-                    elif "error" in result_or_exc:
-                        err_msg = result_or_exc["error"]
-                        logger.warning(f"Extraction failed for {processed_url}: {err_msg}")
-                        if error_handling == "include_error": errors_dict[processed_url] = err_msg
-                    else:
-                        # Should not happen if helper follows contract
-                        err_msg = f"Unexpected result dictionary format for {processed_url}: {result_or_exc}"
-                        logger.error(err_msg)
-                        if error_handling == "include_error": errors_dict[processed_url] = "Unknown error structure."
+        tasks = [task_wrapper(url) for url in target_urls]
+        results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Process results
+        for i, result_or_exc in enumerate(results_from_gather):
+            processed_url = target_urls[i]
+            if isinstance(result_or_exc, Exception):
+                err_msg = f"Task for {processed_url} raised exception: {type(result_or_exc).__name__}: {str(result_or_exc)}"
+                logger.error(err_msg, exc_info=False)
+                if error_handling == "include_error": errors_dict[processed_url] = str(result_or_exc)
+            elif isinstance(result_or_exc, dict):
+                if "data" in result_or_exc:
+                    # Add source URL to the extracted data for context if needed
+                    extracted_item = result_or_exc["data"]
+                    extracted_item["_source_url"] = processed_url # Add metadata
+                    all_extracted_data.append(extracted_item)
+                elif "error" in result_or_exc:
+                    err_msg = result_or_exc["error"]
+                    logger.warning(f"Extraction failed for {processed_url}: {err_msg}")
+                    if error_handling == "include_error": errors_dict[processed_url] = err_msg
                 else:
-                     # Should not happen
-                     err_msg = f"Unexpected result type ({type(result_or_exc)}) for {processed_url}"
-                     logger.error(err_msg)
-                     if error_handling == "include_error": errors_dict[processed_url] = "Internal error: Unexpected task result."
+                    err_msg = f"Unexpected result dict format for {processed_url}"
+                    logger.error(err_msg)
+                    if error_handling == "include_error": errors_dict[processed_url] = "Unknown error structure."
+            else:
+                err_msg = f"Unexpected result type ({type(result_or_exc)}) for {processed_url}"
+                logger.error(err_msg)
+                if error_handling == "include_error": errors_dict[processed_url] = "Internal error: Unexpected task result."
 
         # --- 3. Format Output ---
         formatted_output = _format_output_data(all_extracted_data, output_format)
 
     except (ToolInputError, ToolError) as e:
-        # Catch errors from validation, URL finding, browser init
-        logger.error(f"Error during structured data extraction setup: {type(e).__name__}: {e}", exc_info=True)
-        raise # Re-raise ToolInputError/ToolError
+        logger.error(f"Error during structured data extraction: {type(e).__name__}: {e}", exc_info=True)
+        raise # Re-raise critical setup/validation errors
     except Exception as e:
-        # Catch unexpected errors
         logger.critical(f"Unexpected critical error during structured data extraction: {type(e).__name__}: {e}", exc_info=True)
         raise ToolError(f"Unexpected critical error: {e}") from e
     finally:
@@ -4953,10 +5000,11 @@ async def extract_structured_data_from_pages(
         "extracted_data": formatted_output, # List or CSV string
         "processed_urls_count": len(target_urls),
         "successful_extractions_count": success_count,
-        "errors": errors_dict, # URL -> error message map
+        "errors": errors_dict, # url -> error message map
         "message": msg,
         "processing_time": processing_time
     }
+
 
 @with_tool_metrics
 @with_error_handling
@@ -5307,44 +5355,65 @@ async def find_and_download_pdfs(
 @with_error_handling
 async def multi_engine_search_summary(
     query: str,
-    num_results_per_engine: int = 3,
-    engines: List[str] = ["google", "duckduckgo"], # Default engines
-    llm_model: str = "openai/gpt-4.1-mini",
+    instructions: Dict[str, Any], # NEW: Replaces engines, num_results_per_engine
+    llm_model: str = "openai/gpt-4.1-mini", # Model for summarization
     browser_options: Optional[Dict[str, Any]] = None,
     max_concurrent_summaries: int = 3 # Limit concurrent page processing
 ) -> Dict[str, Any]:
     """
-    Performs a search query on multiple search engines, extracts top results,
-    visits each result page, and generates an LLM summary for each.
+    Performs a search query on multiple search engines (defined in instructions),
+    extracts top results, visits selected pages, and generates an LLM summary
+    for each based on a prompt defined in instructions.
 
     Args:
         query: The search query string.
-        num_results_per_engine: Number of top results to process from each engine. Default 3.
-        engines: List of search engines ("google", "bing", "duckduckgo"). Default ["google", "duckduckgo"].
-        llm_model: LLM model identifier for summarizing result pages. Default "openai/gpt-4.1-mini".
-        browser_options: Dictionary of options for browser_init (e.g., {"headless": True}).
-        max_concurrent_summaries: Max number of URL summaries to process in parallel. Default 3.
+        instructions: Dictionary controlling the search and summarization:
+            search_params: (dict) Contains search engine config.
+                engines: (List[str]) List of engines ("google", "bing", "duckduckgo").
+                num_results_per_engine: (int) Number of results to fetch per engine.
+            summarization_prompt: (str) LLM prompt template for summarizing. Must include placeholders for {query} and {page_content}.
+            url_filter_keywords: (Optional[List[str]]) Keywords to require in URL/title/snippet before summarizing.
+            min_content_length_for_summary: (Optional[int]) Minimum character length of extracted text to attempt summarization.
+        llm_model: (Optional) LLM model identifier for summarization. Default "openai/gpt-4.1-mini".
+        browser_options: (Optional) Dictionary of options for browser_init.
+        max_concurrent_summaries: (Optional) Max number of URL summaries to process in parallel. Default 3.
 
 
     Returns:
         Dictionary containing summarized results and any errors encountered.
     """
     start_time = time.monotonic()
-    logger.info(f"Starting multi-engine search summary for query: '{query}' using engines: {engines}")
+    logger.info(f"Starting multi-engine search summary for query: '{query}' using instructions.")
 
     # --- Validate Inputs ---
     if not query or not isinstance(query, str): raise ToolInputError("Query must be non-empty string.")
-    if not isinstance(num_results_per_engine, int) or num_results_per_engine < 1: raise ToolInputError("num_results_per_engine must be positive integer.")
-    if not isinstance(engines, list) or not engines: raise ToolInputError("Engines must be non-empty list.")
-    valid_engines = {"google", "bing", "duckduckgo"}; invalid_engines = [e for e in engines if e.lower() not in valid_engines]
-    if invalid_engines: raise ToolInputError(f"Invalid engine(s): {invalid_engines}. Supported: {valid_engines}")
+    if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
     if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("llm_model must be 'provider/model_name'.")
 
+    # Validate instructions structure
+    search_params = instructions.get("search_params")
+    summarization_prompt_template = instructions.get("summarization_prompt")
+    url_filter_keywords = instructions.get("url_filter_keywords", [])
+    min_content_len = instructions.get("min_content_length_for_summary", 100) # Default min length
+
+    if not isinstance(search_params, dict): raise ToolInputError("instructions['search_params'] dictionary is required.")
+    engines = search_params.get("engines")
+    num_results_per_engine = search_params.get("num_results_per_engine")
+    if not isinstance(engines, list) or not engines: raise ToolInputError("instructions['search_params']['engines'] (list) is required.")
+    if not isinstance(num_results_per_engine, int) or num_results_per_engine < 1: raise ToolInputError("instructions['search_params']['num_results_per_engine'] (positive int) is required.")
+    valid_engines = {"google", "bing", "duckduckgo"}; invalid_engines = [e for e in engines if e.lower() not in valid_engines]
+    if invalid_engines: raise ToolInputError(f"Invalid engine(s): {invalid_engines}. Supported: {valid_engines}")
+    if not isinstance(summarization_prompt_template, str) or "{query}" not in summarization_prompt_template or "{page_content}" not in summarization_prompt_template:
+        raise ToolInputError("instructions['summarization_prompt'] (string) with {{query}} and {{page_content}} placeholders is required.")
+    if not isinstance(url_filter_keywords, list): raise ToolInputError("instructions['url_filter_keywords'] must be a list of strings.")
+    if not isinstance(min_content_len, int) or min_content_len < 0: raise ToolInputError("instructions['min_content_length_for_summary'] must be a non-negative integer.")
+
+    # --- Setup ---
     browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
     all_results_map: Dict[str, Dict[str, Any]] = {} # url -> {title, snippet, source_engines}
     errors_dict: Dict[str, str] = {} # engine/url -> error message
     browser_was_initialized_by_tool = False
-    summarized_results = [] # Initialize outside try
+    summarized_results = []
 
     try:
         # --- Initialize Browser ---
@@ -5355,113 +5424,137 @@ async def multi_engine_search_summary(
              browser_was_initialized_by_tool = True
 
         # --- 1. Search on Each Engine ---
-        search_urls = {"google": "https://www.google.com", "bing": "https://www.bing.com", "duckduckgo": "https://duckduckgo.com"}
-        search_selectors = {"google": "textarea[name='q']", "bing": "input[name='q']", "duckduckgo": "input[name='q']"}
-        results_selectors = {"google": "div.g", "bing": "li.b_algo", "duckduckgo": "article.result"}
-        link_selectors = {"google": "a[href]", "bing": "h2 > a", "duckduckgo": "a.result__a"}
-        title_selectors = {"google": "h3", "bing": "h2", "duckduckgo": "h2 > a.result__a"}
-        snippet_selectors = {"google": "div[data-sncf~='1'], .VwiC3b", "bing": ".b_caption p", "duckduckgo": ".result__snippet"}
-
+        # (Use the _perform_web_search helper function defined previously)
+        seen_urls = set()
         for engine in engines:
-            engine = engine.lower()
-            logger.info(f"Searching on {engine} for '{query}'...")
+            engine_name = engine.lower()
             try:
-                await browser_navigate(url=search_urls[engine], wait_until="domcontentloaded", capture_snapshot=False)
-                await browser_type(selector=search_selectors[engine], text=query, press_enter=True, capture_snapshot=False)
-                try:
-                    await browser_wait(wait_type="selector", value=results_selectors[engine], timeout=15000, capture_snapshot=False)
-                except ToolError:
-                    logger.warning(f"Primary results selector not found quickly for {engine}, waiting for network idle.")
-                    await browser_wait(wait_type="load_state", value="networkidle", timeout=15000, capture_snapshot=False)
-                await asyncio.sleep(2.0) # Pause
-
-                script = f"""
-                () => {{
-                    const results = [];
-                    const resultElements = document.querySelectorAll('{results_selectors[engine]}');
-                    const numToExtract = {num_results_per_engine};
-                    console.log(`Found ${{resultElements.length}} results for {engine}`);
-                    for (let i = 0; i < resultElements.length && results.length < numToExtract; i++) {{
-                        const el = resultElements[i];
-                        try {{
-                            const linkEl = el.querySelector('{link_selectors[engine]}');
-                            const titleEl = el.querySelector('{title_selectors[engine]}');
-                            const snippetEl = el.querySelector('{snippet_selectors[engine]}');
-                            const url = linkEl?.href;
-                            let title = titleEl?.innerText?.trim() || linkEl?.innerText?.trim();
-                            let snippet = snippetEl?.innerText?.trim();
-                            if (url && url.startsWith('http') && title && !url.includes('/search?q=') && !url.includes('google.com/url?q=')) {{
-                                title = title.replace(/^Cached - /i, '').trim();
-                                snippet = snippet ? snippet.substring(0, 500) + (snippet.length > 500 ? '...' : '') : '';
-                                results.push({{ url: url, title: title, snippet: snippet }});
-                            }}
-                        }} catch (e) {{ console.error('Error processing result element:', e); }}
-                    }}
-                    return results;
-                }}"""
-                extract_res = await browser_execute_javascript(script=script)
-                engine_results = extract_res.get("result", []) if extract_res.get("success") and isinstance(extract_res.get("result"), list) else []
-                if not extract_res.get("success"): logger.warning(f"JS extraction failed on {engine}: {extract_res.get('error')}")
-
-                logger.info(f"Extracted {len(engine_results)} valid results from {engine}.")
-                for res in engine_results:
-                    url = res['url']
-                    if url not in all_results_map:
-                        all_results_map[url] = {"title": res['title'], "snippet": res['snippet'], "source_engines": [engine]}
-                    elif engine not in all_results_map[url]["source_engines"]:
-                        all_results_map[url]["source_engines"].append(engine)
-                        # Update title/snippet if current one is better
-                        if len(res.get('title','')) > len(all_results_map[url].get('title','')): all_results_map[url]['title'] = res['title']
-                        if len(res.get('snippet','')) > len(all_results_map[url].get('snippet','')): all_results_map[url]['snippet'] = res['snippet']
-
+                 results = await _perform_web_search(query, engine=engine_name, num_results=num_results_per_engine)
+                 for res in results:
+                     url = res['url']
+                     if url not in seen_urls:
+                         all_results_map[url] = {"title": res['title'], "snippet": res['snippet'], "source_engines": [engine_name]}
+                         seen_urls.add(url)
+                     elif engine_name not in all_results_map[url]["source_engines"]:
+                         all_results_map[url]["source_engines"].append(engine_name)
+                         if len(res.get('title','')) > len(all_results_map[url].get('title','')): all_results_map[url]['title'] = res['title']
+                         if len(res.get('snippet','')) > len(all_results_map[url].get('snippet','')): all_results_map[url]['snippet'] = res['snippet']
             except Exception as search_err:
-                 logger.error(f"Failed searching on {engine}: {type(search_err).__name__}: {search_err}", exc_info=True)
-                 errors_dict[engine] = f"{type(search_err).__name__}: {str(search_err)}"
+                 logger.error(f"Search failed for {engine_name}: {search_err}", exc_info=True)
+                 errors_dict[engine_name] = str(search_err)
 
-        # --- 2. Visit and Summarize Unique URLs Concurrently ---
+        # --- 2. Filter URLs before Visiting ---
         urls_to_process = list(all_results_map.keys())
-        if not urls_to_process:
-            logger.warning("No unique URLs found across search engines.")
+        if url_filter_keywords:
+            urls_to_summarize = []
+            keywords_lower = [k.lower() for k in url_filter_keywords]
+            for url in urls_to_process:
+                res_info = all_results_map[url]
+                # Check keywords in URL, title, or snippet
+                text_to_check = f"{url} {res_info.get('title','')} {res_info.get('snippet','')}".lower()
+                if any(keyword in text_to_check for keyword in keywords_lower):
+                    urls_to_summarize.append(url)
+                else:
+                     logger.debug(f"Skipping URL (filter keywords not found): {url}")
+            logger.info(f"Filtered {len(urls_to_process)} URLs down to {len(urls_to_summarize)} based on keywords: {url_filter_keywords}")
         else:
-            logger.info(f"Found {len(urls_to_process)} unique URLs. Summarizing concurrently (max: {max_concurrent_summaries})...")
+            urls_to_summarize = urls_to_process
+
+        if not urls_to_summarize:
+             logger.warning("No URLs remaining after filtering to summarize.")
+        else:
+            logger.info(f"Attempting to visit and summarize {len(urls_to_summarize)} URLs concurrently (max: {max_concurrent_summaries})...")
+
+            # --- 3. Visit and Summarize Filtered URLs Concurrently ---
             semaphore = asyncio.Semaphore(max_concurrent_summaries)
             tasks = []
-            url_map_for_gather = {} # Map task index back to URL
+            url_map_for_gather = {}
             task_counter = 0
 
-            async def task_wrapper(url):
+            # --- Define the concurrent task using a nested helper ---
+            async def summarize_task_wrapper(url):
                 async with semaphore:
-                    # Pass the relevant entry from all_results_map to the helper
-                    return await _summarize_single_url(url, query, llm_model, all_results_map[url])
+                    # This nested helper now uses the summarization prompt from instructions
+                    logger.debug(f"Summarizing URL: {url}")
+                    summary = "Summary generation failed."
+                    error = None
+                    page_text = "Content extraction failed."
+                    try:
+                        nav_res = await browser_navigate(url=url, wait_until="load", timeout=30000, capture_snapshot=False)
+                        if not nav_res.get("success"): raise ToolError(f"Navigation failed: {nav_res.get('error')}")
+                        await asyncio.sleep(1.5)
 
-            for url in urls_to_process:
-                tasks.append(asyncio.create_task(task_wrapper(url)))
+                        text_res = await browser_get_text(selector="body")
+                        if text_res.get("success"):
+                            page_text = (text_res.get("text") or "")
+                        else:
+                            logger.warning(f"browser_get_text failed for {url}: {text_res.get('error')}, using snippet.")
+                            page_text = all_results_map[url].get("snippet", "Content extraction failed.")
+
+                        if not page_text.strip() or len(page_text) < min_content_len:
+                             logger.info(f"Skipping summary for {url}: Content too short ({len(page_text)} chars) or empty.")
+                             summary = f"Skipped (content length {len(page_text)} < {min_content_len})"
+                             # Not strictly an error, but not a generated summary
+                        else:
+                             page_text = page_text[:10000] # Limit context passed to LLM
+
+                             system_prompt_sum = "You are an AI assistant that concisely summarizes web page text relevant to a user query."
+                             # Use the prompt *template* from instructions
+                             user_prompt_sum = summarization_prompt_template.format(query=query, page_content=page_text)
+                             messages_sum = [{"role": "system", "content": system_prompt_sum}, {"role": "user", "content": user_prompt_sum}]
+
+                             summary_res = await _call_browser_llm(messages_sum, llm_model, f"summarizing {url}", expected_json=False)
+
+                             if summary_res and summary_res.get("action") != "error" and isinstance(summary_res.get("text"), str):
+                                 summary = summary_res["text"].strip() or "Summary generation returned empty."
+                             else:
+                                 error_detail = summary_res.get('error', 'LLM did not return text.') if summary_res else 'LLM call failed.'
+                                 summary = f"Summary generation failed: {error_detail}"
+                                 error = summary
+
+                    except Exception as page_err:
+                        logger.error(f"Failed processing page {url} for summary: {type(page_err).__name__}: {page_err}", exc_info=False)
+                        error = f"{type(page_err).__name__}: {str(page_err)}"
+                        summary = f"Failed to process page: {error}"
+
+                    return { # Return structure for the gather processing loop
+                        "url": url,
+                        "title": all_results_map[url].get("title", "N/A"),
+                        "summary": summary,
+                        "source_engine": all_results_map[url].get("source_engines", []),
+                        "error": error
+                    }
+            # --- End of nested helper ---
+
+            # Create tasks
+            for url in urls_to_summarize:
+                tasks.append(asyncio.create_task(summarize_task_wrapper(url)))
                 url_map_for_gather[task_counter] = url
                 task_counter += 1
 
+            # Gather results
             summary_results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Process results
+            # Process gather results
             for i, result_or_exc in enumerate(summary_results_from_gather):
                 processed_url = url_map_for_gather[i]
                 if isinstance(result_or_exc, Exception):
-                    err_msg = f"Task for {processed_url} raised exception: {type(result_or_exc).__name__}: {str(result_or_exc)}"
-                    logger.error(err_msg, exc_info=False) # Log less verbosely here
+                    err_msg = f"Summary task for {processed_url} failed: {type(result_or_exc).__name__}: {str(result_or_exc)}"
+                    logger.error(err_msg, exc_info=False)
                     errors_dict[processed_url] = str(result_or_exc)
                     summarized_results.append({"url": processed_url, "title": all_results_map[processed_url].get("title", "N/A"), "summary": f"Failed: {type(result_or_exc).__name__}", "source_engine": all_results_map[processed_url].get("source_engines", []), "error": str(result_or_exc)})
                 elif isinstance(result_or_exc, dict):
-                    if result_or_exc.get("error"): errors_dict[processed_url] = result_or_exc["error"]
-                    summarized_results.append(result_or_exc) # Append success or error dict from helper
+                    if result_or_exc.get("error"): errors_dict[processed_url] = result_or_exc["error"] # Capture summary-specific errors
+                    summarized_results.append(result_or_exc)
                 else:
                     err_msg = f"Unexpected result type ({type(result_or_exc)}) for {processed_url}"; logger.error(err_msg); errors_dict[processed_url] = err_msg
 
     except (ToolInputError, ToolError) as e:
-         logger.error(f"Error during multi-engine search setup or execution: {type(e).__name__}: {e}", exc_info=True)
-         # Return the error structure expected by the caller
+         logger.error(f"Error during multi-engine search: {type(e).__name__}: {e}", exc_info=True)
          return {"success": False, "query": query, "results": summarized_results, "errors": errors_dict, "message": f"Search failed: {str(e)}"}
     except Exception as e:
          logger.critical(f"Unexpected critical error during multi-engine search: {type(e).__name__}: {e}", exc_info=True)
-         return {"success": False, "query": query, "results": summarized_results, "errors": errors_dict, "message": f"Multi-engine search failed critically: {type(e).__name__}: {e}"}
+         return {"success": False, "query": query, "results": summarized_results, "errors": errors_dict, "message": f"Search failed critically: {type(e).__name__}: {e}"}
     finally:
         # Close browser ONLY if this tool initialized it
         if browser_was_initialized_by_tool:
@@ -5470,7 +5563,7 @@ async def multi_engine_search_summary(
 
     processing_time = time.monotonic() - start_time
     successful_summaries = len([r for r in summarized_results if not r.get("error")])
-    msg = f"Summarized {successful_summaries} of {len(urls_to_process)} unique results for query '{query}'."
+    msg = f"Summarized {successful_summaries} of {len(urls_to_summarize)} targeted results for query '{query}'."
     if errors_dict: msg += f" Encountered {len(errors_dict)} errors."
     logger.success(msg, time=processing_time)
 
@@ -5483,74 +5576,87 @@ async def multi_engine_search_summary(
 @with_tool_metrics
 @with_error_handling
 async def monitor_web_data_points(
-    monitoring_targets: List[Dict[str, Any]],
-    previous_values: Optional[Dict[str, str]] = None, # Key format: "{url}::{data_point_name}"
-    llm_model: str = "openai/gpt-4.1-mini",
-    browser_options: Optional[Dict[str, Any]] = None,
-    max_concurrent_pages: int = 3 # Limit concurrency for monitoring
+    instructions: Dict[str, Any],
+    previous_values: Optional[Dict[str, str]] = None # Key format: "{url}::{data_point_name}"
+    # Removed llm_model, browser_options, max_concurrent_pages from signature
 ) -> Dict[str, Any]:
     """
-    Monitors specific data points across multiple web pages, extracts values,
-    and checks conditions or changes.
+    Monitors specific data points across multiple web pages (defined in instructions),
+    extracts values using specified methods (selector or LLM), and checks conditions
+    or changes based on criteria defined in the instructions.
 
     Args:
-        monitoring_targets: List of targets to monitor. Each target dict must contain:
-            url: (str) The URL of the page to visit.
-            data_points: (List[Dict]) List of data points to check on this page.
-                Each data_point dict requires:
-                name: (str) Unique name for this data point (used in results/previous_values).
-                identifier: (str) CSS selector OR natural language prompt for LLM extraction.
-                extraction_method: (str) 'selector' or 'llm'.
-                attribute: (Optional[str]) If method='selector', specific HTML attribute to get (e.g., 'href', 'data-price'). If omitted, gets text content.
-                condition: (Optional[str]) Type of check: 'changed' (vs previous_value), 'equals', 'contains', 'greater_than', 'less_than', 'ge', 'le', 'regex_match', 'llm_eval'. Default: 'changed'.
-                condition_value: (Optional[Any]) Value/pattern to use for comparison in conditions like 'equals', 'contains', numeric checks, 'regex_match'.
-                llm_condition_prompt: (Optional[str]) Prompt for LLM if condition='llm_eval'. Context (current/previous values) will be added automatically.
-        previous_values: (Optional[Dict[str, str]]) Dictionary holding the *last known* values for data points, keyed as "{url}::{data_point_name}". Used for 'changed' condition.
-        llm_model: (Optional) LLM model for 'llm' extraction or 'llm_eval' condition. Default "openai/gpt-4.1-mini".
-        browser_options: (Optional) Options for browser_init (e.g., {"headless": True}).
-        max_concurrent_pages: (Optional) Max number of URLs to process in parallel. Default 3.
+        instructions: Dictionary controlling the monitoring process:
+            monitoring_targets: (List[Dict]) Required. List of targets to monitor.
+                Each target dict requires:
+                url: (str) The URL of the page to visit.
+                data_points: (List[Dict]) List of data points to check on this page.
+                    Each data_point dict requires:
+                    name: (str) Unique name for this data point.
+                    identifier: (str) CSS selector OR natural language prompt for LLM.
+                    extraction_method: (str) 'selector' or 'llm'.
+                    attribute: (Optional[str]) HTML attribute for 'selector' method.
+                    condition: (Optional[str]) Check type: 'changed', 'equals', 'contains',
+                               'greater_than', 'less_than', 'ge', 'le', 'regex_match',
+                               'llm_eval'. Default: 'changed'.
+                    condition_value: (Optional[Any]) Value/pattern for comparison.
+                    llm_condition_prompt: (Optional[str]) Prompt for 'llm_eval' condition.
+            llm_config: (dict) Required. Defines LLM usage.
+                model: (str) Required. LLM model identifier ('provider/model_name') for 'llm' extraction or 'llm_eval'.
+            concurrency: (Optional[dict]) Defines parallel execution settings.
+                max_concurrent_pages: (Optional[int]) Max URLs to process in parallel. Default 3.
+            browser_options: (Optional[dict]) Options for browser_init (e.g., {"headless": True}). Default {"headless": True}.
+        previous_values: (Optional[Dict[str, str]]) Dictionary holding the *last known* values
+                         for data points, keyed as "{url}::{data_point_name}". Used for 'changed' condition.
 
     Returns:
         Dictionary with monitoring results:
         {
             "success": true,
-            "results": {
-                "https://example.com": { # Results keyed by URL
+            "results": { # Keyed by URL
+                "https://example.com": {
                     "data_point_1_name": {
-                        "current_value": "123.45",
-                        "condition_met": false,
-                        "status": "Condition 'changed': Not detected (...)",
-                        "error": null
-                    },
-                    "data_point_2_name": { ... }
-                },
-                "https://anothersite.org": { ... }
+                        "current_value": "...", "condition_met": bool|None, "status": "...", "error": str|None
+                    }, ...
+                }, ...
             },
-            "errors": List[str], # List of page-level processing errors
-            "message": "Monitoring complete. Processed X targets."
+            "errors": List[str], # Page-level processing errors
+            "message": "Monitoring complete summary."
         }
     """
     start_time = time.monotonic()
-    logger.info(f"Starting web data point monitoring for {len(monitoring_targets)} targets.")
 
-    # --- Validate Inputs ---
-    if not isinstance(monitoring_targets, list) or not monitoring_targets: raise ToolInputError("'monitoring_targets' must be a non-empty list.")
-    if previous_values and not isinstance(previous_values, dict): raise ToolInputError("'previous_values' must be a dictionary if provided.")
-    if not llm_model or not isinstance(llm_model, str) or '/' not in llm_model: raise ToolInputError("llm_model must be 'provider/model_name'.")
-    # Deeper validation of target/data_point structure could be added here
+    # --- Validate Instructions Structure ---
+    if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
+    monitoring_targets = instructions.get("monitoring_targets")
+    llm_config = instructions.get("llm_config")
+    concurrency_config = instructions.get("concurrency", {}) # Optional
+    browser_opts_from_instr = instructions.get("browser_options") # Optional
+
+    if not isinstance(monitoring_targets, list) or not monitoring_targets: raise ToolInputError("instructions['monitoring_targets'] (non-empty list) is required.")
+    if not isinstance(llm_config, dict) or not llm_config.get("model"): raise ToolInputError("instructions['llm_config'] (dict) with 'model' ('provider/model_name') is required.")
+    llm_model = llm_config["model"] # Extract LLM model from instructions
+    if not isinstance(concurrency_config, dict): raise ToolInputError("instructions['concurrency'] must be a dictionary if provided.")
+    if browser_opts_from_instr and not isinstance(browser_opts_from_instr, dict): raise ToolInputError("instructions['browser_options'] must be a dictionary if provided.")
+    # Further validation of monitoring_targets structure could be added if needed
+
+    logger.info(f"Starting web data point monitoring for {len(monitoring_targets)} targets using LLM {llm_model}.")
 
     # --- Setup ---
-    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
+    browser_options = browser_opts_from_instr if isinstance(browser_opts_from_instr, dict) else {"headless": True} # Use provided or default
+    max_concurrent_pages = concurrency_config.get("max_concurrent_pages", 3) # Get concurrency from instructions or default
+    if not isinstance(max_concurrent_pages, int) or max_concurrent_pages < 1: raise ToolInputError("concurrency['max_concurrent_pages'] must be a positive integer.")
+
     browser_was_initialized_by_tool = False
     previous_values_map = previous_values or {}
     monitoring_results = {} # url -> { data_point_name -> result }
     page_level_errors = []
 
     try:
-        # Initialize Browser (if needed)
+        # --- Initialize Browser (if needed) ---
         global _browser_instance
         if not _browser_instance or not _browser_instance.is_connected():
-             init_res = await browser_init(**browser_init_options)
+             init_res = await browser_init(**browser_options)
              if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
              browser_was_initialized_by_tool = True
 
@@ -5562,75 +5668,75 @@ async def monitor_web_data_points(
             """Task to process one target URL and its data points."""
             url = target_def.get("url")
             data_points = target_def.get("data_points", [])
-            if not url or not isinstance(url, str) or not isinstance(data_points, list):
-                logger.error(f"Invalid target definition skipped: {target_def}")
-                page_level_errors.append(f"Invalid target definition for URL (or missing URL/data_points): {str(target_def)[:100]}...")
+            # Basic validation of the target structure
+            if not url or not isinstance(url, str) or not isinstance(data_points, list) or not data_points:
+                error_msg = f"Invalid target definition skipped (missing/invalid url or data_points): {str(target_def)[:150]}..."
+                logger.error(error_msg)
+                page_level_errors.append(error_msg)
                 return None # Skip invalid target
 
             target_results = {}
             page_error_msg = None
-            page_obj_for_target: Optional[Page] = None # Keep page open for all data points on it
+            page_obj_for_target: Optional[Page] = None # Store page for reuse across data points
 
             try:
-                 # --- Navigate ---
-                 # Use try-except for navigation to handle page-level errors
-                 try:
-                      page_id, page_obj_for_target = await _ensure_page() # Get a page (could be reused or new)
-                      logger.debug(f"Navigating to target URL for monitoring: {url} (using page {page_id})")
-                      # Use low-level navigation tool directly
-                      nav_res = await browser_navigate(url=url, wait_until="load", timeout=30000, capture_snapshot=False)
-                      if not nav_res.get("success"):
-                           raise ToolError(f"Navigation failed: {nav_res.get('error', 'Unknown error')}")
-                      await asyncio.sleep(1.5) # Wait for potential JS loading
-                 except (ToolError, ToolInputError, Exception) as nav_err:
-                      page_error_msg = f"Failed to navigate to {url}: {type(nav_err).__name__}: {str(nav_err)}"
-                      logger.error(page_error_msg)
-                      page_level_errors.append(page_error_msg)
-                      # Do not proceed with data point extraction if navigation failed
-                      return {url: {"page_error": page_error_msg}} # Return page-level error
+                # --- Navigate (once per URL) ---
+                try:
+                    page_id, page_obj_for_target = await _ensure_page() # Get a page
+                    logger.debug(f"Navigating to target URL for monitoring: {url} (using page {page_id})")
+                    nav_res = await browser_navigate(url=url, wait_until="load", timeout=30000, capture_snapshot=False)
+                    if not nav_res.get("success"): raise ToolError(f"Navigation failed: {nav_res.get('error')}")
+                    await asyncio.sleep(1.5) # Wait for JS
+                except (ToolError, ToolInputError, Exception) as nav_err:
+                    page_error_msg = f"Failed to navigate to {url}: {type(nav_err).__name__}: {str(nav_err)}"
+                    logger.error(page_error_msg)
+                    page_level_errors.append(page_error_msg)
+                    return {url: {"page_error": page_error_msg}}
 
-                 # --- Extract and Evaluate Data Points for this URL ---
-                 if not page_obj_for_target:
-                       raise ToolError("Internal error: Page object became unavailable after navigation.")
+                # --- Extract and Evaluate Data Points (iteratively on the same page) ---
+                if not page_obj_for_target: raise ToolError("Internal error: Page object unavailable after navigation.")
 
-                 for dp_def in data_points:
-                     dp_name = dp_def.get("name")
-                     if not dp_name:
-                          logger.warning(f"Data point definition missing 'name' in target {url}, skipping: {dp_def}")
-                          continue
+                for dp_def in data_points:
+                    dp_name = dp_def.get("name")
+                    if not dp_name or not isinstance(dp_name, str):
+                         logger.warning(f"Data point definition missing/invalid 'name' in target {url}, skipping: {dp_def}")
+                         # Store error for this specific data point within the URL's results
+                         target_results[f"invalid_dp_{uuid.uuid4().hex[:6]}"] = {"error": "Invalid data point definition (missing name)"}
+                         continue
 
-                     dp_result = {"current_value": None, "condition_met": None, "status": "Not evaluated", "error": None}
+                    dp_result = {"current_value": None, "condition_met": None, "status": "Not evaluated", "error": None}
 
-                     # Extract value
-                     current_value, extract_err = await _extract_single_data_point(page_obj_for_target, url, dp_def, llm_model)
-                     dp_result["current_value"] = current_value
-                     if extract_err:
-                          dp_result["error"] = f"Extraction failed: {extract_err}"
-                          dp_result["status"] = "Extraction failed"
-                     else:
-                          # Evaluate condition if extraction succeeded
-                          condition_def = {k: v for k, v in dp_def.items() if k in ['condition', 'condition_value', 'llm_condition_prompt']}
-                          previous_val_key = f"{url}::{dp_name}"
-                          prev_val = previous_values_map.get(previous_val_key)
-                          cond_met, cond_status, eval_err = await _evaluate_data_point_condition(dp_name, current_value, condition_def, prev_val, llm_model)
-                          dp_result["condition_met"] = cond_met
-                          dp_result["status"] = cond_status
-                          if eval_err:
-                              dp_result["error"] = f"Evaluation failed: {eval_err}"
+                    # Extract value using helper
+                    current_value, extract_err = await _extract_single_data_point(page_obj_for_target, url, dp_def, llm_model)
+                    dp_result["current_value"] = current_value
+                    if extract_err:
+                        dp_result["error"] = f"Extraction failed: {extract_err}"
+                        dp_result["status"] = "Extraction failed"
+                        logger.warning(f"Extraction failed for '{dp_name}' on {url}: {extract_err}")
+                    else:
+                        # Evaluate condition if extraction succeeded
+                        condition_def = {k: v for k, v in dp_def.items() if k in ['condition', 'condition_value', 'llm_condition_prompt']}
+                        previous_val_key = f"{url}::{dp_name}" # Consistent key format
+                        prev_val = previous_values_map.get(previous_val_key)
+                        cond_met, cond_status, eval_err = await _evaluate_data_point_condition(dp_name, current_value, condition_def, prev_val, llm_model)
+                        dp_result["condition_met"] = cond_met
+                        dp_result["status"] = cond_status
+                        if eval_err:
+                            dp_result["error"] = f"Evaluation failed: {eval_err}"
+                            logger.warning(f"Evaluation failed for '{dp_name}' on {url}: {eval_err}")
 
-                     target_results[dp_name] = dp_result
+                    target_results[dp_name] = dp_result
 
-                 # Return results for this URL
-                 return {url: target_results}
+                return {url: target_results} # Return results for this URL
 
             except Exception as target_proc_err:
-                 # Catch unexpected errors during the processing of a single target URL
                  err_msg = f"Unexpected error processing target {url}: {type(target_proc_err).__name__}: {str(target_proc_err)}"
                  logger.error(err_msg, exc_info=True)
                  page_level_errors.append(err_msg)
-                 return {url: {"page_error": err_msg}} # Return page-level error
+                 # Return page-level error associated with the URL
+                 return {url: {"page_error": err_msg}}
 
-        # Create and gather tasks
+        # --- Create and Gather Tasks ---
         async def task_wrapper(target_def):
             async with semaphore:
                 return await process_target_url(target_def)
@@ -5641,21 +5747,20 @@ async def monitor_web_data_points(
         # Consolidate results
         for res_or_exc in results_from_gather:
             if isinstance(res_or_exc, Exception):
-                # Should generally be caught within process_target_url, but handle here too
-                err_msg = f"Task processing failed unexpectedly: {type(res_or_exc).__name__}: {str(res_or_exc)}"
-                logger.error(err_msg, exc_info=True)
+                err_msg = f"Monitoring task failed unexpectedly: {type(res_or_exc).__name__}: {str(res_or_exc)}"
+                logger.error(err_msg, exc_info=False) # Less verbose for gather errors
                 page_level_errors.append(err_msg)
             elif isinstance(res_or_exc, dict):
-                monitoring_results.update(res_or_exc) # Merge results for each URL
+                monitoring_results.update(res_or_exc) # Merge results dicts {url: {dp_name: ...}}
             else:
-                 # Should not happen
-                 err_msg = f"Unexpected result type from monitoring task: {type(res_or_exc)}"
+                 err_msg = f"Unexpected result type ({type(res_or_exc)}) from monitoring task"
                  logger.error(err_msg)
                  page_level_errors.append(err_msg)
 
     except (ToolInputError, ToolError) as e:
-         logger.error(f"Error during monitoring setup: {type(e).__name__}: {e}", exc_info=True)
-         raise # Re-raise critical setup errors
+         logger.error(f"Error during monitoring setup or execution: {type(e).__name__}: {e}", exc_info=True)
+         # Add error to page_level_errors for reporting? Or re-raise? Let's re-raise setup errors.
+         raise
     except Exception as e:
          logger.critical(f"Unexpected critical error during monitoring execution: {type(e).__name__}: {e}", exc_info=True)
          raise ToolError(f"Unexpected critical error: {e}") from e
@@ -5667,15 +5772,15 @@ async def monitor_web_data_points(
 
     processing_time = time.monotonic() - start_time
     processed_count = len(monitoring_results)
-    error_count = len(page_level_errors) + sum(1 for url_res in monitoring_results.values() if url_res.get("page_error"))
+    error_count = len(page_level_errors)
     msg = f"Monitoring complete. Processed {processed_count} of {len(monitoring_targets)} targets."
-    if error_count > 0: msg += f" Encountered {error_count} page-level errors."
+    if error_count > 0: msg += f" Encountered {error_count} page-level errors during processing."
     logger.success(msg, time=processing_time)
 
     return {
         "success": True,
         "results": monitoring_results, # {url: {dp_name: {current_value, condition_met, status, error}}}
-        "errors": page_level_errors, # List of page-level errors
+        "errors": page_level_errors, # List of page-level errors encountered during navigation/setup
         "message": msg,
         "processing_time": processing_time
     }
@@ -5686,125 +5791,167 @@ async def monitor_web_data_points(
 async def research_and_synthesize_report(
     topic: str,
     instructions: Dict[str, Any],
-    llm_model: str = "openai/gpt-4.1-mini",
-    browser_options: Optional[Dict[str, Any]] = None,
-    max_concurrent_extractions: int = 3 # Limit concurrent page processing
+    browser_options: Optional[Dict[str, Any]] = None, # Keep top-level browser_options for convenience
+    max_concurrent_extractions: int = 3 # Keep concurrency control at top-level
 ) -> Dict[str, Any]:
     """
-    Performs web research on a topic, extracts key info from selected pages using an LLM,
-    and synthesizes the findings into a report according to provided instructions.
+    Performs web research on a topic using specified search queries, selects relevant pages via LLM,
+    extracts key information from those pages using LLM guidance, and synthesizes the findings
+    into a report according to detailed instructions.
 
     Args:
         topic: The research topic.
-        instructions: Dictionary defining the workflow:
-            research_goal_prompt: (str) Overall objective of the research.
-            search_queries: (List[str]) List of search query templates (use "{topic}").
-            site_selection_prompt: (str) LLM prompt to select relevant URLs from search results (should request JSON {"selected_urls": [...]}).
-            max_sites_to_visit: (int) Max number of selected sites to extract info from.
-            information_extraction_prompt_or_schema: (Union[str, Dict]) LLM prompt or JSON schema to extract data from each visited page (should request JSON output).
-            synthesis_prompt: (str) LLM prompt for generating the final report using extracted snippets (use "{topic}" and "{extracted_information_context}").
-            report_format: (str) Description of the desired output format (e.g., "markdown summary", "json list of key findings").
-            search_engine: (Optional[str]) "google", "bing", etc. Default "google".
-            num_search_results_per_query: (Optional[int]) How many results to fetch per query initially. Default 10.
-        llm_model: (Optional) LLM model identifier for guidance/extraction/synthesis. Default "openai/gpt-4.1-mini".
-        browser_options: (Optional) Options for browser_init.
-        max_concurrent_extractions: (Optional) Max number of site extractions to run in parallel. Default 3.
-
+        instructions: Dictionary controlling the workflow:
+            research_goal_prompt: (str) Required. Overall objective of the research.
+            search_phase: (dict) Required. Defines search parameters.
+                search_queries: (List[str]) Required. List of search query templates (use "{topic}").
+                search_engine: (Optional[str]) "google", "bing", etc. Default "google".
+                num_search_results_per_query: (Optional[int]) Initial results to fetch per query. Default 10.
+            site_selection_phase: (dict) Required. Defines how relevant sites are chosen.
+                selection_prompt: (str) Required. LLM prompt to select relevant URLs (use "{topic}", "{search_results_context}", "{max_urls}"). Must request JSON {"selected_urls": [...]}.
+                llm_model: (str) Required. LLM model for site selection ('provider/model_name'). # Renamed for clarity from site_selection_llm_model
+                max_sites_to_visit: (int) Required. Max number of selected sites to process.
+            extraction_phase: (dict) Required. Defines data extraction from visited sites.
+                extraction_prompt_or_schema: (Union[str, Dict]) Required. LLM prompt or JSON schema for extraction (use "{topic}"). Must request JSON output.
+                llm_model: (str) Required. LLM model for extraction ('provider/model_name'). # Renamed for clarity
+            synthesis_phase: (dict) Required. Defines the final report generation.
+                synthesis_prompt: (str) Required. LLM prompt for generating the report (use "{topic}", "{extracted_information_context}").
+                llm_model: (str) Required. LLM model for synthesis ('provider/model_name'). # Renamed for clarity
+                report_format_description: (str) Required. Description of the desired output format (guides the synthesis LLM).
+            browser_options: (Optional[dict]) Options for browser_init (e.g., {"headless": True}). Merged with top-level.
+            concurrency: (Optional[dict]) Defines parallel execution settings.
+                 max_concurrent_extractions: (Optional[int]) Overrides top-level arg if set. Default 3.
+        browser_options: (Optional) Options for browser_init. Applied over instructions' options.
+        max_concurrent_extractions: (Optional) Max number of site extractions. Applied over instructions' options.
 
     Returns:
-        Dictionary with the final report and process summary:
-        {
-            "success": true,
-            "topic": "...",
-            "report": "Synthesized report content...",
-            "processed_urls": ["url1", ...],
-            "errors": Dict[str, str], # url/stage -> error message
-            "message": "Research and synthesis complete."
-        }
+        Dictionary with the final report and process summary.
     """
     start_time = time.monotonic()
     logger.info(f"Starting research and synthesis report for topic: '{topic}'")
 
-    # --- Validate Instructions ---
+    # --- Validate Instructions Structure ---
     if not isinstance(instructions, dict): raise ToolInputError("Instructions must be a dictionary.")
-    required_keys = [
-        "research_goal_prompt", "search_queries", "site_selection_prompt",
-        "max_sites_to_visit", "information_extraction_prompt_or_schema",
-        "synthesis_prompt", "report_format"
-    ]
-    if not all(k in instructions for k in required_keys): raise ToolInputError(f"Instructions missing one or more required keys: {required_keys}")
-    if not isinstance(instructions["search_queries"], list) or not instructions["search_queries"]: raise ToolInputError("'search_queries' must be a non-empty list.")
-    if not isinstance(instructions["max_sites_to_visit"], int) or instructions["max_sites_to_visit"] < 1: raise ToolInputError("'max_sites_to_visit' must be a positive integer.")
-    # Further validation...
+    for phase_key in ["search_phase", "site_selection_phase", "extraction_phase", "synthesis_phase"]:
+        if not isinstance(instructions.get(phase_key), dict): raise ToolInputError(f"Instructions missing/invalid '{phase_key}'.")
+
+    search_phase = instructions['search_phase']
+    site_selection_phase = instructions['site_selection_phase']
+    extraction_phase = instructions['extraction_phase']
+    synthesis_phase = instructions['synthesis_phase']
+
+    # Search phase validation
+    search_queries = search_phase.get("search_queries")
+    if not isinstance(search_queries, list) or not search_queries: raise ToolInputError("search_phase['search_queries'] (list) required.")
+    search_engine = search_phase.get("search_engine", "google").lower()
+    num_search_results = search_phase.get("num_search_results_per_query", 10)
+    if not isinstance(num_search_results, int) or num_search_results < 1: raise ToolInputError("num_search_results_per_query must be positive integer.")
+    valid_engines = {"google", "bing", "duckduckgo"};
+    if search_engine not in valid_engines: raise ToolInputError(f"search_engine invalid. Choose from {valid_engines}")
+
+    # Site selection validation
+    selection_prompt = site_selection_phase.get("selection_prompt")
+    max_sites_to_visit = site_selection_phase.get("max_sites_to_visit")
+    site_selection_llm_model = site_selection_phase.get("llm_model") # *** FIX: Get model for this phase ***
+    if not isinstance(selection_prompt, str) or not selection_prompt: raise ToolInputError("site_selection_phase['selection_prompt'] (string) required.")
+    if not isinstance(max_sites_to_visit, int) or max_sites_to_visit < 1: raise ToolInputError("max_sites_to_visit must be positive integer.")
+    if not site_selection_llm_model or not isinstance(site_selection_llm_model, str) or '/' not in site_selection_llm_model: raise ToolInputError("site_selection_phase['llm_model'] ('provider/model_name') required.") # *** FIX: Validate model ***
+
+    # Extraction phase validation
+    extraction_prompt_or_schema = extraction_phase.get("extraction_prompt_or_schema")
+    extraction_llm_model = extraction_phase.get("llm_model") # *** FIX: Get model for this phase ***
+    if not extraction_prompt_or_schema: raise ToolInputError("extraction_phase['extraction_prompt_or_schema'] required.")
+    if not extraction_llm_model or not isinstance(extraction_llm_model, str) or '/' not in extraction_llm_model: raise ToolInputError("extraction_phase['llm_model'] ('provider/model_name') required.") # *** FIX: Validate model ***
+
+    # Synthesis phase validation
+    synthesis_prompt_template = synthesis_phase.get("synthesis_prompt")
+    synthesis_llm_model = synthesis_phase.get("llm_model") # *** FIX: Get model for this phase ***
+    report_format_desc = synthesis_phase.get("report_format_description")
+    if not isinstance(synthesis_prompt_template, str) or not synthesis_prompt_template: raise ToolInputError("synthesis_phase['synthesis_prompt'] (string) required.")
+    if not synthesis_llm_model or not isinstance(synthesis_llm_model, str) or '/' not in synthesis_llm_model: raise ToolInputError("synthesis_phase['llm_model'] ('provider/model_name') required.") # *** FIX: Validate model ***
+    if not isinstance(report_format_desc, str) or not report_format_desc: raise ToolInputError("report_format_description (string) required.")
 
     # --- Setup ---
-    browser_init_options = browser_options if isinstance(browser_options, dict) else {"headless": True}
+    # Merge browser options: defaults < instructions < call parameters
+    default_browser_opts = {"headless": True}
+    instr_browser_opts = instructions.get("browser_options", {})
+    final_browser_opts = {**default_browser_opts, **instr_browser_opts, **(browser_options or {})}
+
+    # Concurrency: call parameters override instructions override tool default
+    instr_concurrency = instructions.get("concurrency", {})
+    final_max_concurrent = instr_concurrency.get("max_concurrent_extractions", max_concurrent_extractions)
+    if not isinstance(final_max_concurrent, int) or final_max_concurrent < 1: raise ToolInputError("Concurrency must be a positive integer.")
+
     browser_was_initialized_by_tool = False
     all_search_results: List[Dict[str, str]] = []
     selected_urls_to_visit: List[str] = []
     extracted_snippets: List[Dict[str, Any]] = []
     errors_dict: Dict[str, str] = {} # stage/url -> error
+    final_report: Optional[str] = None
 
     try:
         # --- Initialize Browser (if needed) ---
         global _browser_instance
         if not _browser_instance or not _browser_instance.is_connected():
-             init_res = await browser_init(**browser_init_options)
+             init_res = await browser_init(**final_browser_opts)
              if not init_res.get("success"): raise ToolError(f"Browser init failed: {init_res.get('error')}")
              browser_was_initialized_by_tool = True
 
         # --- 1. Search Phase ---
-        search_engine = instructions.get("search_engine", "google")
-        num_results = instructions.get("num_search_results_per_query", 10)
         seen_urls = set()
+        logger.info(f"Starting search phase using {len(search_queries)} queries on {search_engine}...")
+        # ... (rest of search phase logic remains the same) ...
+        for query_template in search_queries:
+            try: query = query_template.format(topic=topic)
+            except KeyError: raise ToolInputError(f"Search query template '{query_template}' missing '{{topic}}' placeholder.")
 
-        for query_template in instructions["search_queries"]:
-            query = query_template.format(topic=topic)
             try:
-                results = await _perform_web_search(query, engine=search_engine, num_results=num_results)
-                # Add unique results
+                results = await _perform_web_search(query, engine=search_engine, num_results=num_search_results)
+                new_found_count = 0
                 for res in results:
-                    if res['url'] not in seen_urls:
+                    if res.get('url') and res['url'] not in seen_urls:
                         all_search_results.append(res)
                         seen_urls.add(res['url'])
+                        new_found_count += 1
+                logger.debug(f"Query '{query}' yielded {new_found_count} new unique results.")
             except Exception as search_err:
-                logger.error(f"Search failed for query '{query}': {search_err}")
-                errors_dict[f"Search: {query}"] = str(search_err)
+                logger.error(f"Search failed for query '{query}': {search_err}", exc_info=False)
+                errors_dict[f"Search: {query}"] = f"{type(search_err).__name__}: {str(search_err)}"
 
         if not all_search_results:
-            raise ToolError("Web search phase yielded no results.")
-        logger.info(f"Collected {len(all_search_results)} unique search results across {len(instructions['search_queries'])} queries.")
+            raise ToolError("Web search phase yielded no usable results.", error_code="NO_SEARCH_RESULTS")
+        logger.info(f"Collected {len(all_search_results)} unique search results.")
+
 
         # --- 2. Site Selection Phase ---
-        max_sites = instructions["max_sites_to_visit"]
-        selection_prompt = instructions["site_selection_prompt"]
+        # *** FIX: Use the correct model extracted from instructions ***
+        logger.info(f"Starting site selection phase (LLM: {site_selection_llm_model})...")
         try:
             selected_urls_to_visit = await _select_relevant_urls_llm(
-                all_search_results, selection_prompt, topic, max_sites, llm_model
+                all_search_results, selection_prompt, topic, max_sites_to_visit, site_selection_llm_model # *** FIX: Pass correct model ***
             )
             if not selected_urls_to_visit:
-                raise ToolError("LLM failed to select any relevant URLs for extraction.")
-            logger.info(f"LLM selected {len(selected_urls_to_visit)} URLs for information extraction.")
+                raise ToolError("LLM failed to select any relevant URLs for extraction.", error_code="NO_RELEVANT_URLS_SELECTED")
+            logger.info(f"LLM selected {len(selected_urls_to_visit)} URLs for extraction.")
         except Exception as select_err:
-             logger.error(f"Site selection phase failed: {select_err}")
-             errors_dict["Site Selection"] = str(select_err)
-             raise ToolError(f"Site selection failed: {select_err}") from select_err # Stop if selection fails
+             errors_dict["Site Selection"] = f"{type(select_err).__name__}: {str(select_err)}"
+             raise ToolError(f"Site selection failed: {select_err}") from select_err
 
         # --- 3. Information Extraction Phase ---
-        extraction_prompt_or_schema = instructions["information_extraction_prompt_or_schema"]
-        logger.info(f"Starting information extraction from {len(selected_urls_to_visit)} selected URLs (max concurrency: {max_concurrent_extractions})...")
-
-        semaphore = asyncio.Semaphore(max_concurrent_extractions)
+        # *** FIX: Use the correct model extracted from instructions ***
+        logger.info(f"Starting information extraction from {len(selected_urls_to_visit)} URLs (LLM: {extraction_llm_model}, Max Concurrency: {final_max_concurrent})...")
+        semaphore = asyncio.Semaphore(final_max_concurrent)
         tasks = []
 
         async def extraction_task_wrapper(url):
             async with semaphore:
-                return await _extract_info_from_url_llm(url, extraction_prompt_or_schema, topic, llm_model)
+                # *** FIX: Pass correct model ***
+                return await _extract_info_from_url_llm(url, extraction_prompt_or_schema, topic, extraction_llm_model)
 
         tasks = [extraction_task_wrapper(url) for url in selected_urls_to_visit]
         extraction_results_from_gather = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process extraction results
+        # Process extraction results (remains the same)
         for i, result_or_exc in enumerate(extraction_results_from_gather):
             processed_url = selected_urls_to_visit[i]
             if isinstance(result_or_exc, Exception):
@@ -5812,70 +5959,59 @@ async def research_and_synthesize_report(
                 logger.error(err_msg, exc_info=False)
                 errors_dict[processed_url] = str(result_or_exc)
             elif isinstance(result_or_exc, dict):
-                # Check for extraction errors reported by the helper
                 extract_err = result_or_exc.get("_extraction_error")
                 if extract_err:
                     logger.warning(f"Extraction failed for {processed_url}: {extract_err}")
                     errors_dict[processed_url] = extract_err
                 else:
-                    # Successful extraction, add URL for context
-                    result_or_exc["_url"] = processed_url
-                    extracted_snippets.append(result_or_exc)
+                    actual_data = {k: v for k, v in result_or_exc.items() if not k.startswith("_")}
+                    actual_data["_source_url"] = processed_url
+                    extracted_snippets.append(actual_data)
             else:
                 err_msg = f"Unexpected result type ({type(result_or_exc)}) from extraction task for {processed_url}"
                 logger.error(err_msg); errors_dict[processed_url] = err_msg
 
         if not extracted_snippets:
-             # If *all* extractions failed, we can't synthesize
-             raise ToolError("Information extraction phase failed for all selected URLs.")
+             raise ToolError("Information extraction phase failed for all selected URLs.", error_code="EXTRACTION_FAILED_ALL")
+        logger.info(f"Successfully extracted information snippets from {len(extracted_snippets)} URLs.")
 
-        logger.info(f"Successfully extracted information from {len(extracted_snippets)} URLs.")
 
         # --- 4. Synthesis Phase ---
-        synthesis_prompt = instructions["synthesis_prompt"]
-        report_format = instructions["report_format"]
-        logger.info(f"Synthesizing final report (Format: {report_format})...")
-
+        # *** FIX: Use the correct model extracted from instructions ***
+        logger.info(f"Synthesizing final report (Format: {report_format_desc}, LLM: {synthesis_llm_model})...")
         try:
-            final_report = await _synthesize_report_llm(extracted_snippets, synthesis_prompt, topic, report_format, llm_model)
+            final_report = await _synthesize_report_llm(
+                extracted_snippets, synthesis_prompt_template, topic, report_format_desc, synthesis_llm_model # *** FIX: Pass correct model ***
+            )
+            if final_report.startswith("Error:"):
+                 raise ToolError(f"Synthesis failed: {final_report}", error_code="SYNTHESIS_FAILED")
         except Exception as synth_err:
-             logger.error(f"Report synthesis phase failed: {synth_err}", exc_info=True)
-             errors_dict["Synthesis"] = str(synth_err)
-             raise ToolError(f"Report synthesis failed: {synth_err}") from synth_err # Fail the tool if synthesis errors
+             errors_dict["Synthesis"] = f"{type(synth_err).__name__}: {str(synth_err)}"
+             raise ToolError(f"Report synthesis failed: {synth_err}") from synth_err
 
 
     except (ToolInputError, ToolError) as e:
+         # ... (Error handling remains the same) ...
          logger.error(f"Error during research & synthesis for '{topic}': {type(e).__name__}: {e}", exc_info=True)
-         return { # Return error structure
-             "success": False, "topic": topic, "error": str(e),
-             "report": None, "processed_urls": selected_urls_to_visit, "errors": errors_dict,
-             "message": f"Research process failed: {e}"
-         }
+         return { "success": False, "topic": topic, "error": str(e), "report": None, "processed_urls": selected_urls_to_visit, "successful_extractions": len(extracted_snippets), "errors": errors_dict, "message": f"Research process failed: {e}" }
     except Exception as e:
+         # ... (Error handling remains the same) ...
          logger.critical(f"Unexpected critical error during research & synthesis for '{topic}': {type(e).__name__}: {e}", exc_info=True)
-         return {
-             "success": False, "topic": topic, "error": f"Unexpected critical error: {str(e)}",
-             "report": None, "processed_urls": selected_urls_to_visit, "errors": errors_dict,
-             "message": f"Research process failed critically: {type(e).__name__}"
-         }
+         return { "success": False, "topic": topic, "error": f"Unexpected critical error: {str(e)}", "report": None, "processed_urls": selected_urls_to_visit, "successful_extractions": len(extracted_snippets), "errors": errors_dict, "message": f"Research process failed critically: {type(e).__name__}" }
     finally:
-        # Close browser ONLY if this tool initialized it
+        # ... (Browser closing logic remains the same) ...
         if browser_was_initialized_by_tool:
             logger.info("Closing browser instance initialized by research_and_synthesize_report tool.")
             await browser_close()
 
     processing_time = time.monotonic() - start_time
-    msg = f"Research and synthesis for '{topic}' complete. Processed {len(selected_urls_to_visit)} URLs, extracted {len(extracted_snippets)} snippets."
-    if errors_dict: msg += f" Encountered {len(errors_dict)} errors."
+    msg = f"Research and synthesis for '{topic}' complete. Synthesized report based on info from {len(extracted_snippets)} sources."
+    if errors_dict: msg += f" Encountered {len(errors_dict)} errors during processing."
     logger.success(msg, time=processing_time)
 
-    return {
-        "success": True,
-        "topic": topic,
-        "report": final_report,
-        "processed_urls": selected_urls_to_visit, # URLs from which info was attempted
-        "successful_extractions": len(extracted_snippets),
-        "errors": errors_dict, # Any errors during search, selection, extraction, synthesis
-        "message": msg,
-        "processing_time": processing_time
+    return { # Return success structure
+        "success": True, "topic": topic, "report": final_report,
+        "processed_urls": [d.get("_source_url", "Unknown") for d in extracted_snippets], # URLs info was successfully extracted from
+        "successful_extractions": len(extracted_snippets), "errors": errors_dict,
+        "message": msg, "processing_time": processing_time
     }

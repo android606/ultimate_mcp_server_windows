@@ -85,6 +85,7 @@ dependencies = [
     "beautifulsoup4", # Dealing with HTML
     "xmldiff", # for redlines
     "lxml", # XML parser
+    "faster-whisper", # Audio transcripts
 ]
 
 [project.optional-dependencies]

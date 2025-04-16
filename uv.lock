@@ -131,6 +131,22 @@ wheels = [
 ]
 
 [[package]]
+name = "av"
+version = "14.3.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/a0/d9bd6fea6b87ed15294eb2c5da5968e842a062b44e5e190d8cb7be26c333/av-14.3.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:0ec9ed764acbbcc590f30891abdb792c2917e13c91c407751f01ff3d2f957672", size = 19966774 },
+    { url = "https://files.pythonhosted.org/packages/40/92/69d2e596be108b47b83d115ab697f25f553a5449974de6ce4d1b37d313f9/av-14.3.0-cp313-cp313-macosx_12_0_x86_64.whl", hash = "sha256:5c886dcbc7d2f6b6c88e0bea061b268895265d1ec8593e1fd2c69c9795225b9d", size = 23768305 },
+    { url = "https://files.pythonhosted.org/packages/14/34/db18546592b5dffaa8066d3129001fe669a0340be7c324792c4bfae356c0/av-14.3.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:acfd2f6d66b3587131060cba58c007028784ba26d1615d43e0d4afdc37d5945a", size = 33424931 },
+    { url = "https://files.pythonhosted.org/packages/4d/6a/eef972ffae9b7e7edf2606b153cf210cb721fdf777e53790a5b0f19b85c2/av-14.3.0-cp313-cp313-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:ffee262ea4bf016a3e48ce75716ca23adef89cf0d7a55618423fe63bc5986ac2", size = 32018105 },
+    { url = "https://files.pythonhosted.org/packages/60/9a/8eb6940d78a6d0b695719db3922dec4f3994ca1a0dc943db47720ca64d8f/av-14.3.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9d68e5dd7a1b7373bbdbd82fa85b97d5aed4441d145c3938ba1fe3d78637bb05", size = 35148084 },
+    { url = "https://files.pythonhosted.org/packages/19/63/fe614c11f43e06c6e04680a53ecd6252c6c074104c2c179ec7d47cc12a82/av-14.3.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:dd2d8fc3d514305fa979363298bf600fa7f48abfb827baa9baf1a49520291a62", size = 36089398 },
+    { url = "https://files.pythonhosted.org/packages/d0/d6/8cc3c644364199e564e0642674f68b0aeebedc18b6877460c22f7484f3ab/av-14.3.0-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:96d19099b3867fac67dfe2bb29fd15ef41f1f508d2ec711d1f081e505a9a8d04", size = 34356871 },
+    { url = "https://files.pythonhosted.org/packages/27/85/6327062a5bb61f96411c0f444a995dc6a7bf2d7189d9c896aa03b4e46028/av-14.3.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:15dc4a7c916620b733613661ceb7a186f141a0fc98608dfbafacdc794a7cd665", size = 37174375 },
+    { url = "https://files.pythonhosted.org/packages/5b/c0/44232f2e04358ecce33a1d9354f95683bb24262a788d008d8c9dafa3622d/av-14.3.0-cp313-cp313-win_amd64.whl", hash = "sha256:f930faa2e6f6a46d55bc67545b81f5b22bd52975679c1de0f871fc9f8ca95711", size = 27433259 },
+]
+
+[[package]]
 name = "babel"
 version = "2.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -518,6 +534,23 @@ wheels = [
 ]
 
 [[package]]
+name = "ctranslate2"
+version = "4.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pyyaml" },
+    { name = "setuptools" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/59/96/dea1633368d60eb3da7403f3773cc2ba7988e56044ae155f68ab1ebb8f81/ctranslate2-4.6.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:6283ffe63831b980282ff64ab845c62c7ef771f2ce06cb34825fd7578818bf07", size = 13310770 },
+    { url = "https://files.pythonhosted.org/packages/1b/65/d6470f6cfb10e5a065bd71c8cf99d5d107a9d33caedaa622ad7bd9dca01d/ctranslate2-4.6.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:2ebaae12ade184a235569235a875cf03d53b07732342f93b96ae76ef02c31961", size = 1297777 },
+    { url = "https://files.pythonhosted.org/packages/13/52/249565849281e7d6c997ffca88447b8806c119e1b0d1f799c27dda061440/ctranslate2-4.6.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:a719cd765ec10fe20f9a866093e777a000fd926a0bf235c7921f12c84befb443", size = 17487553 },
+    { url = "https://files.pythonhosted.org/packages/77/6d/131193b68d3884f9ab9474d916c6244df2914fbb3234d2a4c1fada72b1d6/ctranslate2-4.6.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:039aa6cc3ed662931a60dec0be28abeaaceb3cc6f476060b8017a7a39a54a9f6", size = 38817828 },
+    { url = "https://files.pythonhosted.org/packages/d5/96/37470cbab08464a31877eb80c3ca3f56d097a1616adc982b53c5bf71d2c2/ctranslate2-4.6.0-cp313-cp313-win_amd64.whl", hash = "sha256:af555c75cb9a9cc6c385f38680b92fa426761cf690e4479b1e962e2b17e02972", size = 19470232 },
+]
+
+[[package]]
 name = "cycler"
 version = "0.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -626,6 +659,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ab/dd/d854f85e70f7341b29e3fda754f2833aec197bd355f805238758e3bcd8ed/fastapi-0.115.9.tar.gz", hash = "sha256:9d7da3b196c5eed049bc769f9475cd55509a112fbe031c0ef2f53768ae68d13f", size = 293774 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/b6/7517af5234378518f27ad35a7b24af9591bc500b8c1780929c1295999eb6/fastapi-0.115.9-py3-none-any.whl", hash = "sha256:4a439d7923e4de796bcc88b64e9754340fcd1574673cbd865ba8a99fe0d28c56", size = 94919 },
+]
+
+[[package]]
+name = "faster-whisper"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "av" },
+    { name = "ctranslate2" },
+    { name = "huggingface-hub" },
+    { name = "onnxruntime" },
+    { name = "tokenizers" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/be/53/195e5b42ede5f09453828d3b00d52bd952ed0e07a8e5c6497affefcfa3be/faster-whisper-1.1.1.tar.gz", hash = "sha256:50d27571970c1be0c2b2680a2593d5d12f9f5d2f10484f242a1afbe7cb946604", size = 1124684 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/69/28359d152f9e2ec1ff4dff3da47011b6346e9a472f89b409bb13017a7d1f/faster_whisper-1.1.1-py3-none-any.whl", hash = "sha256:5808dc334fb64fb4336921450abccfe5e313a859b31ba61def0ac7f639383d90", size = 1118368 },
 ]
 
 [[package]]
@@ -1180,6 +1230,7 @@ dependencies = [
     { name = "chromadb" },
     { name = "colorama" },
     { name = "diskcache" },
+    { name = "faster-whisper" },
     { name = "fitz" },
     { name = "google-genai" },
     { name = "httpx" },
@@ -1273,6 +1324,7 @@ requires-dist = [
     { name = "chromadb" },
     { name = "colorama" },
     { name = "diskcache" },
+    { name = "faster-whisper" },
     { name = "fitz" },
     { name = "flash-attn", marker = "extra == 'advanced'" },
     { name = "google-genai" },
@@ -2350,7 +2402,7 @@ wheels = [
 
 [[package]]
 name = "posthog"
-version = "3.24.3"
+version = "3.25.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -2360,9 +2412,9 @@ dependencies = [
     { name = "requests" },
     { name = "six" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/08/74/e6fc2ac13b3fd91a59497c720dda0dbed9adb0b1f7ce1738e9ebcce1f120/posthog-3.24.3.tar.gz", hash = "sha256:6685f2c6c3ed7a4b990df4c4273e29f7be785256dd259b56968f49454d7645c9", size = 76023 }
+sdist = { url = "https://files.pythonhosted.org/packages/85/a9/ec3bbc23b6f3c23c52e0b5795b1357cca74aa5cfb254213f1e471fef9b4d/posthog-3.25.0.tar.gz", hash = "sha256:9168f3e7a0a5571b6b1065c41b3c171fbc68bfe72c3ac0bfd6e3d2fcdb7df2ca", size = 75968 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/39/2c04caf38bac0fac98dccddf8e37358e6880d3dafb2d8d87556f766225d0/posthog-3.24.3-py2.py3-none-any.whl", hash = "sha256:f1659d6513fcf839337f0d4fcb2f080825087036e135a208b26b5c7238f3e3f1", size = 89150 },
+    { url = "https://files.pythonhosted.org/packages/54/e2/c158366e621562ef224f132e75c1d1c1fce6b078a19f7d8060451a12d4b9/posthog-3.25.0-py2.py3-none-any.whl", hash = "sha256:85db78c13d1ecb11aed06fad53759c4e8fb3633442c2f3d0336bc0ce8a585d30", size = 89115 },
 ]
 
 [[package]]

@@ -394,17 +394,17 @@ class GrokProvider(BaseProvider):
                     "description": "Flagship model that excels at enterprise tasks, domain knowledge",
                 },
                 {
-                    "id": "grok-3-fast-beta",
+                    "id": "grok-3-fast-latest",
                     "provider": self.provider_name,
                     "description": "Fast version of grok-3, same quality with higher cost",
                 },
                 {
-                    "id": "grok-3-mini-beta",
+                    "id": "grok-3-mini-latest",
                     "provider": self.provider_name,
                     "description": "Lightweight model with thinking capabilities",
                 },
                 {
-                    "id": "grok-3-mini-fast-beta",
+                    "id": "grok-3-mini-fast-latest",
                     "provider": self.provider_name,
                     "description": "Fast version of grok-3-mini, same quality with higher cost",
                 }

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import aiofiles
+import httpx
 from docx import Document
 from pydantic import BaseModel, Field, validator
 
@@ -52,6 +53,11 @@ class AudioEnhancementProfile(str, Enum):
     VOICEMAIL = "voicemail"  # Optimized for voicemail recordings
     CUSTOM = "custom"  # User-defined settings
 
+# Expected model sizes in bytes, with some tolerance (minimum size)
+WHISPER_MODEL_SIZES = {
+    "large-v3": 2900000000, # ~2.9GB
+    "large-v3-turbo": 1500000000, # ~1.5GB
+}
 
 class TranscriptionQuality(str, Enum):
     """Quality settings for transcription, balancing speed vs accuracy."""
@@ -300,7 +306,7 @@ class TranscriptionOptions(BaseModel):
         description="Transcript enhancement parameters"
     )
     language_detection: bool = Field(
-        default=True,
+        default=False,  # Disable language detection by default
         description="Automatically detect language before transcription"
     )
 
@@ -526,7 +532,18 @@ async def transcribe_audio(
         
         if isinstance(e, (ToolError, ToolInputError, ResourceError)):
             raise
-        raise ToolError(f"Audio transcription failed: {str(e)}") from e
+        
+        # Return a structured error response instead of just raising an exception
+        return {
+            "raw_transcript": "",
+            "enhanced_transcript": "",
+            "segments": [],
+            "metadata": {},
+            "audio_info": {},
+            "processing_time": context.processing_times if hasattr(context, "processing_times") else {},
+            "success": False,
+            "error": f"Audio transcription failed: {str(e)}"
+        }
     
     finally:
         # Clean up temporary directory unless keep_artifacts is True
@@ -545,6 +562,13 @@ async def process_audio_file(context: ProcessingContext) -> Dict[str, Any]:
     audio_analysis_start = time.time()
     audio_info = await get_detailed_audio_info(context.file_path)
     context.processing_times["audio_analysis"] = time.time() - audio_analysis_start
+    
+    logger.info(
+        f"Audio analysis: {audio_info.get('duration', 0):.1f}s duration, "
+        f"{audio_info.get('sample_rate', 0)} Hz, "
+        f"{audio_info.get('channels', 0)} channels", 
+        emoji_key="audio"
+    )
     
     # Update parameters based on audio analysis if needed
     _update_parameters_from_audio_info(context, audio_info)
@@ -566,39 +590,73 @@ async def process_audio_file(context: ProcessingContext) -> Dict[str, Any]:
         
     context.enhanced_audio_path = enhanced_audio_path
     
-    # --- Detect Language ---
-    if context.options.language_detection and not context.options.whisper_params.language:
-        lang_detect_start = time.time()
-        language_code = await detect_audio_language(context)
-        context.language_code = language_code
-        context.processing_times["language_detection"] = time.time() - lang_detect_start
-        
-        if language_code:
-            logger.info(f"Detected language: {language_code}", emoji_key="language")
-            # Update Whisper parameters with detected language
-            context.options.whisper_params.language = language_code
+    if not os.path.exists(enhanced_audio_path):
+        logger.warning(f"Enhanced audio path does not exist: {enhanced_audio_path}", emoji_key="warning")
+        return {
+            "raw_transcript": "",
+            "enhanced_transcript": "",
+            "segments": [],
+            "metadata": {},
+            "audio_info": audio_info,
+            "processing_time": context.processing_times,
+            "success": False,
+            "error": "Enhanced audio file not found"
+        }
+    
+    # --- Skip Language Detection ---
+    # Language detection is disabled - always use Whisper's built-in detection
+    context.processing_times["language_detection"] = 0
+    if context.options.whisper_params.language:
+        logger.info(f"Using specified language: {context.options.whisper_params.language}", emoji_key="language")
     else:
-        context.processing_times["language_detection"] = 0
+        logger.info("Using Whisper's built-in language detection", emoji_key="language")
     
     # --- Transcribe Audio ---
     transcribe_start = time.time()
+    model = context.options.whisper_params.model
+    quality = context.options.whisper_params.quality.value
     logger.info(
-        f"Transcribing audio with quality: {context.options.whisper_params.quality.value}",
-        emoji_key="transcribe",
-        model=context.options.whisper_params.model
+        f"Transcribing audio with model '{model}' (quality: {quality})",
+        emoji_key="transcribe"
     )
     
-    transcript_result = await transcribe_with_whisper(context)
-    context.processing_times["transcription"] = time.time() - transcribe_start
-    
-    raw_transcript = transcript_result["text"]
-    segments = transcript_result["segments"]
-    
-    # Extract metadata if available
-    metadata = transcript_result.get("metadata", {})
-    if context.language_code and "language" not in metadata:
-        metadata["language"] = context.language_code
+    try:
+        transcript_result = await transcribe_with_whisper(context)
+        context.processing_times["transcription"] = time.time() - transcribe_start
         
+        raw_transcript = transcript_result.get("text", "")
+        segments = transcript_result.get("segments", [])
+        
+        # Check if transcript is empty
+        if not raw_transcript:
+            logger.warning("Whisper returned an empty transcript", emoji_key="warning")
+        else:
+            transcript_length = len(raw_transcript)
+            segments_count = len(segments)
+            logger.info(
+                f"Transcription complete: {transcript_length} characters, {segments_count} segments",
+                emoji_key="success"
+            )
+        
+        # Extract metadata if available
+        metadata = transcript_result.get("metadata", {})
+        if context.language_code and "language" not in metadata:
+            metadata["language"] = context.language_code
+            
+    except Exception as e:
+        logger.error(f"Transcription failed: {str(e)}", emoji_key="error", exc_info=True)
+        context.processing_times["transcription"] = time.time() - transcribe_start
+        return {
+            "raw_transcript": "",
+            "enhanced_transcript": "",
+            "segments": [],
+            "metadata": {"language": context.language_code} if context.language_code else {},
+            "audio_info": audio_info,
+            "processing_time": context.processing_times,
+            "success": False,
+            "error": f"Transcription failed: {str(e)}"
+        }
+    
     # --- Enhance Transcript ---
     enhanced_transcript = raw_transcript
     enhancement_cost = 0.0
@@ -626,12 +684,25 @@ async def process_audio_file(context: ProcessingContext) -> Dict[str, Any]:
                 metadata["title"] = enhancement_result["title"]
                 
             context.processing_times["transcript_enhancement"] = time.time() - enhance_start
+            
+            if not enhanced_transcript:
+                logger.warning("Enhancement returned an empty transcript, falling back to raw transcript", emoji_key="warning")
+                enhanced_transcript = raw_transcript
+            else:
+                enhancement_length = len(enhanced_transcript)
+                logger.info(f"Enhancement complete: {enhancement_length} characters", emoji_key="success")
+                
         except Exception as e:
             logger.error(f"Transcript enhancement failed: {e}", emoji_key="error", exc_info=True)
             context.processing_times["transcript_enhancement"] = time.time() - enhance_start
             # Fall back to raw transcript
             enhanced_transcript = raw_transcript
     else:
+        if not raw_transcript:
+            logger.warning("Skipping transcript enhancement because raw transcript is empty", emoji_key="warning")
+        elif not context.options.enhance_transcript:
+            logger.info("Transcript enhancement disabled by options", emoji_key="info")
+            
         context.processing_times["transcript_enhancement"] = 0
     
     # --- Generate Output Files ---
@@ -647,7 +718,7 @@ async def process_audio_file(context: ProcessingContext) -> Dict[str, Any]:
         "tokens": enhancement_tokens,
         "cost": enhancement_cost,
         "artifacts": artifact_paths,
-        "success": True
+        "success": bool(raw_transcript or enhanced_transcript)
     }
     
     return result
@@ -848,6 +919,112 @@ def _update_parameters_from_audio_info(context: ProcessingContext, audio_info: D
 
 # --- Dependency and Audio Processing Functions ---
 
+async def download_whisper_model(model_name: str, output_path: str) -> bool:
+    """Download a Whisper model from Hugging Face using httpx.
+    
+    Args:
+        model_name: Name of the model to download (e.g. 'large-v3')
+        output_path: Path where to save the model file
+    
+    Returns:
+        True if download was successful, False otherwise
+    """
+    url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model_name}.bin"
+    logger.info(f"Downloading Whisper model '{model_name}' from {url}", emoji_key="download")
+    
+    # Expected model size
+    expected_min_size = WHISPER_MODEL_SIZES.get(model_name, 100000000)  # Default to 100MB minimum if unknown
+    
+    try:
+        async with httpx.AsyncClient(timeout=None) as client:
+            # Make HEAD request first to check if the URL is valid and get expected size
+            try:
+                head_response = await client.head(url)
+                if head_response.status_code != 200:
+                    logger.warning(f"Model URL is not accessible: HTTP {head_response.status_code} for {url}", emoji_key="warning")
+                    return False
+                
+                # If Content-Length is available, use it to check expected size
+                content_length = int(head_response.headers.get("content-length", 0))
+                if content_length > 0:
+                    expected_size_mb = content_length / (1024 * 1024)
+                    logger.info(f"Expected model size: {expected_size_mb:.1f} MB", emoji_key="info")
+                    
+                    # Update expected size if it's larger than our preset minimum
+                    if content_length > expected_min_size:
+                        expected_min_size = content_length * 0.95  # Allow 5% tolerance
+            except Exception as e:
+                logger.warning(f"Failed to validate model URL: {url} - Error: {str(e)}", emoji_key="warning")
+                # Continue anyway, the GET might still work
+            
+            # Stream the response to handle large files
+            try:
+                async with client.stream("GET", url) as response:
+                    if response.status_code != 200:
+                        logger.warning(f"Failed to download model: HTTP {response.status_code} for {url}", emoji_key="warning")
+                        if response.status_code == 404:
+                            logger.warning(f"Model '{model_name}' not found on Hugging Face repository", emoji_key="warning")
+                        return False
+                    
+                    # Get content length if available
+                    content_length = int(response.headers.get("content-length", 0))
+                    if content_length == 0:
+                        logger.warning("Content length is zero or not provided", emoji_key="warning")
+                    
+                    downloaded = 0
+                    
+                    # Open file for writing
+                    try:
+                        with open(output_path, "wb") as f:
+                            # Display progress
+                            last_log_time = time.time()
+                            async for chunk in response.aiter_bytes(chunk_size=8192):
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                
+                                # Log progress every 5 seconds
+                                now = time.time()
+                                if now - last_log_time > 5:
+                                    if content_length > 0:
+                                        percent = downloaded / content_length * 100
+                                        logger.info(f"Download progress: {percent:.1f}% ({downloaded/(1024*1024):.1f} MB)", emoji_key="download")
+                                    else:
+                                        logger.info(f"Downloaded {downloaded/(1024*1024):.1f} MB", emoji_key="download")
+                                    last_log_time = now
+                    except IOError as e:
+                        logger.warning(f"Failed to write to file {output_path}: {str(e)}", emoji_key="warning")
+                        return False
+            except httpx.RequestError as e:
+                logger.warning(f"HTTP request error while downloading model: {str(e)}", emoji_key="warning")
+                return False
+        
+        # Verify the file was downloaded
+        if not os.path.exists(output_path):
+            logger.warning(f"Downloaded file doesn't exist at {output_path}", emoji_key="warning")
+            return False
+            
+        actual_size = os.path.getsize(output_path)
+        if actual_size == 0:
+            logger.warning(f"Downloaded file is empty at {output_path}", emoji_key="warning")
+            return False
+        
+        # Verify file size meets expectations
+        actual_size_mb = actual_size / (1024 * 1024)
+        if actual_size < expected_min_size:
+            logger.warning(
+                f"Model file size ({actual_size_mb:.1f} MB) is smaller than expected minimum size "
+                f"({expected_min_size/(1024*1024):.1f} MB). File may be corrupted or incomplete.", 
+                emoji_key="warning"
+            )
+            return False
+            
+        logger.info(f"Successfully downloaded model to {output_path} ({actual_size_mb:.1f} MB)", emoji_key="success")
+        return True
+            
+    except Exception as e:
+        logger.warning(f"Error downloading whisper model: {e}", emoji_key="warning", exc_info=True)
+        return False
+
 async def check_dependencies(context: ProcessingContext) -> bool:
     """Verifies that required dependencies are installed and accessible."""
     # Check ffmpeg
@@ -876,6 +1053,12 @@ async def check_dependencies(context: ProcessingContext) -> bool:
     
     # Check whisper.cpp
     whisper_path = os.path.expanduser("~/whisper.cpp")
+    
+    # Ensure we're always using large-v3-turbo
+    if context.options.whisper_params.model != "large-v3-turbo":
+        logger.info(f"Overriding model '{context.options.whisper_params.model}' with 'large-v3-turbo'", emoji_key="info")
+        context.options.whisper_params.model = "large-v3-turbo"
+    
     model = context.options.whisper_params.model
     model_path = os.path.join(whisper_path, "models", f"ggml-{model}.bin")
     
@@ -890,21 +1073,95 @@ async def check_dependencies(context: ProcessingContext) -> bool:
         if not os.path.exists(models_dir):
             try:
                 os.makedirs(models_dir)
+                logger.info(f"Created models directory at {models_dir}", emoji_key="info")
             except Exception as e:
                 raise ResourceError(f"Failed to create models directory: {e}") from e
-                
-        raise ResourceError(
-            f"Whisper model '{model}' not found at {model_path}. "
-            f"Please download it first with: "
-            f"~/whisper.cpp/models/download-ggml-model.sh {model}"
-        )
+        
+        # Try to automatically download the model using httpx
+        logger.info(f"Whisper model '{model}' not found at {model_path}", emoji_key="info")
+        logger.info(f"Attempting to download model '{model}' now...", emoji_key="download")
+        
+        # Download the model directly using httpx - first check if model exists
+        if model == "large-v3":
+            # Double check if the model actually exists
+            test_url = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin"
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                try:
+                    head_response = await client.head(test_url)
+                    if head_response.status_code != 200:
+                        # Model might not be directly available - show a clear error
+                        if head_response.status_code == 404:
+                            raise ResourceError(
+                                f"Whisper model 'large-v3' not found in the HuggingFace repository at {test_url}\n"
+                                f"Please download it manually with one of these commands:\n"
+                                f"1. ~/whisper.cpp/models/download-ggml-model.sh large-v3\n"
+                                f"2. Or try a different model like 'large-v3-turbo' which is known to be available"
+                            )
+                except Exception as e:
+                    logger.warning(f"Error checking model availability: {e}", emoji_key="warning")
+                    # Continue with download attempt anyway
+        
+        # Attempt to download the model
+        download_success = await download_whisper_model(model, model_path)
+        if not download_success:
+            # Modified error message with alternative suggestions
+            if model == "large-v3":
+                raise ResourceError(
+                    f"Failed to download Whisper model '{model}'.\n"
+                    f"You can:\n"
+                    f"1. Try using a different model like 'large-v3-turbo' which is more reliable\n"
+                    f"2. Or download manually with: ~/whisper.cpp/models/download-ggml-model.sh {model}"
+                )
+            else:
+                raise ResourceError(
+                    f"Failed to download Whisper model '{model}'.\n"
+                    f"Please download it manually with: ~/whisper.cpp/models/download-ggml-model.sh {model}"
+                )
+        
+        # Verify that the model was downloaded
+        if not os.path.exists(model_path):
+            raise ResourceError(
+                f"Model download completed but model file not found at {model_path}. "
+                f"Please check the download and try again."
+            )
+        
+        # Verify model file size
+        actual_size = os.path.getsize(model_path)
+        expected_min_size = WHISPER_MODEL_SIZES.get(model, 100000000)  # Default to 100MB minimum if unknown
+        
+        if actual_size < expected_min_size:
+            actual_size_mb = actual_size / (1024 * 1024)
+            expected_mb = expected_min_size / (1024 * 1024)
+            raise ResourceError(
+                f"Downloaded model file at {model_path} is too small ({actual_size_mb:.1f} MB). "
+                f"Expected at least {expected_mb:.1f} MB. File may be corrupted or incomplete. "
+                f"Please download it manually with: ~/whisper.cpp/models/download-ggml-model.sh {model}"
+            )
+        
+        logger.info(f"Successfully downloaded Whisper model '{model}'", emoji_key="success")
+    else:
+        # Verify existing model file size
+        actual_size = os.path.getsize(model_path)
+        expected_min_size = WHISPER_MODEL_SIZES.get(model, 100000000)  # Default to 100MB minimum if unknown
+        
+        file_size_mb = actual_size / (1024 * 1024)
+        if actual_size < expected_min_size:
+            expected_mb = expected_min_size / (1024 * 1024)
+            logger.warning(
+                f"Existing model at {model_path} is suspiciously small ({file_size_mb:.1f} MB). "
+                f"Expected at least {expected_mb:.1f} MB. Model may be corrupted.", 
+                emoji_key="warning"
+            )
+        else:
+            logger.info(f"Found existing model at {model_path} ({file_size_mb:.1f} MB)", emoji_key="dependency")
     
     # Check if whisper binary is available in PATH using shlex for command safety
     try:
         whisper_cmd = shlex.split("which whisper-cli")
         result = subprocess.run(whisper_cmd, capture_output=True, text=True)
         if result.returncode == 0:
-            logger.debug(f"Found whisper-cli in PATH: {result.stdout.strip()}", emoji_key="dependency")
+            whisper_path_found = result.stdout.strip()
+            logger.debug(f"Found whisper-cli in PATH: {whisper_path_found}", emoji_key="dependency")
         else:
             # Check in the expected location
             whisper_path = os.path.expanduser("~/whisper.cpp")
@@ -915,6 +1172,7 @@ async def check_dependencies(context: ProcessingContext) -> bool:
                     f"Please build whisper.cpp first with: "
                     f"cd ~/whisper.cpp && cmake -B build && cmake --build build -j --config Release"
                 )
+            logger.debug(f"Found whisper-cli at {whisper_bin}", emoji_key="dependency")
     except FileNotFoundError as e:
         raise ResourceError("Command 'which' not found. Cannot check for whisper-cli installation.") from e
     
@@ -1003,71 +1261,22 @@ async def enhance_audio(context: ProcessingContext, audio_info: Dict[str, Any]) 
     # Create output path in temp directory
     output_path = os.path.join(context.temp_dir, f"{context.base_filename}_enhanced.wav")
     
-    # Get audio parameters
-    params = context.options.audio_params
-    
-    # Build ffmpeg filter string
-    af_filters = []
-    
-    # Volume adjustment
-    if params.volume != 1.0:
-        af_filters.append(f"volume={params.volume}")
-    
-    # Highpass filter
-    if params.highpass > 0:
-        af_filters.append(f"highpass=f={params.highpass}")
-    
-    # Lowpass filter
-    if params.lowpass > 0:
-        af_filters.append(f"lowpass=f={params.lowpass}")
-    
-    # Noise reduction
-    if params.noise_reduction > 0:
-        af_filters.append(f"afftdn=nr={params.noise_reduction}:nf=-20")
-    
-    # Dynamic compression
-    if params.compression:
-        af_filters.append(
-            "compand=attacks=0:points=-80/-80|-45/-15|-27/-9|0/-7|20/-7:gain=5"
-        )
-    
-    # Dynamic audio normalization
-    if params.normalize:
-        af_filters.append("dynaudnorm=f=150:g=15:p=1:m=1:s=0")
-    
-    # Dereverberation (if enabled)
-    if params.dereverberation:
-        af_filters.append("areverse,arnndn=m=./rnnoise-models/sh.rnnn,areverse")
-    
-    # Custom filters (if provided)
-    if params.custom_filters:
-        af_filters.append(params.custom_filters)
-    
-    # Convert to mono/stereo as specified
-    if params.output_channels == 1:
-        af_filters.append("pan=mono|c0=0.5*c0+0.5*c1")
-    elif params.output_channels == 2 and audio_info.get("channels", 0) == 1:
-        af_filters.append("pan=stereo|c0=c0|c1=c0")
-    
-    # Build the complete command
+    # Use optimized audio enhancement settings
+    # Build the complete command with the standardized enhancement settings
     cmd = [
         "ffmpeg",
         "-i", context.file_path,
         "-threads", str(os.cpu_count() or 1),
-    ]
-    
-    # Add audio filter if we have any
-    if af_filters:
-        cmd.extend(["-af", ",".join(af_filters)])
-    
-    # Set output format parameters
-    cmd.extend([
-        "-ar", str(params.output_sample_rate),
-        "-ac", str(params.output_channels),
+        "-af", "volume=1.5, highpass=f=200, lowpass=f=3000, afftdn=nr=10:nf=-20, "
+              "compand=attacks=0:points=-80/-80|-45/-15|-27/-9|0/-7|20/-7:gain=5, "
+              "dynaudnorm=f=150:g=15:p=1:m=1:s=0, "
+              "pan=stereo|c0=c0|c1=c0",
+        "-ar", "16000",
+        "-ac", "2",
         "-c:a", "pcm_s16le",
         "-y",  # Overwrite output if exists
         output_path
-    ])
+    ]
     
     logger.debug(f"Running ffmpeg command: {' '.join(cmd)}", emoji_key="command")
     
@@ -1084,6 +1293,14 @@ async def enhance_audio(context: ProcessingContext, audio_info: Dict[str, Any]) 
             logger.error(f"FFmpeg error: {error_msg}", emoji_key="error")
             return None
         
+        # Verify the output file was created and has a reasonable size
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+            file_size_mb = os.path.getsize(output_path) / (1024 * 1024)
+            logger.info(f"Enhanced audio saved to {output_path} ({file_size_mb:.2f} MB)", emoji_key="audio")
+        else:
+            logger.warning("Enhanced audio file is suspiciously small or doesn't exist", emoji_key="warning")
+            return None
+        
         # If we're keeping enhanced audio, copy it to a persistent location
         if context.options.save_enhanced_audio:
             original_dir = os.path.dirname(context.file_path)
@@ -1098,96 +1315,6 @@ async def enhance_audio(context: ProcessingContext, audio_info: Dict[str, Any]) 
         return None
 
 
-async def detect_audio_language(context: ProcessingContext) -> Optional[str]:
-    """Detect language from a short sample of the audio."""
-    if not context.enhanced_audio_path:
-        return None
-    
-    # Create a sample file with first 30 seconds of audio for faster detection
-    sample_path = os.path.join(context.temp_dir, f"{context.base_filename}_sample.wav")
-    
-    # Extract first 30 seconds
-    cmd = [
-        "ffmpeg",
-        "-i", context.enhanced_audio_path,
-        "-t", "30",  # 30 seconds is usually enough
-        "-c:a", "copy",
-        "-y",
-        sample_path
-    ]
-    
-    try:
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        await process.communicate()
-        
-        if process.returncode != 0 or not os.path.exists(sample_path):
-            logger.warning("Failed to create audio sample for language detection", emoji_key="warning")
-            return None
-        
-        # Use whisper.cpp with tiny model for fast language detection
-        whisper_path = os.path.expanduser("~/whisper.cpp")
-        whisper_bin = os.path.join(whisper_path, "build", "bin", "whisper-cli")
-        
-        # Check if tiny model exists, if not use the specified model
-        tiny_model_path = os.path.join(whisper_path, "models", "ggml-tiny.bin")
-        if not os.path.exists(tiny_model_path):
-            logger.info("Tiny model not found, using specified model for language detection", emoji_key="language")
-            model_path = os.path.join(whisper_path, "models", f"ggml-{context.options.whisper_params.model}.bin")
-        else:
-            model_path = tiny_model_path
-        
-        # Run whisper with language detection only
-        lang_cmd = [
-            whisper_bin,
-            "-m", model_path,
-            "-f", sample_path,
-            "-l", "auto",
-            "-t", "1"  # Single thread is enough for detection
-        ]
-        
-        logger.debug(f"Running language detection: {' '.join(lang_cmd)}", emoji_key="command")
-        
-        process = await asyncio.create_subprocess_exec(
-            *lang_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        
-        if process.returncode != 0:
-            logger.warning("Language detection failed", emoji_key="warning")
-            return None
-        
-        # Parse output to find language
-        stdout_text = stdout.decode('utf-8', errors='ignore')
-        
-        # Look for detected language in output
-        lang_match = re.search(r'auto-detected language: (\w+)', stdout_text)
-        if lang_match:
-            return lang_match.group(1)
-            
-        # If not found, look for any language code mention
-        lang_match = re.search(r'language: (\w+)', stdout_text)
-        if lang_match:
-            return lang_match.group(1)
-            
-        return None
-    except Exception as e:
-        logger.warning(f"Language detection error: {e}", emoji_key="warning")
-        return None
-    finally:
-        # Clean up sample file
-        try:
-            if os.path.exists(sample_path):
-                os.remove(sample_path)
-        except Exception:
-            pass
-
-
 async def transcribe_with_whisper(context: ProcessingContext) -> Dict[str, Any]:
     """Transcribes audio using Whisper.cpp with advanced options."""
     # Create output base name in temp directory
@@ -1199,9 +1326,36 @@ async def transcribe_with_whisper(context: ProcessingContext) -> Dict[str, Any]:
     params = context.options.whisper_params
     
     # Build command with configurable parameters
+    whisper_bin = os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli")
+    model_path = os.path.expanduser(f"~/whisper.cpp/models/ggml-{params.model}.bin")
+    
+    # Validate required files exist
+    if not os.path.exists(whisper_bin):
+        logger.error(f"Whisper binary not found at {whisper_bin}", emoji_key="error")
+        raise ToolError(f"Whisper binary not found at {whisper_bin}")
+    
+    if not os.path.exists(model_path):
+        logger.error(f"Whisper model not found at {model_path}", emoji_key="error")
+        raise ToolError(f"Whisper model not found at {model_path}")
+    
+    # Verify model file size
+    actual_size = os.path.getsize(model_path)
+    expected_min_size = WHISPER_MODEL_SIZES.get(params.model, 100000000)  # Default to 100MB minimum if unknown
+    if actual_size < expected_min_size:
+        actual_size_mb = actual_size / (1024 * 1024)
+        expected_mb = expected_min_size / (1024 * 1024)
+        logger.warning(
+            f"Model file at {model_path} is smaller than expected ({actual_size_mb:.1f} MB, expected {expected_mb:.1f} MB)",
+            emoji_key="warning"
+        )
+    
+    if not os.path.exists(context.enhanced_audio_path):
+        logger.error(f"Audio file not found at {context.enhanced_audio_path}", emoji_key="error")
+        raise ToolError(f"Audio file not found at {context.enhanced_audio_path}")
+    
     cmd = [
-        os.path.expanduser("~/whisper.cpp/build/bin/whisper-cli"),
-        "-m", os.path.expanduser(f"~/whisper.cpp/models/ggml-{params.model}.bin"),
+        whisper_bin,
+        "-m", model_path,
         "-f", context.enhanced_audio_path,
         "-of", output_base,
         "-oj"  # Always output JSON for post-processing
@@ -1249,7 +1403,8 @@ async def transcribe_with_whisper(context: ProcessingContext) -> Dict[str, Any]:
     if params.diarize:
         cmd.append("-dm")
     
-    logger.debug(f"Running whisper command: {' '.join(cmd)}", emoji_key="command")
+    cmd_str = ' '.join(cmd)
+    logger.debug(f"Running whisper command: {cmd_str}", emoji_key="command")
     
     try:
         process = await asyncio.create_subprocess_exec(
@@ -1262,58 +1417,111 @@ async def transcribe_with_whisper(context: ProcessingContext) -> Dict[str, Any]:
         stderr_output = stderr.decode('utf-8', errors='ignore') if stderr else ""
         stdout_output = stdout.decode('utf-8', errors='ignore') if stdout else ""
         
+        # Log outputs for debugging
+        if stdout_output:
+            logger.debug(f"Whisper stdout (first 500 chars): {stdout_output[:500]}", emoji_key="info")
+        
+        if stderr_output:
+            if process.returncode != 0:
+                logger.error(f"Whisper stderr: {stderr_output}", emoji_key="error")
+            elif "error" in stderr_output.lower() or "warning" in stderr_output.lower():
+                logger.warning(f"Whisper warnings/errors: {stderr_output}", emoji_key="warning")
+            else:
+                logger.debug(f"Whisper stderr: {stderr_output}", emoji_key="info")
+        
         if process.returncode != 0:
             error_msg = stderr_output or "Unknown error"
-            logger.error(f"Whisper transcription error: {error_msg}", emoji_key="error")
-            raise ToolError(f"Whisper transcription failed: {error_msg}")
-        
-        # Extract language from output if not already set
-        if not context.language_code:
-            lang_match = re.search(r'auto-detected language: (\w+)', stdout_output)
-            if lang_match:
-                context.language_code = lang_match.group(1)
-        
+            logger.error(f"Whisper transcription error (exit code {process.returncode}): {error_msg}", emoji_key="error")
+            raise ToolError(f"Whisper transcription failed with exit code {process.returncode}: {error_msg}")
+            
+        # Check if output files exist
+        if not os.path.exists(output_json) and not os.path.exists(output_txt):
+            logger.error("Whisper completed successfully but no output files were created", emoji_key="error")
+            raise ToolError("Whisper completed successfully but no output files were created")
+            
         # Read results from the JSON file
         if os.path.exists(output_json):
-            async with aiofiles.open(output_json, 'r') as f:
-                content = await f.read()
-                
+            json_file_size = os.path.getsize(output_json)
+            logger.debug(f"Reading JSON output file: {output_json} ({json_file_size} bytes)", emoji_key="info")
+            
+            if json_file_size < 10:  # Suspiciously small
+                logger.warning(f"JSON output file is suspiciously small: {json_file_size} bytes", emoji_key="warning")
+            
             try:
-                result = json.loads(content)
-                
-                # Fix missing fields in result if needed
-                if "segments" not in result:
-                    result["segments"] = []
-                
-                # Extract metadata
-                metadata = {
-                    "language": context.language_code or result.get("language"),
-                    "duration": result.get("duration", 0)
-                }
-                result["metadata"] = metadata
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse Whisper JSON output: {e}", emoji_key="error")
-                raise ToolError(f"Failed to parse Whisper output JSON: {e}") from e
+                async with aiofiles.open(output_json, 'r') as f:
+                    content = await f.read()
+                    
+                try:
+                    result = json.loads(content)
+                    
+                    # Fix missing fields in result if needed
+                    if "segments" not in result:
+                        logger.warning("No segments found in Whisper JSON output", emoji_key="warning")
+                        result["segments"] = []
+                    
+                    if "text" not in result or not result.get("text"):
+                        logger.warning("No transcript text found in Whisper JSON output", emoji_key="warning")
+                        # Try to construct text from segments
+                        if result.get("segments"):
+                            reconstructed_text = " ".join([seg.get("text", "") for seg in result["segments"]])
+                            if reconstructed_text:
+                                logger.info("Reconstructed transcript text from segments", emoji_key="info")
+                                result["text"] = reconstructed_text
+                            else:
+                                result["text"] = ""
+                        else:
+                            result["text"] = ""
+                    
+                    # Extract metadata
+                    metadata = {
+                        "language": context.language_code or result.get("language"),
+                        "duration": result.get("duration", 0)
+                    }
+                    result["metadata"] = metadata
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse Whisper JSON output: {e}", emoji_key="error")
+                    logger.error(f"JSON content: {content[:1000]}...", emoji_key="error")
+                    raise ToolError(f"Failed to parse Whisper output JSON: {e}") from e
+            except Exception as e:
+                logger.error(f"Failed to read Whisper JSON output file: {e}", emoji_key="error")
+                raise ToolError(f"Failed to read Whisper output: {e}") from e
         else:
-            logger.warning(f"Whisper JSON output not found: {output_json}", emoji_key="warning")
+            logger.warning(f"Whisper JSON output not found at expected path: {output_json}", emoji_key="warning")
             # Fallback to text file
             if os.path.exists(output_txt):
-                async with aiofiles.open(output_txt, 'r') as f:
-                    text = await f.read()
+                txt_file_size = os.path.getsize(output_txt)
+                logger.info(f"Falling back to text output file: {output_txt} ({txt_file_size} bytes)", emoji_key="info")
                 
-                # Create minimal result structure
-                result = {
-                    "text": text,
-                    "segments": [{"text": text, "start": 0, "end": 0}],
-                    "metadata": {
-                        "language": context.language_code,
-                        "duration": 0
+                if txt_file_size < 10:  # Suspiciously small
+                    logger.warning(f"Text output file is suspiciously small: {txt_file_size} bytes", emoji_key="warning")
+                
+                try:
+                    async with aiofiles.open(output_txt, 'r') as f:
+                        text = await f.read()
+                    
+                    # Create minimal result structure
+                    result = {
+                        "text": text,
+                        "segments": [{"text": text, "start": 0, "end": 0}],
+                        "metadata": {
+                            "language": context.language_code,
+                            "duration": 0
+                        }
                     }
-                }
+                    
+                    if not text:
+                        logger.warning("Text output file is empty", emoji_key="warning")
+                except Exception as e:
+                    logger.error(f"Failed to read text output file: {e}", emoji_key="error")
+                    raise ToolError(f"Failed to read Whisper text output: {e}") from e
             else:
-                logger.error("No output files found from Whisper", emoji_key="error")
+                logger.error(f"No output files found from Whisper at {output_base}.*", emoji_key="error")
                 raise ToolError("No output files found from Whisper transcription")
+        
+        # Check if we actually got a transcript
+        if not result.get("text"):
+            logger.warning("Whisper returned an empty transcript", emoji_key="warning")
         
         # Clean up results (remove empty/duplicate segments)
         cleaned_segments = clean_segments(result.get("segments", []))
@@ -1980,9 +2188,9 @@ async def generate_output_files(
                     await f.write(f"Topics: {topics_str}\n")
                 await f.write("\n")
             
-            # Write transcript
-            await f.write(enhanced_transcript)
-            
+            # Write raw transcript instead of enhanced transcript
+            await f.write(raw_transcript)
+        
         artifact_paths["output_files"]["text"] = text_path
     
     # Generate SRT output
