@@ -13,7 +13,7 @@ from rich.rule import Rule
 
 from llm_gateway.services.cache import get_cache_service, run_completion_with_cache
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import display_cache_stats
+from llm_gateway.utils.display import display_cache_stats, CostTracker
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -24,7 +24,7 @@ from llm_gateway.utils.logging.console import console
 logger = get_logger("example.cache_demo")
 
 
-async def demonstrate_cache():
+async def demonstrate_cache(tracker: CostTracker = None):
     """Demonstrate cache functionality using Rich."""
     console.print(Rule("[bold blue]Cache Demonstration[/bold blue]"))
     logger.info("Starting cache demonstration", emoji_key="start")
@@ -63,6 +63,11 @@ async def demonstrate_cache():
         results[1] = await run_completion_with_cache(prompt, use_cache=True)
         times[1] = time.time() - start_time
         stats_log[1] = get_current_stats_dict()
+        
+        # Track cost - only for non-cache hits (actual API calls)
+        if tracker:
+            tracker.add_call(results[1])
+            
         console.print(f"   [yellow]MISS:[/yellow] Took [bold]{times[1]:.3f}s[/bold] (Cost: ${results[1].cost:.6f}, Tokens: {results[1].total_tokens})")
 
         # 2. Cache Hit
@@ -80,6 +85,11 @@ async def demonstrate_cache():
         results[3] = await run_completion_with_cache(prompt, use_cache=False)
         times[3] = time.time() - start_time
         stats_log[3] = get_current_stats_dict() # Stats shouldn't change much for bypass
+        
+        # Track cost - bypassing cache calls the API
+        if tracker:
+            tracker.add_call(results[3])
+            
         console.print(f"   [cyan]BYPASS:[/cyan] Took [bold]{times[3]:.3f}s[/bold] (Cost: ${results[3].cost:.6f}, Tokens: {results[3].total_tokens})")
 
         # 4. Another Cache Hit
@@ -127,8 +137,12 @@ async def demonstrate_cache():
 
 async def main():
     """Run cache demonstration."""
+    tracker = CostTracker()  # Create cost tracker instance
     try:
-        await demonstrate_cache()
+        await demonstrate_cache(tracker)
+        
+        # Display cost summary at the end
+        tracker.display_summary(console)
         
     except Exception as e:
         logger.critical(f"Cache demonstration failed: {str(e)}", emoji_key="critical")

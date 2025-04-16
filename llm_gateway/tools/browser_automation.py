@@ -33,7 +33,7 @@ from playwright.async_api import (
 from llm_gateway.constants import TaskType
 from llm_gateway.exceptions import ToolError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
-from llm_gateway.tools.completion import chat_completion 
+from llm_gateway.tools.completion import generate_completion, chat_completion
 from llm_gateway.tools.filesystem import create_directory
 from llm_gateway.utils import get_logger
 
@@ -564,57 +564,66 @@ async def _call_browser_llm(
     task_description: str,
     expected_json: bool = True
 ) -> Optional[Dict[str, Any]]:
-    """Internal helper to call the LLM for browser guidance and parse JSON response."""
     logger.debug(f"Sending prompt to LLM ({model}) for {task_description}")
     if not messages:
         logger.error(f"LLM call attempted with empty messages list for {task_description}.")
         return {"action": "error", "error": "Internal error: Empty messages list."}
 
     try:
-        # Extract provider/model name
-        provider_name = model.split('/')[0] if '/' in model else "openai" # Default provider assumption
-        model_name = model.split('/')[-1]
-
+        # Extract prompt from the last user message
+        user_messages = [m for m in messages if m.get('role') == 'user']
+        if not user_messages:
+            logger.error(f"No user messages found in message list for {task_description}")
+            return {"action": "error", "error": "Internal error: No user messages in list."}
+        
+        prompt = user_messages[-1].get('content', '')
+        if not prompt:
+            logger.error(f"Empty prompt in last user message for {task_description}")
+            return {"action": "error", "error": "Internal error: Empty prompt."}
+        
         completion_params = {
-            "provider": provider_name,
-            "model": model_name,
-            "messages": messages,
+            "model": model, 
+            "prompt": prompt,
             "temperature": 0.1, # Low temperature for focused tasks
         }
-        if expected_json:
-             # Request JSON output if the LLM/provider supports it
+        
+        provider_name_for_debug = model.split('/')[0] if '/' in model else "openai" 
+        if expected_json and provider_name_for_debug != "openai": 
              completion_params["additional_params"] = {"response_format": {"type": "json_object"}}
+             logger.debug(f"Requesting JSON format for provider: {provider_name_for_debug}")
+        elif expected_json and provider_name_for_debug == "openai":
+             logger.warning(f"Skipping JSON format request for OpenAI provider due to potential issue (debugging). Expecting natural language JSON.")
 
-        # Call the chat_completion tool (which is already decorated with error handling etc.)
-        response = await chat_completion(**completion_params)
+        # Call the generate_completion tool instead of chat_completion
+        logger.info(f"Calling generate_completion for {task_description} with model {model}")
+        response = await generate_completion(**completion_params)
 
-        # chat_completion already returns a dict with success/error, use that structure
+        # Extraction logic remains the same
         if response.get("success"):
-            llm_message = response.get("message", {})
-            llm_output_text = llm_message.get("content", "")
-            if not llm_output_text:
+            llm_text = response.get("text", "")
+            if not llm_text:
                  logger.warning(f"LLM returned empty content for {task_description}")
                  if expected_json:
                      return {"action": "error", "error": "LLM returned empty content when JSON was expected."}
                  else:
                       return {"text": ""} # Return empty text if JSON wasn't required
 
-            logger.debug(f"LLM Raw Response for {task_description}: {llm_output_text}")
+            logger.debug(f"LLM Raw Response for {task_description}: {llm_text}")
 
             if expected_json:
                 # Attempt to parse JSON, with robust cleaning
                 try:
                     # Try direct parse first
                     try:
-                        action_data = json.loads(llm_output_text)
+                        action_data = json.loads(llm_text)
                     except json.JSONDecodeError:
                         # If direct parse fails, try cleaning markdown fences
-                        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", llm_output_text)
+                        match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", llm_text)
                         if match:
                             cleaned_output = match.group(1).strip()
                         else:
                             # Assume it might be plain JSON without fences but with surrounding text
-                            cleaned_output = llm_output_text.strip()
+                            cleaned_output = llm_text.strip()
                             # Attempt to extract first valid JSON object literal
                             brace_match = re.search(r'\{.*\}', cleaned_output, re.DOTALL)
                             if brace_match:
@@ -638,14 +647,14 @@ async def _call_browser_llm(
                     return action_data
 
                 except json.JSONDecodeError as json_err:
-                    logger.error(f"LLM response for {task_description} not valid JSON: {json_err}\nRaw text: '''{llm_output_text}'''")
+                    logger.error(f"LLM response for {task_description} not valid JSON: {json_err}\nRaw text: '''{llm_text}'''")
                     return {"action": "error", "error": f"LLM response was not valid JSON: {json_err}"}
                 except Exception as parse_err:
-                    logger.error(f"Error parsing LLM action JSON for {task_description}: {parse_err}\nRaw text: '''{llm_output_text}'''")
+                    logger.error(f"Error parsing LLM action JSON for {task_description}: {parse_err}\nRaw text: '''{llm_text}'''")
                     return {"action": "error", "error": f"Error parsing LLM JSON: {parse_err}"}
             else:
                  # Return raw text if JSON wasn't expected
-                 return {"text": llm_output_text}
+                 return {"text": llm_text}
         else:
             # Use error details from the chat_completion response
             error_detail = response.get("error", "Unknown LLM call error")
@@ -2381,7 +2390,7 @@ async def browser_click(
             ) from e
 
         raise ToolError(message=error_msg, http_status_code=500) from e
- 
+
 @with_tool_metrics
 @with_error_handling
 async def browser_type(
@@ -2956,7 +2965,7 @@ async def browser_get_text(
         selector: CSS selector to find the element.
         trim: (Optional) Whether to trim whitespace from the text. Default: True.
         include_hidden: (Optional) Whether to include text from hidden elements. Default: False.
-               When false, matches the text visible to users.
+                   When false, matches the text visible to users.
 
     Returns:
         A dictionary containing results:
@@ -5155,7 +5164,8 @@ async def find_and_download_pdfs(
 
         search_urls = {"google": "https://www.google.com", "bing": "https://www.bing.com", "duckduckgo": "https://duckduckgo.com"}
         search_selectors = {"google": "textarea[name='q']", "bing": "input[name='q']", "duckduckgo": "input[name='q']"}
-        wait_selectors = {"google": "#search", "bing": "#b_results", "duckduckgo": "article.result"} # Correct DDG selector here too
+        wait_selectors = {"google": "#search", "bing": "#b_results", "duckduckgo": ".react-results--main, .serp__results"} 
+        engine_key = search_engine.lower()
         search_url = search_urls.get(engine_key, search_urls["google"])
         search_selector = search_selectors.get(engine_key, search_selectors["google"])
         # wait_selector variable is removed or ignored
@@ -5166,10 +5176,25 @@ async def find_and_download_pdfs(
         logger.info(f"Typing search query '{search_query}' into {search_selector}...")
         await browser_type(selector=search_selector, text=search_query, press_enter=True, capture_snapshot=False)
         
-        # Determine the correct wait selector directly in the call
-        actual_wait_selector = wait_selectors.get(search_engine.lower(), wait_selectors["google"])
-        logger.info(f"Waiting for search results using selector: {actual_wait_selector}...") 
-        await browser_wait(wait_type="selector", value=actual_wait_selector, timeout=20000) # Use the determined selector
+        # Wait for initial page load
+        await asyncio.sleep(2)
+        
+        # Dynamically detect search results container instead of using hardcoded selectors
+        logger.info("Detecting search results container...")
+        dynamic_selector = await _detect_search_results_element()
+        if dynamic_selector:
+            logger.info(f"Detected search results container: {dynamic_selector}")
+            await browser_wait(wait_type="selector", value=dynamic_selector, timeout=5000)
+        else:
+            # Fallback to hardcoded selectors if dynamic detection fails
+            actual_wait_selector = wait_selectors.get(search_engine.lower(), wait_selectors["google"])
+            logger.info(f"Dynamic detection failed, using selector: {actual_wait_selector}...")
+            try:
+                await browser_wait(wait_type="selector", value=actual_wait_selector, timeout=5000)
+            except Exception as wait_err:
+                logger.warning(f"Failed waiting for selector {actual_wait_selector}: {wait_err}")
+                # Continue anyway - we might still be able to extract content
+        
         await asyncio.sleep(1.5) # Allow results to potentially render
 
         # --- 4. Target Site Identification ---
@@ -5240,7 +5265,8 @@ async def find_and_download_pdfs(
             # Prepare context, limit size
             prompt_context = f"Current URL: {page_state['url']}\nTitle: {page_state['title']}\nSummary:\n{page_state.get('text_summary', '')[:1500]}\n\nElements:\n"
             elements = page_state.get('elements', [])
-            if not elements: prompt_context += "- None found.\n"
+            if not elements: 
+                prompt_context += "- None found.\n"
             else:
                  # Provide element info clearly
                  for el in elements: prompt_context += f"- {el.get('id')}: {el.get('tag')} (Type: {el.get('type', 'N/A')}) Text:'{el.get('text', '')}'{', Href:' + el.get('href', 'N/A') if el.get('href') else ''}\n"
@@ -6046,3 +6072,82 @@ async def research_and_synthesize_report(
         "successful_extractions": len(extracted_snippets), "errors": errors_dict,
         "message": msg, "processing_time": processing_time
     }
+
+async def _detect_search_results_element():
+    """Dynamically detect search results container on the current page using JavaScript."""
+    script = """() => {
+        // Common patterns for search results containers
+        const possibleSelectors = [
+            // DuckDuckGo selectors
+            '.react-results--main', '.serp__results', '#links', '.results', 
+            // Google selectors
+            '#search', '#rso', '.g',
+            // Bing selectors
+            '#b_results', '#b_content',
+            // Generic selectors
+            '[role="main"]', 'main', '.main-results', '.search-results'
+        ];
+        
+        // Try each selector
+        for (const selector of possibleSelectors) {
+            const element = document.querySelector(selector);
+            if (element) {
+                // Check if it likely contains results (has multiple children or significant content)
+                if (element.children.length > 2 || element.textContent.length > 100) {
+                    return {
+                        selector: selector,
+                        found: true,
+                        childCount: element.children.length
+                    };
+                }
+            }
+        }
+        
+        // If no predefined selector works, try to intelligently find results
+        // Look for elements with multiple similar children (like a list of results)
+        const potentialContainers = Array.from(document.querySelectorAll('div, section, main, ol, ul'))
+            .filter(el => el.children.length >= 3);
+            
+        // Sort by number of children (more likely to be results container)
+        potentialContainers.sort((a, b) => b.children.length - a.children.length);
+        
+        if (potentialContainers.length > 0) {
+            const bestGuess = potentialContainers[0];
+            let path = '';
+            
+            // Construct a selector path (not perfect but often works)
+            if (bestGuess.id) {
+                path = '#' + bestGuess.id;
+            } else if (bestGuess.className) {
+                path = '.' + bestGuess.className.split(' ')[0];
+            } else {
+                // Try to create a path using nth-child 
+                let el = bestGuess;
+                let tempPath = '';
+                while (el && el !== document.body) {
+                    const siblings = Array.from(el.parentNode.children);
+                    const index = siblings.indexOf(el) + 1;
+                    const tag = el.tagName.toLowerCase();
+                    tempPath = `${tag}:nth-child(${index})${tempPath ? ' > ' + tempPath : ''}`;
+                    el = el.parentNode;
+                }
+                path = tempPath;
+            }
+            
+            return {
+                selector: path,
+                found: true,
+                bestGuess: true,
+                childCount: bestGuess.children.length
+            };
+        }
+        
+        return { found: false };
+    }"""
+    
+    result = await browser_execute_javascript(script=script)
+    if result.get("success") and result.get("result", {}).get("found"):
+        return result["result"]["selector"]
+    return None
+
+

@@ -383,11 +383,12 @@ def analyze_text_quality(text: str) -> Dict[str, Any]:
     return {"word_count": word_count}
 
 
-async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
+async def evaluate_essays(essays_by_model: Dict[str, str], tracker: CostTracker = None) -> Dict[str, Any]:
     """Use LLM to evaluate which essay is the best.
     
     Args:
         essays_by_model: Dictionary mapping model IDs to their essay texts
+        tracker: Optional CostTracker to track API call costs
         
     Returns:
         Dictionary with evaluation results
@@ -446,6 +447,10 @@ async def evaluate_essays(essays_by_model: Dict[str, str]) -> Dict[str, Any]:
             
             # 45 second timeout for evaluation
             completion_result = await asyncio.wait_for(completion_task, timeout=45)
+            
+            # Track API call if tracker provided
+            if tracker:
+                tracker.add_call(completion_result)
             
             # Accumulate cost
             if hasattr(completion_result, 'cost'):
@@ -696,7 +701,7 @@ async def run_tournament_demo(tracker: CostTracker):
                         for model_id, response in final_responses.items():
                             essays_by_model[model_id] = response.get('response_text', '')
                         
-                        evaluation_result = await evaluate_essays(essays_by_model)
+                        evaluation_result = await evaluate_essays(essays_by_model, tracker)
                         
                         if "error" not in evaluation_result:
                             console.print(Panel(

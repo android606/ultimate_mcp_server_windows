@@ -18,7 +18,7 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.services.analytics.metrics import get_metrics_tracker
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import display_analytics_metrics
+from llm_gateway.utils.display import CostTracker, display_analytics_metrics
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -29,7 +29,7 @@ from llm_gateway.utils.logging.console import console
 logger = get_logger("example.analytics_reporting")
 
 
-async def simulate_llm_usage():
+async def simulate_llm_usage(tracker: CostTracker = None):
     """Simulate various LLM API calls to generate analytics data."""
     console.print(Rule("[bold blue]Simulating LLM Usage[/bold blue]"))
     logger.info("Simulating LLM usage to generate analytics data", emoji_key="start")
@@ -102,6 +102,10 @@ async def simulate_llm_usage():
                 )
                 completion_time = time.time() - start_time
                 
+                # Track costs if tracker provided
+                if tracker:
+                    tracker.add_call(result)
+                
                 # Record metrics using the actual model returned in the result
                 metrics.record_request(
                     provider=provider_name,
@@ -134,13 +138,13 @@ async def simulate_llm_usage():
     return metrics
 
 
-async def demonstrate_metrics_tracking():
+async def demonstrate_metrics_tracking(tracker: CostTracker = None):
     """Demonstrate metrics tracking functionality using Rich."""
     console.print(Rule("[bold blue]Metrics Tracking Demonstration[/bold blue]"))
     logger.info("Starting metrics tracking demonstration", emoji_key="start")
     
     metrics = get_metrics_tracker(reset_on_start=True)
-    await simulate_llm_usage()
+    await simulate_llm_usage(tracker)
     stats = metrics.get_stats()
     
     # Use the standardized display utility instead of custom code
@@ -372,15 +376,19 @@ async def demonstrate_real_time_monitoring():
 
 async def main():
     """Run all analytics and reporting demonstrations."""
+    tracker = CostTracker()  # Create cost tracker instance
     try:
         # Demonstrate metrics tracking (includes simulation)
-        await demonstrate_metrics_tracking()
+        await demonstrate_metrics_tracking(tracker)
         
         # Demonstrate report generation
         await demonstrate_analytics_reporting()
         
         # Demonstrate real-time monitoring
         await demonstrate_real_time_monitoring()
+        
+        # Display final cost summary
+        tracker.display_summary(console)
         
     except Exception as e:
         logger.critical(f"Analytics demo failed: {str(e)}", emoji_key="critical", exc_info=True)

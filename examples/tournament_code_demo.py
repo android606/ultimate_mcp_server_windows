@@ -22,9 +22,9 @@ import asyncio
 import json
 import re
 import sys
+from collections import namedtuple
 from pathlib import Path
 from typing import Any, Dict, Optional
-from collections import namedtuple
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -38,10 +38,19 @@ from rich.table import Table
 from llm_gateway.core.server import Gateway
 from llm_gateway.services.prompts import PromptTemplate
 from llm_gateway.tools import extract_code_from_response
+
 # Import tournament tools
-from llm_gateway.tools.tournament import create_tournament, get_tournament_status, get_tournament_results
+from llm_gateway.tools.tournament import (
+    create_tournament,
+    get_tournament_results,
+    get_tournament_status,
+)
 from llm_gateway.utils import get_logger, process_mcp_result
-from llm_gateway.utils.display import display_tournament_results, display_tournament_status, CostTracker
+from llm_gateway.utils.display import (
+    CostTracker,
+    display_tournament_results,
+    display_tournament_status,
+)
 from llm_gateway.utils.logging.console import console
 
 
@@ -574,7 +583,7 @@ async def run_tournament_demo(tracker: CostTracker):
                             
                             # If no extracted code but response_text exists, try to extract code from it
                             if not extracted_code and response.get('response_text'):
-                                extracted_code = await extract_code_from_response(response.get('response_text', ''))
+                                extracted_code = await extract_code_from_response(response.get('response_text', ''), tracker=tracker)
                             
                             if extracted_code:
                                 has_responses = True

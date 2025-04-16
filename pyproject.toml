@@ -89,7 +89,8 @@ dependencies = [
     "html2text",
     "readability-lxml",
     "markdownify",
-    "trafilatura"
+    "trafilatura",
+    "markdown",
 ]
 
 [project.optional-dependencies]

@@ -1,8 +1,8 @@
 """Document processing tools for LLM Gateway."""
 import asyncio
+import json
 import re
 import time
-import json
 import traceback
 from typing import Any, Dict, List, Optional
 
@@ -22,7 +22,6 @@ except ImportError:
     _tiktoken_available = False
 
 from llm_gateway.constants import Provider, TaskType
-from llm_gateway.core.providers.base import get_provider, ModelResponse
 from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError
 from llm_gateway.services.cache import with_cache
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
@@ -731,7 +730,8 @@ async def summarize_document(
          final_error_model = f"{provider}/{error_model_detail}"
          
          if isinstance(e, (ProviderError, ToolError, ToolInputError)):
-             if isinstance(e, ProviderError) and not hasattr(e, 'model'): e.model = final_error_model
+             if isinstance(e, ProviderError) and not hasattr(e, 'model'): 
+                 e.model = final_error_model
              raise 
          else:
              raise ProviderError(
@@ -875,10 +875,10 @@ JSON Output:""" # Added priming token
                 
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse LLM output as JSON for entity extraction: {e}. Raw text: {extracted_text}")
-            raise ToolError(message=f"Failed to parse LLM output as JSON: {e}. Output: {extracted_text}", error_code="PARSING_ERROR")
+            raise ToolError(message=f"Failed to parse LLM output as JSON: {e}. Output: {extracted_text}", error_code="PARSING_ERROR") from e
         except Exception as parse_err:
              logger.warning(f"Failed to parse LLM output for entity extraction ({output_format}): {parse_err}. Raw text: {extracted_text}")
-             raise ToolError(message=f"Failed to parse LLM output ({output_format}): {parse_err}. Output: {extracted_text}", error_code="PARSING_ERROR")
+             raise ToolError(message=f"Failed to parse LLM output ({output_format}): {parse_err}. Output: {extracted_text}", error_code="PARSING_ERROR") from parse_err
 
         logger.info(f"Final entities data (after filtering): {entities_data}")
         
@@ -906,7 +906,8 @@ JSON Output:""" # Added priming token
         final_error_model = f"{provider}/{error_model_detail}"
          
         if isinstance(e, (ProviderError, ToolError, ToolInputError)):
-             if isinstance(e, ProviderError) and not hasattr(e, 'model'): e.model = final_error_model
+             if isinstance(e, ProviderError) and not hasattr(e, 'model'): 
+                 e.model = final_error_model
              raise 
         else:
              raise ProviderError(
@@ -1015,7 +1016,7 @@ async def generate_qa_pairs(
                           
         except (json.JSONDecodeError, ValueError) as e:
             logger.error(f"Failed to parse Q&A pairs from LLM output: {e}. Raw output:\n{qa_text}")
-            raise ToolError(message=f"Failed to parse generated Q&A pairs from the LLM response: {e}. Output: {qa_text}", error_code="PARSING_ERROR")
+            raise ToolError(message=f"Failed to parse generated Q&A pairs from the LLM response: {e}. Output: {qa_text}", error_code="PARSING_ERROR") from e
 
         logger.success(
             f"Q&A pairs generated successfully with {provider}/{completion_result['model']}",
@@ -1041,7 +1042,8 @@ async def generate_qa_pairs(
         final_error_model = f"{provider}/{error_model_detail}"
 
         if isinstance(e, (ProviderError, ToolError, ToolInputError)):
-             if isinstance(e, ProviderError) and not hasattr(e, 'model'): e.model = final_error_model
+             if isinstance(e, ProviderError) and not hasattr(e, 'model'): 
+                 e.model = final_error_model
              raise 
         else:
              raise ProviderError(
@@ -1127,18 +1129,20 @@ async def process_document_batch(
         semaphore = asyncio.Semaphore(max_concurrency)
         results_for_next_stage = [None] * len(documents) # Prepare storage for this stage's output
 
-        async def run_operation(index, input_data):
-            async with semaphore:
+        async def run_operation(index, input_data, _semaphore=semaphore, _input_key=input_key, 
+                               _op_name=op_name, _op_func=op_func, _op_params=op_params, 
+                               _results_for_next_stage=results_for_next_stage):
+            async with _semaphore:
                 if batch_results[index]["error"]: # Skip if previous stage failed for this doc
                     return None 
                 
                 # Determine the actual input for this operation
                 actual_input = None
-                if input_key:
+                if _input_key:
                      # Find the result from the previous stage for this document index
-                     prev_result = batch_results[index].get(input_key)
+                     prev_result = batch_results[index].get(_input_key)
                      if prev_result is None:
-                          error_msg = f"Input key '{input_key}' not found in results for document {index} for operation '{op_name}'"
+                          error_msg = f"Input key '{_input_key}' not found in results for document {index} for operation '{_op_name}'"
                           batch_results[index]["error"] = error_msg
                           logger.warning(error_msg)
                           return None
@@ -1148,7 +1152,7 @@ async def process_document_batch(
                      actual_input = input_data
                 
                 if actual_input is None: # Should not happen if logic above is correct, but safety check
-                     error_msg = f"Could not determine input for operation '{op_name}' on document {index}."
+                     error_msg = f"Could not determine input for operation '{_op_name}' on document {index}."
                      batch_results[index]["error"] = error_msg
                      logger.error(error_msg)
                      return None
@@ -1156,17 +1160,17 @@ async def process_document_batch(
                 try:
                     # Assume the first arg is the main input (document/text)
                     # This might need adjustment for tools with different signatures
-                    if op_name == "chunk_document":
-                        result = await op_func(document=actual_input, **op_params)
-                    elif op_name in ["summarize_document", "extract_entities", "generate_qa_pairs"]:
+                    if _op_name == "chunk_document":
+                        result = await _op_func(document=actual_input, **_op_params)
+                    elif _op_name in ["summarize_document", "extract_entities", "generate_qa_pairs"]:
                          # These tools return dicts, we usually want the main result field
-                         result_dict = await op_func(document=actual_input, **op_params)
+                         result_dict = await _op_func(document=actual_input, **_op_params)
                          if result_dict.get("success"):
-                              if op_name == "summarize_document":
+                              if _op_name == "summarize_document":
                                    result = result_dict.get("summary")
-                              elif op_name == "extract_entities":
+                              elif _op_name == "extract_entities":
                                    result = result_dict.get("entities")
-                              elif op_name == "generate_qa_pairs":
+                              elif _op_name == "generate_qa_pairs":
                                    result = result_dict.get("qa_pairs")
                               else:
                                    result = result_dict # Fallback
@@ -1174,19 +1178,21 @@ async def process_document_batch(
                               raise ToolError(status_code=500, detail=result_dict.get("error", "Operation failed"))
                     else:
                         # Default call structure - might need refinement
-                        result = await op_func(actual_input, **op_params)
+                        result = await _op_func(actual_input, **_op_params)
                         
                     # Store result for the next stage
-                    results_for_next_stage[index] = result 
+                    _results_for_next_stage[index] = result 
                     return result
                 except Exception as e:
-                    error_msg = f"Error during '{op_name}' on document {index}: {type(e).__name__}: {str(e)}"
+                    error_msg = f"Error during '{_op_name}' on document {index}: {type(e).__name__}: {str(e)}"
                     batch_results[index]["error"] = error_msg # Store error at the document level
                     logger.error(error_msg, exc_info=False) # Log error but don't need full trace always
                     return None # Indicate failure for this document
 
         # Create tasks based on the correct input source for this stage
-        if input_key:
+        _input_key = input_key  # Bind loop variable
+        _op_name = op_name  # Bind loop variable
+        if _input_key:
              # Input comes from previous results, use batch_results index
              tasks = [run_operation(i, None) for i in range(len(documents))] 
         else:
@@ -1203,7 +1209,7 @@ async def process_document_batch(
                  else:
                       # If res is None but no error was set, something went wrong internally
                       if batch_results[i]["error"] is None:
-                           batch_results[i]["error"] = f"Operation '{op_name}' did not return a result for document {i}."
+                           batch_results[i]["error"] = f"Operation '{_op_name}' did not return a result for document {i}."
         
         # Prepare inputs for the *next* operation stage
         # If the current op failed for a doc, the input for next stage will be None
