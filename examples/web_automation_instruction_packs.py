@@ -12,7 +12,7 @@ ACADEMIC_PAPER_INSTRUCTIONS = {
     "search_phase": {
         "search_query_template": "site:arxiv.org {topic} pdf",
         "target_site_identification_prompt": """Analyze the search results summary for "{search_term}".
-Identify the URL that is most likely the main arXiv search results page or a specific relevant paper's abstract page on arXiv.org for the topic. Prioritize URLs starting with 'https://arxiv.org/'.
+Identify the URL that is most likely the main arXiv search results page or a specific relevant paper's abstract page on arXiv.org for the topic. If you see a direct PDF link (ending in .pdf or containing /pdf/), prefer that URL. Prioritize URLs starting with 'https://arxiv.org/'.
 
 Search Results Summary:
 ---
@@ -24,11 +24,26 @@ Respond ONLY with a valid JSON object: {{"target_url": "URL_or_null"}}.""",
         "num_search_results_per_query": 5 # Limit initial results
     },
     "exploration_phase": {
-        "exploration_goal_prompt": "Explore the arXiv website for the topic '{topic}'. Identify direct PDF download links for relevant research papers. Look for links labeled 'PDF', 'Download PDF', or links ending in .pdf within abstract pages.",
+        "exploration_goal_prompt": """You are an AI assistant tasked with finding and downloading PDF research papers from arXiv related to '{topic}'.
+
+Your goal is to find PDF download links for relevant papers. Look for links labeled 'PDF', 'Download PDF', or links ending in .pdf within the page.
+
+IMPORTANT: When you find a PDF link, you MUST use the "download_pdf" action with the full PDF URL to download it. Do not try to summarize the content - downloading the PDF is the primary goal.
+
+Please follow these guidelines:
+1. If the current page is a direct PDF or has PDF in the URL, use "download_pdf" action immediately
+2. If you're on an abstract page, look for PDF links and use "download_pdf" action
+3. If you're on a search results page, look for relevant paper links and click them
+4. Use "scroll" action to see more results if needed
+5. If you can't find relevant papers after multiple steps, use "goal_impossible"
+6. If you successfully download at least one PDF, use "goal_achieved"
+
+Remember: Your PRIMARY goal is to DOWNLOAD PDFs using the "download_pdf" action, not just navigate or summarize.""",
         "navigation_keywords": ["abstract", "pdf", "view", "download", "related", "version", "year", "author", "subject", "search"],
-        "pdf_keywords": ["pdf", "download pdf"],
+        "pdf_keywords": ["pdf", "download pdf", "download"],
         "pdf_url_patterns": [r'/pdf/\d+\.\d+v?\d*', r'\.pdf$'], # Updated arXiv pattern
-        "max_steps": 10
+        "max_steps": 10,
+        "valid_actions": ["click", "scroll", "download_pdf", "go_back", "goal_achieved", "goal_impossible"]
     },
     "download_phase": {
         "metadata_extraction_prompt": """Based on the context below (URL, surrounding text/elements, often from an arXiv abstract page) for the PDF link below, extract the paper's TITLE, the primary AUTHOR's last name, and the YEAR of publication (YYYY).

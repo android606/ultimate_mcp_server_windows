@@ -423,11 +423,7 @@ async def browser_install(
         raise ToolError(error_msg, http_status_code=500) from e
 
 async def _get_simplified_page_state_for_llm(max_elements: int = 75) -> Dict[str, Any]:
-    """
-    Retrieves a simplified representation of the current page state for LLM prompts.
-    Focuses on extracting interactable elements like links and buttons, assigning simple IDs.
-    Internal helper function.
-    """
+    """Get a simplified version of the page state for LLM consumption."""
     script = f"""
     () => {{
         const MAX_ELEMENTS = {max_elements}; // Limit the number of elements extracted
@@ -459,60 +455,63 @@ async def _get_simplified_page_state_for_llm(max_elements: int = 75) -> Dict[str
                 if (!isVisible) return;
 
                 let description = el.textContent?.trim() ||
-                                  el.getAttribute('aria-label') ||
-                                  el.title ||
-                                  el.value ||
-                                  el.alt ||
-                                  el.id ||
-                                  el.className.split(' ').filter(c=>c.length > 2)[0] || // First meaningful class name
-                                  el.tagName;
+                                    el.getAttribute('aria-label') ||
+                                    el.title ||
+            let description = el.textContent?.trim() ||
+                                el.getAttribute('aria-label') ||
+                                el.title ||
+                                el.value ||
+                                el.alt ||
+                                el.id ||
+                                el.className.split(' ').filter(c=>c.length > 2)[0] || // First meaningful class name
+                                el.tagName;
 
-                if (description.length > MAX_TEXT_LEN) {{
-                    description = description.substring(0, MAX_TEXT_LEN - 3) + '...';
-                }}
+            if (description.length > MAX_TEXT_LEN) {{
+                description = description.substring(0, MAX_TEXT_LEN - 3) + '...';
+            }}
 
-                const elementId = `el_${{element_counter++}}`; // Simple ID for LLM reference
-                const elementInfo = {{
-                    id: elementId, // ID for LLM to refer to
-                    tag: el.tagName.toLowerCase(),
-                    text: description || '<no text>', // Ensure text is never empty
-                }};
+            const elementId = `el_${{element_counter++}}`; // Simple ID for LLM reference
+            const elementInfo = {{
+                id: elementId, // ID for LLM to refer to
+                tag: el.tagName.toLowerCase(),
+                text: description || '<no text>', // Ensure text is never empty
+            }};
 
-                // Add href for links, classify them
-                if (el.href) {{
-                    const href = el.href;
-                    // Use a simpler regex check for PDF extension, case-insensitive
-                    if (/\\.pdf$/i.test(href)) {{
-                        elementInfo.type = 'pdf_link';
-                        elementInfo.href = href;
-                    }} else if (href.startsWith('http') || href.startsWith('/')) {{
-                         elementInfo.type = 'nav_link';
-                         // Avoid sending excessively long URLs to the LLM
-                         elementInfo.href = href.length > 250 ? href.substring(0, 250) + '...' : href;
-                    }} else {{
-                         // Exclude non-nav/pdf links like mailto:, javascript: for cleaner LLM context
-                         return; // Skip adding 'other_link' types
-                    }}
+            // Add href for links, classify them
+            if (el.href) {{
+                const href = el.href;
+                // Use a simpler regex check for PDF extension, case-insensitive
+                if (/\\.pdf$/i.test(href)) {{
+                    elementInfo.type = 'pdf_link';
+                    elementInfo.href = href;
+                }} else if (href.startsWith('http') || href.startsWith('/')) {{
+                        elementInfo.type = 'nav_link';
+                        // Avoid sending excessively long URLs to the LLM
+                        elementInfo.href = href.length > 250 ? href.substring(0, 250) + '...' : href;
                 }} else {{
-                     elementInfo.type = el.tagName.toLowerCase(); // button, input
+                        // Exclude non-nav/pdf links like mailto:, javascript: for cleaner LLM context
+                        return; // Skip adding 'other_link' types
                 }}
+            }} else {{
+                    elementInfo.type = el.tagName.toLowerCase(); // button, input
+            }}
 
-                elements.push(elementInfo);
-                seenElements.add(el); // Mark as seen
-            }});
+            elements.push(elementInfo);
+            seenElements.add(el); // Mark as seen
         }});
+    }});
 
-        // Limit total text summary to avoid huge prompts
-        let bodyText = document.body.innerText || "";
-        let textSummary = bodyText.substring(0, 2000); // Increased summary length slightly
-        if (bodyText.length > 2000) textSummary += "... [text truncated]";
+    // Limit total text summary to avoid huge prompts
+    let bodyText = document.body.innerText || "";
+    let textSummary = bodyText.substring(0, 2000); // Increased summary length slightly
+    if (bodyText.length > 2000) textSummary += "... [text truncated]";
 
-        return {{
-            url: window.location.href,
-            title: document.title || "No Title", // Ensure title is always a string
-            elements: elements,
-            text_summary: textSummary // Provide a text summary
-        }};
+    return {{
+        url: window.location.href,
+        title: document.title || "No Title", // Ensure title is always a string
+        elements: elements,
+        text_summary: textSummary // Provide a text summary
+    }};
     }}
     """
     try:
@@ -6149,5 +6148,4 @@ async def _detect_search_results_element():
     if result.get("success") and result.get("result", {}).get("found"):
         return result["result"]["selector"]
     return None
-
 
