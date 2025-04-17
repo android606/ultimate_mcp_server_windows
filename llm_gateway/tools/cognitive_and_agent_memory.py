@@ -80,6 +80,8 @@ SQLITE_PRAGMAS = [
     "PRAGMA busy_timeout=30000"
 ]
 
+MAX_SEMANTIC_CANDIDATES = int(os.environ.get("MAX_SEMANTIC_CANDIDATES", "500")) # Hard cap for semantic search candidates
+
 # ======================================================
 # Enums (Combined & Standardized)
 # ======================================================
@@ -266,6 +268,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
     memory_id TEXT UNIQUE,             -- Link back to the memory
     model TEXT NOT NULL,               -- Embedding model used
     embedding BLOB NOT NULL,           -- Serialized vector
+    dimension INTEGER NOT NULL,        --  Dimension of the embedding vector
     created_at INTEGER NOT NULL
     -- Cannot add FK to memories yet, as it doesn't exist. Will be added via memories FK.
 );
@@ -463,6 +466,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_memory
 CREATE INDEX IF NOT EXISTS idx_memory_links_type ON memory_links(link_type);
 -- Embedding indices
 CREATE INDEX IF NOT EXISTS idx_embeddings_memory_id ON embeddings(memory_id); -- Index the FK
+CREATE INDEX IF NOT EXISTS idx_embeddings_dimension ON embeddings(dimension); -- Index for dimension filtering
 -- Cognitive State indices
 CREATE INDEX IF NOT EXISTS idx_cognitive_states_workflow ON cognitive_states(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_cognitive_states_latest ON cognitive_states(workflow_id, is_latest);
@@ -724,61 +728,95 @@ class MemoryUtils:
         Attempts to represent complex objects that fail direct serialization.
         If the final JSON string exceeds MAX_TEXT_LENGTH, it returns a
         JSON object indicating truncation.
+
+        Args:
+            obj: The Python object to serialize.
+
+        Returns:
+            A JSON string representation, or None if the input is None.
+            Returns a specific error JSON structure if serialization fails or
+            if the resulting JSON string exceeds MAX_TEXT_LENGTH.
         """
         if obj is None:
             return None
 
+        json_str = None # Initialize variable
+
         try:
             # Attempt direct JSON serialization with reasonable defaults
+            # Use default=str as a basic fallback for common non-serializable types like datetime
             json_str = json.dumps(obj, ensure_ascii=False, default=str)
+
         except TypeError as e:
             # Handle objects that are not directly serializable (like sets, custom classes)
-            logger.debug(f"Direct serialization failed for type {type(obj)}: {e}. Trying fallback.")
+            logger.debug(f"Direct JSON serialization failed for type {type(obj)}: {e}. Trying fallback.")
             try:
-                # Attempt a fallback using string representation within a structured error
+                # Attempt a fallback using string representation
                 fallback_repr = str(obj)
-                # Ensure fallback doesn't exceed limits either
-                if len(fallback_repr.encode('utf-8')) > MAX_TEXT_LENGTH:
-                    byte_limit = MAX_TEXT_LENGTH
-                    # Adjust byte_limit to avoid splitting multi-byte characters
-                    while True:
-                        try:
-                            truncated_repr = fallback_repr[:byte_limit].encode('utf-8').decode('utf-8')
-                            break
-                        except UnicodeDecodeError:
-                            byte_limit -= 1
-                            if byte_limit <= 0:
-                                truncated_repr = ""
-                                break
-                    fallback_repr = truncated_repr + "..."
-                    logger.warning(f"Fallback string representation also exceeded max length for type {type(obj)}.")
+                # Ensure fallback doesn't exceed limits either, using robust UTF-8 handling
+                fallback_bytes = fallback_repr.encode('utf-8')
+                if len(fallback_bytes) > MAX_TEXT_LENGTH:
+                    # Truncate the byte representation
+                    truncated_bytes = fallback_bytes[:MAX_TEXT_LENGTH]
+                    # Decode back to string, replacing invalid byte sequences caused by truncation
+                    truncated_repr = truncated_bytes.decode('utf-8', errors='replace')
 
+                    # Optional refinement: Check if the last character is the replacement char (U+FFFD)
+                    # If so, try truncating one byte less to avoid splitting a multi-byte char right at the end.
+                    # This is a heuristic and might not always be perfect but can improve readability.
+                    if truncated_repr.endswith('\ufffd') and MAX_TEXT_LENGTH > 1:
+                         # Try decoding one byte less
+                         shorter_repr = fallback_bytes[:MAX_TEXT_LENGTH-1].decode('utf-8', errors='replace')
+                         # If the shorter version *doesn't* end with the replacement character, use it.
+                         if not shorter_repr.endswith('\ufffd'):
+                              truncated_repr = shorter_repr
+
+                    truncated_repr += "..." # Add ellipsis to indicate truncation
+                    logger.warning(f"Fallback string representation truncated for type {type(obj)}.")
+                else:
+                    # No truncation needed for the fallback string itself
+                    truncated_repr = fallback_repr
+
+                # Create the JSON string containing the error and the (potentially truncated) fallback
                 json_str = json.dumps({
                     "error": f"Serialization failed for type {type(obj)}.",
-                    "fallback_repr": fallback_repr
-                })
+                    "fallback_repr": truncated_repr # Store the safely truncated string representation
+                }, ensure_ascii=False)
+
             except Exception as fallback_e:
                 # Final fallback if even string conversion fails
                 logger.error(f"Could not serialize object of type {type(obj)} even with fallback: {fallback_e}", exc_info=True)
                 json_str = json.dumps({
                     "error": f"Unserializable object type {type(obj)}. Fallback failed.",
                     "critical_error": str(fallback_e)
-                })
+                }, ensure_ascii=False)
+
+        # --- Check final length AFTER serialization attempt (success or fallback) ---
+        # Ensure json_str is assigned before checking length
+        if json_str is None:
+             # This case should theoretically not be reached if the logic above is sound,
+             # but added as a safeguard. It implies an unexpected path where serialization
+             # didn't succeed but also didn't fall into the error handlers properly.
+             logger.error(f"Internal error: json_str is None after serialization attempt for object of type {type(obj)}")
+             return json.dumps({
+                 "error": "Internal serialization error occurred.",
+                 "original_type": str(type(obj))
+             }, ensure_ascii=False)
+
 
         # Check final length against MAX_TEXT_LENGTH (bytes)
-        if len(json_str.encode('utf-8')) > MAX_TEXT_LENGTH:
+        final_bytes = json_str.encode('utf-8')
+        if len(final_bytes) > MAX_TEXT_LENGTH:
+            # If the generated JSON (even if it's an error JSON from fallback) is too long,
+            # return a standard "too long" error marker with a preview.
             logger.warning(f"Serialized JSON string exceeds max length ({MAX_TEXT_LENGTH} bytes). Returning truncated indicator.")
-            # Create a specific JSON structure indicating truncation
-            # We don't truncate the actual JSON string here, as partial JSON is often useless.
-            # Instead, we return a specific error structure.
-            # Alternatively, depending on needs, one could try to truncate *parts* of the data,
-            # e.g., elements in a list or values in a dict, but that's complex and lossy.
-            # This approach clearly signals that the full data wasn't stored.
+            # Provide a preview of the oversized JSON string
+            preview_str = json_str[:200] + ("..." if len(json_str) > 200 else "")
             return json.dumps({
                 "error": "Serialized content exceeded maximum length.",
                 "original_type": str(type(obj)),
-                "preview": json_str[:200] + "..." # Provide a small preview
-            })
+                "preview": preview_str # Provide a small preview of the oversized content
+            }, ensure_ascii=False)
         else:
             # Return the valid JSON string if within limits
             return json_str
@@ -827,10 +865,31 @@ class MemoryUtils:
         Returns:
             The next available integer sequence number (starting from 1).
         """
+        # --- Concurrency Note ---
+        # This read-then-write operation (SELECT MAX + 1, then INSERT) is
+        # generally safe within the transaction managed by the DBConnection
+        # context manager wrapping the calling tool function. This makes it
+        # atomic relative to other *completed* tool calls.
+        # However, a theoretical race condition exists if *multiple concurrent*
+        # calls to the *same* tool function attempt to get the sequence number
+        # for the *exact same parent_id* before the transaction commits.
+        # They might both read the same MAX value.
+        # In practice, SQLite's isolation levels (especially WAL mode) and the
+        # typical single-threaded nature of agent actions within a workflow
+        # make this unlikely to cause issues.
+        # If duplicate sequence numbers are observed under very high concurrency,
+        # consider implementing an explicit asyncio.Lock per parent_id,
+        # managed in a shared dictionary within the MemoryUtils class or a
+        # dedicated sequence manager. For now, we rely on transaction isolation.
+        # --- End Concurrency Note ---
+
         sql = f"SELECT MAX(sequence_number) FROM {table} WHERE {parent_col} = ?"
+        # Use execute directly on the connection for context management
         async with conn.execute(sql, (parent_id,)) as cursor:
+            # Use fetchone without await for aiosqlite cursor
             row = cursor.fetchone()
             # If no rows exist (row is None) or MAX is NULL, start at 1. Otherwise, increment max.
+            # Access by index as row might be None or a tuple/row object
             max_sequence = row[0] if row and row[0] is not None else 0
             return max_sequence + 1
 
@@ -954,10 +1013,16 @@ async def _store_embedding(conn: aiosqlite.Connection, memory_id: str, text: str
 
         # Generate embedding using the service (handles caching internally)
         embedding_list = await embedding_service.create_embeddings(texts=[text])
-        if not embedding_list:
+        if not embedding_list or not embedding_list[0]: # Extra check for empty embedding
              logger.warning(f"Failed to generate embedding for memory {memory_id}")
              return None
-        embedding_array = np.array(embedding_list[0]) # Convert list to numpy array
+        embedding_array = np.array(embedding_list[0], dtype=np.float32) # Ensure consistent dtype
+        if embedding_array.size == 0:
+             logger.warning(f"Generated embedding is empty for memory {memory_id}")
+             return None
+
+        # Get the embedding dimension
+        embedding_dimension = embedding_array.shape[0]
 
         # Generate a unique ID for this embedding entry in our DB table
         embedding_db_id = MemoryUtils.generate_id()
@@ -967,12 +1032,13 @@ async def _store_embedding(conn: aiosqlite.Connection, memory_id: str, text: str
         # Store embedding in our DB
         await conn.execute(
             """
-            INSERT INTO embeddings (id, memory_id, model, embedding, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO embeddings (id, memory_id, model, embedding, dimension, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(memory_id) DO UPDATE SET
                 id = excluded.id,
                 model = excluded.model,
                 embedding = excluded.embedding,
+                dimension = excluded.dimension,
                 created_at = excluded.created_at
             """,
             (
@@ -980,10 +1046,10 @@ async def _store_embedding(conn: aiosqlite.Connection, memory_id: str, text: str
                 memory_id,
                 model_used,
                 embedding_bytes,
+                embedding_dimension,
                 int(time.time())
             )
         )
-
         # Update the memory record to link to this *embedding table entry ID*
         # Note: The cognitive_memory schema had embedding_id as FK to embeddings.id
         # We will store embedding_db_id here.
@@ -992,7 +1058,7 @@ async def _store_embedding(conn: aiosqlite.Connection, memory_id: str, text: str
             (embedding_db_id, memory_id)
         )
 
-        logger.debug(f"Stored embedding {embedding_db_id} for memory {memory_id}")
+        logger.debug(f"Stored embedding {embedding_db_id} (Dim: {embedding_dimension}) for memory {memory_id}")
         return embedding_db_id # Return the ID of the row in the embeddings table
 
     except Exception as e:
@@ -1007,10 +1073,10 @@ async def _find_similar_memories(
     limit: int = 5,
     threshold: float = SIMILARITY_THRESHOLD,
     memory_level: Optional[str] = None,
-    memory_type: Optional[str] = None # Added memory_type filter parameter
+    memory_type: Optional[str] = None
 ) -> List[Tuple[str, float]]:
     """Finds memories with similar semantic meaning using embeddings stored in SQLite.
-       Filters by workflow, level, type, and TTL.
+       Filters by workflow, level, type, dimension, and TTL.
 
     Args:
         conn: Database connection.
@@ -1032,20 +1098,25 @@ async def _find_similar_memories(
 
         # 1. Generate query embedding
         query_embedding_list = await embedding_service.create_embeddings(texts=[query_text])
-        if not query_embedding_list:
+        if not query_embedding_list or not query_embedding_list[0]: # Extra check
             logger.warning(f"Failed to generate query embedding for: '{query_text[:50]}...'")
             return []
-        query_embedding = np.array(query_embedding_list[0])
-        query_embedding_2d = query_embedding.reshape(1, -1)
+        query_embedding = np.array(query_embedding_list[0], dtype=np.float32) # Ensure consistent dtype
+        if query_embedding.size == 0:
+            logger.warning(f"Generated query embedding is empty for: '{query_text[:50]}...'")
+            return []
+
+        query_dimension = query_embedding.shape[0]
+        query_embedding_2d = query_embedding.reshape(1, -1) # Reshape for scikit-learn
 
         # 2. Build query to fetch candidate embeddings from DB, including filters
         sql = """
         SELECT m.memory_id, e.embedding
         FROM memories m
         JOIN embeddings e ON m.embedding_id = e.id
-        WHERE 1=1
-        """
-        params: List[Any] = []
+        WHERE e.dimension = ?
+        """ 
+        params: List[Any] = [query_dimension]
 
         if workflow_id:
             sql += " AND m.workflow_id = ?"
@@ -1053,7 +1124,6 @@ async def _find_similar_memories(
         if memory_level:
             sql += " AND m.memory_level = ?"
             params.append(memory_level.lower()) # Ensure lowercase for comparison
-        # *** ADDED memory_type filter directly to SQL ***
         if memory_type:
             sql += " AND m.memory_type = ?"
             params.append(memory_type.lower()) # Ensure lowercase
@@ -1069,28 +1139,37 @@ async def _find_similar_memories(
         sql += " ORDER BY m.last_accessed DESC NULLS LAST LIMIT ?" # Prioritize recently accessed
         params.append(candidate_limit)
 
-        # 3. Fetch candidate embeddings
+        # 3. Fetch candidate embeddings (only those with matching dimension)
         candidates: List[Tuple[str, bytes]] = []
         async with conn.execute(sql, params) as cursor:
+            # Use fetchall without await
             candidates = await cursor.fetchall() # Fetchall is ok for limited candidates
 
         if not candidates:
-            logger.debug("No candidate memories found matching filters for semantic search.")
+            logger.debug(f"No candidate memories found matching filters (including dimension {query_dimension}) for semantic search.")
             return []
 
         # 4. Calculate similarities for candidates
         similarities: List[Tuple[str, float]] = []
         for memory_id, embedding_bytes in candidates:
             try:
+                # Deserialize embedding from bytes
                 memory_embedding = np.frombuffer(embedding_bytes, dtype=np.float32)
-                if memory_embedding.size == 0: 
+                if memory_embedding.size == 0:
+                    logger.warning(f"Skipping empty embedding blob for memory {memory_id}")
                     continue
+
+                # Reshape for scikit-learn compatibility
                 memory_embedding_2d = memory_embedding.reshape(1, -1)
 
+                # --- Safety Check: Verify dimensions again (should match due to SQL filter) ---
+                # This primarily guards against database corruption or schema inconsistencies.
                 if query_embedding_2d.shape[1] != memory_embedding_2d.shape[1]:
-                    logger.warning(f"Dim mismatch for memory {memory_id}. Skipping.")
+                    logger.warning(f"Dimension mismatch detected for memory {memory_id} (Query: {query_embedding_2d.shape[1]}, DB: {memory_embedding_2d.shape[1]}) despite DB filter. Skipping.")
                     continue
+                # --- End Safety Check ---
 
+                # Calculate cosine similarity
                 similarity = sk_cosine_similarity(query_embedding_2d, memory_embedding_2d)[0][0]
 
                 # 5. Filter by threshold
@@ -1104,7 +1183,7 @@ async def _find_similar_memories(
         # 6. Sort by similarity and limit to the final requested count
         similarities.sort(key=lambda x: x[1], reverse=True)
 
-        logger.debug(f"Calculated similarities for {len(candidates)} candidates. Found {len(similarities)} memories above threshold {threshold} before limiting to {limit}.")
+        logger.debug(f"Calculated similarities for {len(candidates)} candidates (Dim: {query_dimension}). Found {len(similarities)} memories above threshold {threshold} before limiting to {limit}.")
         return similarities[:limit]
 
     except Exception as e:
@@ -1122,68 +1201,87 @@ async def initialize_memory_system(db_path: str = DEFAULT_DB_PATH) -> Dict[str, 
     """Initializes the Unified Agent Memory system and checks embedding service status.
 
     Creates or verifies the database schema using aiosqlite, applies optimizations,
-    and attempts to initialize the singleton EmbeddingService, reporting its status.
-    Should be called once before using other memory or embedding tools.
+    and attempts to initialize the singleton EmbeddingService. **Raises ToolError if
+    the embedding service fails to initialize or is non-functional.**
 
     Args:
         db_path: (Optional) Path to the SQLite database file.
 
     Returns:
-        Initialization status dictionary including embedding service availability.
+        Initialization status dictionary (only if successful).
         {
             "success": true,
             "message": "Unified Memory System initialized successfully.",
             "db_path": "/path/to/unified_agent_memory.db",
-            "embedding_service_functional": true, # Indicates if embeddings can be generated
-            "embedding_service_warning": null, # Optional warning message if service is limited
+            "embedding_service_functional": true, # Will always be true if function returns successfully
+            "embedding_service_warning": null,
             "processing_time": 0.123
         }
+
+    Raises:
+        ToolError: If database initialization fails OR if the EmbeddingService
+                   cannot be initialized or lacks a functional client (e.g., missing API key).
     """
     start_time = time.time()
     logger.info("Initializing Unified Memory System...", emoji_key="rocket")
-    embedding_service_functional = False
-    embedding_service_warning = None
+    embedding_service_warning = None # This will now likely be part of the error message
 
     try:
         # Initialize/Verify Database Schema via DBConnection context manager
         async with DBConnection(db_path) as conn:
              # Perform a simple check to ensure DB connection is working
-            await conn.execute("SELECT count(*) FROM workflows")
+            cursor = await conn.execute("SELECT count(*) FROM workflows")
+            # Use fetchone() without await
+            _ = cursor.fetchone()
+            await cursor.close() # Close cursor
             # No explicit commit needed here if using default aiosqlite behavior or autocommit
+        logger.success("Unified Memory System database connection verified.", emoji_key="database")
 
-        # Attempt to initialize/get the EmbeddingService singleton
+        # Attempt to initialize/get the EmbeddingService singleton and VERIFY functionality
         try:
             # This call triggers the service's __init__ if it's the first time
             embedding_service = get_embedding_service()
-            # Check if the service has its client (requires API key)
+            # Check if the service has its client (e.g., requires API key)
             if embedding_service.client is not None:
-                embedding_service_functional = True
                 logger.info("EmbeddingService initialized and functional.", emoji_key="brain")
             else:
-                embedding_service_warning = "EmbeddingService initialized but OpenAI API key missing or invalid. Embeddings disabled."
-                logger.warning(embedding_service_warning, emoji_key="warning")
+                embedding_service_warning = "EmbeddingService client not available (check API key?). Embeddings disabled."
+                logger.error(embedding_service_warning, emoji_key="warning") # Log as error
+                # Raise explicit error instead of just returning False status
+                raise ToolError(embedding_service_warning)
         except Exception as embed_init_err:
-            embedding_service_warning = f"Failed to initialize EmbeddingService: {str(embed_init_err)}. Embeddings disabled."
-            logger.error(embedding_service_warning, emoji_key="error", exc_info=True)
-            # We don't raise ToolError here, memory system can function without embeddings
+             # This includes the explicit ToolError raised above for missing client
+             if not isinstance(embed_init_err, ToolError): # Avoid double wrapping if it was the specific client error
+                 embedding_service_warning = f"Failed to initialize EmbeddingService: {str(embed_init_err)}. Embeddings disabled."
+                 logger.error(embedding_service_warning, emoji_key="error", exc_info=True)
+                 raise ToolError(embedding_service_warning) from embed_init_err
+             else:
+                 # Re-raise the ToolError directly if it was the specific missing client error
+                 raise embed_init_err
 
+        # If we reach here, both DB and Embedding Service are functional
         processing_time = time.time() - start_time
-        logger.success("Unified Memory System database initialized successfully.", emoji_key="white_check_mark", time=processing_time)
+        logger.success("Unified Memory System initialized successfully (DB and Embeddings OK).", emoji_key="white_check_mark", time=processing_time)
 
         return {
             "success": True,
             "message": "Unified Memory System initialized successfully.",
             "db_path": os.path.abspath(db_path),
-            "embedding_service_functional": embedding_service_functional, # Report status based on service init
-            "embedding_service_warning": embedding_service_warning, # Provide details if non-functional
+            "embedding_service_functional": True, # Will always be true if this return is reached
+            "embedding_service_warning": None, # No warning if successful
             "processing_time": processing_time
         }
     except Exception as e:
-        # This catches errors during DB initialization primarily
-        logger.error(f"Failed to initialize memory system database: {str(e)}", emoji_key="x", exc_info=True)
-        # Re-raise as ToolError, indicating core system failure
-        raise ToolError(f"Memory system database initialization failed: {str(e)}") from e
-
+        # This catches errors during DB initialization OR the ToolError raised from embedding failure
+        processing_time = time.time() - start_time
+        # Ensure it's logged as a critical failure
+        logger.error(f"Failed to initialize memory system: {str(e)}", emoji_key="x", exc_info=True, time=processing_time)
+        # Re-raise as ToolError if it wasn't already one
+        if isinstance(e, ToolError):
+            raise e
+        else:
+            # Wrap unexpected DB errors
+            raise ToolError(f"Memory system initialization failed: {str(e)}") from e
 
 # --- 2. Workflow Management Tools (Ported/Adapted from agent_memory) ---
 @with_tool_metrics
@@ -1761,16 +1859,16 @@ async def get_action_details(
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
     """Retrieves detailed information about one or more actions.
-    
+
     Fetch complete details about specific actions by their IDs, either individually
     or in batch. Optionally includes information about action dependencies.
-    
+
     Args:
         action_id: ID of a single action to retrieve (ignored if action_ids is provided)
         action_ids: Optional list of action IDs to retrieve in batch
         include_dependencies: Whether to include dependency information for each action
         db_path: Path to the SQLite database file
-        
+
     Returns:
         Dictionary containing action details:
         {
@@ -1783,8 +1881,8 @@ async def get_action_details(
                     "title": "Load data",
                     ... other action fields ...
                     "dependencies": { # Only if include_dependencies=True
-                        "depends_on": ["action-id-1", "action-id-2"],
-                        "dependent_actions": ["action-id-3"]
+                        "depends_on": [{"action_id": "action-id-1", "type": "requires"}],
+                        "dependent_actions": [{"action_id": "action-id-3", "type": "informs"}]
                     }
                 },
                 ... more actions if batch ...
@@ -1792,7 +1890,7 @@ async def get_action_details(
             "success": true,
             "processing_time": 0.123
         }
-        
+
     Raises:
         ToolInputError: If neither action_id nor action_ids is provided, or if no matching actions found
         ToolError: If database operation fails
@@ -1803,13 +1901,31 @@ async def get_action_details(
     if not action_id and not action_ids:
         raise ToolInputError("Either action_id or action_ids must be provided", param_name="action_id")
 
-    target_action_ids = action_ids or [action_id]
+    # Ensure target_action_ids is a list
+    target_action_ids = []
+    if action_ids:
+        if isinstance(action_ids, list):
+            target_action_ids = action_ids
+        else:
+            # Handle potential non-list input gracefully
+            logger.warning(f"action_ids provided was not a list ({type(action_ids)}). Attempting to use action_id.")
+            if action_id:
+                target_action_ids = [action_id]
+            else:
+                raise ToolInputError("action_ids must be a list or action_id must be provided.", param_name="action_ids")
+    elif action_id:
+        target_action_ids = [action_id]
+
+    if not target_action_ids: # Should not happen due to initial check, but safeguard
+         raise ToolInputError("No valid action IDs specified.", param_name="action_id")
+
 
     try:
         async with DBConnection(db_path) as conn:
             placeholders = ', '.join(['?'] * len(target_action_ids))
+            # Ensure the query correctly joins tags and groups
             select_query = f"""
-                SELECT a.*, GROUP_CONCAT(t.name) as tags_str
+                SELECT a.*, GROUP_CONCAT(DISTINCT t.name) as tags_str
                 FROM actions a
                 LEFT JOIN action_tags at ON a.action_id = at.action_id
                 LEFT JOIN tags t ON at.tag_id = t.tag_id
@@ -1819,48 +1935,72 @@ async def get_action_details(
 
             actions_result = []
             cursor = await conn.execute(select_query, target_action_ids)
+            # Iterate using async for
             async for row in cursor:
+                # Convert row to dict for easier manipulation
                 action_data = dict(row)
 
+                # Format timestamps
                 if action_data.get("started_at"):
                     action_data["started_at"] = to_iso_z(action_data["started_at"])
                 if action_data.get("completed_at"):
                     action_data["completed_at"] = to_iso_z(action_data["completed_at"])
 
-                if action_data.get("tags_str"): 
+                # Process tags
+                if action_data.get("tags_str"):
                     action_data["tags"] = action_data["tags_str"].split(',')
-                else: action_data["tags"] = []
-                action_data.pop("tags_str", None)
+                else:
+                    action_data["tags"] = []
+                action_data.pop("tags_str", None) # Remove the intermediate column
 
-                if action_data.get("tool_args"): 
+                if action_data.get("tool_args"):
                     action_data["tool_args"] = await MemoryUtils.deserialize(action_data["tool_args"])
-                if action_data.get("tool_result"): 
+                if action_data.get("tool_result"):
                     action_data["tool_result"] = await MemoryUtils.deserialize(action_data["tool_result"])
 
+                # Include dependencies if requested
                 if include_dependencies:
                     action_data["dependencies"] = {"depends_on": [], "dependent_actions": []}
-                    dep_cursor_on = await conn.execute("SELECT target_action_id, dependency_type FROM dependencies WHERE source_action_id = ?", (action_data["action_id"],))
-                    action_data["dependencies"]["depends_on"] = [{"action_id": r["target_action_id"], "type": r["dependency_type"]} for r in await dep_cursor_on.fetchall()]
+                    # Fetch actions this one depends ON (target_action_id is the dependency)
+                    dep_cursor_on = await conn.execute(
+                        "SELECT target_action_id, dependency_type FROM dependencies WHERE source_action_id = ?",
+                        (action_data["action_id"],)
+                    )
+                    # Use fetchall without await
+                    depends_on_rows = await dep_cursor_on.fetchall()
                     await dep_cursor_on.close()
-                    dep_cursor_by = await conn.execute("SELECT source_action_id, dependency_type FROM dependencies WHERE target_action_id = ?", (action_data["action_id"],))
-                    action_data["dependencies"]["dependent_actions"] = [{"action_id": r["source_action_id"], "type": r["dependency_type"]} for r in await dep_cursor_by.fetchall()]
+                    action_data["dependencies"]["depends_on"] = [{"action_id": r["target_action_id"], "type": r["dependency_type"]} for r in depends_on_rows]
+
+                    # Fetch actions that depend ON this one (source_action_id depends on this)
+                    dep_cursor_by = await conn.execute(
+                        "SELECT source_action_id, dependency_type FROM dependencies WHERE target_action_id = ?",
+                        (action_data["action_id"],)
+                    )
+                    # Use fetchall without await
+                    dependent_rows = await dep_cursor_by.fetchall()
                     await dep_cursor_by.close()
+                    action_data["dependencies"]["dependent_actions"] = [{"action_id": r["source_action_id"], "type": r["dependency_type"]} for r in dependent_rows]
+
 
                 actions_result.append(action_data)
-            await cursor.close()
+            await cursor.close() # Close the main cursor
 
             if not actions_result:
                 action_ids_str = ", ".join(target_action_ids[:5]) + ("..." if len(target_action_ids) > 5 else "")
                 raise ToolInputError(f"No actions found with IDs: {action_ids_str}", param_name="action_id" if action_id else "action_ids")
 
             processing_time = time.time() - start_time
-            logger.info(f"Retrieved details for {len(actions_result)} actions", emoji_key="search")
+            logger.info(f"Retrieved details for {len(actions_result)} actions", emoji_key="search", time=processing_time)
 
-            result = { "actions": actions_result, "success": True, "processing_time": processing_time }
+            result = {
+                "actions": actions_result,
+                "success": True,
+                "processing_time": processing_time
+            }
             return result
 
     except ToolInputError:
-        raise
+        raise # Re-raise specific input errors
     except Exception as e:
         logger.error(f"Error retrieving action details: {e}", exc_info=True)
         raise ToolError(f"Failed to retrieve action details: {str(e)}") from e
@@ -1876,21 +2016,28 @@ async def summarize_context_block(
     target_tokens: int = 500,
     context_type: str = "actions",  # "actions", "memories", "thoughts", etc.
     workflow_id: Optional[str] = None,
+    provider: str = LLMGatewayProvider.ANTHROPIC.value, # Use enum/constant for default
+    model: Optional[str] = "claude-3-5-haiku-20241022", # Default model
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
     """Summarizes a specific block of context for an agent, optimized for preserving key information.
-    
+
     A specialized version of summarize_text designed specifically for compressing agent context
     blocks like action histories, memory sets, or thought chains. Uses optimized prompting
     based on context_type to preserve the most relevant information for agent decision-making.
-    
+
     Args:
         text_to_summarize: Context block text to summarize
         target_tokens: Desired length of summary (default 500)
         context_type: Type of context being summarized (affects prompting)
         workflow_id: Optional workflow ID for logging
+        provider: (Optional) LLM provider to use (e.g., 'openai', 'anthropic').
+                  Default 'anthropic'.
+        model: (Optional) Specific LLM model name (e.g., 'gpt-4.1-mini',
+               'claude-3-5-haiku-20241022'). If None, uses provider's default.
+               Default 'claude-3-5-haiku-20241022'.
         db_path: Path to the SQLite database file
-        
+
     Returns:
         Dictionary containing the generated summary:
         {
@@ -1900,20 +2047,20 @@ async def summarize_context_block(
             "success": true,
             "processing_time": 0.123
         }
-        
+
     Raises:
         ToolInputError: If text_to_summarize is empty
-        ToolError: If summarization fails
+        ToolError: If summarization fails or provider is invalid
     """
     start_time = time.time()
-    
+
     if not text_to_summarize:
         raise ToolInputError("Text to summarize cannot be empty", param_name="text_to_summarize")
-    
+
     # Select appropriate prompt template based on context type
     if context_type == "actions":
         prompt_template = """
-You are an expert context summarizer for an AI agent. Your task is to summarize the following ACTION HISTORY logs 
+You are an expert context summarizer for an AI agent. Your task is to summarize the following ACTION HISTORY logs
 while preserving the most important information for the agent to maintain situational awareness.
 
 For actions, focus on:
@@ -1923,7 +2070,7 @@ For actions, focus on:
 4. Any actions that created artifacts or memories
 5. Sequential relationships between actions
 
-Produce a VERY CONCISE summary that maintains the chronological flow and preserves action IDs 
+Produce a VERY CONCISE summary that maintains the chronological flow and preserves action IDs
 when referring to specific actions. Aim for approximately {target_tokens} tokens.
 
 ACTION HISTORY TO SUMMARIZE:
@@ -1943,7 +2090,7 @@ For memories, focus on:
 4. Memory IDs should be preserved when referring to specific memories
 5. Connected memories that form knowledge networks
 
-Produce a VERY CONCISE summary that preserves the key information, high-value insights, and 
+Produce a VERY CONCISE summary that preserves the key information, high-value insights, and
 critical relationships. Aim for approximately {target_tokens} tokens.
 
 MEMORY ENTRIES TO SUMMARIZE:
@@ -1990,59 +2137,63 @@ TEXT TO SUMMARIZE:
 
 CONCISE SUMMARY:
 """
-    
+
     try:
-        # Use the default provider for context summarization
-        # Here we prioritize speed and cost over quality
-        provider = "anthropic"  # Using Anthropic for summarization
-        model = "claude-3-5-haiku-20241022"  # Using Haiku for faster, cheaper summarization
-        
-        # Get provider instance
+        # Get provider instance using the function argument
         provider_instance = await get_provider(provider)
         if not provider_instance:
             raise ToolError(f"Failed to initialize provider '{provider}'. Check configuration.")
-        
+
         # Prepare prompt
         prompt = prompt_template.format(
             text_to_summarize=text_to_summarize,
             target_tokens=target_tokens
         )
-        
+
+        # Use the model parameter passed to the function.
+        # The get_provider instance might handle None model by using its default,
+        # or we rely on the default value set in the function signature if None is passed.
+        model_to_use = model # Pass the model argument (which defaults if None wasn't explicitly passed)
+
         # Generate summary
         generation_result = await provider_instance.generate_completion(
             prompt=prompt,
-            model=model,
+            model=model_to_use, # Use the variable holding the desired model
             max_tokens=target_tokens + 50,  # Add some buffer for prompt tokens
             temperature=0.2  # Lower temperature for more deterministic summaries
         )
-        
+
         summary_text = generation_result.text.strip()
         if not summary_text:
             raise ToolError("LLM returned empty context summary.")
-        
+
         # Calculate compression ratio
-        compression_ratio = len(summary_text) / max(1, len(text_to_summarize))
-        
+        # Avoid division by zero if text_to_summarize is empty (although checked earlier)
+        original_length = max(1, len(text_to_summarize))
+        compression_ratio = len(summary_text) / original_length
+
         # Log the operation if workflow_id provided
         if workflow_id:
             async with DBConnection(db_path) as conn:
                 await MemoryUtils._log_memory_operation(
-                    conn, workflow_id, "compress_context", None, None, 
+                    conn, workflow_id, "compress_context", None, None,
                     {
                         "context_type": context_type,
                         "original_length": len(text_to_summarize),
                         "summary_length": len(summary_text),
-                        "compression_ratio": compression_ratio
+                        "compression_ratio": compression_ratio,
+                        "provider": provider, # Log the provider used
+                        "model": model_to_use # Log the model used
                     }
                 )
                 await conn.commit()
-        
+
         processing_time = time.time() - start_time
         logger.info(
-            f"Compressed {context_type} context: {len(text_to_summarize)} → {len(summary_text)} chars (ratio: {compression_ratio:.2f})",
+            f"Compressed {context_type} context: {len(text_to_summarize)} -> {len(summary_text)} chars (Ratio: {compression_ratio:.2f}, LLM: {provider}/{model_to_use or 'default'})",
             emoji_key="compression", time=processing_time
         )
-        
+
         return {
             "summary": summary_text,
             "context_type": context_type,
@@ -2050,9 +2201,9 @@ CONCISE SUMMARY:
             "success": True,
             "processing_time": processing_time
         }
-    
+
     except ToolInputError:
-        raise
+        raise # Re-raise specific input errors
     except Exception as e:
         logger.error(f"Error summarizing context block: {e}", exc_info=True)
         raise ToolError(f"Failed to summarize context block: {str(e)}") from e
@@ -3375,7 +3526,7 @@ async def hybrid_search_memories(
                 try:
                     # Use internal helper _find_similar_memories
                     # Fetch more candidates than final limit initially to allow keyword scores to influence ranking
-                    semantic_candidate_limit = max(limit * 3, 30)
+                    semantic_candidate_limit = min(max(limit * 5, 50), MAX_SEMANTIC_CANDIDATES)
                     semantic_results = await _find_similar_memories(
                         conn=conn,
                         query_text=query,
