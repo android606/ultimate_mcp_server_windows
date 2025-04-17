@@ -3,12 +3,10 @@
 import asyncio
 import copy
 import difflib
-import inspect
 import json
 import math
 import random
 import re
-import statistics
 import time
 import traceback
 from collections import defaultdict
@@ -16,44 +14,39 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeAlias, cast
 
+from mcp.server.fastmcp import Context as McpContext
 from mcp.types import JSONSchemaObject
 
 # MCP and Pydantic Types
 from mcp.types import Tool as McpToolDef
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from llm_gateway.utils import get_logger
 
 logger = get_logger("llm_gateway.tools.completion")
 
 # JSON Schema and Patch Libraries
-import jsonschema
-from jsonschema.exceptions import SchemaError as JsonSchemaValidationError
-from jsonpatch import JsonPatch, apply_patch, JsonPatchException
-from jsonpointer import JsonPointerException
+import jsonschema  # noqa: E402
+from jsonpatch import JsonPatchException, apply_patch  # noqa: E402 
+from jsonpointer import JsonPointerException  # noqa: E402
+from jsonschema.exceptions import SchemaError as JsonSchemaValidationError  # noqa: E402
 
 # Project Imports
-from llm_gateway.constants import Provider
-from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError
-from llm_gateway.tools.base import with_error_handling, with_tool_metrics
-from llm_gateway.tools.completion import generate_completion
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.text import count_tokens
-from llm_gateway.constants import COST_PER_MILLION_TOKENS
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider  # noqa: E402
+from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError  # noqa: E402
+from llm_gateway.tools.base import with_error_handling, with_tool_metrics  # noqa: E402
+from llm_gateway.tools.completion import generate_completion  # noqa: E402
+from llm_gateway.utils import count_tokens, get_logger  # noqa: E402
 
 # MCP Context Type Hint
-try:
-    from mcp.server.fastmcp import Context as McpContext
-except ImportError:
-    McpContext = Any
 
 logger = get_logger("llm_gateway.tools.docstring_refiner")
 
 # --- Constants ---
 DEFAULT_REFINEMENT_PROVIDER = Provider.OPENAI.value
-DEFAULT_REFINEMENT_MODEL = "gpt-4o"
+DEFAULT_REFINEMENT_MODEL = "gpt-4.1"
 FALLBACK_REFINEMENT_MODEL_PROVIDER = Provider.ANTHROPIC.value
-FALLBACK_REFINEMENT_MODEL_NAME = "claude-3-opus-20240229"
+FALLBACK_REFINEMENT_MODEL_NAME = "claude-3-7-sonnet-20250219"
 MAX_CONCURRENT_TESTS = 4
 MAX_TEST_QUERIES_PER_TOOL = 30
 MAX_REFINEMENT_ITERATIONS = 5
@@ -364,8 +357,7 @@ def _apply_schema_patches(base_schema: JsonDict, patch_suggestions: List[Paramet
         return patched_schema, errors, successfully_applied_patches
 
     try:
-        patch = JsonPatch(all_ops)
-        result_schema = patch.apply(patched_schema, inplace=False)
+        result_schema = apply_patch(patched_schema, all_ops, inplace=False)
 
         try:
             jsonschema.Draft7Validator.check_schema(result_schema)
@@ -378,7 +370,7 @@ def _apply_schema_patches(base_schema: JsonDict, patch_suggestions: List[Paramet
             logger.debug(f"Applied and validated {len(all_ops)} schema patch operations.")
             successfully_applied_patches = all_ops
             return result_schema, errors, successfully_applied_patches
-        except (jsonschema.exceptions.SchemaError, JsonPatchException) as val_err:
+        except (JsonSchemaValidationError, JsonPatchException) as val_err:
                 errors.append(f"Schema validation failed after patching: {val_err}. Patches: {all_ops}")
                 logger.error(f"Schema validation failed after patching: {val_err}. Patches: {all_ops}")
                 return copy.deepcopy(base_schema), errors, []
@@ -410,7 +402,6 @@ def _validate_args_against_schema(args: JsonDict, schema: JSONSchemaObject) -> O
 def _create_value_for_schema(schema: JsonDict, strategy: str = "positive", history: Optional[List[Any]] = None) -> Any:
     """Generates a single value based on JSON schema type, format, constraints, and strategy."""
     schema_type = schema.get("type", "any")
-    desc = schema.get("description", "").lower()
     fmt = schema.get("format")
     enum = schema.get("enum")
     minimum = schema.get("minimum")
@@ -769,7 +760,6 @@ def _select_test_strategies(
     logger.debug(f"Selected test strategies: {final_counts_tuples}")
     return final_counts_tuples
 
-
 async def _generate_test_cases(
     tool_name: str,
     tool_schema: JSONSchemaObject,
@@ -943,7 +933,7 @@ async def _generate_test_cases(
 
                     # Add the generated case if valid for the strategy
                     if case is not None: # Ensure case was generated
-                        if add_unique_test_case(cast(TestStrategy, strategy), case, strategy_desc, targets_failure):
+                        if add_unique_test_case(cast('TestStrategy', strategy), case, strategy_desc, targets_failure):
                             generated_count += 1
                 except Exception as gen_err:
                      logger.warning(f"Error generating test case for strategy '{strategy}' on tool '{tool_name}': {gen_err}", exc_info=True)
@@ -1043,8 +1033,6 @@ async def _execute_tool_tests(
         - The total estimated cost (float) accumulated from successful tool calls
           that reported a cost.
     """
-    results_list: List[TestExecutionResult] = []
-    total_cost = 0.0
     # Use the correct constant name defined previously
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_TESTS)
 
@@ -1217,7 +1205,7 @@ async def _analyze_and_propose(
     refinement_model_configs: List[Dict[str, Any]], # List of LLM configs for analysis
     original_schema: JSONSchemaObject, # Original schema for context (optional use)
     validation_level: str # Validation level used ('none', 'basic', 'full')
-) -> Tuple[Optional[RefinementAnalysis], Optional[ProposedChanges], float]:
+) -> Tuple[Optional['RefinementAnalysis'], Optional['ProposedChanges'], float]:
     """
     Analyzes test failures, proposes documentation/schema improvements using an
     ensemble of LLMs, generates relevant examples, and calculates costs.
@@ -1285,7 +1273,7 @@ async def _analyze_and_propose(
     # --- Format Error Summary for LLM ---
     error_summary_text = ""
     error_patterns: Dict[ErrorPatternKey, Dict[str, Any]] = defaultdict(lambda: {"count": 0, "examples": []})
-    for i, failure in enumerate(failures):
+    for _i, failure in enumerate(failures):
         # Create a more robust key: Type:Code:ParamTarget (if available)
         err_key_parts = [failure.error_type or "UnknownType", failure.error_code or "UnknownCode"]
         targeted_param = None
@@ -1399,7 +1387,6 @@ You are an expert technical writer and API designer diagnosing LLM agent failure
 JSON Output:"""
 
     # --- Run Analysis with Ensemble ---
-    analysis_results: List[Tuple[Optional[RefinementAnalysis], Optional[ProposedChanges], float]] = []
 
     async def run_single_analysis(config: Dict[str, Any]) -> Tuple[Optional[RefinementAnalysis], Optional[ProposedChanges], float]:
         """Runs analysis using one LLM config, returning structured results and cost."""
@@ -1545,47 +1532,6 @@ Output ONLY the valid JSON list."""
         return [], cost
 
 
-async def _simulate_agent_usage(
-    tool_name: str,
-    current_docs: ProposedChanges,
-    current_schema: JSONSchemaObject,
-    refinement_model_config: Dict[str, Any],
-    num_simulations: int = 3
-) -> Tuple[List[AgentSimulationResult], float]:
-    """Simulates an agent attempting to use the tool based on current docs."""
-    # (Implementation from V6 - Reuse)
-    # ... Assume V6 implementation ...
-    # NOTE: For brevity, omitting full copy-paste. Assume V6 logic is used.
-    sim_results = []
-    total_cost = 0.0
-    generic_tasks = [ f"Use '{tool_name}' for its primary purpose.", f"Test '{tool_name}' with optional parameters.", f"Attempt a common task suitable for '{tool_name}'."]
-    tasks_to_simulate = random.sample(generic_tasks, k=min(num_simulations, len(generic_tasks)))
-    schema_str = json.dumps(current_schema, indent=2)
-    examples_str = json.dumps([ex.model_dump() for ex in current_docs.examples[:1]], indent=2) # Limit prompt context
-
-    for task_desc in tasks_to_simulate:
-        prompt = f"""Simulate using tool '{tool_name}' for task: "{task_desc}"
-Docs: {current_docs.description}
-Schema: {schema_str}
-Examples: {examples_str}
-Output JSON: {{"tool_selected": ..., "arguments_formulated": ..., "formulation_success": ..., "reasoning": ..., "confidence_score": ...}}"""
-        try:
-            result = await generate_completion(prompt=prompt, **refinement_model_config, temperature=0.5, max_tokens=1500, additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None)
-            total_cost += result.get("cost", 0.0)
-            if not result.get("success"): 
-                raise ToolError(f"LLM Sim fail: {result.get('error')}")
-            sim_text = result["text"]
-            try:
-                sim_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", sim_text.strip())
-                sim_data = json.loads(sim_text_cleaned)
-                sim_results.append(AgentSimulationResult(task_description=task_desc, **sim_data))
-            except (json.JSONDecodeError, ValidationError, TypeError) as e:
-                logger.error(f"Failed parse/validate Sim result JSON: {e}. Raw: {sim_text}", exc_info=True)
-                sim_results.append(AgentSimulationResult(task_description=task_desc, formulation_success=False, formulation_error=f"Parse fail: {e}"))
-        except Exception as e:
-            logger.error(f"Error agent sim task '{task_desc}': {e}", exc_info=True)
-            sim_results.append(AgentSimulationResult(task_description=task_desc, formulation_success=False, formulation_error=f"Exec fail: {e}"))
-    return sim_results, total_cost
 
 async def _winnow_documentation(
     tool_name: str,
@@ -1634,14 +1580,14 @@ Output JSON: {{"description": "concise_desc", "examples": [...]}}""" # Examples 
 
 @with_tool_metrics
 @with_error_handling
-async def refine_tool_documentation( # Clean name
+async def refine_tool_documentation(
     tool_names: Optional[List[str]] = None,
     refine_all_available: bool = False,
     generation_config: Optional[JsonDict] = None,
     max_iterations: int = 1,
     refinement_model_config: Optional[JsonDict] = None,
     analysis_ensemble_configs: Optional[List[JsonDict]] = None,
-    validation_level: Optional[Literal['none', 'basic', 'full']] = None,
+    validation_level: Optional[Literal['none', 'basic', 'full']] = None, # Made optional, default below
     enable_winnowing: bool = True,
     progress_callback: ProgressCallback = None,
     ctx: McpContext = None
@@ -1649,7 +1595,7 @@ async def refine_tool_documentation( # Clean name
     """
     Apex++ Synergetic: Autonomously refines MCP tool documentation via agent simulation,
     schema-aware adaptive testing, validated JSON Patch schema evolution, ensemble analysis,
-    failure-driven example generation, optional winnowing, and comprehensive reporting.
+    failure-driven example generation, optional winnowing, and detailed reporting.
 
     Args:
         tool_names: Specific tool names (e.g., ["server:tool"]) to refine. Use EITHER this OR `refine_all_available`.
@@ -1658,15 +1604,15 @@ async def refine_tool_documentation( # Clean name
         max_iterations: (Optional) Max internal test-analyze-patch-suggest cycles per tool. Default 1. Max capped.
         refinement_model_config: (Optional) Primary LLM config for analysis/generation. Uses capable default if None.
         analysis_ensemble_configs: (Optional) List of additional LLM configs for ensemble analysis.
-        validation_level: (Optional) How strictly to validate generated test args ('none', 'basic', 'full'). Defaults based on jsonschema availability.
+        validation_level: (Optional) How strictly to validate generated test args ('none', 'basic', 'full'). Defaults to 'full' if jsonschema available, else 'none'.
         enable_winnowing: (Optional) If True, run final pass to make documentation concise. Default True.
         progress_callback: (Optional) Async function to call with `RefinementProgressEvent` updates.
         ctx: MCP context object (required).
 
     Returns:
-        Dictionary structured by `DocstringRefinementResult`, detailing the process and final proposals.
+        Dictionary structured by `DocstringRefinementResult`.
     """
-    v6_start_time = time.time()
+    start_time = time.time()
     refined_tools_list: List[RefinedToolResult] = []
     total_tests_attempted_overall = 0
     total_tests_failed_overall = 0
@@ -1676,7 +1622,7 @@ async def refine_tool_documentation( # Clean name
     refinement_process_errors_overall: List[str] = []
     total_iterations_run_all_tools = 0
 
-    # Determine effective validation level based on library availability
+    # Determine effective validation level
     eff_validation_level = validation_level or ('full')
 
     async def _emit_progress(event_data: Dict[str, Any]):
@@ -1698,8 +1644,8 @@ async def refine_tool_documentation( # Clean name
         all_tools_dict = ctx.request_context.lifespan_context.get('tools', {})
 
     if not all_tools_dict:
-        logger.warning("No tools found registered in the server context.")
-        return DocstringRefinementResult(refined_tools=[], refinement_model_configs=[], total_iterations_run=0, total_test_calls_attempted=0, total_test_calls_failed=0, total_schema_validation_failures=0, total_agent_simulation_failures=0, total_refinement_cost=0.0, total_processing_time=time.time()-v6_start_time, success=True).model_dump()
+        logger.warning("No tools registered in server context.")
+        return DocstringRefinementResult(refined_tools=[], refinement_model_configs=[], total_iterations_run=0, total_test_calls_attempted=0, total_test_calls_failed=0, total_schema_validation_failures=0, total_agent_simulation_failures=0, total_refinement_cost=0.0, total_processing_time=time.time()-start_time, success=True).model_dump()
 
     if not refine_all_available and (not tool_names or not isinstance(tool_names, list)):
         raise ToolInputError("Either 'tool_names' list must be provided or 'refine_all_available' must be True.")
@@ -1710,23 +1656,20 @@ async def refine_tool_documentation( # Clean name
         raise ToolInputError(f"Tools not found: {', '.join(missing)}. Available: {list(all_tools_dict.keys())}")
 
     if not target_tool_names:
-         return DocstringRefinementResult(refined_tools=[], refinement_model_configs=[], total_iterations_run=0, total_test_calls_attempted=0, total_test_calls_failed=0, total_schema_validation_failures=0, total_agent_simulation_failures=0, total_refinement_cost=0.0, total_processing_time=time.time()-v6_start_time, success=True).model_dump()
+         return DocstringRefinementResult(refined_tools=[], refinement_model_configs=[], total_iterations_run=0, total_test_calls_attempted=0, total_test_calls_failed=0, total_schema_validation_failures=0, total_agent_simulation_failures=0, total_refinement_cost=0.0, total_processing_time=time.time()-start_time, success=True).model_dump()
 
     # --- Prepare Configs ---
     try: 
         test_gen_strategy = TestCaseGenerationStrategy(**(generation_config or {}))
     except ValidationError as e: 
-        raise ToolInputError(f"Invalid generation_config: {e}")
-    num_tests_per_tool = min(test_gen_strategy.total_requested, MAX_TEST_QUERIES_PER_TOOL)
+        raise ToolInputError(f"Invalid generation_config: {e}") from e
+    num_tests_per_tool = min(sum(getattr(test_gen_strategy, f) for f in test_gen_strategy.model_fields), MAX_TEST_QUERIES_PER_TOOL)
     max_iterations = max(1, min(max_iterations, MAX_REFINEMENT_ITERATIONS))
     default_config = {"provider": DEFAULT_REFINEMENT_PROVIDER, "model": DEFAULT_REFINEMENT_MODEL}
     primary_refinement_config = refinement_model_config or default_config
     analysis_configs = [primary_refinement_config]
-    if analysis_ensemble_configs and isinstance(analysis_ensemble_configs, list):
+    if analysis_ensemble_configs: 
         analysis_configs.extend([c for c in analysis_ensemble_configs if isinstance(c, dict) and c != primary_refinement_config])
-    refinement_model_full_id = f"{primary_refinement_config['provider']}/{primary_refinement_config['model']}"
-    final_analysis_configs = analysis_configs # Store the final list used
-
 
     logger.info(f"Starting Apex++ refinement for {len(target_tool_names)} tools...")
 
@@ -1740,11 +1683,11 @@ async def refine_tool_documentation( # Clean name
         tool_def = all_tools_dict.get(tool_name)
         # Basic validation
         if not tool_def or not hasattr(tool_def, 'name'): 
-            return RefinedToolResult(tool_name=tool_name, iterations=[], original_schema={}, final_proposed_changes=ProposedChanges(description="ERROR: Tool definition missing"), final_schema_after_patches=[], initial_success_rate=0, final_success_rate=0, improvement_factor=0, process_error="Tool definition missing")
+            return RefinedToolResult(tool_name=tool_name, iterations=[], original_schema={}, final_proposed_changes=ProposedChanges(description="ERROR: Tool definition missing"), final_schema_after_patches={}, initial_success_rate=0, final_success_rate=0, improvement_factor=0, process_error="Tool definition missing")
         original_desc = getattr(tool_def, 'description', '') or ''
         original_schema = getattr(tool_def, 'inputSchema', getattr(tool_def, 'input_schema', None))
         if not isinstance(original_schema, dict): 
-            return RefinedToolResult(tool_name=tool_name, iterations=[], original_schema={}, final_proposed_changes=ProposedChanges(description=original_desc), final_schema_after_patches=[], initial_success_rate=0, final_success_rate=0, improvement_factor=0, process_error="Invalid original schema")
+            return RefinedToolResult(tool_name=tool_name, iterations=[], original_schema={}, final_proposed_changes=ProposedChanges(description=original_desc), final_schema_after_patches={}, initial_success_rate=0, final_success_rate=0, improvement_factor=0, process_error="Invalid original schema")
 
         tool_iterations_results: List[RefinementIterationResult] = []
         current_proposed_changes = ProposedChanges(description=original_desc, examples=[]) # Start with original desc
@@ -1757,7 +1700,7 @@ async def refine_tool_documentation( # Clean name
         try:
             for iteration in range(1, max_iterations + 1):
                 await _emit_progress({"tool_name": tool_name, "iteration": iteration, "total_iterations": max_iterations, "stage": "starting_iteration", "message": f"Starting Iteration {iteration}"})
-                schema_before_patch = copy.deepcopy(current_schema_for_iter) # Schema used THIS iter
+                schema_before_patch = copy.deepcopy(current_schema_for_iter) # Schema used for this iter
 
                 # 1. Agent Simulation
                 await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "agent_simulation", "message": "Simulating agent usage..."})
@@ -1819,15 +1762,7 @@ async def refine_tool_documentation( # Clean name
                     await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "analysis_end", "message": f"Analysis complete (Confidence: {iter_analysis.improvement_confidence:.2f if iter_analysis else 'N/A'})."})
                 else:
                     iter_analysis = RefinementAnalysis(overall_diagnosis="No errors this iteration.", improvement_confidence=1.0, hypothetical_error_resolution="N/A")
-                    iter_proposal_changes = current_proposed_changes # Keep current docs
-                    iter_schema_patches = []
-                    await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "analysis_end", "message": "No failures detected, skipping analysis."})
-
-                # Ensure iter_proposal_changes is not None before proceeding
-                if iter_proposal_changes is None:
-                    logger.warning(f"Proposal became None after analysis for tool {tool_name}, iter {iteration}. Reverting to current docs.")
-                    iter_proposal_changes = current_proposed_changes.model_copy(deep=True)
-                    iter_schema_patches = [] # Ensure patches are also reset
+                    iter_proposal_changes = current_proposed_changes # Keep current
 
                 # 5. Apply Schema Patches In-Memory
                 schema_after_patch = schema_before_patch
@@ -1857,7 +1792,7 @@ async def refine_tool_documentation( # Clean name
                     success_rate=current_success_rate,
                     validation_failure_rate=(iter_validation_failures / len(test_cases)) if test_cases else 0.0,
                     analysis=iter_analysis,
-                    proposed_changes=iter_proposal_changes.model_copy(deep=True),
+                    proposed_changes=iter_proposal_changes.model_copy(deep=True) if iter_proposal_changes else None,
                     applied_schema_patches=applied_patches_this_iter,
                     description_diff=iter_diff_desc,
                     schema_diff=iter_diff_schema
@@ -1882,44 +1817,44 @@ async def refine_tool_documentation( # Clean name
                 if stop_reason:
                     logger.info(f"Iter {iteration}: Stopping refinement for '{tool_name}' - Reason: {stop_reason}.")
                     await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "iteration_complete", "message": f"Stopping: {stop_reason}"})
-                    # Apply winnowing if enabled *and* stopping condition met *and* proposal exists
-                    if enable_winnowing and iter_proposal_changes and current_success_rate >= 0.9: # Winnow if stable
+                    # Apply winnowing if enabled and stopping condition met
+                    if enable_winnowing:
                         await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "winnowing", "message": "Attempting winnowing..."})
                         winnowed_proposal, winnow_cost = await _winnow_documentation(
-                             tool_name, iter_proposal_changes, # Winnow the latest proposal
-                             schema_after_patch, # Use the final schema state
+                             tool_name, iter_proposal_changes or current_proposed_changes, # Use last proposal
+                             schema_after_patch, # Use final schema state for winnowing context
                              primary_refinement_config
                         )
                         total_refinement_cost_overall += winnow_cost
-                        iter_proposal_changes = winnowed_proposal # Replace proposal
+                        iter_proposal_changes = winnowed_proposal # Replace proposal with winnowed version
                         await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "winnowing", "message": "Winnowing complete."})
                     break # Exit iteration loop
 
                 # 9. Prepare for Next Iteration
                 current_proposed_changes = iter_proposal_changes or current_proposed_changes
-                current_schema_for_iter = schema_after_patch # Use patched schema
+                current_schema_for_iter = schema_after_patch
                 await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "iteration_complete", "message": "Preparing for next iteration"})
 
             # --- End Iteration Loop ---
 
         except Exception as tool_proc_error:
-            msg = f"Failed refinement process for tool '{tool_name}': {type(tool_proc_error).__name__}: {str(tool_proc_error)}"
+            msg = f"Failed refining tool '{tool_name}': {type(tool_proc_error).__name__}: {str(tool_proc_error)}"
             logger.error(msg, exc_info=True)
             tool_process_error = msg
 
         # --- Assemble Final Result for this Tool ---
-        final_tool_result: Optional[RefinedToolResult] = None
+        final_tool_result = None
         if tool_iterations_results:
             final_iter = tool_iterations_results[-1]
-            # Use the last proposed docs (potentially after winnowing)
+            # Final proposed changes are those from the last successful proposal step
             final_docs = final_iter.proposed_changes or final_iter.documentation_used
-            # Final schema is the state *after* the last successful patch application
-            final_schema = current_schema_for_iter
+            # Final schema is the one used AFTER the last successful patch application
+            final_schema = current_schema_for_iter # This holds the state after the last iter's patch
             improvement = ((final_success_rate - initial_success_rate) / (1.0001 - initial_success_rate)) if initial_success_rate >= 0 and final_success_rate >= 0 and initial_success_rate < 1 else 0.0
 
             final_tool_result = RefinedToolResult(
                  tool_name=tool_name, original_schema=original_schema, iterations=tool_iterations_results,
-                 final_proposed_changes=final_docs,
+                 final_proposed_changes=final_docs, # Contains desc, examples, LAST proposed patches
                  final_proposed_schema_patches=accumulated_patches, # All patches successfully applied
                  final_schema_after_patches=final_schema,
                  initial_success_rate=initial_success_rate if initial_success_rate >= 0 else 0.0,
@@ -1937,8 +1872,46 @@ async def refine_tool_documentation( # Clean name
                  process_error=tool_process_error
              )
 
-        await _emit_progress({"tool_name": tool_name, "iteration": max_iterations, "stage": "tool_complete", "message": "Refinement process finished for this tool."})
+        await _emit_progress({"tool_name": tool_name, "iteration": max_iterations, "stage": "tool_complete", "message": "Refinement process finished."})
         return final_tool_result
+
+    # --- Parallel Tool Processing ---
+    processing_tasks = [process_single_tool(name) for name in target_tool_names]
+    results_from_gather = await asyncio.gather(*processing_tasks, return_exceptions=True)
+
+    # --- Process Results & Accumulate Totals ---
+    for res in results_from_gather:
+         if isinstance(res, RefinedToolResult):
+              refined_tools_list.append(res)
+              if res.process_error: 
+                  refinement_process_errors_overall.append(res.process_error)
+              # Accumulate costs/stats from the result object if needed (already tracked globally though)
+         elif isinstance(res, Exception):
+              err_msg = f"Unexpected error during parallel processing: {type(res).__name__}: {str(res)}"
+              logger.error(err_msg, exc_info=res)
+              refinement_process_errors_overall.append(err_msg)
+
+    # --- Final Overall Result ---
+    processing_time = time.time() - start_time
+    overall_success = not bool(refinement_process_errors_overall)
+    final_result = DocstringRefinementResult(
+        refined_tools=refined_tools_list,
+        refinement_model_configs=analysis_configs, # Use cleaned list
+        total_iterations_run=total_iterations_run_all_tools,
+        total_test_calls_attempted=total_tests_attempted_overall,
+        total_test_calls_failed=total_tests_failed_overall,
+        total_schema_validation_failures=total_schema_validation_failures,
+        total_agent_simulation_failures=total_agent_simulation_failures,
+        total_refinement_cost=total_refinement_cost_overall,
+        total_processing_time=processing_time,
+        errors_during_refinement_process=refinement_process_errors_overall,
+        success=overall_success
+    )
+
+    logger.success("Apex++ Docstring Refinement V6 completed.", time=processing_time)
+    await _emit_progress({"tool_name": "ALL", "iteration": max_iterations, "total_iterations": max_iterations, "stage": "tool_complete", "message": "Overall refinement process finished.", "details": {"success": overall_success}})
+
+    return final_result.model_dump()
 
     # --- Parallel Tool Processing ---
     # Wrap process_single_tool to handle potential None return if validation fails early
@@ -1961,7 +1934,6 @@ async def refine_tool_documentation( # Clean name
     # Update overall error list with errors caught during gather/task execution
     # (already handled by appending within safe_process_single_tool)
 
-
     # --- Final Overall Result ---
     processing_time = time.time() - start_time
     overall_success = not bool(refinement_process_errors_overall)
@@ -1979,7 +1951,7 @@ async def refine_tool_documentation( # Clean name
         success=overall_success
     )
 
-    logger.success(f"Apex++ Docstring Refinement completed.", time=processing_time)
+    logger.success("Docstring Refinement completed.", time=processing_time)
     await _emit_progress({
         "tool_name": "ALL", "iteration": max_iterations, "total_iterations": max_iterations,
         "stage": "tool_complete", "message": "Overall refinement process finished.",
@@ -1994,7 +1966,8 @@ async def _generate_examples(
     schema: JSONSchemaObject,
     success_cases: List['TestExecutionResult'], # Use forward reference
     failure_cases: List['TestExecutionResult'], # Use forward reference
-    refinement_model_config: Dict[str, Any]
+    refinement_model_config: Dict[str, Any],
+    validation_level: Literal['full', 'basic'] = 'full'
 ) -> Tuple[List['GeneratedExample'], float]: # Use forward reference
     """
     Generates illustrative usage examples for a tool using an LLM.
@@ -2169,7 +2142,6 @@ JSON Output:
         # Catch errors during the generate_completion call or other unexpected issues
         logger.error(f"Error generating examples for tool '{tool_name}': {e}", exc_info=True)
         return [], cost # Return empty list and accumulated cost
-
 
 async def _simulate_agent_usage(
     tool_name: str,
@@ -2465,342 +2437,3 @@ JSON Output:
         logger.error(f"Error during winnowing LLM call or processing for '{tool_name}': {e}", exc_info=True)
         # Return the *original* ProposedChanges object on any execution error
         return current_docs.model_copy(deep=True), cost
-
-# --- Main Tool Function ---
-
-@with_tool_metrics
-@with_error_handling
-async def refine_tool_documentation(
-    tool_names: Optional[List[str]] = None,
-    refine_all_available: bool = False,
-    generation_config: Optional[JsonDict] = None,
-    max_iterations: int = 1,
-    refinement_model_config: Optional[JsonDict] = None,
-    analysis_ensemble_configs: Optional[List[JsonDict]] = None,
-    validation_level: Optional[Literal['none', 'basic', 'full']] = None, # Made optional, default below
-    enable_winnowing: bool = True,
-    progress_callback: ProgressCallback = None,
-    ctx: McpContext = None
-) -> JsonDict:
-    """
-    Apex++ Synergetic: Autonomously refines MCP tool documentation via agent simulation,
-    schema-aware adaptive testing, validated JSON Patch schema evolution, ensemble analysis,
-    failure-driven example generation, optional winnowing, and detailed reporting.
-
-    Args:
-        tool_names: Specific tool names (e.g., ["server:tool"]) to refine. Use EITHER this OR `refine_all_available`.
-        refine_all_available: If True, refine all registered tools. Overrides `tool_names`. Default False.
-        generation_config: (Optional) Dict controlling test case counts per strategy (`TestCaseGenerationStrategy`).
-        max_iterations: (Optional) Max internal test-analyze-patch-suggest cycles per tool. Default 1. Max capped.
-        refinement_model_config: (Optional) Primary LLM config for analysis/generation. Uses capable default if None.
-        analysis_ensemble_configs: (Optional) List of additional LLM configs for ensemble analysis.
-        validation_level: (Optional) How strictly to validate generated test args ('none', 'basic', 'full'). Defaults to 'full' if jsonschema available, else 'none'.
-        enable_winnowing: (Optional) If True, run final pass to make documentation concise. Default True.
-        progress_callback: (Optional) Async function to call with `RefinementProgressEvent` updates.
-        ctx: MCP context object (required).
-
-    Returns:
-        Dictionary structured by `DocstringRefinementResult`.
-    """
-    start_time = time.time()
-    refined_tools_list: List[RefinedToolResult] = []
-    total_tests_attempted_overall = 0
-    total_tests_failed_overall = 0
-    total_schema_validation_failures = 0
-    total_agent_simulation_failures = 0
-    total_refinement_cost_overall = 0.0
-    refinement_process_errors_overall: List[str] = []
-    total_iterations_run_all_tools = 0
-
-    # Determine effective validation level
-    eff_validation_level = validation_level or ('full')
-
-    async def _emit_progress(event_data: Dict[str, Any]):
-        if progress_callback:
-            try: 
-                await progress_callback(RefinementProgressEvent(**event_data))
-            except Exception as cb_err: 
-                logger.warning(f"Progress callback failed: {cb_err}")
-
-    # --- Validate Inputs and Context ---
-    if not ctx or not hasattr(ctx, 'mcp') or ctx.mcp is None:
-        raise ToolError("MCP context (ctx.mcp) is required.", error_code="CONTEXT_MISSING")
-    mcp_instance = ctx.mcp
-
-    all_tools_dict: Dict[str, McpToolDef] = {}
-    if hasattr(mcp_instance, '_tools'): 
-        all_tools_dict = mcp_instance._tools
-    elif hasattr(ctx, 'request_context') and ctx.request_context and hasattr(ctx.request_context, 'lifespan_context'):
-        all_tools_dict = ctx.request_context.lifespan_context.get('tools', {})
-
-    if not all_tools_dict:
-        logger.warning("No tools registered in server context.")
-        return DocstringRefinementResult(refined_tools=[], refinement_model_configs=[], total_iterations_run=0, total_test_calls_attempted=0, total_test_calls_failed=0, total_schema_validation_failures=0, total_agent_simulation_failures=0, total_refinement_cost=0.0, total_processing_time=time.time()-start_time, success=True).model_dump()
-
-    if not refine_all_available and (not tool_names or not isinstance(tool_names, list)):
-        raise ToolInputError("Either 'tool_names' list must be provided or 'refine_all_available' must be True.")
-
-    target_tool_names = list(all_tools_dict.keys()) if refine_all_available else tool_names
-    missing = [name for name in target_tool_names if name not in all_tools_dict]
-    if missing: 
-        raise ToolInputError(f"Tools not found: {', '.join(missing)}. Available: {list(all_tools_dict.keys())}")
-
-    if not target_tool_names:
-         return DocstringRefinementResult(refined_tools=[], refinement_model_configs=[], total_iterations_run=0, total_test_calls_attempted=0, total_test_calls_failed=0, total_schema_validation_failures=0, total_agent_simulation_failures=0, total_refinement_cost=0.0, total_processing_time=time.time()-start_time, success=True).model_dump()
-
-    # --- Prepare Configs ---
-    try: 
-        test_gen_strategy = TestCaseGenerationStrategy(**(generation_config or {}))
-    except ValidationError as e: 
-        raise ToolInputError(f"Invalid generation_config: {e}") from e
-    num_tests_per_tool = min(sum(getattr(test_gen_strategy, f) for f in test_gen_strategy.model_fields), MAX_TEST_QUERIES_PER_TOOL)
-    max_iterations = max(1, min(max_iterations, MAX_REFINEMENT_ITERATIONS))
-    default_config = {"provider": DEFAULT_REFINEMENT_PROVIDER, "model": DEFAULT_REFINEMENT_MODEL}
-    primary_refinement_config = refinement_model_config or default_config
-    analysis_configs = [primary_refinement_config]
-    if analysis_ensemble_configs: 
-        analysis_configs.extend([c for c in analysis_ensemble_configs if isinstance(c, dict) and c != primary_refinement_config])
-    refinement_model_full_id = f"{primary_refinement_config['provider']}/{primary_refinement_config['model']}"
-
-
-    logger.info(f"Starting Apex++ refinement for {len(target_tool_names)} tools...")
-
-    # --- Function to process a single tool ---
-    async def process_single_tool(tool_name: str) -> RefinedToolResult:
-        nonlocal total_refinement_cost_overall, total_tests_attempted_overall, total_tests_failed_overall
-        nonlocal total_schema_validation_failures, total_agent_simulation_failures, total_iterations_run_all_tools
-        nonlocal refinement_process_errors_overall
-
-        await _emit_progress({"tool_name": tool_name, "iteration": 0, "total_iterations": max_iterations, "stage": "starting_iteration", "message": "Starting refinement"})
-        tool_def = all_tools_dict.get(tool_name)
-        # Basic validation
-        if not tool_def or not hasattr(tool_def, 'name'): 
-            return RefinedToolResult(tool_name=tool_name, iterations=[], original_schema={}, final_proposed_changes=ProposedChanges(description="ERROR: Tool definition missing"), final_schema_after_patches={}, initial_success_rate=0, final_success_rate=0, improvement_factor=0, process_error="Tool definition missing")
-        original_desc = getattr(tool_def, 'description', '') or ''
-        original_schema = getattr(tool_def, 'inputSchema', getattr(tool_def, 'input_schema', None))
-        if not isinstance(original_schema, dict): 
-            return RefinedToolResult(tool_name=tool_name, iterations=[], original_schema={}, final_proposed_changes=ProposedChanges(description=original_desc), final_schema_after_patches={}, initial_success_rate=0, final_success_rate=0, improvement_factor=0, process_error="Invalid original schema")
-
-        tool_iterations_results: List[RefinementIterationResult] = []
-        current_proposed_changes = ProposedChanges(description=original_desc, examples=[]) # Start with original desc
-        current_schema_for_iter = copy.deepcopy(original_schema)
-        accumulated_patches: List[JsonDict] = []
-        initial_success_rate = -1.0
-        final_success_rate = -1.0
-        tool_process_error: Optional[str] = None
-
-        try:
-            for iteration in range(1, max_iterations + 1):
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "total_iterations": max_iterations, "stage": "starting_iteration", "message": f"Starting Iteration {iteration}"})
-                schema_before_patch = copy.deepcopy(current_schema_for_iter) # Schema used for this iter
-
-                # 1. Agent Simulation
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "agent_simulation", "message": "Simulating agent usage..."})
-                agent_sim_results, sim_cost = await _simulate_agent_usage(
-                    tool_name, current_proposed_changes, current_schema_for_iter, primary_refinement_config
-                )
-                total_refinement_cost_overall += sim_cost
-                current_agent_sim_failures = sum(1 for r in agent_sim_results if not r.formulation_success)
-                total_agent_simulation_failures += current_agent_sim_failures
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "agent_simulation", "message": f"Simulation complete ({current_agent_sim_failures} failures)."})
-
-                # 2. Generate Test Cases
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "test_generation", "message": "Generating test cases..."})
-                previous_results_for_guidance = tool_iterations_results[-1].test_results if tool_iterations_results else None
-                test_cases, test_gen_cost = await _generate_test_cases(
-                    tool_name=tool_name, tool_schema=current_schema_for_iter,
-                    tool_description=current_proposed_changes.description, num_tests=num_tests_per_tool,
-                    refinement_model_config=primary_refinement_config,
-                    validation_level=eff_validation_level,
-                    previous_results=previous_results_for_guidance,
-                    agent_sim_results=agent_sim_results
-                )
-                total_refinement_cost_overall += test_gen_cost
-                iter_validation_failures = sum(1 for tc in test_cases if tc.schema_validation_error)
-                total_schema_validation_failures += iter_validation_failures
-                valid_test_cases_for_exec = [tc for tc in test_cases if eff_validation_level != 'full' or tc.schema_validation_error is None or tc.strategy_used.startswith("negative_")]
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "test_generation", "message": f"Generated {len(test_cases)} cases ({iter_validation_failures} validation fails). Executing {len(valid_test_cases_for_exec)}."})
-
-                # 3. Execute Tests
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "test_execution_start", "message": f"Executing {len(valid_test_cases_for_exec)} tests..."})
-                test_results, test_exec_cost = await _execute_tool_tests(
-                    mcp_instance=mcp_instance, tool_name=tool_name, test_cases=valid_test_cases_for_exec
-                )
-                total_refinement_cost_overall += test_exec_cost
-                total_tests_attempted_overall += len(test_results)
-                current_failures = sum(1 for r in test_results if not r.success)
-                total_tests_failed_overall += current_failures
-                current_success_rate = (len(test_results) - current_failures) / len(test_results) if test_results else 1.0
-                if iteration == 1: 
-                    initial_success_rate = current_success_rate
-                final_success_rate = current_success_rate
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "test_execution_end", "message": f"Execution complete ({current_failures} failures).", "details": {"failures": current_failures, "success_rate": current_success_rate}})
-
-                # 4. Analyze & Propose
-                iter_analysis: Optional[RefinementAnalysis] = None
-                iter_proposal_changes: Optional[ProposedChanges] = current_proposed_changes.model_copy(deep=True)
-                iter_schema_patches: List[ParameterSchemaPatch] = []
-                analysis_cost = 0.0
-                if current_failures > 0 or iteration == 1:
-                    await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "analysis_start", "message": "Analyzing failures and proposing improvements..."})
-                    iter_analysis, iter_proposal_changes, analysis_cost = await _analyze_and_propose(
-                        tool_name=tool_name, iteration=iteration, current_docs=current_proposed_changes,
-                        current_schema=current_schema_for_iter, test_results=test_results,
-                        refinement_model_configs=analysis_configs, # Use ensemble
-                        original_schema=original_schema, validation_level=eff_validation_level
-                    )
-                    total_refinement_cost_overall += analysis_cost
-                    iter_schema_patches = iter_proposal_changes.schema_patches if iter_proposal_changes else []
-                    await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "analysis_end", "message": f"Analysis complete (Confidence: {iter_analysis.improvement_confidence:.2f if iter_analysis else 'N/A'})."})
-                else:
-                    iter_analysis = RefinementAnalysis(overall_diagnosis="No errors this iteration.", improvement_confidence=1.0, hypothetical_error_resolution="N/A")
-                    iter_proposal_changes = current_proposed_changes # Keep current
-
-                # 5. Apply Schema Patches In-Memory
-                schema_after_patch = schema_before_patch
-                schema_apply_errors: List[str] = []
-                applied_patches_this_iter: List[JsonDict] = []
-                if iter_schema_patches:
-                    await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "schema_patching", "message": f"Applying {len(iter_schema_patches)} schema patches..."})
-                    schema_after_patch, schema_apply_errors, applied_patches_this_iter = _apply_schema_patches(
-                        schema_before_patch, iter_schema_patches
-                    )
-                    if schema_apply_errors: 
-                        await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "error", "message": f"Schema patch errors: {schema_apply_errors}"})
-                    accumulated_patches.extend(applied_patches_this_iter)
-
-                # 6. Calculate Diffs
-                iter_diff_desc = _create_diff(current_proposed_changes.description, iter_proposal_changes.description, f"desc_iter_{iteration-1}", f"desc_iter_{iteration}")
-                iter_diff_schema = _create_schema_diff(schema_before_patch, schema_after_patch)
-
-                # 7. Store Iteration Result
-                iter_result = RefinementIterationResult(
-                    iteration=iteration,
-                    documentation_used=current_proposed_changes.model_copy(deep=True),
-                    schema_used=schema_before_patch,
-                    agent_simulation_results=agent_sim_results,
-                    test_cases_generated=test_cases,
-                    test_results=test_results,
-                    success_rate=current_success_rate,
-                    validation_failure_rate=(iter_validation_failures / len(test_cases)) if test_cases else 0.0,
-                    analysis=iter_analysis,
-                    proposed_changes=iter_proposal_changes.model_copy(deep=True) if iter_proposal_changes else None,
-                    applied_schema_patches=applied_patches_this_iter,
-                    description_diff=iter_diff_desc,
-                    schema_diff=iter_diff_schema
-                )
-                tool_iterations_results.append(iter_result)
-                total_iterations_run_all_tools += 1
-
-                # 8. Check Stopping Conditions
-                confidence = iter_analysis.improvement_confidence if iter_analysis else 0.0
-                stop_reason = ""
-                if current_failures == 0 and iter_validation_failures == 0: 
-                    stop_reason = "100% success & validation"
-                elif confidence < 0.2: 
-                    stop_reason = f"low analysis confidence ({confidence:.2f})"
-                elif iteration > 1:
-                     prev_success = tool_iterations_results[-2].success_rate
-                     prev_valid = 1.0 - tool_iterations_results[-2].validation_failure_rate
-                     curr_valid = 1.0 - iter_result.validation_failure_rate
-                     if current_success_rate <= prev_success and curr_valid <= prev_valid:
-                         stop_reason = "success/validation rates stagnated"
-
-                if stop_reason:
-                    logger.info(f"Iter {iteration}: Stopping refinement for '{tool_name}' - Reason: {stop_reason}.")
-                    await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "iteration_complete", "message": f"Stopping: {stop_reason}"})
-                    # Apply winnowing if enabled and stopping condition met
-                    if enable_winnowing:
-                        await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "winnowing", "message": "Attempting winnowing..."})
-                        winnowed_proposal, winnow_cost = await _winnow_documentation(
-                             tool_name, iter_proposal_changes or current_proposed_changes, # Use last proposal
-                             schema_after_patch, # Use final schema state for winnowing context
-                             primary_refinement_config
-                        )
-                        total_refinement_cost_overall += winnow_cost
-                        iter_proposal_changes = winnowed_proposal # Replace proposal with winnowed version
-                        await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "winnowing", "message": "Winnowing complete."})
-                    break # Exit iteration loop
-
-                # 9. Prepare for Next Iteration
-                current_proposed_changes = iter_proposal_changes or current_proposed_changes
-                current_schema_for_iter = schema_after_patch
-                await _emit_progress({"tool_name": tool_name, "iteration": iteration, "stage": "iteration_complete", "message": "Preparing for next iteration"})
-
-            # --- End Iteration Loop ---
-
-        except Exception as tool_proc_error:
-            msg = f"Failed refining tool '{tool_name}': {type(tool_proc_error).__name__}: {str(tool_proc_error)}"
-            logger.error(msg, exc_info=True)
-            tool_process_error = msg
-
-        # --- Assemble Final Result for this Tool ---
-        final_tool_result = None
-        if tool_iterations_results:
-            final_iter = tool_iterations_results[-1]
-            # Final proposed changes are those from the last successful proposal step
-            final_docs = final_iter.proposed_changes or final_iter.documentation_used
-            # Final schema is the one used AFTER the last successful patch application
-            final_schema = current_schema_for_iter # This holds the state after the last iter's patch
-            improvement = ((final_success_rate - initial_success_rate) / (1.0001 - initial_success_rate)) if initial_success_rate >= 0 and final_success_rate >= 0 and initial_success_rate < 1 else 0.0
-
-            final_tool_result = RefinedToolResult(
-                 tool_name=tool_name, original_schema=original_schema, iterations=tool_iterations_results,
-                 final_proposed_changes=final_docs, # Contains desc, examples, LAST proposed patches
-                 final_proposed_schema_patches=accumulated_patches, # All patches successfully applied
-                 final_schema_after_patches=final_schema,
-                 initial_success_rate=initial_success_rate if initial_success_rate >= 0 else 0.0,
-                 final_success_rate=final_success_rate if final_success_rate >= 0 else 0.0,
-                 improvement_factor=improvement,
-                 token_count_change=(count_tokens(original_desc) - count_tokens(final_docs.description)),
-                 process_error=tool_process_error
-             )
-        elif tool_process_error: # Handle case where loop failed entirely
-             final_tool_result = RefinedToolResult(
-                 tool_name=tool_name, iterations=[], original_schema=original_schema,
-                 final_proposed_changes=ProposedChanges(description=original_desc),
-                 final_proposed_schema_patches=[], final_schema_after_patches=original_schema,
-                 initial_success_rate=0.0, final_success_rate=0.0, improvement_factor=0.0,
-                 process_error=tool_process_error
-             )
-
-        await _emit_progress({"tool_name": tool_name, "iteration": max_iterations, "stage": "tool_complete", "message": "Refinement process finished."})
-        return final_tool_result
-
-    # --- Parallel Tool Processing ---
-    processing_tasks = [process_single_tool(name) for name in target_tool_names]
-    results_from_gather = await asyncio.gather(*processing_tasks, return_exceptions=True)
-
-    # --- Process Results & Accumulate Totals ---
-    for res in results_from_gather:
-         if isinstance(res, RefinedToolResult):
-              refined_tools_list.append(res)
-              if res.process_error: 
-                  refinement_process_errors_overall.append(res.process_error)
-              # Accumulate costs/stats from the result object if needed (already tracked globally though)
-         elif isinstance(res, Exception):
-              err_msg = f"Unexpected error during parallel processing: {type(res).__name__}: {str(res)}"
-              logger.error(err_msg, exc_info=res)
-              refinement_process_errors_overall.append(err_msg)
-
-    # --- Final Overall Result ---
-    processing_time = time.time() - start_time
-    overall_success = not bool(refinement_process_errors_overall)
-    final_result = DocstringRefinementResult(
-        refined_tools=refined_tools_list,
-        refinement_model_configs=analysis_configs, # Use cleaned list
-        total_iterations_run=total_iterations_run_all_tools,
-        total_test_calls_attempted=total_tests_attempted_overall,
-        total_test_calls_failed=total_tests_failed_overall,
-        total_schema_validation_failures=total_schema_validation_failures,
-        total_agent_simulation_failures=total_agent_simulation_failures,
-        total_refinement_cost=total_refinement_cost_overall,
-        total_processing_time=processing_time,
-        errors_during_refinement_process=refinement_process_errors_overall,
-        success=overall_success
-    )
-
-    logger.success("Apex++ Docstring Refinement V6 completed.", time=processing_time)
-    await _emit_progress({"tool_name": "ALL", "iteration": max_iterations, "total_iterations": max_iterations, "stage": "tool_complete", "message": "Overall refinement process finished.", "details": {"success": overall_success}})
-
-    return final_result.model_dump()
