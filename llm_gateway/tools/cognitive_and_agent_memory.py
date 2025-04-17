@@ -201,16 +201,16 @@ PRAGMA busy_timeout=30000;
 -- Workflows table ---
 CREATE TABLE IF NOT EXISTS workflows (
     workflow_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,             
-    description TEXT,                
-    goal TEXT,                       
-    status TEXT NOT NULL,            
-    created_at INTEGER NOT NULL,     
-    updated_at INTEGER NOT NULL,     
-    completed_at INTEGER,            
-    parent_workflow_id TEXT,         
-    metadata TEXT,                   
-    last_active INTEGER              
+    title TEXT NOT NULL,
+    description TEXT,
+    goal TEXT,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    completed_at INTEGER,
+    parent_workflow_id TEXT,
+    metadata TEXT,
+    last_active INTEGER
 );
 
 -- Actions table ---
@@ -225,8 +225,8 @@ CREATE TABLE IF NOT EXISTS actions (
     tool_args TEXT,                   -- JSON serialized
     tool_result TEXT,                 -- JSON serialized
     status TEXT NOT NULL,             -- Uses ActionStatus enum
-    started_at INTEGER NOT NULL,      
-    completed_at INTEGER,             
+    started_at INTEGER NOT NULL,
+    completed_at INTEGER,
     sequence_number INTEGER,
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (parent_action_id) REFERENCES actions(action_id) ON DELETE SET NULL
@@ -243,7 +243,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     path TEXT,                        -- Filesystem path
     content TEXT,                     -- For text-based artifacts
     metadata TEXT,                    -- JSON serialized
-    created_at INTEGER NOT NULL,      
+    created_at INTEGER NOT NULL,
     is_output BOOLEAN DEFAULT FALSE,
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL
@@ -255,32 +255,22 @@ CREATE TABLE IF NOT EXISTS thought_chains (
     workflow_id TEXT NOT NULL,
     action_id TEXT,                   -- Optional action context
     title TEXT NOT NULL,
-    created_at INTEGER NOT NULL,      
+    created_at INTEGER NOT NULL,
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL
 );
 
--- Thoughts table (From agent_memory, modified)
-CREATE TABLE IF NOT EXISTS thoughts (
-    thought_id TEXT PRIMARY KEY,
-    thought_chain_id TEXT NOT NULL,
-    parent_thought_id TEXT,
-    thought_type TEXT NOT NULL,        -- Uses ThoughtType enum
-    content TEXT NOT NULL,
-    sequence_number INTEGER NOT NULL,
-    created_at INTEGER NOT NULL,       
-    relevant_action_id TEXT,           -- Action this thought relates to/caused
-    relevant_artifact_id TEXT,         -- Artifact this thought relates to
-    relevant_memory_id TEXT,           -- *** FK: Memory entry this thought relates to ***
-    FOREIGN KEY (thought_chain_id) REFERENCES thought_chains(thought_chain_id) ON DELETE CASCADE,
-    FOREIGN KEY (parent_thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL,
-    FOREIGN KEY (relevant_action_id) REFERENCES actions(action_id) ON DELETE SET NULL,
-    FOREIGN KEY (relevant_artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL
-    -- Defer circular FK to memories table definition below
-    -- FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL -- *** FK ***
+-- Embeddings table (Create before memories which references it) ---
+CREATE TABLE IF NOT EXISTS embeddings (
+    id TEXT PRIMARY KEY,               -- Embedding hash ID
+    memory_id TEXT UNIQUE,             -- Link back to the memory
+    model TEXT NOT NULL,               -- Embedding model used
+    embedding BLOB NOT NULL,           -- Serialized vector
+    created_at INTEGER NOT NULL
+    -- Cannot add FK to memories yet, as it doesn't exist. Will be added via memories FK.
 );
 
--- Memories table ---
+-- Memories table (Create before thoughts which references it) ---
 CREATE TABLE IF NOT EXISTS memories (
     memory_id TEXT PRIMARY KEY,        -- Renamed from 'id' for clarity
     workflow_id TEXT NOT NULL,
@@ -294,45 +284,58 @@ CREATE TABLE IF NOT EXISTS memories (
     source TEXT,                       -- Origin (tool name, file, user, etc.)
     context TEXT,                      -- JSON context of memory creation
     tags TEXT,                         -- JSON array of tags
-    created_at INTEGER NOT NULL,       
-    updated_at INTEGER NOT NULL,       
-    last_accessed INTEGER,             
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    last_accessed INTEGER,
     access_count INTEGER DEFAULT 0,
     ttl INTEGER DEFAULT 0,             -- TTL in seconds (0 = permanent)
     embedding_id TEXT,                 -- FK to embeddings table
     action_id TEXT,                    -- *** FK: Action associated with this memory ***
-    thought_id TEXT,                   -- *** FK: Thought associated with this memory ***
+    thought_id TEXT,                   -- *** FK: Thought associated with this memory - REMOVED INLINE, ADDED VIA ALTER LATER ***
     artifact_id TEXT,                  -- *** FK: Artifact associated with this memory ***
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (embedding_id) REFERENCES embeddings(id) ON DELETE SET NULL,
-    FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL, -- *** FK ***
-    -- Defer circular FK to thoughts table definition below
-    -- FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL, -- *** FK ***
-    FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL -- *** FK ***
+    FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL,
+    FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL
+    -- REMOVED INLINE FK: FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
 );
+
+-- Add back reference from embeddings to memories now that memories exists
+ALTER TABLE embeddings ADD CONSTRAINT fk_embeddings_memory FOREIGN KEY (memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE;
+
+
+-- Thoughts table (Create after memories)
+CREATE TABLE IF NOT EXISTS thoughts (
+    thought_id TEXT PRIMARY KEY,
+    thought_chain_id TEXT NOT NULL,
+    parent_thought_id TEXT,
+    thought_type TEXT NOT NULL,        -- Uses ThoughtType enum
+    content TEXT NOT NULL,
+    sequence_number INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    relevant_action_id TEXT,           -- Action this thought relates to/caused
+    relevant_artifact_id TEXT,         -- Artifact this thought relates to
+    relevant_memory_id TEXT,           -- *** FK: Memory entry this thought relates to - REMOVED INLINE, ADDED VIA ALTER LATER ***
+    FOREIGN KEY (thought_chain_id) REFERENCES thought_chains(thought_chain_id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL,
+    FOREIGN KEY (relevant_action_id) REFERENCES actions(action_id) ON DELETE SET NULL,
+    FOREIGN KEY (relevant_artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL
+    -- REMOVED INLINE FK: FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+);
+
 
 -- Memory links table ---
 CREATE TABLE IF NOT EXISTS memory_links (
-    link_id TEXT PRIMARY KEY,        
-    source_memory_id TEXT NOT NULL,  
-    target_memory_id TEXT NOT NULL,  
+    link_id TEXT PRIMARY KEY,
+    source_memory_id TEXT NOT NULL,
+    target_memory_id TEXT NOT NULL,
     link_type TEXT NOT NULL,          -- Uses LinkType enum
     strength REAL DEFAULT 1.0,
     description TEXT,
-    created_at INTEGER NOT NULL,       
+    created_at INTEGER NOT NULL,
     FOREIGN KEY (source_memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE,
     FOREIGN KEY (target_memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE,
     UNIQUE(source_memory_id, target_memory_id, link_type)
-);
-
--- Embeddings table ---
-CREATE TABLE IF NOT EXISTS embeddings (
-    id TEXT PRIMARY KEY,               -- Embedding hash ID
-    memory_id TEXT UNIQUE,             -- Link back to the memory
-    model TEXT NOT NULL,               -- Embedding model used
-    embedding BLOB NOT NULL,           -- Serialized vector
-    created_at INTEGER NOT NULL,       
-    FOREIGN KEY (memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE
 );
 
 -- Cognitive states table (will store memory_ids)
@@ -344,26 +347,26 @@ CREATE TABLE IF NOT EXISTS cognitive_states (
     focus_areas TEXT,                  -- JSON array of memory_ids or descriptive strings
     context_actions TEXT,              -- JSON array of relevant action_ids
     current_goals TEXT,                -- JSON array of goal descriptions or thought_ids
-    created_at INTEGER NOT NULL,       
+    created_at INTEGER NOT NULL,
     is_latest BOOLEAN NOT NULL,
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
 );
 
 -- Reflections table (for meta-cognitive analysis)
 CREATE TABLE IF NOT EXISTS reflections (
-    reflection_id TEXT PRIMARY KEY,    
+    reflection_id TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
     reflection_type TEXT NOT NULL,     -- summary, insight, planning, etc.
-    created_at INTEGER NOT NULL,       
+    created_at INTEGER NOT NULL,
     referenced_memories TEXT,          -- JSON array of memory_ids
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
 );
 
--- Memory operations log (for auditing/debugging) 
+-- Memory operations log (for auditing/debugging)
 CREATE TABLE IF NOT EXISTS memory_operations (
-    operation_log_id TEXT PRIMARY KEY, 
+    operation_log_id TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL,
     memory_id TEXT,                    -- Related memory, if applicable
     action_id TEXT,                    -- Related action, if applicable
@@ -421,17 +424,6 @@ CREATE TABLE IF NOT EXISTS dependencies (
     UNIQUE(source_action_id, target_action_id, dependency_type)
 );
 
--- Deferrable Circular Foreign Key Constraints for thoughts <-> memories
--- (Execute after tables are created)
--- ALTER TABLE thoughts ADD CONSTRAINT fk_thoughts_memory FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
--- ALTER TABLE memories ADD CONSTRAINT fk_memories_thought FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
--- NOTE: Adding constraints via ALTER TABLE needs separate handling or adjustment in DBConnection __aenter__ if schema init logic is complex.
--- For simplicity in this example, we'll stick to inline definition and correct ordering + deferred FK for circular refs if needed later.
--- Let's re-add the inline FKs but ensure correct order (memories before thoughts)
--- Re-adding FKs inline now that memories table is defined first:
-ALTER TABLE thoughts ADD CONSTRAINT fk_thoughts_memory FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
-ALTER TABLE memories ADD CONSTRAINT fk_memories_thought FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
-
 
 -- Create Indices ---
 -- Workflow indices
@@ -452,8 +444,8 @@ CREATE INDEX IF NOT EXISTS idx_thought_chains_workflow ON thought_chains(workflo
 CREATE INDEX IF NOT EXISTS idx_thoughts_chain ON thoughts(thought_chain_id);
 CREATE INDEX IF NOT EXISTS idx_thoughts_sequence ON thoughts(thought_chain_id, sequence_number);
 CREATE INDEX IF NOT EXISTS idx_thoughts_type ON thoughts(thought_type);
-CREATE INDEX IF NOT EXISTS idx_thoughts_relevant_memory ON thoughts(relevant_memory_id);
--- Memory indices (Updated for new table and FKs)
+CREATE INDEX IF NOT EXISTS idx_thoughts_relevant_memory ON thoughts(relevant_memory_id); -- Index still useful
+-- Memory indices
 CREATE INDEX IF NOT EXISTS idx_memories_workflow ON memories(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_memories_level ON memories(memory_level);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(memory_type);
@@ -463,12 +455,14 @@ CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(last_accessed DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories(embedding_id);
 CREATE INDEX IF NOT EXISTS idx_memories_action_id ON memories(action_id);
-CREATE INDEX IF NOT EXISTS idx_memories_thought_id ON memories(thought_id);
+CREATE INDEX IF NOT EXISTS idx_memories_thought_id ON memories(thought_id); -- Index still useful
 CREATE INDEX IF NOT EXISTS idx_memories_artifact_id ON memories(artifact_id);
 -- Link indices
 CREATE INDEX IF NOT EXISTS idx_memory_links_source ON memory_links(source_memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_links_type ON memory_links(link_type);
+-- Embedding indices
+CREATE INDEX IF NOT EXISTS idx_embeddings_memory_id ON embeddings(memory_id); -- Index the FK
 -- Cognitive State indices
 CREATE INDEX IF NOT EXISTS idx_cognitive_states_workflow ON cognitive_states(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_cognitive_states_latest ON cognitive_states(workflow_id, is_latest);
@@ -512,6 +506,18 @@ CREATE TRIGGER IF NOT EXISTS memories_after_update AFTER UPDATE ON memories BEGI
     INSERT INTO memory_fts(rowid, content, description, reasoning, tags, workflow_id, memory_id)
     VALUES (new.rowid, new.content, new.description, new.reasoning, new.tags, new.workflow_id, new.memory_id);
 END;
+
+-- Deferrable Circular Foreign Key Constraints for thoughts <-> memories
+-- Execute after tables are created
+PRAGMA defer_foreign_keys = ON; -- Enable deferral for the transaction applying these constraints
+
+ALTER TABLE thoughts ADD CONSTRAINT fk_thoughts_memory
+    FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id)
+    ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE memories ADD CONSTRAINT fk_memories_thought
+    FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id)
+    ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
 """
 
 # ======================================================
@@ -521,8 +527,10 @@ END;
 class DBConnection:
     """Context manager for database connections using aiosqlite."""
 
-    _instance = None
+    _instance: Optional[aiosqlite.Connection] = None # Added type hint for clarity
     _lock = asyncio.Lock()
+    _db_path_used: Optional[str] = None
+    _init_lock_timeout = 15.0 # Configurable timeout in seconds
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self.db_path = db_path
@@ -530,61 +538,118 @@ class DBConnection:
         # Ensure directory exists synchronously during init
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    async def _initialize_instance(self) -> aiosqlite.Connection:
+        """Handles the actual creation and setup of the database connection."""
+        logger.info(f"Connecting to database: {self.db_path}", emoji_key="database")
+        conn = await aiosqlite.connect(
+            self.db_path,
+            timeout=CONNECTION_TIMEOUT # Use timeout from cognitive_memory
+            # isolation_level=ISOLATION_LEVEL # aiosqlite handles transactions differently
+        )
+        conn.row_factory = aiosqlite.Row
+
+        # Apply optimizations
+        for pragma in SQLITE_PRAGMAS:
+            await conn.execute(pragma)
+
+        # Enable custom functions needed by cognitive_memory parts
+        await conn.create_function("json_contains", 2, _json_contains, deterministic=True)
+        await conn.create_function("json_contains_any", 2, _json_contains_any, deterministic=True)
+        await conn.create_function("json_contains_all", 2, _json_contains_all, deterministic=True)
+        await conn.create_function("compute_memory_relevance", 5, _compute_memory_relevance, deterministic=True)
+
+        # Initialize schema if needed
+        # Check if tables exist before running the full script
+        cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='workflows'")
+        # Use fetchone() without await for aiosqlite cursor
+        table_exists = cursor.fetchone()
+        await cursor.close() # Explicitly close cursor after fetch
+        if not table_exists:
+            logger.info("Database schema not found. Initializing...", emoji_key="gear")
+            # Ensure foreign keys are enabled before schema execution for ALTER TABLE
+            await conn.execute("PRAGMA foreign_keys = ON;")
+            await conn.executescript(SCHEMA_SQL)
+            await conn.commit()
+            logger.success("Database schema initialized successfully.", emoji_key="white_check_mark")
+        else:
+            # Optionally, add schema migration logic here in the future
+            logger.info("Database schema already exists.", emoji_key="database")
+            # Ensure foreign keys are on for existing connections
+            await conn.execute("PRAGMA foreign_keys = ON;")
+
+        # Set the path used for this instance *after* successful connection
+        DBConnection._db_path_used = self.db_path
+        return conn
+
     async def __aenter__(self) -> aiosqlite.Connection:
-        async with DBConnection._lock:
-            if DBConnection._instance is None:
-                logger.info(f"Connecting to database: {self.db_path}", emoji_key="database")
-                self.conn = await aiosqlite.connect(
-                    self.db_path,
-                    timeout=CONNECTION_TIMEOUT # Use timeout from cognitive_memory
-                    # isolation_level=ISOLATION_LEVEL # aiosqlite handles transactions differently
-                )
-                self.conn.row_factory = aiosqlite.Row
+        # 1. Quick check without lock
+        instance = DBConnection._instance
+        if instance is not None:
+            # Path consistency check for singleton reuse
+            if self.db_path != DBConnection._db_path_used:
+                logger.error(f"DBConnection singleton mismatch: Already initialized with path '{DBConnection._db_path_used}', but requested '{self.db_path}'.")
+                raise RuntimeError(f"DBConnection singleton initialized with path '{DBConnection._db_path_used}', requested '{self.db_path}'")
+            # Ensure foreign keys are enabled for this specific use of the connection
+            # Doing this on every enter ensures it's set for the current operation context
+            await instance.execute("PRAGMA foreign_keys = ON;")
+            return instance
 
-                # Apply optimizations
-                for pragma in SQLITE_PRAGMAS:
-                    await self.conn.execute(pragma)
+        # 2. Acquire lock with timeout only if instance might need initialization
+        try:
+            # Use asyncio.timeout for the lock acquisition itself
+            async with asyncio.timeout(DBConnection._init_lock_timeout):
+                async with DBConnection._lock:
+                    # 3. Double-check instance after acquiring lock
+                    if DBConnection._instance is None:
+                        # Call the separate initialization method
+                        DBConnection._instance = await self._initialize_instance()
+                    # Re-check path consistency inside lock to handle race condition if multiple threads tried init
+                    elif self.db_path != DBConnection._db_path_used:
+                         logger.error(f"DBConnection singleton mismatch detected inside lock: Already initialized with path '{DBConnection._db_path_used}', but requested '{self.db_path}'.")
+                         raise RuntimeError(f"DBConnection singleton initialized with path '{DBConnection._db_path_used}', requested '{self.db_path}'")
 
-                # Enable custom functions needed by cognitive_memory parts
-                await self.conn.create_function("json_contains", 2, _json_contains, deterministic=True)
-                await self.conn.create_function("json_contains_any", 2, _json_contains_any, deterministic=True)
-                await self.conn.create_function("json_contains_all", 2, _json_contains_all, deterministic=True)
-                await self.conn.create_function("compute_memory_relevance", 5, _compute_memory_relevance, deterministic=True)
+        except asyncio.TimeoutError:
+             # Log timeout error and raise a ToolError
+             logger.error(f"Timeout acquiring DB initialization lock after {DBConnection._init_lock_timeout}s. Possible deadlock or hang.", emoji_key="alarm_clock")
+             raise ToolError("Database initialization timed out.") from None
+        except Exception as init_err:
+             # Catch potential errors during _initialize_instance
+             logger.error(f"Error during database initialization: {init_err}", exc_info=True, emoji_key="x")
+             # Ensure instance is None if initialization failed
+             DBConnection._instance = None
+             DBConnection._db_path_used = None
+             raise ToolError(f"Database initialization failed: {init_err}") from init_err
 
-                # Initialize schema if needed
-                # Check if tables exist before running the full script
-                cursor = await self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='workflows'")
-                table_exists = cursor.fetchone()
-                if not table_exists:
-                    logger.info("Database schema not found. Initializing...", emoji_key="gear")
-                    await self.conn.executescript(SCHEMA_SQL)
-                    await self.conn.commit()
-                    logger.success("Database schema initialized successfully.", emoji_key="white_check_mark")
-                else:
-                    # Optionally, add schema migration logic here in the future
-                    logger.info("Database schema already exists.", emoji_key="database")
-                    # Ensure foreign keys are on for existing connections
-                    await self.conn.execute("PRAGMA foreign_keys = ON")
-
-                DBConnection._instance = self.conn
-            else:
-                # Reuse existing connection instance
-                self.conn = DBConnection._instance
-
-            # Ensure foreign keys are enabled for this transaction/cursor
-            await self.conn.execute("PRAGMA foreign_keys = ON;")
-            return self.conn
+        # Ensure FKs enabled for the first use after initialization and return the instance
+        # Note: _initialize_instance also sets PRAGMA foreign_keys=ON, but setting it again here
+        # ensures it's applied for the context manager's immediate use.
+        await DBConnection._instance.execute("PRAGMA foreign_keys = ON;")
+        return DBConnection._instance
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        # We don't close the connection here anymore if using singleton pattern
-        # The connection should be managed globally or closed on application shutdown
         if exc_type is not None:
              logger.error(f"Database error occurred: {exc_val}", exc_info=(exc_type, exc_val, exc_tb))
-        # If not using singleton, uncomment the close below
-        # if self.conn:
-        #     await self.conn.close()
-        #     DBConnection._instance = None
         pass
+
+    @classmethod
+    async def close_connection(cls):
+        """Closes the singleton database connection if it exists.
+
+        This method should be called explicitly by the application during shutdown
+        to ensure resources are released cleanly.
+        """
+        if cls._instance:
+            logger.info("Attempting to close database connection.", emoji_key="lock")
+            try:
+                await cls._instance.close()
+                logger.success("Database connection closed successfully.", emoji_key="white_check_mark")
+            except Exception as e:
+                logger.error(f"Error closing database connection: {e}", exc_info=True)
+            finally:
+                # Ensure the instance reference is cleared even if close fails
+                cls._instance = None
+        else:
+            logger.info("No active database connection instance to close.")    
 
 # Custom SQLite helper functions (from cognitive_memory) - Keep these
 def _json_contains(json_text, search_value):
@@ -8216,10 +8281,8 @@ async def _example():
     mem_get = await get_memory_by_id(memory_id=mem1["memory_id"], include_links=True, db_path=db)
     print("\nGet Memory By ID:", mem_get)
 
-    # Close the connection if using singleton pattern on app shutdown
-    if DBConnection._instance:
-        await DBConnection._instance.close()
-        DBConnection._instance = None
+    # Close the connection on app shutdown
+    await DBConnection.close_connection()
 
 # if __name__ == "__main__":
 #     asyncio.run(_example())
