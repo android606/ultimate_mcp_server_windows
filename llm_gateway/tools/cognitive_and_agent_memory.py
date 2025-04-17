@@ -183,16 +183,10 @@ class LinkType(str, Enum):
 
 
 # ======================================================
-# Database Schema (Merged & Refined)
-# ======================================================
-
-# Note: Using TEXT for IDs (UUIDs) and TIMESTAMP for datetimes (ISO format strings)
-# ======================================================
-# Database Schema (Merged & Refined)
+# Database Schema
 # ======================================================
 
 # Note: Using TEXT for IDs (UUIDs) and INTEGER for datetimes (Unix timestamp seconds)
-# Note: Added comments explaining origins and modifications.
 
 SCHEMA_SQL = """
 -- Base Pragmas (Combined)
@@ -639,9 +633,15 @@ def _compute_memory_relevance(importance, confidence, created_at, access_count, 
 
 
 # ======================================================
-# Utilities (Combined & Refined)
+# Utilities
 # ======================================================
 
+def to_iso_z(ts: float) -> str:        # helper ⇒  ISO‑8601 with trailing “Z”
+    return (
+        datetime.fromtimestamp(ts, tz=timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
 
 class MemoryUtils:
     """Utility methods for memory operations."""
@@ -1225,11 +1225,6 @@ async def create_workflow(
             await conn.commit()
 
             # Prepare the result dictionary, formatting timestamps for output
-            timestamp_utc = (
-                datetime.fromtimestamp(now_unix, tz=timezone.utc)
-                .isoformat(timespec="seconds")      # e.g. '2025-04-17T20:42:15+00:00'
-                .replace("+00:00", "Z")             # -> '2025-04-17T20:42:15Z'
-            )
 
             result = {
                 "workflow_id": workflow_id,
@@ -1237,8 +1232,8 @@ async def create_workflow(
                 "description": description,
                 "goal": goal,
                 "status": WorkflowStatus.ACTIVE.value,
-                "created_at": timestamp_utc,
-                "updated_at": timestamp_utc,
+                "created_at": to_iso_z(now_unix),
+                "updated_at": to_iso_z(now_unix),
                 "tags": tags or [],
                 "primary_thought_chain_id": thought_chain_id,  # default chain ID for the agent
                 "success": True,
@@ -1317,17 +1312,10 @@ async def update_workflow_status(
             await MemoryUtils.process_tags(conn, workflow_id, update_tags or [], "workflow")
             await conn.commit()
 
-            # Format timestamps for output
-            timestamp_utc = (
-                datetime.fromtimestamp(now_unix, tz=timezone.utc)
-                .isoformat(timespec="seconds")      # e.g. '2025-04-17T20:49:30+00:00'
-                .replace("+00:00", "Z")             # -> '2025-04-17T20:49:30Z'
-            )
-
             result = {
                 "workflow_id": workflow_id,
                 "status": status_enum.value,
-                "updated_at": timestamp_utc,
+                "updated_at": to_iso_z(now_unix),
                 "success": True,
             }
 
@@ -1336,7 +1324,7 @@ async def update_workflow_status(
                 WorkflowStatus.FAILED,
                 WorkflowStatus.ABANDONED,
             ):
-                result["completed_at"] = timestamp_utc
+                result["completed_at"] = to_iso_z(now_unix)
                 logger.info(f"Updated workflow {workflow_id} status to '{status_enum.value}'", emoji_key="arrows_counterclockwise")
                 return result
 
@@ -1482,12 +1470,6 @@ async def record_action_start(
             await conn.commit()
 
             # --- Prepare Result (Format timestamp for output) ---
-            timestamp_utc = (
-                datetime.fromtimestamp(now_unix, tz=timezone.utc)
-                .isoformat(timespec="seconds")        # e.g. '2025-04-17T20:55:10+00:00'
-                .replace("+00:00", "Z")               # -> '2025-04-17T20:55:10Z'
-            )
-
             result = {
                 "action_id": action_id,
                 "workflow_id": workflow_id,
@@ -1495,7 +1477,7 @@ async def record_action_start(
                 "title": auto_title,
                 "tool_name": tool_name,
                 "status": ActionStatus.IN_PROGRESS.value,
-                "started_at": timestamp_utc,     
+                "started_at": to_iso_z(now_unix),     
                 "sequence_number": sequence_number,
                 "tags": tags or [],
                 "linked_memory_id": memory_id,
@@ -1679,17 +1661,12 @@ async def record_action_completion(
             await conn.commit()
 
             # --- 7. Prepare Result (Format timestamp for output) ---
-            timestamp_utc = (
-                datetime.fromtimestamp(now_unix, tz=timezone.utc)
-                .isoformat(timespec="seconds")        # e.g. '2025-04-17T21:02:45+00:00'
-                .replace("+00:00", "Z")               # -> '2025-04-17T21:02:45Z'
-            )
 
             result = {
                 "action_id": action_id,
                 "workflow_id": workflow_id,
                 "status": status_enum.value,
-                "completed_at": timestamp_utc,        # *** FORMATTED OUTPUT ***
+                "completed_at": to_iso_z(now_unix),
                 "conclusion_thought_id": conclusion_thought_id,
                 "success": True,
                 "processing_time": time.time() - start_time,
@@ -1756,17 +1733,15 @@ async def get_action_details(
         ToolError: If database operation fails
     """
     start_time = time.time()
-    
+
     # Validate inputs
     if not action_id and not action_ids:
         raise ToolInputError("Either action_id or action_ids must be provided", param_name="action_id")
-    
-    # Convert single action_id to list if action_ids not provided
+
     target_action_ids = action_ids or [action_id]
-    
+
     try:
         async with DBConnection(db_path) as conn:
-            # Prepare query - query all fields from actions plus tags
             placeholders = ', '.join(['?'] * len(target_action_ids))
             select_query = f"""
                 SELECT a.*, GROUP_CONCAT(t.name) as tags_str
@@ -1776,71 +1751,49 @@ async def get_action_details(
                 WHERE a.action_id IN ({placeholders})
                 GROUP BY a.action_id
             """
-            
+
             actions_result = []
-            async with conn.execute(select_query, target_action_ids) as cursor:
-                async for row in cursor:
-                    action_data = dict(row)
-                    
-                    # Process tags
-                    if action_data.get("tags_str"):
-                        action_data["tags"] = action_data["tags_str"].split(',')
-                    else:
-                        action_data["tags"] = []
-                    action_data.pop("tags_str", None)
-                    
-                    # Deserialize JSON fields
-                    if action_data.get("tool_args"):
-                        action_data["tool_args"] = await MemoryUtils.deserialize(action_data["tool_args"])
-                    
-                    if action_data.get("tool_result"):
-                        action_data["tool_result"] = await MemoryUtils.deserialize(action_data["tool_result"])
-                    
-                    # Include dependencies if requested
-                    if include_dependencies:
-                        action_data["dependencies"] = {
-                            "depends_on": [],
-                            "dependent_actions": []
-                        }
-                        
-                        # Get actions this action depends on
-                        async with conn.execute(
-                            "SELECT target_action_id, dependency_type FROM dependencies WHERE source_action_id = ?", 
-                            (action_data["action_id"],)
-                        ) as dep_cursor:
-                            action_data["dependencies"]["depends_on"] = [
-                                {"action_id": row["target_action_id"], "type": row["dependency_type"]}
-                                for row in await dep_cursor.fetchall()
-                            ]
-                        
-                        # Get actions that depend on this action
-                        async with conn.execute(
-                            "SELECT source_action_id, dependency_type FROM dependencies WHERE target_action_id = ?", 
-                            (action_data["action_id"],)
-                        ) as dep_cursor:
-                            action_data["dependencies"]["dependent_actions"] = [
-                                {"action_id": row["source_action_id"], "type": row["dependency_type"]}
-                                for row in await dep_cursor.fetchall()
-                            ]
-                    
-                    actions_result.append(action_data)
-            
+            cursor = await conn.execute(select_query, target_action_ids)
+            async for row in cursor:
+                action_data = dict(row)
+
+                if action_data.get("started_at"):
+                    action_data["started_at"] = to_iso_z(action_data["started_at"])
+                if action_data.get("completed_at"):
+                    action_data["completed_at"] = to_iso_z(action_data["completed_at"])
+
+                if action_data.get("tags_str"): 
+                    action_data["tags"] = action_data["tags_str"].split(',')
+                else: action_data["tags"] = []
+                action_data.pop("tags_str", None)
+
+                if action_data.get("tool_args"): 
+                    action_data["tool_args"] = await MemoryUtils.deserialize(action_data["tool_args"])
+                if action_data.get("tool_result"): 
+                    action_data["tool_result"] = await MemoryUtils.deserialize(action_data["tool_result"])
+
+                if include_dependencies:
+                    action_data["dependencies"] = {"depends_on": [], "dependent_actions": []}
+                    dep_cursor_on = await conn.execute("SELECT target_action_id, dependency_type FROM dependencies WHERE source_action_id = ?", (action_data["action_id"],))
+                    action_data["dependencies"]["depends_on"] = [{"action_id": r["target_action_id"], "type": r["dependency_type"]} for r in await dep_cursor_on.fetchall()]
+                    await dep_cursor_on.close()
+                    dep_cursor_by = await conn.execute("SELECT source_action_id, dependency_type FROM dependencies WHERE target_action_id = ?", (action_data["action_id"],))
+                    action_data["dependencies"]["dependent_actions"] = [{"action_id": r["source_action_id"], "type": r["dependency_type"]} for r in await dep_cursor_by.fetchall()]
+                    await dep_cursor_by.close()
+
+                actions_result.append(action_data)
+            await cursor.close()
+
             if not actions_result:
                 action_ids_str = ", ".join(target_action_ids[:5]) + ("..." if len(target_action_ids) > 5 else "")
                 raise ToolInputError(f"No actions found with IDs: {action_ids_str}", param_name="action_id" if action_id else "action_ids")
-            
+
             processing_time = time.time() - start_time
             logger.info(f"Retrieved details for {len(actions_result)} actions", emoji_key="search")
-            
-            # Return single action directly if only one was requested via action_id
-            result = {
-                "actions": actions_result,
-                "success": True,
-                "processing_time": processing_time
-            }
-            
+
+            result = { "actions": actions_result, "success": True, "processing_time": processing_time }
             return result
-    
+
     except ToolInputError:
         raise
     except Exception as e:
@@ -2169,18 +2122,12 @@ async def add_action_dependency(
                 emoji_key="link",
             )
 
-            timestamp_utc = (
-                datetime.fromtimestamp(now_unix, tz=timezone.utc)
-                .isoformat(timespec="seconds")     # e.g. '2025-04-17T21:08:30+00:00'
-                .replace("+00:00", "Z")            # -> '2025-04-17T21:08:30Z'
-            )
-
             return {
                 "source_action_id": source_action_id,
                 "target_action_id": target_action_id,
                 "dependency_type": dependency_type,
                 "dependency_id": dependency_id,  # May be None if IGNORE failed lookup
-                "created_at": timestamp_utc,     
+                "created_at": to_iso_z(now_unix),     
                 "success": True,
                 "processing_time": processing_time,
             }
@@ -2236,57 +2183,50 @@ async def get_action_dependencies(
         ToolInputError: If action ID not found or direction is invalid.
         ToolError: If the database operation fails.
     """
-    if not action_id:
+    if not action_id: 
         raise ToolInputError("Action ID required.", param_name="action_id")
-    if direction not in ["downstream", "upstream"]:
+    if direction not in ["downstream", "upstream"]: 
         raise ToolInputError("Direction must be 'downstream' or 'upstream'.", param_name="direction")
 
     start_time = time.time()
 
     try:
         async with DBConnection(db_path) as conn:
-            # --- Validate Action Exists ---
-            async with conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (action_id,)) as cursor:
-                 if not cursor.fetchone():
-                     raise ToolInputError(f"Action {action_id} not found.", param_name="action_id")
+            cursor = await conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (action_id,))
+            action_exists = cursor.fetchone()
+            await cursor.close()
+            if not action_exists: 
+                raise ToolInputError(f"Action {action_id} not found.", param_name="action_id")
 
-            # --- Build Query based on Direction ---
             select_cols = "a.action_id, a.title, dep.dependency_type"
             if include_details:
-                 # Add more columns from the 'actions' table aliased as 'a'
+                 # Fetch timestamps as integers
                  select_cols += ", a.action_type, a.status, a.started_at, a.completed_at, a.sequence_number"
 
             if direction == "downstream":
-                 # Find actions (source) that depend on the target (action_id)
-                 query = f"""
-                 SELECT {select_cols}
-                 FROM dependencies dep
-                 JOIN actions a ON dep.source_action_id = a.action_id
-                 WHERE dep.target_action_id = ?
-                 """
+                 query = f"SELECT {select_cols} FROM dependencies dep JOIN actions a ON dep.source_action_id = a.action_id WHERE dep.target_action_id = ?"
                  params = [action_id]
             else: # upstream
-                 # Find actions (target) that the source (action_id) depends on
-                 query = f"""
-                 SELECT {select_cols}
-                 FROM dependencies dep
-                 JOIN actions a ON dep.target_action_id = a.action_id
-                 WHERE dep.source_action_id = ?
-                 """
+                 query = f"SELECT {select_cols} FROM dependencies dep JOIN actions a ON dep.target_action_id = a.action_id WHERE dep.source_action_id = ?"
                  params = [action_id]
 
-            # Add dependency_type filter if provided
             if dependency_type:
                  query += " AND dep.dependency_type = ?"
                  params.append(dependency_type)
 
-            query += " ORDER BY a.sequence_number ASC" # Order by sequence for readability
+            query += " ORDER BY a.sequence_number ASC"
 
-            # --- Execute Query & Process Results ---
             related_actions = []
-            async with conn.execute(query, params) as cursor:
-                 async for row in cursor:
-                      related_actions.append(dict(row)) # Convert row to dict
+            cursor = await conn.execute(query, params)
+            async for row in cursor:
+                action_data = dict(row)
+                if include_details:
+                    if action_data.get("started_at"):
+                        action_data["started_at"] = to_iso_z(action_data["started_at"])
+                    if action_data.get("completed_at"):
+                        action_data["completed_at"] = to_iso_z(action_data["completed_at"])
+                related_actions.append(action_data)
+            await cursor.close()
 
             processing_time = time.time() - start_time
             logger.info(f"Retrieved {len(related_actions)} {direction} dependencies for action {action_id}", emoji_key="left_right_arrow")
@@ -2469,11 +2409,6 @@ async def record_artifact(
             await conn.commit()
 
             # --- Prepare Result (Format timestamp for output) ---
-            timestamp_utc = (
-                datetime.fromtimestamp(now_unix, tz=timezone.utc)
-                .isoformat(timespec="seconds")        # e.g. '2025-04-17T21:12:05+00:00'
-                .replace("+00:00", "Z")               # -> '2025-04-17T21:12:05Z'
-            )
 
             result = {
                 "artifact_id": artifact_id,
@@ -2482,7 +2417,7 @@ async def record_artifact(
                 "artifact_type": artifact_type_enum.value,
                 "path": path,
                 "content_stored_in_db": bool(db_content),
-                "created_at": timestamp_utc,
+                "created_at": to_iso_z(now_unix),
                 "is_output": is_output,
                 "tags": artifact_tags,
                 "linked_memory_id": memory_id,
@@ -2657,19 +2592,13 @@ async def record_thought(
             # --- Commit and Return ---
             await conn.commit()
 
-            timestamp_utc = (
-                datetime.fromtimestamp(now_unix, tz=timezone.utc)
-                .isoformat(timespec="seconds")        # e.g. '2025-04-17T21:15:40+00:00'
-                .replace("+00:00", "Z")               # -> '2025-04-17T21:15:40Z'
-            )
-
             result = {
                 "thought_id": thought_id,
                 "thought_chain_id": target_thought_chain_id,
                 "thought_type": thought_type_enum.value,
                 "content": content,
                 "sequence_number": sequence_number,
-                "created_at": timestamp_utc,
+                "created_at": to_iso_z(now_unix),
                 "linked_memory_id": linked_memory_id,
                 "success": True,
             }
@@ -3906,14 +3835,15 @@ async def query_memories(
 async def list_workflows(
     status: Optional[str] = None,
     tag: Optional[str] = None,
-    after_date: Optional[str] = None, # ISO Format string
-    before_date: Optional[str] = None, # ISO Format string
+    after_date: Optional[str] = None, # ISO Format string for filtering
+    before_date: Optional[str] = None, # ISO Format string for filtering
     limit: int = 10,
     offset: int = 0,
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
-    """Lists workflows matching specified criteria."""
-    # [Implementation ported from agent_memory.list_workflows, adapted for aiosqlite/schema]
+    """Lists workflows matching specified criteria.
+       Timestamps are returned as ISO 8601 strings.
+    """
     try:
         # Validate status
         if status:
@@ -3921,17 +3851,21 @@ async def list_workflows(
                 WorkflowStatus(status.lower())
             except ValueError as e: 
                 raise ToolInputError(f"Invalid status: {status}", param_name="status") from e
-        # Validate dates
+
+        # Convert filter dates from ISO strings to Unix timestamps for querying
+        after_ts: Optional[int] = None
         if after_date:
             try: 
-                datetime.fromisoformat(after_date.replace('Z', '+00:00'))
+                after_ts = int(datetime.fromisoformat(after_date.replace('Z', '+00:00')).timestamp())
             except ValueError as e: 
                 raise ToolInputError("Invalid after_date format. Use ISO.", param_name="after_date") from e
+        before_ts: Optional[int] = None
         if before_date:
             try: 
-                datetime.fromisoformat(before_date.replace('Z', '+00:00'))
+                before_ts = int(datetime.fromisoformat(before_date.replace('Z', '+00:00')).timestamp())
             except ValueError as e: 
                 raise ToolInputError("Invalid before_date format. Use ISO.", param_name="before_date") from e
+
         # Validate pagination
         if limit < 1: 
             raise ToolInputError("Limit must be >= 1", param_name="limit")
@@ -3941,7 +3875,7 @@ async def list_workflows(
         async with DBConnection(db_path) as conn:
             base_query = """
             SELECT DISTINCT w.workflow_id, w.title, w.description, w.goal, w.status,
-                   w.created_at, w.updated_at, w.completed_at
+                   w.created_at, w.updated_at, w.completed_at -- Fetch timestamps as INTEGER
             FROM workflows w
             """
             count_query = "SELECT COUNT(DISTINCT w.workflow_id) FROM workflows w"
@@ -3957,21 +3891,22 @@ async def list_workflows(
             if status:
                 where_clauses.append("w.status = ?")
                 params.append(status.lower())
-            if after_date:
+            if after_ts is not None: # Use timestamp for filtering
                 where_clauses.append("w.created_at >= ?")
-                params.append(after_date)
-            if before_date:
+                params.append(after_ts)
+            if before_ts is not None: # Use timestamp for filtering
                 where_clauses.append("w.created_at <= ?")
-                params.append(before_date)
+                params.append(before_ts)
 
             where_sql = " WHERE " + " AND ".join(where_clauses)
             full_base_query = base_query + joins + where_sql
             full_count_query = count_query + joins + where_sql
 
             # Get total count
-            async with conn.execute(full_count_query, params) as cursor:
-                row = cursor.fetchone()
-                total_count = row[0] if row else 0
+            cursor = await conn.execute(full_count_query, params)
+            row = cursor.fetchone()
+            await cursor.close()
+            total_count = row[0] if row else 0
 
             # Get workflow data
             data_query = full_base_query + " ORDER BY w.updated_at DESC LIMIT ? OFFSET ?"
@@ -3979,13 +3914,21 @@ async def list_workflows(
             workflows_list = []
             workflow_ids_fetched = []
 
-            async with conn.execute(data_query, params) as cursor:
-                 rows = await cursor.fetchall()
-                 for row in rows:
-                     wf_data = dict(row)
-                     wf_data["tags"] = [] # Initialize tags list
-                     workflows_list.append(wf_data)
-                     workflow_ids_fetched.append(wf_data["workflow_id"])
+            cursor = await conn.execute(data_query, params)
+            rows = await cursor.fetchall()
+            await cursor.close()
+
+            for row in rows:
+                 wf_data = dict(row)
+                 if wf_data.get("created_at"):
+                     wf_data["created_at"] = to_iso_z(wf_data["created_at"])
+                 if wf_data.get("updated_at"):
+                     wf_data["updated_at"] = to_iso_z(wf_data["updated_at"])
+                 if wf_data.get("completed_at"):
+                     wf_data["completed_at"] = to_iso_z(wf_data["completed_at"])
+                 wf_data["tags"] = [] # Initialize tags list
+                 workflows_list.append(wf_data)
+                 workflow_ids_fetched.append(wf_data["workflow_id"])
 
             # Batch fetch tags for fetched workflows
             if workflow_ids_fetched:
@@ -3996,9 +3939,10 @@ async def list_workflows(
                  WHERE wt.workflow_id IN ({placeholders})
                  """
                  tags_map = defaultdict(list)
-                 async with conn.execute(tags_query, workflow_ids_fetched) as tags_cursor:
-                      async for tag_row in tags_cursor:
-                           tags_map[tag_row["workflow_id"]].append(tag_row["name"])
+                 tags_cursor = await conn.execute(tags_query, workflow_ids_fetched)
+                 async for tag_row in tags_cursor:
+                      tags_map[tag_row["workflow_id"]].append(tag_row["name"])
+                 await tags_cursor.close()
 
                  # Assign tags to workflows
                  for wf in workflows_list:
@@ -4031,25 +3975,34 @@ async def get_workflow_details(
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
     """Retrieves comprehensive details about a specific workflow, including related items.
-       (Ported from agent_memory, adapted for unified schema).
+       Timestamps are returned as ISO 8601 strings.
     """
-    if not workflow_id: 
+    if not workflow_id:
         raise ToolInputError("Workflow ID required.", param_name="workflow_id")
 
     try:
         async with DBConnection(db_path) as conn:
             # --- Get Workflow Core Info & Tags ---
-            async with conn.execute("SELECT * FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                wf_row = cursor.fetchone()
-                if not wf_row: 
-                    raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
-                workflow_details = dict(wf_row)
-                workflow_details["metadata"] = await MemoryUtils.deserialize(workflow_details.get("metadata"))
+            cursor = await conn.execute("SELECT * FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_row = await cursor.fetchone()
+            await cursor.close()
+            if not wf_row:
+                raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
+
+            workflow_details = dict(wf_row)
+            if workflow_details.get("created_at"):
+                workflow_details["created_at"] = to_iso_z(workflow_details["created_at"])
+            if workflow_details.get("updated_at"):
+                workflow_details["updated_at"] = to_iso_z(workflow_details["updated_at"])
+            if workflow_details.get("completed_at"):
+                workflow_details["completed_at"] = to_iso_z(workflow_details["completed_at"])
+            workflow_details["metadata"] = await MemoryUtils.deserialize(workflow_details.get("metadata"))
 
             # Fetch tags
             workflow_details["tags"] = []
-            async with conn.execute("SELECT t.name FROM tags t JOIN workflow_tags wt ON t.tag_id = wt.tag_id WHERE wt.workflow_id = ?", (workflow_id,)) as cursor:
-                 workflow_details["tags"] = [row["name"] for row in await cursor.fetchall()]
+            tags_cursor = await conn.execute("SELECT t.name FROM tags t JOIN workflow_tags wt ON t.tag_id = wt.tag_id WHERE wt.workflow_id = ?", (workflow_id,))
+            workflow_details["tags"] = [row["name"] for row in await tags_cursor.fetchall()]
+            await tags_cursor.close()
 
             # --- Get Actions ---
             if include_actions:
@@ -4063,14 +4016,19 @@ async def get_workflow_details(
                 GROUP BY a.action_id
                 ORDER BY a.sequence_number ASC
                 """
-                async with conn.execute(actions_query, (workflow_id,)) as cursor:
-                     async for row in cursor:
-                          action = dict(row)
-                          action["tool_args"] = await MemoryUtils.deserialize(action.get("tool_args"))
-                          action["tool_result"] = await MemoryUtils.deserialize(action.get("tool_result"))
-                          action["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
-                          del action["tags_str"] # Remove the concatenated string
-                          workflow_details["actions"].append(action)
+                actions_cursor = await conn.execute(actions_query, (workflow_id,))
+                async for row in actions_cursor:
+                    action = dict(row)
+                    if action.get("started_at"):
+                        action["started_at"] = to_iso_z(action["started_at"])
+                    if action.get("completed_at"):
+                        action["completed_at"] = to_iso_z(action["completed_at"])
+                    action["tool_args"] = await MemoryUtils.deserialize(action.get("tool_args"))
+                    action["tool_result"] = await MemoryUtils.deserialize(action.get("tool_result"))
+                    action["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
+                    action.pop("tags_str", None) # Remove the concatenated string
+                    workflow_details["actions"].append(action)
+                await actions_cursor.close()
 
             # --- Get Artifacts ---
             if include_artifacts:
@@ -4084,34 +4042,41 @@ async def get_workflow_details(
                 GROUP BY a.artifact_id
                 ORDER BY a.created_at ASC
                 """
-                async with conn.execute(artifacts_query, (workflow_id,)) as cursor:
-                     async for row in cursor:
-                          artifact = dict(row)
-                          artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
-                          artifact["is_output"] = bool(artifact["is_output"])
-                          artifact["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
-                          del artifact["tags_str"]
-                          # Limit content preview in details view
-                          if artifact.get("content") and len(artifact["content"]) > 200:
-                              artifact["content_preview"] = artifact["content"][:197] + "..."
-                          workflow_details["artifacts"].append(artifact)
+                artifacts_cursor = await conn.execute(artifacts_query, (workflow_id,))
+                async for row in artifacts_cursor:
+                    artifact = dict(row)
+                    if artifact.get("created_at"):
+                        artifact["created_at"] = to_iso_z(artifact["created_at"])
+                    artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
+                    artifact["is_output"] = bool(artifact["is_output"])
+                    artifact["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
+                    artifact.pop("tags_str", None)
+                    if artifact.get("content") and len(artifact["content"]) > 200:
+                        artifact["content_preview"] = artifact["content"][:197] + "..."
+                    workflow_details["artifacts"].append(artifact)
+                await artifacts_cursor.close()
 
             # --- Get Thought Chains & Thoughts ---
             if include_thoughts:
                 workflow_details["thought_chains"] = []
-                async with conn.execute("SELECT * FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC", (workflow_id,)) as chain_cursor:
-                     async for chain_row in chain_cursor:
-                          thought_chain = dict(chain_row)
-                          thought_chain["thoughts"] = []
-                          # Fetch thoughts for this chain
-                          async with conn.execute("SELECT * FROM thoughts WHERE thought_chain_id = ? ORDER BY sequence_number ASC", (thought_chain["thought_chain_id"],)) as thought_cursor:
-                               async for thought_row in thought_cursor:
-                                   thought_chain["thoughts"].append(dict(thought_row))
-                          workflow_details["thought_chains"].append(thought_chain)
+                chain_cursor = await conn.execute("SELECT * FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC", (workflow_id,))
+                async for chain_row_data in chain_cursor:
+                    thought_chain = dict(chain_row_data)
+                    if thought_chain.get("created_at"):
+                        thought_chain["created_at"] = to_iso_z(thought_chain["created_at"])
+                    thought_chain["thoughts"] = []
+                    thought_cursor = await conn.execute("SELECT * FROM thoughts WHERE thought_chain_id = ? ORDER BY sequence_number ASC", (thought_chain["thought_chain_id"],))
+                    async for thought_row_data in thought_cursor:
+                        thought = dict(thought_row_data)
+                        if thought.get("created_at"):
+                            thought["created_at"] = to_iso_z(thought["created_at"])
+                        thought_chain["thoughts"].append(thought)
+                    await thought_cursor.close()
+                    workflow_details["thought_chains"].append(thought_chain)
+                await chain_cursor.close()
 
             # --- Get Recent/Important Memories (Optional) ---
             if include_memories:
-                 # Fetch a sample of recent/important memories associated with this workflow
                  memories_query = """
                  SELECT memory_id, content, memory_type, memory_level, importance, created_at
                  FROM memories
@@ -4120,14 +4085,16 @@ async def get_workflow_details(
                  LIMIT ?
                  """
                  workflow_details["memories_sample"] = []
-                 async with conn.execute(memories_query, (workflow_id, memories_limit)) as cursor:
-                      async for row in cursor:
-                           mem = dict(row)
-                           mem["created_at_unix"] = mem["created_at"]
-                           if mem.get("content") and len(mem["content"]) > 150:
-                               mem["content_preview"] = mem["content"][:147] + "..."
-                           workflow_details["memories_sample"].append(mem)
-
+                 mem_cursor = await conn.execute(memories_query, (workflow_id, memories_limit))
+                 async for row in mem_cursor:
+                      mem = dict(row)
+                      if mem.get("created_at"):
+                          mem["created_at_iso"] = to_iso_z(mem["created_at"])
+                      mem["created_at_unix"] = mem.get("created_at") 
+                      if mem.get("content") and len(mem["content"]) > 150:
+                          mem["content_preview"] = mem["content"][:147] + "..."
+                      workflow_details["memories_sample"].append(mem)
+                 await mem_cursor.close()
 
             workflow_details["success"] = True
             logger.info(f"Retrieved details for workflow {workflow_id}", emoji_key="books")
@@ -4138,6 +4105,7 @@ async def get_workflow_details(
     except Exception as e:
         logger.error(f"Error getting workflow details for {workflow_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to get workflow details: {str(e)}") from e
+    
 
 # --- 9. Action Details ---
 @with_tool_metrics
@@ -4201,48 +4169,39 @@ async def get_recent_actions(
         if not isinstance(limit, int) or limit < 1:
             raise ToolInputError("Limit must be a positive integer", param_name="limit")
         if action_type:
-            try:
-                ActionType(action_type.lower()) # Validate enum
-            except ValueError as e:
-                valid_types = [t.value for t in ActionType]
-                raise ToolInputError(f"Invalid action_type '{action_type}'. Must be one of: {', '.join(valid_types)}", param_name="action_type") from e
+            try: 
+                ActionType(action_type.lower())
+            except ValueError as e: 
+                raise ToolInputError(f"Invalid action_type '{action_type}'. Must be one of: {[t.value for t in ActionType]}", param_name="action_type") from e
         if status:
-            try:
-                ActionStatus(status.lower()) # Validate enum
-            except ValueError as e:
-                valid_statuses = [s.value for s in ActionStatus]
-                raise ToolInputError(f"Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}", param_name="status") from e
+            try: 
+                ActionStatus(status.lower())
+            except ValueError as e: 
+                raise ToolInputError(f"Invalid status '{status}'. Must be one of: {[s.value for s in ActionStatus]}", param_name="status") from e
 
         async with DBConnection(db_path) as conn:
             # --- Check Workflow & Get Title ---
-            async with conn.execute("SELECT title FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 wf_row = cursor.fetchone()
-                 if not wf_row:
-                     raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
-                 workflow_title = wf_row["title"]
+            cursor = await conn.execute("SELECT title FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_row = await cursor.fetchone()
+            await cursor.close()
+            if not wf_row:
+                 raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
+            workflow_title = wf_row["title"]
 
             # --- Build Query ---
             select_fields = [
                 "a.action_id", "a.action_type", "a.title", "a.tool_name", "a.tool_args",
                 "a.status", "a.started_at", "a.completed_at", "a.sequence_number", "a.parent_action_id",
-                "GROUP_CONCAT(t.name) as tags_str" # Aggregate tags
+                "GROUP_CONCAT(t.name) as tags_str"
             ]
-            # Conditionally add large text fields
             if include_reasoning:
                 select_fields.append("a.reasoning")
-            if include_tool_results:
+            if include_tool_results: 
                 select_fields.append("a.tool_result")
 
-            query = f"""
-            SELECT {', '.join(select_fields)}
-            FROM actions a
-            LEFT JOIN action_tags at ON a.action_id = at.action_id
-            LEFT JOIN tags t ON at.tag_id = t.tag_id
-            WHERE a.workflow_id = ?
-            """
+            query = f"SELECT {', '.join(select_fields)} FROM actions a LEFT JOIN action_tags at ON a.action_id = at.action_id LEFT JOIN tags t ON at.tag_id = t.tag_id WHERE a.workflow_id = ?"
             params: List[Any] = [workflow_id]
 
-            # Add optional filters
             if action_type:
                  query += " AND a.action_type = ?"
                  params.append(action_type.lower())
@@ -4250,29 +4209,29 @@ async def get_recent_actions(
                  query += " AND a.status = ?"
                  params.append(status.lower())
 
-            # Add grouping, ordering, and limit
             query += " GROUP BY a.action_id ORDER BY a.sequence_number DESC LIMIT ?"
             params.append(limit)
 
             # --- Execute Query & Process Results ---
             actions_list = []
-            async with conn.execute(query, params) as cursor:
-                 async for row in cursor:
-                      action = dict(row) # Convert row to dict
+            cursor = await conn.execute(query, params)
+            async for row in cursor:
+                action = dict(row)
+                if action.get("started_at"):
+                    action["started_at"] = to_iso_z(action["started_at"])
+                if action.get("completed_at"):
+                    action["completed_at"] = to_iso_z(action["completed_at"])
 
-                      # Process tags
-                      action["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
-                      del action["tags_str"] # Remove the concatenated field
+                action["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
+                action.pop("tags_str", None)
 
-                      # Deserialize JSON fields only if they were included in the SELECT
-                      # (and thus present in the row dict)
-                      if "tool_args" in action:
-                          action["tool_args"] = await MemoryUtils.deserialize(action.get("tool_args"))
-                      if "tool_result" in action: # Will only be present if include_tool_results was True
-                          action["tool_result"] = await MemoryUtils.deserialize(action.get("tool_result"))
-                      # Reasoning is already included or excluded by the SELECT statement
+                if "tool_args" in action: 
+                    action["tool_args"] = await MemoryUtils.deserialize(action.get("tool_args"))
+                if "tool_result" in action: 
+                    action["tool_result"] = await MemoryUtils.deserialize(action.get("tool_result"))
 
-                      actions_list.append(action)
+                actions_list.append(action)
+            await cursor.close()
 
             # --- Prepare Final Result ---
             result = {
@@ -4290,7 +4249,8 @@ async def get_recent_actions(
         logger.error(f"Error getting recent actions for workflow {workflow_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to get recent actions: {str(e)}") from e
 
-# --- 10. Artifact Details (Ported from agent_memory) ---
+
+# --- 10. Artifact Details ---
 @with_tool_metrics
 @with_error_handling
 async def get_artifacts(
@@ -4302,23 +4262,26 @@ async def get_artifacts(
     limit: int = 10,
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
-    """Retrieves artifacts created during a workflow, optionally filtered."""
-    # [Implementation ported from agent_memory.get_artifacts, adapted for aiosqlite/schema]
+    """Retrieves artifacts created during a workflow, optionally filtered.
+       Timestamps are returned as ISO 8601 strings.
+    """
     try:
         # Validations
         if limit < 1: 
             raise ToolInputError("Limit must be >= 1", param_name="limit")
         if artifact_type:
-            try: 
+            try:
                 ArtifactType(artifact_type.lower())
             except ValueError as e: 
                 raise ToolInputError(f"Invalid artifact_type: {artifact_type}", param_name="artifact_type") from e
 
         async with DBConnection(db_path) as conn:
-             # Check workflow
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not cursor.fetchone(): 
-                    raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
+            # Check workflow
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_exists = await cursor.fetchone()
+            await cursor.close()
+            if not wf_exists: 
+                raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
 
             # Build query
             select_cols = "a.artifact_id, a.action_id, a.artifact_type, a.name, a.description, a.path, a.metadata, a.created_at, a.is_output, GROUP_CONCAT(t.name) as tags_str"
@@ -4331,7 +4294,6 @@ async def get_artifacts(
             params = [workflow_id]
 
             if tag:
-                 # Ensure joins are present if filtering by tag
                  if "LEFT JOIN artifact_tags" not in joins:
                       joins += " LEFT JOIN artifact_tags att ON a.artifact_id = att.artifact_id LEFT JOIN tags t ON att.tag_id = t.tag_id"
                  where_clauses.append("t.name = ?")
@@ -4353,17 +4315,22 @@ async def get_artifacts(
             final_query = query + joins + where_sql + group_by + order_by + limit_sql
 
             artifacts_list = []
-            async with conn.execute(final_query, params) as cursor:
-                 async for row in cursor:
-                      artifact = dict(row)
-                      artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
-                      artifact["is_output"] = bool(artifact["is_output"])
-                      artifact["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
-                      del artifact["tags_str"]
-                      # Add preview if content excluded but present
-                      if not include_content and artifact.get("content") and len(artifact["content"]) > 100:
-                          artifact["content_preview"] = artifact["content"][:97] + "..."
-                      artifacts_list.append(artifact)
+            cursor = await conn.execute(final_query, params)
+            async for row in cursor:
+                artifact = dict(row)
+                if artifact.get("created_at"):
+                    artifact["created_at"] = to_iso_z(artifact["created_at"])
+                artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
+                artifact["is_output"] = bool(artifact["is_output"])
+                artifact["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
+                artifact.pop("tags_str", None)
+                if not include_content and "content" in artifact and artifact.get("content"): # Check key exists before accessing
+                    if len(artifact["content"]) > 100:
+                        artifact["content_preview"] = artifact["content"][:97] + "..."
+                    if not include_content:
+                        del artifact["content"] # Remove original content if not requested
+                artifacts_list.append(artifact)
+            await cursor.close()
 
             result = {
                 "artifacts": artifacts_list,
@@ -4379,7 +4346,6 @@ async def get_artifacts(
         logger.error(f"Error getting artifacts: {e}", exc_info=True)
         raise ToolError(f"Failed to get artifacts: {str(e)}") from e
 
-
 @with_tool_metrics
 @with_error_handling
 async def get_artifact_by_id(
@@ -4387,9 +4353,10 @@ async def get_artifact_by_id(
     include_content: bool = True,
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
-    """Retrieves a specific artifact by its ID."""
-    # [Implementation ported from agent_memory.get_artifact_by_id, adapted for aiosqlite/schema]
-    if not artifact_id: 
+    """Retrieves a specific artifact by its ID.
+       Timestamps are returned as ISO 8601 strings.
+    """
+    if not artifact_id:
         raise ToolInputError("Artifact ID required.", param_name="artifact_id")
     try:
         async with DBConnection(db_path) as conn:
@@ -4402,32 +4369,41 @@ async def get_artifact_by_id(
              WHERE a.artifact_id = ?
              GROUP BY a.artifact_id
              """
-             async with conn.execute(query, (artifact_id,)) as cursor:
-                  row = cursor.fetchone()
-                  if not row: 
-                      raise ToolInputError(f"Artifact {artifact_id} not found.", param_name="artifact_id")
+             cursor = await conn.execute(query, (artifact_id,))
+             row = await cursor.fetchone()
+             await cursor.close()
+             if not row:
+                  raise ToolInputError(f"Artifact {artifact_id} not found.", param_name="artifact_id")
 
-                  artifact = dict(row)
-                  artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
-                  artifact["is_output"] = bool(artifact["is_output"])
-                  artifact["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
-                  del artifact["tags_str"]
+             artifact = dict(row)
+             if artifact.get("created_at"):
+                 artifact["created_at"] = to_iso_z(artifact["created_at"])
+             artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
+             artifact["is_output"] = bool(artifact["is_output"])
+             artifact["tags"] = row["tags_str"].split(',') if row["tags_str"] else []
+             artifact.pop("tags_str", None)
 
-                  if not include_content:
-                       del artifact["content"] # Remove content if not requested
+             if not include_content:
+                  if "content" in artifact: # Check key exists before deleting
+                      del artifact["content"]
 
-                  # Update access stats for related memory if possible
-                  async with conn.execute("SELECT memory_id FROM memories WHERE artifact_id = ?", (artifact_id,)) as mem_cursor:
-                       mem_row = mem_cursor.fetchone()
-                       if mem_row:
-                           await MemoryUtils._update_memory_access(conn, mem_row["memory_id"])
-                           await MemoryUtils._log_memory_operation(conn, artifact["workflow_id"], "access_via_artifact", mem_row["memory_id"], None, {"artifact_id": artifact_id})
-                           await conn.commit()
+             # Update access stats for related memory if possible
+             mem_cursor = await conn.execute("SELECT memory_id, workflow_id FROM memories WHERE artifact_id = ?", (artifact_id,))
+             mem_row = await mem_cursor.fetchone()
+             await mem_cursor.close()
+             if mem_row:
+                 # Use workflow_id from memory for logging if artifact one missing? No, artifact should have one.
+                 artifact_workflow_id = artifact.get("workflow_id") # Get workflow_id from artifact data
+                 if artifact_workflow_id:
+                     await MemoryUtils._update_memory_access(conn, mem_row["memory_id"])
+                     await MemoryUtils._log_memory_operation(conn, artifact_workflow_id, "access_via_artifact", mem_row["memory_id"], None, {"artifact_id": artifact_id})
+                     await conn.commit()
+                 else:
+                     logger.warning(f"Cannot log memory access via artifact {artifact_id} as workflow_id is missing from artifact record.")
 
-
-                  artifact["success"] = True
-                  logger.info(f"Retrieved artifact {artifact_id}", emoji_key="page_facing_up")
-                  return artifact
+             artifact["success"] = True
+             logger.info(f"Retrieved artifact {artifact_id}", emoji_key="page_facing_up")
+             return artifact
 
     except ToolInputError:
         raise
@@ -4517,36 +4493,43 @@ async def get_thought_chain(
     include_thoughts: bool = True,
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
-    """Retrieves a thought chain and optionally its thoughts."""
-    # [Implementation ported from agent_memory.get_thought_chain, adapted for aiosqlite/schema]
-    if not thought_chain_id: 
+    """Retrieves a thought chain and optionally its thoughts.
+    """
+    if not thought_chain_id:
         raise ToolInputError("Thought chain ID required.", param_name="thought_chain_id")
     try:
         async with DBConnection(db_path) as conn:
              # Get chain info
-            async with conn.execute("SELECT * FROM thought_chains WHERE thought_chain_id = ?", (thought_chain_id,)) as cursor:
-                chain_row = cursor.fetchone()
-                if not chain_row: 
-                    raise ToolInputError(f"Thought chain {thought_chain_id} not found.", param_name="thought_chain_id")
-                thought_chain_details = dict(chain_row)
+             cursor = await conn.execute("SELECT * FROM thought_chains WHERE thought_chain_id = ?", (thought_chain_id,))
+             chain_row = await cursor.fetchone()
+             await cursor.close()
+             if not chain_row:
+                 raise ToolInputError(f"Thought chain {thought_chain_id} not found.", param_name="thought_chain_id")
 
-            # Get thoughts
-            thought_chain_details["thoughts"] = []
-            if include_thoughts:
-                 async with conn.execute("SELECT * FROM thoughts WHERE thought_chain_id = ? ORDER BY sequence_number ASC", (thought_chain_id,)) as cursor:
-                      async for row in cursor:
-                          thought_chain_details["thoughts"].append(dict(row))
+             thought_chain_details = dict(chain_row)
+             if thought_chain_details.get("created_at"):
+                 thought_chain_details["created_at"] = to_iso_z(thought_chain_details["created_at"])
 
-            thought_chain_details["success"] = True
-            logger.info(f"Retrieved thought chain {thought_chain_id} with {len(thought_chain_details.get('thoughts',[]))} thoughts", emoji_key="left_speech_bubble")
-            return thought_chain_details
+             # Get thoughts
+             thought_chain_details["thoughts"] = []
+             if include_thoughts:
+                 thought_cursor = await conn.execute("SELECT * FROM thoughts WHERE thought_chain_id = ? ORDER BY sequence_number ASC", (thought_chain_id,))
+                 async for row in thought_cursor:
+                      thought = dict(row)
+                      if thought.get("created_at"):
+                          thought["created_at"] = to_iso_z(thought["created_at"])
+                      thought_chain_details["thoughts"].append(thought)
+                 await thought_cursor.close()
+
+             thought_chain_details["success"] = True
+             logger.info(f"Retrieved thought chain {thought_chain_id} with {len(thought_chain_details.get('thoughts',[]))} thoughts", emoji_key="left_speech_bubble")
+             return thought_chain_details
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"Error getting thought chain {thought_chain_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to get thought chain: {str(e)}") from e
-
 
 # ======================================================
 # Helper Function for Working Memory Management (Adapted from cognitive_memory)
@@ -5138,7 +5121,6 @@ async def save_cognitive_state(
         raise ToolInputError("State title required.", param_name="title")
 
     state_id = MemoryUtils.generate_id()
-    now_iso = datetime.utcnow().isoformat()
     now_unix = int(time.time())
     start_time = time.time()
 
@@ -5151,47 +5133,51 @@ async def save_cognitive_state(
         async with DBConnection(db_path) as conn:
             # --- Validation Step ---
             # 1. Check workflow exists
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not cursor.fetchone():
-                    raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_exists = cursor.fetchone()
+            await cursor.close()
+            if not wf_exists: 
+                raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
 
             # 2. Validate Memory IDs belong to this workflow
             if all_memory_ids:
                 placeholders = ','.join('?' * len(all_memory_ids))
                 query = f"SELECT memory_id FROM memories WHERE memory_id IN ({placeholders}) AND workflow_id = ?"
                 params = list(all_memory_ids) + [workflow_id]
-                async with conn.execute(query, params) as cursor:
-                    found_mem_ids = {row['memory_id'] for row in await cursor.fetchall()}
-                    missing_mem_ids = all_memory_ids - found_mem_ids
-                    if missing_mem_ids:
-                        raise ToolInputError(f"Memory IDs not found or not in workflow {workflow_id}: {missing_mem_ids}", param_name="working_memory_ids/focus_area_ids")
+                cursor = await conn.execute(query, params)
+                found_mem_ids = {row['memory_id'] for row in await cursor.fetchall()}
+                await cursor.close()
+                missing_mem_ids = all_memory_ids - found_mem_ids
+                if missing_mem_ids:
+                    raise ToolInputError(f"Memory IDs not found or not in workflow {workflow_id}: {missing_mem_ids}", param_name="working_memory_ids/focus_area_ids")
 
             # 3. Validate Action IDs belong to this workflow
             if all_action_ids:
                 placeholders = ','.join('?' * len(all_action_ids))
                 query = f"SELECT action_id FROM actions WHERE action_id IN ({placeholders}) AND workflow_id = ?"
                 params = list(all_action_ids) + [workflow_id]
-                async with conn.execute(query, params) as cursor:
-                    found_action_ids = {row['action_id'] for row in await cursor.fetchall()}
-                    missing_action_ids = all_action_ids - found_action_ids
-                    if missing_action_ids:
-                        raise ToolInputError(f"Action IDs not found or not in workflow {workflow_id}: {missing_action_ids}", param_name="context_action_ids")
+                cursor = await conn.execute(query, params)
+                found_action_ids = {row['action_id'] for row in await cursor.fetchall()}
+                await cursor.close()
+                missing_action_ids = all_action_ids - found_action_ids
+                if missing_action_ids:
+                    raise ToolInputError(f"Action IDs not found or not in workflow {workflow_id}: {missing_action_ids}", param_name="context_action_ids")
 
             # 4. Validate Thought IDs belong to this workflow
             if all_thought_ids:
                 placeholders = ','.join('?' * len(all_thought_ids))
-                # Check thought exists and is linked to the correct workflow via thought_chains
                 query = f"""
                     SELECT t.thought_id FROM thoughts t
                     JOIN thought_chains tc ON t.thought_chain_id = tc.thought_chain_id
                     WHERE t.thought_id IN ({placeholders}) AND tc.workflow_id = ?
                 """
                 params = list(all_thought_ids) + [workflow_id]
-                async with conn.execute(query, params) as cursor:
-                    found_thought_ids = {row['thought_id'] for row in await cursor.fetchall()}
-                    missing_thought_ids = all_thought_ids - found_thought_ids
-                    if missing_thought_ids:
-                        raise ToolInputError(f"Thought IDs not found or not in workflow {workflow_id}: {missing_thought_ids}", param_name="current_goal_thought_ids")
+                cursor = await conn.execute(query, params)
+                found_thought_ids = {row['thought_id'] for row in await cursor.fetchall()}
+                await cursor.close()
+                missing_thought_ids = all_thought_ids - found_thought_ids
+                if missing_thought_ids:
+                    raise ToolInputError(f"Thought IDs not found or not in workflow {workflow_id}: {missing_thought_ids}", param_name="current_goal_thought_ids")
 
             # --- Proceed with Saving State ---
             # Mark previous states as not latest
@@ -5199,7 +5185,7 @@ async def save_cognitive_state(
 
             # Serialize state data (using the validated lists)
             working_mem_json = await MemoryUtils.serialize(working_memory_ids)
-            focus_json = await MemoryUtils.serialize(focus_area_ids or []) # Use empty list if None
+            focus_json = await MemoryUtils.serialize(focus_area_ids or [])
             context_actions_json = await MemoryUtils.serialize(context_action_ids or [])
             current_goals_json = await MemoryUtils.serialize(current_goal_thought_ids or [])
 
@@ -5211,16 +5197,15 @@ async def save_cognitive_state(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (state_id, workflow_id, title, working_mem_json, focus_json,
-                 context_actions_json, current_goals_json, now_iso, True)
+                 context_actions_json, current_goals_json, now_unix, True) # *** Use now_unix ***
             )
 
             # Update workflow timestamp
-            await conn.execute("UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?", (now_iso, now_unix, workflow_id))
+            await conn.execute("UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?", (now_unix, now_unix, workflow_id)) # *** Use now_unix ***
 
             # Log operation
             log_data = {
-                "state_id": state_id,
-                "title": title,
+                "state_id": state_id, "title": title,
                 "working_memory_count": len(working_memory_ids),
                 "focus_count": len(focus_area_ids or []),
                 "action_context_count": len(context_action_ids or []),
@@ -5234,19 +5219,24 @@ async def save_cognitive_state(
                 "state_id": state_id,
                 "workflow_id": workflow_id,
                 "title": title,
-                "created_at": now_iso,
+                "created_at": to_iso_z(now_unix),
                 "success": True,
-                "processing_time": time.time() - start_time
+                "processing_time": time.time() - start_time,
             }
-            logger.info(f"Saved cognitive state '{title}' ({state_id}) for workflow {workflow_id}", emoji_key="save")
-            return result
 
+            logger.info(
+                f"Saved cognitive state '{title}' ({state_id}) for workflow {workflow_id}",
+                emoji_key="save",
+            )
+
+            return result
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"Error saving cognitive state: {e}", exc_info=True)
         raise ToolError(f"Failed to save cognitive state: {str(e)}") from e
     
+
 @with_tool_metrics
 @with_error_handling
 async def load_cognitive_state(
@@ -5282,16 +5272,18 @@ async def load_cognitive_state(
         ToolInputError: If the workflow or specified state doesn't exist.
         ToolError: If the database operation fails.
     """
-    if not workflow_id: 
+    if not workflow_id:
         raise ToolInputError("Workflow ID required.", param_name="workflow_id")
     start_time = time.time()
 
     try:
         async with DBConnection(db_path) as conn:
-             # Check workflow exists
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 if not cursor.fetchone(): 
-                     raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
+            # Check workflow exists
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_exists = await cursor.fetchone()
+            await cursor.close()
+            if not wf_exists:
+                raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
 
             # Build query
             query = "SELECT * FROM cognitive_states WHERE workflow_id = ?"
@@ -5303,15 +5295,17 @@ async def load_cognitive_state(
                 query += " ORDER BY created_at DESC, is_latest DESC LIMIT 1" # Prefer is_latest if timestamps clash
 
             # Fetch state
-            async with conn.execute(query, params) as cursor:
-                 row = cursor.fetchone()
-                 if not row:
-                      err_msg = f"State {state_id} not found." if state_id else f"No states found for workflow {workflow_id}."
-                      raise ToolInputError(err_msg, param_name="state_id" if state_id else "workflow_id")
+            cursor = await conn.execute(query, params)
+            row = await cursor.fetchone()
+            await cursor.close()
+            if not row:
+                 err_msg = f"State {state_id} not found." if state_id else f"No states found for workflow {workflow_id}."
+                 raise ToolInputError(err_msg, param_name="state_id" if state_id else "workflow_id")
 
-                 state = dict(row)
+            state = dict(row)
 
-            # Deserialize data
+            # Deserialize data and format timestamp
+            created_at_unix = state["created_at"] # Get the stored Unix timestamp
             result = {
                  "state_id": state["state_id"],
                  "workflow_id": state["workflow_id"],
@@ -5320,16 +5314,15 @@ async def load_cognitive_state(
                  "focus_areas": await MemoryUtils.deserialize(state.get("focus_areas")) or [],
                  "context_action_ids": await MemoryUtils.deserialize(state.get("context_actions")) or [],
                  "current_goals": await MemoryUtils.deserialize(state.get("current_goals")) or [],
-                 "created_at": state["created_at"],
+                 "created_at": to_iso_z(created_at_unix),
                  "success": True,
                  "processing_time": time.time() - start_time
             }
 
-            # Log operation (consider dedicated type)
+            # Log operation
             await MemoryUtils._log_memory_operation(conn, workflow_id, "load_state", None, None, {
                 "state_id": state["state_id"], "title": state["title"]
             })
-            # No commit needed for read operation
 
             logger.info(f"Loaded cognitive state '{result['title']}' ({result['state_id']}) for workflow {workflow_id}", emoji_key="inbox_tray")
             return result
@@ -7512,12 +7505,12 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
     report_lines.append(f"**Status:** {workflow.get('status', 'N/A').capitalize()}")
     if workflow.get("goal"): 
         report_lines.append(f"**Goal:** {workflow['goal']}")
-    if workflow.get("description"): 
+    if workflow.get("description"):
         report_lines.append(f"\n{workflow['description']}")
-    report_lines.append(f"\n**Created:** {workflow.get('created_at', 'N/A')}")
-    report_lines.append(f"**Last Updated:** {workflow.get('updated_at', 'N/A')}")
-    if workflow.get("completed_at"): 
-        report_lines.append(f"**Completed:** {workflow['completed_at']}")
+    report_lines.append(f"\n**Created:** {to_iso_z(workflow.get('created_at_unix'))}") # Assuming get_details returns unix ts
+    report_lines.append(f"**Last Updated:** {to_iso_z(workflow.get('updated_at_unix'))}")
+    if workflow.get("completed_at_unix"): 
+        report_lines.append(f"**Completed:** {to_iso_z(workflow.get('completed_at_unix'))}")
     if workflow.get("tags"): 
         report_lines.append(f"**Tags:** {', '.join(workflow['tags'])}")
 
@@ -7529,7 +7522,6 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
         completion_percentage = int((completed_actions_count / total_actions) * 100) if total_actions > 0 else 0
         report_lines.append("\n## Progress Overview\n")
         report_lines.append(f"Overall completion: **{completion_percentage}%** ({completed_actions_count}/{total_actions} actions completed)")
-        # Progress bar visualization
         bar_filled = '#' * (completion_percentage // 5)
         bar_empty = ' ' * (20 - (completion_percentage // 5))
         report_lines.append(f"\n```\n[{bar_filled}{bar_empty}] {completion_percentage}%\n```")
@@ -7537,39 +7529,39 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
     # --- Key Actions and Steps ---
     if actions and include_details:
         report_lines.append("\n## Key Actions and Steps\n")
-        # Sort actions by sequence number for chronological order
         sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", 0))
         for i, action in enumerate(sorted_actions):
             status_emoji = {"completed": "✅", "failed": "❌", "skipped": "⏭️", "in_progress": "⏳", "planned": "🗓️"}.get(action.get('status'), '❓')
             title = action.get('title', action.get('action_type', 'Action')).strip()
-            report_lines.append(f"### {i+1}. {status_emoji} {title}\n") # Use H3 for actions
+            report_lines.append(f"### {i+1}. {status_emoji} {title}\n")
             report_lines.append(f"**Action ID:** `{action.get('action_id')}`")
             report_lines.append(f"**Type:** {action.get('action_type', 'N/A').capitalize()}")
             report_lines.append(f"**Status:** {action.get('status', 'N/A').capitalize()}")
-            report_lines.append(f"**Started:** {action.get('started_at', 'N/A')}")
+            report_lines.append(f"**Started:** {action.get('started_at', 'N/A')}") # Assumes get_details already formatted these
             if action.get("completed_at"): 
                 report_lines.append(f"**Completed:** {action['completed_at']}")
 
-            if action.get("reasoning"):
+            if action.get("reasoning"): 
                 report_lines.append(f"\n**Reasoning:**\n```\n{action['reasoning']}\n```")
             if action.get("tool_name"):
                 report_lines.append(f"\n**Tool Used:** `{action['tool_name']}`")
                 if action.get("tool_args"):
-                    args_str = json.dumps(action['tool_args'], indent=2)
+                    try: 
+                        args_str = json.dumps(action['tool_args'], indent=2)
+                    except TypeError: 
+                        args_str = str(action['tool_args'])
                     report_lines.append(f"**Arguments:**\n```json\n{args_str}\n```")
                 if action.get("tool_result"):
-                    # Display result concisely
                     result_repr = action['tool_result']
-                    if isinstance(result_repr, dict) or isinstance(result_repr, list):
+                    try:
                         result_str = json.dumps(result_repr, indent=2)
-                        if len(result_str) > 500:
-                             result_str = result_str[:497] + "..."
-                        report_lines.append(f"**Result Preview:**\n```json\n{result_str}\n```")
-                    else:
-                         result_str = str(result_repr)
-                         if len(result_str) > 500:
-                              result_str = result_str[:497] + "..."
-                         report_lines.append(f"**Result Preview:**\n```\n{result_str}\n```")
+                        lang = "json"
+                    except TypeError:
+                        result_str = str(result_repr)
+                        lang = ""
+                    if len(result_str) > 500: 
+                        result_str = result_str[:497] + "..."
+                    report_lines.append(f"**Result Preview:**\n```{lang}\n{result_str}\n```")
 
             if action.get("tags"): 
                 report_lines.append(f"**Tags:** {', '.join(action['tags'])}")
@@ -7582,68 +7574,68 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
         for i, chain in enumerate(thought_chains):
             report_lines.append(f"### Reasoning Chain {i+1}: {chain.get('title', 'Untitled')}\n")
             thoughts = sorted(chain.get("thoughts", []), key=lambda t: t.get("sequence_number", 0))
-            if not thoughts:
+            if not thoughts: 
                 report_lines.append("_No thoughts recorded in this chain._")
             else:
                 for thought in thoughts:
-                    # Highlight important thought types
                     is_key_thought = thought.get('thought_type') in ['goal', 'decision', 'summary', 'hypothesis', 'inference', 'reflection', 'critique']
                     prefix = "**" if is_key_thought else ""
                     suffix = "**" if is_key_thought else ""
                     type_label = thought.get('thought_type', 'Thought').capitalize()
-                    report_lines.append(f"- {prefix}{type_label}:{suffix} {thought.get('content', '')}")
-                    # Optionally add links to related items
+                    thought_time = thought.get('created_at', 'N/A') # Assumes get_details already formatted
+                    report_lines.append(f"- {prefix}{type_label}{suffix} ({thought_time}): {thought.get('content', '')}")
                     links = []
-                    if thought.get('relevant_action_id'): 
+                    if thought.get('relevant_action_id'):
                         links.append(f"Action `{thought['relevant_action_id'][:8]}`")
                     if thought.get('relevant_artifact_id'): 
                         links.append(f"Artifact `{thought['relevant_artifact_id'][:8]}`")
-                    if thought.get('relevant_memory_id'): 
+                    if thought.get('relevant_memory_id'):
                         links.append(f"Memory `{thought['relevant_memory_id'][:8]}`")
-                    if links: 
+                    if links:
                         report_lines.append(f"  *Related to:* {', '.join(links)}")
-            report_lines.append("") # Add space after chain
+            report_lines.append("")
 
     # --- Artifacts & Outputs ---
     artifacts = workflow.get("artifacts", [])
     if artifacts and include_details:
         report_lines.append("\n## Artifacts & Outputs\n")
-        report_lines.append("| Name | Type | Description | Path/Preview | Tags | Output? |")
-        report_lines.append("| ---- | ---- | ----------- | ------------ | ---- | ------- |")
+        report_lines.append("| Name | Type | Description | Path/Preview | Created | Tags | Output? |")
+        report_lines.append("| ---- | ---- | ----------- | ------------ | ------- | ---- | ------- |")
         for artifact in artifacts:
             name = artifact.get('name', 'N/A')
             atype = artifact.get('artifact_type', 'N/A')
-            desc = (artifact.get('description', '') or '')[:50] # Truncate desc
+            desc = (artifact.get('description', '') or '')[:50]
             path_or_preview = artifact.get('path', '') or (artifact.get('content_preview', '') or '')
-            path_or_preview = f"`{path_or_preview}`" if artifact.get('path') else path_or_preview[:60] # Format path or truncate preview
+            path_or_preview = f"`{path_or_preview}`" if artifact.get('path') else path_or_preview[:60]
+            created_time = artifact.get('created_at', 'N/A') # Assumes get_details already formatted
             tags = ', '.join(artifact.get('tags', []))
             is_output = "Yes" if artifact.get('is_output') else "No"
-            report_lines.append(f"| {name} | {atype} | {desc} | {path_or_preview} | {tags} | {is_output} |")
+            report_lines.append(f"| {name} | {atype} | {desc} | {path_or_preview} | {created_time} | {tags} | {is_output} |")
 
     # --- Conclusion / Next Steps ---
     report_lines.append("\n## Conclusion & Next Steps\n")
     status = workflow.get("status", "N/A")
+    # ... (rest of conclusion logic remains the same) ...
     if status == WorkflowStatus.COMPLETED.value:
         report_lines.append("Workflow marked as **Completed**.")
     elif status == WorkflowStatus.FAILED.value:
         report_lines.append("Workflow marked as **Failed**.")
-    elif status == WorkflowStatus.ABANDONED.value:
+    elif status == WorkflowStatus.ABANDONED.value: 
         report_lines.append("Workflow marked as **Abandoned**.")
     elif status == WorkflowStatus.PAUSED.value:
         report_lines.append("Workflow is currently **Paused**.")
     else: # Active
         report_lines.append("Workflow is **Active**. Potential next steps include:")
-        # Suggest based on last action or open thoughts
         last_action = sorted(actions, key=lambda a: a.get("sequence_number", 0))[-1] if actions else None
         if last_action and last_action.get("status") == ActionStatus.IN_PROGRESS.value:
-             report_lines.append(f"- Completing action: '{last_action.get('title', 'Last Action')}'")
+            report_lines.append(f"- Completing action: '{last_action.get('title', 'Last Action')}'")
         elif last_action:
-             report_lines.append(f"- Planning the next action after '{last_action.get('title', 'Last Action')}'")
-        else:
-             report_lines.append("- Defining the initial actions for the workflow goal.")
+            report_lines.append(f"- Planning the next action after '{last_action.get('title', 'Last Action')}'")
+        else: 
+            report_lines.append("- Defining the initial actions for the workflow goal.")
 
     # Footer
-    report_lines.append("\n---\n*Report generated on " + datetime.utcnow().isoformat() + "Z*")
+    report_lines.append("\n---\n*Report generated on " + to_iso_z(datetime.utcnow().timestamp()) + "Z*")
     return "\n".join(report_lines)
 
 # --- Concise, Narrative, Technical Reports (Keep these as separate functions for clarity) ---
@@ -7684,12 +7676,27 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
     """Generates a narrative-style report as a story."""
     report_lines = [f"# The Journey of: {workflow.get('title', 'Untitled Workflow')}"]
 
+    # Helper to format timestamp or return 'N/A'
+    def format_ts(unix_ts_or_iso_str):
+        if isinstance(unix_ts_or_iso_str, int):
+             try: 
+                 return to_iso_z(unix_ts_or_iso_str)
+             except (TypeError, ValueError): 
+                 return 'an unknown time'
+        elif isinstance(unix_ts_or_iso_str, str):
+             try: 
+                 return to_iso_z(unix_ts_or_iso_str)
+             except (TypeError, ValueError): 
+                 return 'an unknown time'
+        return 'an unknown time'
+
     # Introduction
     report_lines.append("\n## Our Quest Begins\n")
-    if workflow.get("goal"): 
-        report_lines.append(f"We embarked on a mission: **{workflow['goal']}**.")
-    else: 
-        report_lines.append(f"Our story started on {workflow.get('created_at')}, aiming to understand or create '{workflow.get('title', 'something interesting')}'")
+    start_time = format_ts(workflow.get('created_at')) # Assumes get_details returned ISO string
+    if workflow.get("goal"):
+        report_lines.append(f"We embarked on a mission around {start_time}: **{workflow['goal']}**.")
+    else:
+        report_lines.append(f"Our story started on {start_time}, aiming to understand or create '{workflow.get('title', 'something interesting')}'")
     if workflow.get("description"): 
         report_lines.append(f"> {workflow['description']}\n")
 
@@ -7700,25 +7707,26 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
         sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", 0))
         for action in sorted_actions:
             title = action.get('title', action.get('action_type', 'A step'))
+            start_time_action = format_ts(action.get('started_at')) # Assumes get_details returned ISO string
             if action.get("status") == ActionStatus.COMPLETED.value:
-                 report_lines.append(f"Then, we successfully **{title}**.")
+                 report_lines.append(f"Then, around {start_time_action}, we successfully **{title}**.")
                  if include_details and action.get('reasoning'): 
                      report_lines.append(f"  *Our reasoning was: {action['reasoning'][:150]}...*")
             elif action.get("status") == ActionStatus.FAILED.value:
-                 report_lines.append(f"We encountered trouble when trying to **{title}**.")
+                 report_lines.append(f"Around {start_time_action}, we encountered trouble when trying to **{title}**.")
             elif action.get("status") == ActionStatus.IN_PROGRESS.value:
-                 report_lines.append(f"Currently, we are working on **{title}**.")
-            # Add transitions or pauses maybe?
-            report_lines.append("") # Blank line separator
+                 report_lines.append(f"Starting around {start_time_action}, we are working on **{title}**.")
+            report_lines.append("")
 
     # Discoveries
     thoughts = [t for chain in workflow.get("thought_chains", []) for t in chain.get("thoughts", [])]
-    key_thoughts = [t for t in thoughts if t.get('thought_type') in ['decision', 'insight', 'hypothesis', 'summary', 'reflection']]
+    key_thoughts = [t for t in thoughts if t.get('thought_type') in ['decision', 'insight', 'hypothesis', 'summary', 'reflection']] # Added insight here
     if key_thoughts and include_details:
          report_lines.append("## Moments of Clarity\n")
          sorted_thoughts = sorted(key_thoughts, key=lambda t: t.get("sequence_number", 0))
-         for thought in sorted_thoughts[:7]: # Limit key thoughts shown
-              report_lines.append(f"- A key **{thought.get('thought_type')}** emerged: *{thought.get('content', '')[:150]}...*")
+         for thought in sorted_thoughts[:7]:
+              thought_time = format_ts(thought.get('created_at')) # Assumes get_details returned ISO string
+              report_lines.append(f"- Around {thought_time}, a key **{thought.get('thought_type')}** emerged: *{thought.get('content', '')[:150]}...*")
 
     # Treasures
     artifacts = workflow.get("artifacts", [])
@@ -7726,28 +7734,30 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
          report_lines.append("\n## Treasures Found\n")
          outputs = [a for a in artifacts if a.get('is_output')]
          other_artifacts = [a for a in artifacts if not a.get('is_output')]
-         display_artifacts = outputs[:3] + other_artifacts[:(5-len(outputs))] # Show up to 5, prioritizing outputs
+         display_artifacts = outputs[:3] + other_artifacts[:(5-len(outputs))]
          for artifact in display_artifacts:
               marker = "🏆 Final Result:" if artifact.get('is_output') else "📌 Item Created:"
-              report_lines.append(f"- {marker} **{artifact.get('name')}** ({artifact.get('artifact_type')}).")
-              if artifact.get('description'): 
+              artifact_time = format_ts(artifact.get('created_at')) # Assumes get_details returned ISO string
+              report_lines.append(f"- {marker} Around {artifact_time}, **{artifact.get('name')}** ({artifact.get('artifact_type')}) was produced.")
+              if artifact.get('description'):
                   report_lines.append(f"  *{artifact['description'][:100]}...*")
 
     # Current Status/Ending
     status = workflow.get("status", "active")
     report_lines.append(f"\n## {'Journey\'s End' if status == 'completed' else 'The Story So Far...'}\n")
-    if status == WorkflowStatus.COMPLETED.value: 
+    if status == WorkflowStatus.COMPLETED.value:
         report_lines.append("Our quest is complete! We achieved our objectives.")
-    elif status == WorkflowStatus.FAILED.value: 
+    elif status == WorkflowStatus.FAILED.value:
         report_lines.append("Alas, this chapter ends here, marked by challenges we could not overcome.")
-    elif status == WorkflowStatus.ABANDONED.value: 
+    elif status == WorkflowStatus.ABANDONED.value:
         report_lines.append("We chose to leave this path, perhaps to return another day.")
     elif status == WorkflowStatus.PAUSED.value: 
         report_lines.append("We pause here, taking stock before continuing the adventure.")
     else: 
-        report_lines.append("The journey continues... What trials and discoveries lie ahead?")
+        report_lines.append("The journey continues...")
 
-    report_lines.append("\n---\n*Narrative recorded on " + datetime.utcnow().isoformat() + "Z*")
+
+    report_lines.append("\n---\n*Narrative recorded on " + to_iso_z(datetime.now()))
     return "\n".join(report_lines)
 
 async def _generate_technical_report(workflow: Dict[str, Any], include_details: bool) -> str:
@@ -7760,11 +7770,11 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
     report_lines.append(f"title: {workflow.get('title')}")
     report_lines.append(f"status: {workflow.get('status')}")
     report_lines.append(f"goal: {workflow.get('goal') or 'N/A'}")
-    report_lines.append(f"created_at: {workflow.get('created_at')}")
-    report_lines.append(f"updated_at: {workflow.get('updated_at')}")
+    report_lines.append(f"created_at: {to_iso_z(workflow.get('created_at'))}")
+    report_lines.append(f"updated_at: {to_iso_z(workflow.get('updated_at'))}")
     if workflow.get("completed_at"): 
-        report_lines.append(f"completed_at: {workflow['completed_at']}")
-    if workflow.get("tags"): 
+        report_lines.append(f"completed_at: {to_iso_z(workflow.get('completed_at'))}")
+    if workflow.get("tags"):
         report_lines.append(f"tags: {workflow['tags']}")
     report_lines.append("```")
 
@@ -7777,15 +7787,14 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
         for a in actions: 
             counts[a.get("status", "unknown")] += 1
         report_lines.append("**Action Status Counts:**")
-        for status, count in counts.items():
-             report_lines.append(f"- {status.capitalize()}: {count} ({int(count/total*100)}%)")
-
+        for status, count in counts.items(): 
+            report_lines.append(f"- {status.capitalize()}: {count} ({int(count/total*100)}%)")
         type_counts = defaultdict(int)
         for a in actions: 
             type_counts[a.get("action_type", "unknown")] += 1
         report_lines.append("\n**Action Type Counts:**")
-        for atype, count in type_counts.items():
-             report_lines.append(f"- {atype.capitalize()}: {count} ({int(count/total*100)}%)")
+        for atype, count in type_counts.items(): 
+            report_lines.append(f"- {atype.capitalize()}: {count} ({int(count/total*100)}%)")
 
     # --- Action Log ---
     if actions and include_details:
@@ -7797,28 +7806,28 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
             report_lines.append(f"title: {action.get('title')}")
             report_lines.append(f"type: {action.get('action_type')}")
             report_lines.append(f"status: {action.get('status')}")
-            report_lines.append(f"started_at: {action.get('started_at')}")
+            report_lines.append(f"started_at: {to_iso_z(action.get('started_at'))}")
             if action.get("completed_at"): 
-                report_lines.append(f"completed_at: {action['completed_at']}")
+                report_lines.append(f"completed_at: {to_iso_z(action.get('completed_at'))}")
             if action.get("tool_name"): 
                 report_lines.append(f"tool_name: {action['tool_name']}")
-            # Add concise args/results if present
             if action.get("tool_args"): 
                 report_lines.append(f"tool_args_preview: {str(action['tool_args'])[:100]}...")
-            if action.get("tool_result"): 
+            if action.get("tool_result"):
                 report_lines.append(f"tool_result_preview: {str(action['tool_result'])[:100]}...")
             report_lines.append("```")
-            if action.get("reasoning"): 
+            if action.get("reasoning"):
                 report_lines.append(f"**Reasoning:**\n```\n{action['reasoning']}\n```")
 
     # --- Artifacts ---
     artifacts = workflow.get("artifacts", [])
     if artifacts and include_details:
         report_lines.append("\n## Artifacts\n```json")
-        # Represent artifacts as JSON list for technical view
         artifact_list_repr = []
         for artifact in artifacts:
             repr_dict = {k: artifact.get(k) for k in ["artifact_id", "name", "artifact_type", "description", "path", "is_output", "tags", "created_at"]}
+            if "created_at" in repr_dict:
+                repr_dict["created_at"] = to_iso_z(repr_dict["created_at"])
             artifact_list_repr.append(repr_dict)
         report_lines.append(json.dumps(artifact_list_repr, indent=2))
         report_lines.append("```")
@@ -7830,7 +7839,13 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
         for chain in thought_chains:
              report_lines.append(f"### Chain: {chain.get('title')} (`{chain.get('thought_chain_id')}`)\n```json")
              thoughts = sorted(chain.get("thoughts", []), key=lambda t: t.get("sequence_number", 0))
-             report_lines.append(json.dumps(thoughts, indent=2))
+             formatted_thoughts = []
+             for thought in thoughts:
+                 fmt_thought = dict(thought)
+                 if fmt_thought.get("created_at"):
+                     fmt_thought["created_at"] = to_iso_z(fmt_thought["created_at"])
+                 formatted_thoughts.append(fmt_thought)
+             report_lines.append(json.dumps(formatted_thoughts, indent=2))
              report_lines.append("```")
 
     return "\n".join(report_lines)
