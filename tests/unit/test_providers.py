@@ -1,20 +1,19 @@
 """Tests for the provider implementations."""
-import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 import pytest
 from pytest import MonkeyPatch
 
 from llm_gateway.constants import Provider
+from llm_gateway.core.providers.anthropic import AnthropicProvider
 from llm_gateway.core.providers.base import (
     BaseProvider,
     ModelResponse,
     get_provider,
 )
-from llm_gateway.core.providers.anthropic import AnthropicProvider
-from llm_gateway.core.providers.openai import OpenAIProvider
 from llm_gateway.core.providers.deepseek import DeepSeekProvider
 from llm_gateway.core.providers.gemini import GeminiProvider
+from llm_gateway.core.providers.openai import OpenAIProvider
 from llm_gateway.utils import get_logger
 
 logger = get_logger("test.providers")

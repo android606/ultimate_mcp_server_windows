@@ -5,7 +5,7 @@
 - **Language:** en (confidence: 1.00)
 - **Transcription Model:** large-v3
 - **Device:** cuda
-- **Processing Time:** 72.57 seconds
+- **Processing Time:** 72.08 seconds
 
 ## Full Transcript
 

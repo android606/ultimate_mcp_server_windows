@@ -14,6 +14,9 @@ from rich.rule import Rule
 from llm_gateway.core.server import Gateway
 from llm_gateway.services.vector import get_vector_db_service
 from llm_gateway.services.vector.embeddings import cosine_similarity, get_embedding_service
+
+# --- Add Marqo Tool Import ---
+from llm_gateway.tools.marqo_fused_search import marqo_fused_search
 from llm_gateway.utils import get_logger
 from llm_gateway.utils.display import (
     display_embedding_generation_results,
@@ -22,10 +25,7 @@ from llm_gateway.utils.display import (
     parse_and_display_result,
 )
 
-# --- Add Marqo Tool Import ---
-from llm_gateway.tools.marqo_fused_search import marqo_fused_search
 # ---------------------------
-
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
 
