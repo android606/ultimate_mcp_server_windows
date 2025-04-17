@@ -2363,49 +2363,48 @@ async def record_artifact(
     """
     start_time = time.time()
     # --- Input Validation ---
-    if not name: 
+    if not name:
         raise ToolInputError("Artifact name required", param_name="name")
     try:
         artifact_type_enum = ArtifactType(artifact_type.lower())
     except ValueError as e:
         valid_types = [t.value for t in ArtifactType]
         raise ToolInputError(f"Invalid artifact_type '{artifact_type}'. Must be one of: {', '.join(valid_types)}", param_name="artifact_type") from e
-    # Allow either path or content, or both
-    # if not path and not content: raise ToolInputError("Either path or content must be provided", param_name="path/content")
 
     artifact_id = MemoryUtils.generate_id()
-    now_iso = datetime.utcnow().isoformat()
     now_unix = int(time.time())
 
     try:
         async with DBConnection(db_path) as conn:
             # --- Existence Checks ---
-            # Check workflow
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not cursor.fetchone():
-                    raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
-            # Check action (if provided)
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_exists = cursor.fetchone()
+            await cursor.close()
+            if not wf_exists:
+                raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
             if action_id:
-                async with conn.execute("SELECT 1 FROM actions WHERE action_id = ? AND workflow_id = ?", (action_id, workflow_id)) as cursor:
-                    if not cursor.fetchone():
-                        raise ToolInputError(f"Action {action_id} not found or does not belong to workflow {workflow_id}", param_name="action_id")
+                cursor = await conn.execute("SELECT 1 FROM actions WHERE action_id = ? AND workflow_id = ?", (action_id, workflow_id))
+                action_exists = cursor.fetchone()
+                await cursor.close()
+                if not action_exists:
+                    raise ToolInputError(f"Action {action_id} not found or does not belong to workflow {workflow_id}", param_name="action_id")
 
             # --- Prepare Data ---
             metadata_json = await MemoryUtils.serialize(metadata)
-            # Handle potentially large content - store truncated version in DB if needed
-            # The main content might be in the file path, or needs careful handling if stored directly
             db_content = None
             if content:
-                if len(content.encode('utf-8')) > MAX_TEXT_LENGTH:
-                     logger.warning(f"Artifact content for '{name}' exceeds max length ({MAX_TEXT_LENGTH} bytes). Storing truncated version in DB.")
-                     # Find byte index for truncation carefully
-                     byte_limit = MAX_TEXT_LENGTH
-                     temp_content = content
-                     while len(temp_content[:byte_limit].encode('utf-8', errors='ignore')) > MAX_TEXT_LENGTH:
-                          byte_limit -= 1
-                     db_content = temp_content[:byte_limit] + "..."
+                content_bytes = content.encode('utf-8')
+                if len(content_bytes) > MAX_TEXT_LENGTH:
+                    logger.warning(f"Artifact content for '{name}' exceeds max length ({MAX_TEXT_LENGTH} bytes). Storing truncated version in DB.")
+                    truncated_bytes = content_bytes[:MAX_TEXT_LENGTH]
+                    db_content = truncated_bytes.decode('utf-8', errors='replace')
+                    if db_content.endswith('\ufffd') and MAX_TEXT_LENGTH > 1:
+                         db_content_shorter = content_bytes[:MAX_TEXT_LENGTH-1].decode('utf-8', errors='replace')
+                         if not db_content_shorter.endswith('\ufffd'):
+                              db_content = db_content_shorter
+                    db_content += "..."
                 else:
-                     db_content = content
+                    db_content = content
 
             # --- Insert Artifact Record ---
             await conn.execute(
@@ -2415,7 +2414,7 @@ async def record_artifact(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (artifact_id, workflow_id, action_id, artifact_type_enum.value, name,
-                 description, path, db_content, metadata_json, now_iso, is_output)
+                 description, path, db_content, metadata_json, now_unix, is_output) # *** Use now_unix ***
             )
             logger.debug(f"Inserted artifact record {artifact_id}")
 
@@ -2425,11 +2424,10 @@ async def record_artifact(
             logger.debug(f"Processed {len(artifact_tags)} tags for artifact {artifact_id}")
 
             # --- Update Workflow Timestamp ---
-            await conn.execute("UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?", (now_iso, now_unix, workflow_id))
+            await conn.execute("UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?", (now_unix, now_unix, workflow_id)) # *** Use now_unix ***
 
             # --- Create Linked Episodic Memory about the Artifact Creation ---
             memory_id = MemoryUtils.generate_id()
-            # Construct a descriptive memory content
             memory_content = f"Artifact '{name}' (type: {artifact_type_enum.value}) was created"
             if action_id: 
                 memory_content += f" during action '{action_id[:8]}...'"
@@ -2443,12 +2441,9 @@ async def record_artifact(
                 memory_content += ". Content stored directly."
             if is_output: 
                 memory_content += ". Marked as a final workflow output."
-
-            # Assign tags and importance (final outputs are slightly more important)
             mem_tags = list(set(["artifact_creation", artifact_type_enum.value] + artifact_tags))
             mem_importance = 6.0 if is_output else 5.0
 
-            # Insert the memory record, linking it to the artifact and potentially the action
             await conn.execute(
                  """
                  INSERT INTO memories (memory_id, workflow_id, action_id, artifact_id, content, memory_level, memory_type,
@@ -2456,7 +2451,7 @@ async def record_artifact(
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  """,
                  (memory_id, workflow_id, action_id, artifact_id, memory_content, MemoryLevel.EPISODIC.value, MemoryType.ARTIFACT_CREATION.value,
-                  mem_importance, 1.0, json.dumps(mem_tags), now_unix, now_unix, 0)
+                  mem_importance, 1.0, json.dumps(mem_tags), now_unix, now_unix, 0) # Memories already use Unix timestamps
             )
             logger.debug(f"Inserted linked memory record {memory_id} for artifact {artifact_id}")
 
@@ -2473,24 +2468,34 @@ async def record_artifact(
             # --- Commit Transaction ---
             await conn.commit()
 
-            # --- Prepare Result ---
+            # --- Prepare Result (Format timestamp for output) ---
+            timestamp_utc = (
+                datetime.fromtimestamp(now_unix, tz=timezone.utc)
+                .isoformat(timespec="seconds")        # e.g. '2025-04-17T21:12:05+00:00'
+                .replace("+00:00", "Z")               # -> '2025-04-17T21:12:05Z'
+            )
+
             result = {
                 "artifact_id": artifact_id,
                 "workflow_id": workflow_id,
                 "name": name,
                 "artifact_type": artifact_type_enum.value,
                 "path": path,
-                "content_stored_in_db": bool(db_content), # Indicate if content is in DB (potentially truncated)
-                "created_at": now_iso,
+                "content_stored_in_db": bool(db_content),
+                "created_at": timestamp_utc,
                 "is_output": is_output,
                 "tags": artifact_tags,
-                "linked_memory_id": memory_id, # Provide the ID of the memory entry
+                "linked_memory_id": memory_id,
                 "success": True,
-                "processing_time": time.time() - start_time
+                "processing_time": time.time() - start_time,
             }
-            logger.info(f"Recorded artifact '{name}' ({artifact_id}) and linked memory {memory_id} in workflow {workflow_id}", emoji_key="package")
-            return result
 
+            logger.info(
+                f"Recorded artifact '{name}' ({artifact_id}) and linked memory {memory_id} in workflow {workflow_id}",
+                emoji_key="package",
+            )
+
+            return result
     except ToolInputError:
         raise # Re-raise specific input errors
     except Exception as e:
@@ -2513,7 +2518,7 @@ async def record_thought(
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
     """Records a thought in a reasoning chain, potentially linking to memory and creating an associated memory entry.
-       (Ported from agent_memory, integrated with memory linking/creation).
+       Timestamps are returned as ISO 8601 strings.
     """
     # --- Input Validation ---
     if not content or not isinstance(content, str):
@@ -2529,63 +2534,66 @@ async def record_thought(
         ) from e
 
     thought_id = MemoryUtils.generate_id()
-    now_iso = datetime.utcnow().isoformat()
     now_unix = int(time.time())
 
     try:
         async with DBConnection(db_path) as conn:
             # --- Existence Checks for Foreign Keys ---
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_exists = cursor.fetchone()
+            await cursor.close()
+            if not wf_exists: 
+                raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
 
-            # Check workflow exists
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not cursor.fetchone():
-                    raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
-
-            # Check parent thought exists (if provided)
             if parent_thought_id:
-                 async with conn.execute("SELECT 1 FROM thoughts WHERE thought_id = ?", (parent_thought_id,)) as cursor:
-                     if not cursor.fetchone():
-                         raise ToolInputError(f"Parent thought not found: {parent_thought_id}", param_name="parent_thought_id")
+                 cursor = await conn.execute("SELECT 1 FROM thoughts WHERE thought_id = ?", (parent_thought_id,))
+                 pthought_exists = cursor.fetchone()
+                 await cursor.close()
+                 if not pthought_exists: 
+                     raise ToolInputError(f"Parent thought not found: {parent_thought_id}", param_name="parent_thought_id")
 
-            # Check relevant action exists (if provided)
             if relevant_action_id:
-                 async with conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (relevant_action_id,)) as cursor:
-                     if not cursor.fetchone():
-                         raise ToolInputError(f"Relevant action not found: {relevant_action_id}", param_name="relevant_action_id")
+                 cursor = await conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (relevant_action_id,))
+                 raction_exists = cursor.fetchone()
+                 await cursor.close()
+                 if not raction_exists: 
+                     raise ToolInputError(f"Relevant action not found: {relevant_action_id}", param_name="relevant_action_id")
 
-            # Check relevant artifact exists (if provided)
             if relevant_artifact_id:
-                 async with conn.execute("SELECT 1 FROM artifacts WHERE artifact_id = ?", (relevant_artifact_id,)) as cursor:
-                     if not cursor.fetchone():
-                         raise ToolInputError(f"Relevant artifact not found: {relevant_artifact_id}", param_name="relevant_artifact_id")
+                 cursor = await conn.execute("SELECT 1 FROM artifacts WHERE artifact_id = ?", (relevant_artifact_id,))
+                 rartifact_exists = cursor.fetchone()
+                 await cursor.close()
+                 if not rartifact_exists: 
+                     raise ToolInputError(f"Relevant artifact not found: {relevant_artifact_id}", param_name="relevant_artifact_id")
 
-            # Check relevant memory exists (if provided)
             if relevant_memory_id:
-                 async with conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (relevant_memory_id,)) as cursor:
-                     if not cursor.fetchone():
-                         raise ToolInputError(f"Relevant memory not found: {relevant_memory_id}", param_name="relevant_memory_id")
+                 cursor = await conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (relevant_memory_id,))
+                 rmemory_exists = cursor.fetchone()
+                 await cursor.close()
+                 if not rmemory_exists: 
+                     raise ToolInputError(f"Relevant memory not found: {relevant_memory_id}", param_name="relevant_memory_id")
 
             # --- Determine Target Thought Chain ---
             target_thought_chain_id = thought_chain_id
             if not target_thought_chain_id:
-                # Find the primary (first created) thought chain for the workflow
-                async with conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,)) as cursor:
-                    row = cursor.fetchone()
-                    if not row:
-                        # If no chain exists, create the default one
-                        target_thought_chain_id = MemoryUtils.generate_id()
-                        logger.info(f"No existing thought chain found for workflow {workflow_id}, creating default.")
-                        await conn.execute(
-                            "INSERT INTO thought_chains (thought_chain_id, workflow_id, title, created_at) VALUES (?, ?, ?, ?)",
-                            (target_thought_chain_id, workflow_id, "Main reasoning", now_iso)
-                        )
-                    else:
-                        target_thought_chain_id = row["thought_chain_id"]
+                cursor = await conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,))
+                row = cursor.fetchone()
+                await cursor.close()
+                if not row:
+                    target_thought_chain_id = MemoryUtils.generate_id()
+                    logger.info(f"No existing thought chain found for workflow {workflow_id}, creating default.")
+                    await conn.execute(
+                        "INSERT INTO thought_chains (thought_chain_id, workflow_id, title, created_at) VALUES (?, ?, ?, ?)",
+                        (target_thought_chain_id, workflow_id, "Main reasoning", now_unix) # *** Use now_unix ***
+                    )
+                else:
+                    target_thought_chain_id = row["thought_chain_id"]
             else:
-                # Verify the provided thought_chain_id exists and belongs to the workflow
-                async with conn.execute("SELECT 1 FROM thought_chains WHERE thought_chain_id = ? AND workflow_id = ?", (target_thought_chain_id, workflow_id)) as cursor:
-                    if not cursor.fetchone():
-                        raise ToolInputError(f"Provided thought chain {target_thought_chain_id} not found or does not belong to workflow {workflow_id}", param_name="thought_chain_id")
+                cursor = await conn.execute("SELECT 1 FROM thought_chains WHERE thought_chain_id = ? AND workflow_id = ?", (target_thought_chain_id, workflow_id))
+                chain_exists = cursor.fetchone()
+                await cursor.close()
+                if not chain_exists:
+                    raise ToolInputError(f"Provided thought chain {target_thought_chain_id} not found or does not belong to workflow {workflow_id}", param_name="thought_chain_id")
 
             # --- Get Sequence Number ---
             sequence_number = await MemoryUtils.get_next_sequence_number(conn, target_thought_chain_id, "thoughts", "thought_chain_id")
@@ -2601,27 +2609,29 @@ async def record_thought(
                 """,
                 (
                     thought_id, target_thought_chain_id, parent_thought_id, thought_type_enum.value, content,
-                    sequence_number, now_iso, relevant_action_id, relevant_artifact_id, relevant_memory_id
+                    sequence_number, now_unix, relevant_action_id, relevant_artifact_id, relevant_memory_id
                 )
             )
 
             # --- Update Workflow Timestamp ---
             await conn.execute(
                 "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
-                (now_iso, now_unix, workflow_id)
+                (now_unix, now_unix, workflow_id) 
             )
 
             # --- Create Linked Memory for Important Thoughts ---
             linked_memory_id = None
             important_thought_types = [
                 ThoughtType.GOAL.value, ThoughtType.DECISION.value, ThoughtType.SUMMARY.value,
-                ThoughtType.REFLECTION.value, ThoughtType.HYPOTHESIS.value, ThoughtType.INSIGHT.value # Added insight here
+                ThoughtType.REFLECTION.value, ThoughtType.HYPOTHESIS.value, # Note: Insight is not a ThoughtType enum value
             ]
+            # Find insight type if defined elsewhere, for now assuming it's not part of the list
+            # important_thought_types.append(ThoughtType.INSIGHT.value)
+
             if thought_type_enum.value in important_thought_types:
                 linked_memory_id = MemoryUtils.generate_id()
                 mem_content = f"Thought [{sequence_number}] ({thought_type_enum.value.capitalize()}): {content}"
                 mem_tags = ["reasoning", thought_type_enum.value]
-                # Adjust importance based on thought type
                 mem_importance = 7.5 if thought_type_enum.value in [ThoughtType.GOAL.value, ThoughtType.DECISION.value] else 6.5
 
                 await conn.execute(
@@ -2634,13 +2644,12 @@ async def record_thought(
                      """,
                      (
                          linked_memory_id, workflow_id, thought_id, mem_content,
-                         MemoryLevel.SEMANTIC.value, # Store important thoughts as semantic? Or Episodic? Let's try Semantic.
+                         MemoryLevel.SEMANTIC.value,
                          MemoryType.REASONING_STEP.value,
-                         mem_importance, 1.0, # Assume high confidence in own thoughts initially
+                         mem_importance, 1.0,
                          json.dumps(mem_tags), now_unix, now_unix, 0
                      )
                 )
-                # Log memory operation
                 await MemoryUtils._log_memory_operation(
                     conn, workflow_id, "create_from_thought", linked_memory_id, None, {"thought_id": thought_id}
                 )
@@ -2648,17 +2657,28 @@ async def record_thought(
             # --- Commit and Return ---
             await conn.commit()
 
+            timestamp_utc = (
+                datetime.fromtimestamp(now_unix, tz=timezone.utc)
+                .isoformat(timespec="seconds")        # e.g. '2025-04-17T21:15:40+00:00'
+                .replace("+00:00", "Z")               # -> '2025-04-17T21:15:40Z'
+            )
+
             result = {
                 "thought_id": thought_id,
                 "thought_chain_id": target_thought_chain_id,
                 "thought_type": thought_type_enum.value,
-                "content": content, # Return full content
+                "content": content,
                 "sequence_number": sequence_number,
-                "created_at": now_iso,
-                "linked_memory_id": linked_memory_id, # Include ID if memory was created
-                "success": True
+                "created_at": timestamp_utc,
+                "linked_memory_id": linked_memory_id,
+                "success": True,
             }
-            logger.info(f"Recorded thought ({thought_type_enum.value}) in workflow {workflow_id}", emoji_key="brain")
+
+            logger.info(
+                f"Recorded thought ({thought_type_enum.value}) in workflow {workflow_id}",
+                emoji_key="brain",
+            )
+
             return result
 
     except ToolInputError:
