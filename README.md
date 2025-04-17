@@ -147,6 +147,18 @@ Process large documents efficiently:
   - Symlink security verification
   - Parent directory existence checking
 
+## Autonomous Tool Documentation Refiner
+
+The MCP server includes an autonomous documentation refinement system that improves the quality of tool documentation through an intelligent, iterative process:
+
+- **Agent Simulation**: Tests how LLMs interpret documentation to identify ambiguities
+- **Adaptive Testing**: Generates and executes diverse test cases based on tool schemas
+- **Failure Analysis**: Uses LLM ensembles to diagnose documentation weaknesses
+- **Smart Improvements**: Proposes targeted enhancements to descriptions, schemas, and examples
+- **Iterative Refinement**: Continuously improves documentation until tests consistently pass
+
+This feature significantly reduces manual documentation maintenance, improves tool usability for LLM agents, and helps identify edge cases that human writers might miss. While powerful, it does consume LLM resources and works best for tools with structured input schemas.
+
 ### Browser Automation with Playwright
   - Enable agents to interact with websites: navigate, click, type, scrape data, take screenshots, generate PDFs, download/upload files, and execute JavaScript via Playwright integration.
 
@@ -613,7 +625,72 @@ else:
 
 ```
 
-*(More tool examples can be added here...)*
+## Autonomous Documentation Refiner
+
+The LLM Gateway MCP Server includes a powerful feature for autonomously analyzing, testing, and refining the documentation of registered MCP tools. This feature, implemented in `llm_gateway/tools/docstring_refiner.py`, helps improve the usability and reliability of tools when invoked by Large Language Models (LLMs) like Claude.
+
+### How It Works
+
+The documentation refiner follows a methodical, iterative approach:
+
+1. **Agent Simulation**: Simulates how an LLM agent would interpret the current documentation to identify potential ambiguities or missing information
+2. **Adaptive Test Generation**: Creates diverse test cases based on the tool's schema, simulation results, and failures from previous iterations
+3. **Schema-Aware Testing**: Validates generated test cases against the schema before execution, then executes valid tests against the actual tools
+4. **Ensemble Failure Analysis**: Uses multiple LLMs to analyze failures in the context of the documentation used for that test run
+5. **Structured Improvement Proposals**: Generates specific improvements to the description, schema (as JSON Patch operations), and usage examples
+6. **Validated Schema Patching**: Applies and validates proposed schema patches in-memory
+7. **Iterative Refinement**: Repeats the cycle until tests consistently pass or a maximum iteration count is reached
+8. **Optional Winnowing**: Performs a final pass to streamline documentation while preserving critical information
+
+### Benefits
+
+- **Reduces Manual Effort**: Automates the tedious process of improving tool documentation
+- **Improves Agent Performance**: Creates clearer, more precise documentation that helps LLMs correctly use tools
+- **Identifies Edge Cases**: Discovers ambiguities and edge cases human writers might miss
+- **Increases Consistency**: Establishes a consistent documentation style across all tools
+- **Adapts to Feedback**: Learns from test failures to target specific documentation weaknesses
+- **Schema Evolution**: Incrementally improves schemas with validated patches
+- **Detailed Reporting**: Provides comprehensive reports on the entire refinement process
+
+### Limitations and Considerations
+
+- **Cost & Time**: Performs multiple LLM calls per iteration per tool, which can be expensive and time-consuming
+- **Resource Intensive**: May require significant computational resources for large tool ecosystems
+- **LLM Dependency**: Quality of improvements depends on the capabilities of the LLMs used
+- **Schema Complexity**: Generating correct JSON Patches for complex schemas can be challenging
+- **Maintenance Complexity**: The system has many dependencies which can make maintenance more difficult
+
+### When to Use
+
+This feature is particularly valuable when:
+
+- You have many tools that are frequently accessed by LLM agents
+- You're seeing a high rate of tool usage failures due to misinterpretation of documentation
+- You're expanding your tool ecosystem and need to ensure consistent documentation quality
+- You want to improve agent performance without modifying the underlying tools
+
+### Usage Example
+
+```python
+from llm_gateway.tools.docstring_refiner import refine_tool_documentation
+
+# Refine specific tools
+result = await refine_tool_documentation(
+    tool_names=["search_tool", "data_processor"],
+    max_iterations=3,
+    refinement_model_config={"model": "gpt-4", "provider": "openai"},
+    enable_winnowing=True,
+    ctx=mcp_context
+)
+
+# Or refine all available tools
+result = await refine_tool_documentation(
+    refine_all_available=True,
+    max_iterations=2,
+    ctx=mcp_context
+)
+```
+
 
 ## Getting Started
 
