@@ -4,10 +4,9 @@ import asyncio
 import json
 import sys
 import time
-import traceback
+from collections import namedtuple  # Import namedtuple
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from collections import namedtuple # Import namedtuple
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,11 +22,11 @@ from rich.table import Table
 from llm_gateway.constants import Provider
 from llm_gateway.core.providers.base import get_provider
 from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger, process_mcp_result
 from llm_gateway.exceptions import ToolExecutionError
+from llm_gateway.utils import get_logger, process_mcp_result
 
 # --- Add Display Utils Import ---
-from llm_gateway.utils.display import _display_stats, CostTracker # Import CostTracker
+from llm_gateway.utils.display import CostTracker, _display_stats  # Import CostTracker
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console
@@ -36,7 +35,6 @@ from llm_gateway.utils.logging.console import console
 # Import tool functions directly if not registering them all
 # from llm_gateway.tools.optimization import recommend_model, execute_optimized_workflow # No, call via MCP
 # from llm_gateway.tools.completion import generate_completion # Call via MCP
-from llm_gateway.tools.optimization import estimate_cost # Import estimate_cost for _display_stats
 # -------------------------
 
 # Initialize logger
@@ -131,11 +129,16 @@ async def execute_workflow(
             prev_result = step_results[input_from_step]
             # Simple logic: look for common output keys
             if isinstance(prev_result, dict):
-                 if 'summary' in prev_result: step_input_data = prev_result['summary']
-                 elif 'text' in prev_result: step_input_data = prev_result['text']
-                 elif 'chunks' in prev_result: step_input_data = prev_result['chunks'] # May need specific handling
-                 elif 'result' in prev_result: step_input_data = prev_result['result'] # From DocumentResponse
-                 else: step_input_data = prev_result # Pass the whole dict?
+                 if 'summary' in prev_result: 
+                     step_input_data = prev_result['summary']
+                 elif 'text' in prev_result: 
+                     step_input_data = prev_result['text']
+                 elif 'chunks' in prev_result: 
+                     step_input_data = prev_result['chunks'] # May need specific handling
+                 elif 'result' in prev_result: 
+                     step_input_data = prev_result['result'] # From DocumentResponse
+                 else: 
+                     step_input_data = prev_result # Pass the whole dict?
             else:
                  step_input_data = prev_result # Pass raw output
             logger.debug(f"Using output from step '{input_from_step}' as input.")
@@ -548,12 +551,13 @@ async def main():
         
         # --- Register Necessary Tools --- 
         # Ensure tools called by demos are registered on the MCP instance
-        # This assumes the gateway setup might not register all by default for this demo
-        # Or perhaps Gateway() should register them if register_tools=True?
-        # For now, manually register the ones needed for this specific demo file.
-        from llm_gateway.tools.optimization import recommend_model
         from llm_gateway.tools.completion import generate_completion
-        from llm_gateway.tools.document import summarize_document, extract_entities, generate_qa_pairs
+        from llm_gateway.tools.document import (
+            extract_entities,
+            generate_qa_pairs,
+            summarize_document,
+        )
+        from llm_gateway.tools.optimization import recommend_model
         
         mcp.tool()(recommend_model)
         mcp.tool()(generate_completion)

@@ -72,7 +72,6 @@ async def embedding_generation_demo():
         "text-embedding-3-small",
         "text-embedding-3-large",
         "text-embedding-ada-002"
-        # Add other models like 'cohere/embed-english-v3.0' if configured
     ]
 
     # Collect results for display

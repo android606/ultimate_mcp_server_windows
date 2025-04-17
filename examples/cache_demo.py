@@ -13,7 +13,7 @@ from rich.rule import Rule
 
 from llm_gateway.services.cache import get_cache_service, run_completion_with_cache
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import display_cache_stats, CostTracker
+from llm_gateway.utils.display import CostTracker, display_cache_stats
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console

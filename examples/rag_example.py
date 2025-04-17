@@ -17,8 +17,8 @@ from llm_gateway.services.knowledge_base import (
     get_knowledge_base_retriever,
 )
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.logging.console import console
 from llm_gateway.utils.display import CostTracker
+from llm_gateway.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("rag_example")

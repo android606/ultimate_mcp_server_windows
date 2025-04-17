@@ -79,7 +79,6 @@ from jsonpatch import JsonPatchException, apply_patch  # noqa: E402
 from jsonpointer import JsonPointerException  # noqa: E402
 from jsonschema.exceptions import SchemaError as JsonSchemaValidationError  # noqa: E402
 from mcp.server.fastmcp import Context as McpContext
-from mcp.types import JSONSchemaObject
 
 # MCP and Pydantic Types
 from mcp.types import Tool as McpToolDef
@@ -90,7 +89,22 @@ from llm_gateway.constants import Provider  # noqa: E402
 from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError  # noqa: E402
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics  # noqa: E402
 from llm_gateway.tools.completion import generate_completion  # noqa: E402
-from llm_gateway.utils import count_tokens, get_logger  # noqa: E402
+from llm_gateway.utils import get_logger  # noqa: E402
+from llm_gateway.utils.text import count_tokens  # noqa: E402
+
+# Type Aliases
+JSONSchemaObject: TypeAlias = Dict[str, Any]
+JsonDict: TypeAlias = Dict[str, Any]
+TestStrategy: TypeAlias = Literal[
+    "positive_required_only", "positive_optional_mix", "positive_all_optional",
+    "negative_type", "negative_required", "negative_enum", "negative_format",
+    "negative_range", "negative_length", "negative_pattern",
+    "edge_empty", "edge_null", "edge_boundary_min", "edge_boundary_max",
+    "llm_realistic_combo", "llm_ambiguity_probe", "llm_simulation_based"
+]
+ErrorPatternKey: TypeAlias = str
+SchemaPath: TypeAlias = str
+ProgressCallback: TypeAlias = Optional[Callable[['RefinementProgressEvent'], None]]
 
 # MCP Context Type Hint
 
@@ -106,19 +120,6 @@ MAX_TEST_QUERIES_PER_TOOL = 30
 MAX_REFINEMENT_ITERATIONS = 5
 SCHEMA_VALIDATION_LEVEL: Literal['none', 'basic', 'full'] = "full"
 LLM_AGENT_TIMEOUT_SECONDS = 120.0
-
-# Type Aliases
-JsonDict: TypeAlias = Dict[str, Any]
-TestStrategy: TypeAlias = Literal[
-    "positive_required_only", "positive_optional_mix", "positive_all_optional",
-    "negative_type", "negative_required", "negative_enum", "negative_format",
-    "negative_range", "negative_length", "negative_pattern",
-    "edge_empty", "edge_null", "edge_boundary_min", "edge_boundary_max",
-    "llm_realistic_combo", "llm_ambiguity_probe", "llm_simulation_based"
-]
-ErrorPatternKey: TypeAlias = str
-SchemaPath: TypeAlias = str
-ProgressCallback: TypeAlias = Optional[Callable[['RefinementProgressEvent'], None]]
 
 # --- Pydantic Models ---
 

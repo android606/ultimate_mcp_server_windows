@@ -4,11 +4,6 @@ import asyncio
 import sys
 from pathlib import Path
 
-# Add project root to path for imports when running as script
-# Adjust the path depth as necessary for your project structure
-project_root = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(project_root))
-
 # Third-party imports
 from rich import box
 from rich.columns import Columns
@@ -27,20 +22,26 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+# Add project root to path for imports when running as script
+# Adjust the path depth as necessary for your project structure
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+
+
 # Project imports (Ensure these paths are correct)
 try:
-    from llm_gateway.constants import Provider
     from llm_gateway.core.server import Gateway
+    from llm_gateway.exceptions import ToolError
+    from llm_gateway.tools.filesystem import write_file
+
     # Import our text redline tool
     from llm_gateway.tools.text_redline_tools import compare_documents_redline, create_html_redline
-    from llm_gateway.tools.filesystem import write_file
-    from llm_gateway.exceptions import ToolError
     from llm_gateway.utils import get_logger
     from llm_gateway.utils.display import CostTracker
     from llm_gateway.utils.logging.console import console
 except ImportError as e:
      print(f"Error importing LLM Gateway components: {e}")
-     print(f"Ensure the script is run from the correct directory or the project path is set correctly.")
+     print("Ensure the script is run from the correct directory or the project path is set correctly.")
      print(f"Project root added to sys.path: {project_root}")
      sys.exit(1)
 
@@ -403,7 +404,7 @@ async def demonstrate_advanced_redline_features():
                     abs_output_path = str(output_path.resolve())
                     await write_file(path=abs_output_path, content=result["redline_html"])
                     save_statuses[config_name] = f"Saved to [cyan]{output_path}[/cyan]"
-                except Exception as save_err:
+                except Exception:
                     save_statuses[config_name] = f"[yellow]Failed to save to {output_path}[/yellow]"
                 # --- End Save ---
 
@@ -473,7 +474,9 @@ async def demonstrate_multi_format_redline():
     ]
 
     format_table = Table(title="[bold cyan]Document Formats for Comparison[/bold cyan]", box=box.MINIMAL)
-    format_table.add_column("Format", style="cyan"); format_table.add_column("Original Size", style="green"); format_table.add_column("Modified Size", style="blue")
+    format_table.add_column("Format", style="cyan")
+    format_table.add_column("Original Size", style="green")
+    format_table.add_column("Modified Size", style="blue")
     for fmt in formats:
         format_table.add_row(fmt["name"], f"{len(fmt['original'])} chars", f"{len(fmt['modified'])} chars")
     console.print(format_table)
@@ -507,7 +510,7 @@ async def demonstrate_multi_format_redline():
                          abs_output_path = str(output_path.resolve())
                          await write_file(path=abs_output_path, content=redline_content)
                          save_statuses[fmt["name"]] = f"Saved to [cyan]{output_path}[/cyan]"
-                     except Exception as save_err:
+                     except Exception:
                          save_statuses[fmt["name"]] = f"[yellow]Failed to save to {output_path}[/yellow]"
                 else:
                      save_statuses[fmt["name"]] = "[yellow]No redline content generated[/yellow]"
@@ -670,8 +673,10 @@ The updated report should still be brief (10-15 lines) but reflect these changes
                 stats = result["stats"]
 
                 stats_table = Table(box=box.ROUNDED, show_header=False)
-                stats_table.add_column("Metric", style="cyan"); stats_table.add_column("Value", style="white")
-                for key, value in stats.items(): stats_table.add_row(key.replace('_', ' ').title(), str(value))
+                stats_table.add_column("Metric", style="cyan")
+                stats_table.add_column("Value", style="white")
+                for key, value in stats.items(): 
+                    stats_table.add_row(key.replace('_', ' ').title(), str(value))
                 stats_table.add_row("Processing Time", f"{result['processing_time']:.3f} seconds")
                 console.print(stats_table)
 

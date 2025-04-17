@@ -3,32 +3,31 @@
 
 import asyncio
 import sys
+from collections import namedtuple  # Import namedtuple
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-from collections import namedtuple # Import namedtuple
+from typing import Any, Dict, Optional
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Rich imports for nice UI
+import rich.traceback  # Import the module itself
 from rich import box
 from rich.console import Console, Group
 from rich.markup import escape
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.traceback import Traceback
-import rich.traceback # Import the module itself
 from rich.tree import Tree
 
+from llm_gateway.exceptions import ToolError, ToolInputError  # Import specific exceptions
 from llm_gateway.tools.sql_database_interactions import (
     analyze_column_statistics,
     connect_to_database,
-    create_database_index,
-    create_database_view,
     disconnect_from_database,
     discover_database_schema,
     execute_parameterized_query,
@@ -41,9 +40,8 @@ from llm_gateway.tools.sql_database_interactions import (
     get_table_details,
     test_connection,
 )
-from llm_gateway.exceptions import ToolError, ToolInputError # Import specific exceptions
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker # Import CostTracker
+from llm_gateway.utils.display import CostTracker  # Import CostTracker
 
 # Initialize Rich console and logger
 console = Console()
@@ -568,7 +566,6 @@ async def table_details_demo(connection_id: str, table_name: str) -> None:
                  stats_text = []
                  for col_name, stats_data in statistics.items():
                      if isinstance(stats_data, dict) and "error" not in stats_data:
-                         count = stats_data.get('count', 'N/A')
                          nulls = stats_data.get('null_count', 'N/A')
                          uniques = stats_data.get('unique_count', 'N/A')
                          est = " (est.)" if stats_data.get('unique_count_estimated') else ""
@@ -703,7 +700,8 @@ async def column_statistics_demo(connection_id: str, table_name: str, column_nam
                 for key, value in basic_stats.items():
                     if value is not None:
                         formatted_value = f"{value:.2f}" if isinstance(value, float) else str(value)
-                        if key == "unique_count_estimated" and value is True: continue # Don't show the flag itself
+                        if key == "unique_count_estimated" and value is True: 
+                            continue # Don't show the flag itself
                         if key == "unique_count" and basic_stats.get("unique_count_estimated"):
                              formatted_value += " [dim](est.)[/]"
                         
@@ -718,7 +716,6 @@ async def column_statistics_demo(connection_id: str, table_name: str, column_nam
             if histogram and "error" not in histogram:
                 hist_branch = stats_tree.add("[bold]:chart_with_upwards_trend: Value Distribution[/]")
                 buckets = histogram.get("buckets", [])
-                hist_type = histogram.get("type", "unknown")
 
                 if buckets:
                     # Use Progress for a visual bar chart
@@ -733,7 +730,8 @@ async def column_statistics_demo(connection_id: str, table_name: str, column_nam
                              count = bucket.get("count", 0)
                              percentage = bucket.get("percentage", 0)
                              # Truncate long labels
-                             if len(str(label)) > 25: label = str(label)[:22] + "..."
+                             if len(str(label)) > 25: 
+                                 label = str(label)[:22] + "..."
                              progress.add_task("", total=100, completed=percentage, label=escape(str(label)), count=count)
                     hist_branch.add(progress)
                 elif "notes" in histogram:
@@ -803,7 +801,7 @@ async def query_execution_demo(connection_id: str) -> None:
     try:
         # Simple SELECT query
         simple_query = "SELECT customer_id, name, email, status FROM customers WHERE status = 'active'"
-        logger.info(f"Executing simple query...", emoji_key="db")
+        logger.info("Executing simple query...", emoji_key="db")
         with console.status("[cyan]Running simple query...[/]"):
             query_result = await execute_query(
                 connection_id=connection_id,
@@ -856,7 +854,7 @@ async def query_execution_demo(connection_id: str) -> None:
         WHERE c.status = 'active'
         ORDER BY o.order_date DESC
         """
-        logger.info(f"Executing aggregate query...", emoji_key="db")
+        logger.info("Executing aggregate query...", emoji_key="db")
         with console.status("[cyan]Running aggregate query...[/]"):
             aggregate_result = await execute_query(
                 connection_id=connection_id,
@@ -926,7 +924,8 @@ async def transaction_demo(connection_id: str) -> None:
                          res_table = Table(box=box.SIMPLE, show_header=True, padding=(0, 1), title=f"{row_count} Row(s)")
                          # Get columns from query_result or infer from the first row if necessary
                          cols = query_result.get("columns", current_rows[0].keys() if current_rows and isinstance(current_rows[0], dict) else [])
-                         for col in cols: res_table.add_column(col, style="cyan")
+                         for col in cols: 
+                             res_table.add_column(col, style="cyan")
                          # Populate the table rows
                          for row in current_rows:
                              if hasattr(row, '_mapping'):

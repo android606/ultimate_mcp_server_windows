@@ -45,7 +45,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues - expected when API keys aren't configured
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized", 
+            r"Provider '(openai|anthropic|google)' not available or initialized", 
             r"Failed to get provider: No valid OpenAI key found",
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
@@ -101,7 +101,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             r"Error deleting knowledge base 'demo-kb': Knowledge base 'demo-kb' not found", # Non-existent KB during cleanup
             r"Error directly deleting vector collection 'demo_.*?': Collection '.*?' does not exist", # Non-existent collection
             # SPECIFIC provider availability issues - expected when API keys aren't configured
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized", # Missing specific provider
+            r"Provider '(openai|anthropic|google)' not available or initialized", # Missing specific provider
             r"No suitable provider found for embedding generation", # No embedding provider available
             r"OpenAIError: No API key provided.", # Specific API key error
             # Standard setup messages - not errors
@@ -129,7 +129,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized",
+            r"Provider '(openai|anthropic|google)' not available or initialized",
             r"No suitable provider found for embedding generation",
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
@@ -144,7 +144,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             # SPECIFIC cleanup messages with reasons - intentional cleanup operations
             r"Could not delete collection 'demo_.*?': Collection '.*?' does not exist", # Non-existent collection during cleanup
             # SPECIFIC provider availability issues - expected when API keys aren't configured
-            r"Failed to initialize provider '(openai|anthropic|cohere|google)': .*API key.*", # Specific provider with API key issue
+            r"Failed to initialize provider '(openai|anthropic|google)': .*API key.*", # Specific provider with API key issue
             r"No suitable provider found for embedding generation", # Specific embedding provider error
             # SPECIFIC demo workflow messages - expected for educational examples
             r"Skipping RAG demo - embedding provider not available", # Specific reason for skipping demo
@@ -253,9 +253,9 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # SPECIFIC provider availability issues - expected when API keys aren't configured
-            r"Failed to get/initialize provider '(openai|anthropic|cohere|google)': .*", # Specific provider with reason
+            r"Failed to get/initialize provider '(openai|anthropic|google)': .*", # Specific provider with reason
             r"No providers could be initialized for this demonstration", # Specific provider initialization message
-            r"No default model found for provider '(openai|anthropic|cohere|google)'", # Specific model availability issue
+            r"No default model found for provider '(openai|anthropic|google)'", # Specific model availability issue
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
@@ -271,7 +271,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # SPECIFIC provider availability issues - expected when API keys aren't configured
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized", # Specific missing provider
+            r"Provider '(openai|anthropic|google)' not available or initialized", # Specific missing provider
             r"All providers failed: No providers available for completion", # Specific provider failure
             # SPECIFIC demo features - expected component testing
             r"Error with cached completion demo: Cache is disabled", # Specific cache demo error
@@ -294,7 +294,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             r"Execution error in.*: .*", # General execution errors 
             r"Traceback \(most recent call last\):.*", # Tracebacks from browser automation
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized",
+            r"Provider '(openai|anthropic|google)' not available or initialized",
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
@@ -341,7 +341,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # SPECIFIC provider availability issues - expected when API keys aren't configured
-            r"API key for provider '(openai|anthropic|cohere|google)' not found", # Specific API key missing message
+            r"API key for provider '(openai|anthropic|google)' not found", # Specific API key missing message
             r"Could not determine provider for model '.*?'", # Specific model-provider mapping issue
             r"No models met criteria: max_cost=\$\d+\.\d+, .*", # Specific criteria filtering result
             # Standard setup messages - not errors
@@ -371,8 +371,8 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # SPECIFIC provider availability issues - expected when API keys aren't configured
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized", # Specific provider not available
-            r"All providers failed: \['(openai|anthropic|cohere|google)'.*?\]", # Specific list of failed providers
+            r"Provider '(openai|anthropic|google)' not available or initialized", # Specific provider not available
+            r"All providers failed: \['(openai|anthropic|google)'.*?\]", # Specific list of failed providers
             # Standard setup messages - not errors
             r"Initializing Gateway: Loading configuration\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
@@ -389,7 +389,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # SPECIFIC provider availability issues - expected when API keys aren't configured
-            r"Provider '(openai|anthropic|cohere|google)' not available", # Specific provider not available
+            r"Provider '(openai|anthropic|google)' not available", # Specific provider not available
             # Standard setup messages - not errors
             r"Initializing Gateway: Loading configuration\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
@@ -406,8 +406,8 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # SPECIFIC provider availability messages - expected initialization info
-            r"Some API keys missing: \['(openai|anthropic|cohere|google)'.*?\]", # Specific API keys warning
-            r"Provider '(openai|anthropic|cohere|google)' not available", # Specific provider not available
+            r"Some API keys missing: \['(openai|anthropic|google)'.*?\]", # Specific API keys warning
+            r"Provider '(openai|anthropic|google)' not available", # Specific provider not available
             r"Failed to initialize provider: Invalid API key or provider configuration", # Specific initialization error
             # SPECIFIC initialization messages - expected setup steps
             r"Initializing required providers for delegation demo", # Specific initialization message
@@ -437,7 +437,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized",
+            r"Provider '(openai|anthropic|google)' not available or initialized",
             r"Failed to initialize OpenAI provider: Invalid API key", 
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
@@ -450,7 +450,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized",
+            r"Provider '(openai|anthropic|google)' not available or initialized",
             r"Skipping provider initialization as no API keys are available",
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
@@ -476,7 +476,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized",
+            r"Provider '(openai|anthropic|google)' not available or initialized",
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
@@ -488,7 +488,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google|grok|meta)' not available or initialized",
+            r"Provider '(openai|anthropic|google|grok|meta)' not available or initialized",
             r"No providers could be initialized",
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
@@ -514,7 +514,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized",
+            r"Provider '(openai|anthropic|google)' not available or initialized",
             # Search and web access related messages
             r"Failed to perform web search: .*",
             r"Web search failed: .*",
@@ -529,7 +529,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # Provider availability issues
-            r"Provider '(openai|anthropic|cohere|google)' not available or initialized",
+            r"Provider '(openai|anthropic|google)' not available or initialized",
             # Standard setup messages - not errors
             r"Configuration not yet loaded\. Loading now\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",

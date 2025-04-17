@@ -8,13 +8,13 @@ from typing import Any, Dict, List, Optional
 
 # Import specific exceptions for better error handling hints
 from llm_gateway.exceptions import ProviderError, ResourceError, ToolInputError
+from llm_gateway.services import get_rag_engine
 
 # Moved imports for services to the top level
 from llm_gateway.services.knowledge_base import (
     get_knowledge_base_manager,
     get_knowledge_base_retriever,
 )
-from llm_gateway.services import get_rag_engine
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
 from llm_gateway.utils import get_logger
 

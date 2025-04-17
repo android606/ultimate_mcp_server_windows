@@ -10,7 +10,7 @@ import time
 
 # --- Filesystem Tool Display Helper ---
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Set
 
 from rich import box
 from rich.console import (
@@ -1524,8 +1524,24 @@ async def generate_rich_directory_tree(path: Union[str, Path], max_depth: int = 
 
 class CostTracker:
     """Tracks API call costs and token usage across multiple calls."""
-    def __init__(self):
+    def __init__(self, limit: Optional[float] = None):
         self.data: Dict[str, Dict[str, Dict[str, Any]]] = {} # {provider: {model: {cost, tokens..., calls}}}
+        self.limit: Optional[float] = limit  # Cost limit in USD
+
+    @property
+    def total_cost(self) -> float:
+        """Get the total cost across all providers and models."""
+        total = 0.0
+        for provider_data in self.data.values():
+            for model_data in provider_data.values():
+                total += model_data.get("cost", 0.0)
+        return total
+
+    def exceeds_limit(self) -> bool:
+        """Check if the current total cost exceeds the specified limit."""
+        if self.limit is None:
+            return False
+        return self.total_cost >= self.limit
 
     def add_call(self, result: Any, provider: Optional[str] = None, model: Optional[str] = None):
         """Adds cost and token data from an API call result."""
@@ -1682,4 +1698,14 @@ class CostTracker:
         summary_table.columns[6].footer = f"{grand_total_cost:.6f}"
 
         output.print(summary_table)
-        output.print() # Add a blank line after the table 
+        
+        # Display cost limit information if set
+        if self.limit is not None:
+            limit_color = "green" if self.total_cost < self.limit else "red"
+            output.print(f"[{limit_color}]Cost limit: ${self.limit:.2f} | Current usage: ${self.total_cost:.2f} ({(self.total_cost/self.limit*100):.1f}%)[/{limit_color}]")
+        
+        output.print() # Add a blank line after the table
+
+    def display_costs(self, console: Optional[Console] = None, title: str = "Total Demo Cost Summary"):
+        """Alias for display_summary for backward compatibility."""
+        return self.display_summary(console_instance=console, title=title)

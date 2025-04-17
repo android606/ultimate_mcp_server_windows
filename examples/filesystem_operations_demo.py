@@ -44,21 +44,14 @@ except Exception as e:
     sys.exit(1)
 
 # --- Defer ALL llm_gateway imports until AFTER env vars are set ---
-from llm_gateway.config import get_config
-from llm_gateway.utils import get_logger
-
 # Import Rich components (can happen earlier, but keep grouped for clarity)
 from rich.markup import escape
 from rich.panel import Panel
-from rich.pretty import pretty_repr
 from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.table import Table
-from rich.tree import Tree
+
+from llm_gateway.config import get_config
 
 # Import necessary exceptions
-from llm_gateway.exceptions import ToolError, ToolInputError
-
 # Filesystem Tools
 from llm_gateway.tools.filesystem import (
     create_directory,
@@ -74,10 +67,11 @@ from llm_gateway.tools.filesystem import (
     search_files,
     write_file,
 )
+from llm_gateway.utils import get_logger
+from llm_gateway.utils.display import generate_rich_directory_tree, safe_tool_call
 
 # Shared console and display utils
 from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.display import safe_tool_call, generate_rich_directory_tree
 
 # Initialize logger AFTER all relevant imports
 logger = get_logger("example.filesystem")

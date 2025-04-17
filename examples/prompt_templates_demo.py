@@ -19,7 +19,7 @@ from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway
 from llm_gateway.services.prompts import PromptTemplate, get_prompt_repository
 from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import display_text_content_result, CostTracker
+from llm_gateway.utils.display import CostTracker, display_text_content_result
 
 # --- Add Rich Imports ---
 from llm_gateway.utils.logging.console import console

@@ -182,16 +182,6 @@ class EmbeddingService:
                 self.client = AsyncOpenAI(**openai_kwargs)
                 logger.info(f"Initialized AsyncOpenAI embedding client for model: {self.model_name}")
 
-            # TODO: Add elif blocks for other providers (e.g., Cohere, Hugging Face)
-            # elif self.provider_type == 'cohere':
-            #     provider_config = config.providers.cohere # Assuming Cohere config exists
-            #     self.api_key = self.api_key or provider_config.api_key
-            #     if not self.api_key:
-            #         raise ValueError(\"Cohere API key not provided or found in configuration.\")
-            #     import cohere
-            #     self.client = cohere.Client(self.api_key, ...)
-            #     logger.info(f\"Initialized Cohere embedding client for model: {self.model_name}\")
-
             else:
                 raise ValueError(f"Unsupported embedding provider type: {self.provider_type}")
 
@@ -227,14 +217,7 @@ class EmbeddingService:
                 logger.debug(f"Successfully created {len(embeddings)} embeddings using {self.model_name}.")
                 return embeddings
 
-            # TODO: Add elif blocks for other providers
-            # elif self.provider_type == 'cohere':
-            #     response = await self.client.embed(texts=texts, model=self.model_name)
-            #     return response.embeddings
-
             else:
-                # This case should ideally be caught during initialization,
-                # but included for robustness.
                 raise ValueError(f"Unsupported provider type: {self.provider_type}")
 
         except Exception as e:
