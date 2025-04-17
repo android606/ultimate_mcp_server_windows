@@ -1,5 +1,64 @@
 # llm_gateway/tools/docstring_refiner.py
 
+"""
+MCP Tool for Autonomous Refinement of Tool Documentation.
+
+This module implements the `refine_tool_documentation` MCP tool, designed to
+autonomously analyze, test, and refine the documentation (description, input schema, examples)
+of other registered MCP tools within the LLM Gateway. The goal is to improve the usability
+and reliability of these tools when invoked by Large Language Model (LLM) agents like Claude.
+
+Core Methodology:
+1.  **Agent Simulation:** An LLM simulates how an agent would interpret the current
+    documentation to formulate arguments for various hypothetical tasks. This identifies
+    potential ambiguities or missing information.
+2.  **Adaptive Test Case Generation:** Based on the tool's input schema, simulation
+    results, and failures from previous iterations, a diverse set of test cases is
+    generated. This includes positive, negative (schema violations), edge case, and
+    LLM-generated realistic/ambiguity-probing scenarios. Test strategies are adaptively
+    weighted based on observed failures.
+3.  **Schema-Aware Test Execution:** Generated test cases (arguments) are optionally
+    validated against the current schema *before* execution. Valid tests are then executed
+    against the actual target tool via the MCP server's `call_tool` mechanism. Results,
+    errors (including schema validation failures), and timings are captured.
+4.  **Ensemble Failure Analysis:** If tests fail, an ensemble of LLMs analyzes the
+    failures (error messages, failing arguments, strategies used) in the context of the
+    *documentation used for that test run*. They diagnose root causes (e.g., misleading
+    description, incorrect schema constraint, missing example) and categorize flaws.
+5.  **Structured Improvement Proposal:** Based on the analysis, the LLM ensemble proposes
+    specific, structured improvements:
+    *   A revised overall tool `description`.
+    *   Targeted `schema_patches` in JSON Patch (RFC 6902) format to correct flaws
+        in the input schema (e.g., changing types, adding descriptions, fixing constraints).
+    *   New usage `examples` designed to illustrate correct usage and address common
+        failure patterns.
+6.  **Validated Schema Patching:** Proposed schema patches are applied *in-memory* to the
+    current schema. The resulting schema is validated using `jsonschema` to ensure
+    structural correctness before being used in the next iteration. Invalid patches are rejected.
+7.  **Iterative Refinement:** The cycle (Simulate -> Test Gen -> Exec -> Analyze -> Propose -> Patch)
+    repeats up to `max_iterations` or until tests consistently pass and analysis confidence is high.
+8.  **Winnowing (Optional):** Once refinement stabilizes, a final LLM pass can simplify the
+    description and select only the most essential examples for conciseness.
+9.  **Detailed Reporting:** The tool returns a comprehensive report detailing the entire
+    process, including results from each iteration, final proposed documentation, schema diffs,
+    cost estimates, and overall success metrics.
+
+Dependencies:
+- Relies heavily on the `generate_completion` tool for internal LLM calls.
+- Requires access to the MCP server instance (`ctx.mcp`) to list tools and execute them.
+- Uses `jsonschema` and `jsonpatch` for schema manipulation and validation.
+- Uses standard project infrastructure (logging, exceptions, constants, base tool decorators).
+
+Usage Considerations:
+- **Cost & Time:** This tool performs multiple LLM calls per iteration per target tool,
+  making it potentially expensive and time-consuming. Use judiciously.
+- **LLM Variability:** The quality of analysis and proposals depends on the capability
+  of the LLM(s) used for refinement. Results may vary.
+- **Schema Complexity:** Generating correct JSON Patches for complex schemas via LLM
+  can be challenging. Post-patch validation helps, but logical correctness isn't guaranteed.
+
+"""
+
 import asyncio
 import copy
 import difflib
@@ -14,6 +73,11 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeAlias, cast
 
+# JSON Schema and Patch Libraries
+import jsonschema  # noqa: E402
+from jsonpatch import JsonPatchException, apply_patch  # noqa: E402 
+from jsonpointer import JsonPointerException  # noqa: E402
+from jsonschema.exceptions import SchemaError as JsonSchemaValidationError  # noqa: E402
 from mcp.server.fastmcp import Context as McpContext
 from mcp.types import JSONSchemaObject
 
@@ -21,18 +85,8 @@ from mcp.types import JSONSchemaObject
 from mcp.types import Tool as McpToolDef
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from llm_gateway.utils import get_logger
-
-logger = get_logger("llm_gateway.tools.completion")
-
-# JSON Schema and Patch Libraries
-import jsonschema  # noqa: E402
-from jsonpatch import JsonPatchException, apply_patch  # noqa: E402 
-from jsonpointer import JsonPointerException  # noqa: E402
-from jsonschema.exceptions import SchemaError as JsonSchemaValidationError  # noqa: E402
-
 # Project Imports
-from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider  # noqa: E402
+from llm_gateway.constants import Provider  # noqa: E402
 from llm_gateway.exceptions import ProviderError, ToolError, ToolInputError  # noqa: E402
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics  # noqa: E402
 from llm_gateway.tools.completion import generate_completion  # noqa: E402
@@ -193,6 +247,7 @@ class RefinedToolResult(BaseModel):
     improvement_factor: float
     token_count_change: Optional[int] = None
     process_error: Optional[str] = None
+    final_proposed_schema_patches: List[JsonDict] = Field(default_factory=list)
 
 class DocstringRefinementResult(BaseModel):
     report_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
@@ -210,10 +265,76 @@ class DocstringRefinementResult(BaseModel):
 
 class TestCaseGenerationStrategy(BaseModel):
     """
-    Configuration controlling the number of test cases generated for each strategy.
-    Adjust counts to focus testing on specific areas based on tool complexity or
-    observed failure patterns. The total number of tests generated will be the sum
-    of these counts, capped by MAX_TEST_QUERIES_PER_TOOL.
+    Configuration model for controlling the number of test cases generated for each testing strategy.
+
+    This model allows users to specify how many test cases should be generated for various testing strategies, including positive tests, negative tests (schema violations), edge cases, and LLM-driven tests. Each field represents a specific strategy and defines the number of test cases to generate for that strategy. The total number of tests generated is the sum of all these counts, capped by `MAX_TEST_QUERIES_PER_TOOL`. Users can adjust these counts to focus testing on specific areas based on tool complexity or observed failure patterns.
+
+    ### Fields
+
+    #### Positive Strategies
+    - **`positive_required_only`** (`int`, default=2, ge=0):  
+      Number of tests that use only the required parameters. These tests ensure that the tool functions correctly with minimal input.
+    - **`positive_optional_mix`** (`int`, default=3, ge=0):  
+      Number of tests that use required parameters plus a random subset of optional parameters. These tests verify the tool's behavior with varying optional inputs.
+    - **`positive_all_optional`** (`int`, default=1, ge=0):  
+      Number of tests that use required parameters plus all available optional parameters. These tests check the tool's handling of complete input sets.
+
+    #### Negative Strategies (Schema Violations)
+    - **`negative_type`** (`int`, default=2, ge=0):  
+      Number of tests that provide a parameter with the wrong data type (e.g., string instead of integer). These tests ensure proper type validation.
+    - **`negative_required`** (`int`, default=2, ge=0):  
+      Number of tests that deliberately omit one required parameter. These tests verify that the tool correctly handles missing required inputs.
+    - **`negative_enum`** (`int`, default=1, ge=0):  
+      Number of tests that provide a value not listed in a parameter's 'enum' constraint. These tests check enum validation.
+    - **`negative_format`** (`int`, default=1, ge=0):  
+      Number of tests that provide a value violating a parameter's 'format' constraint (e.g., invalid email or date). These tests ensure format validation.
+    - **`negative_range`** (`int`, default=1, ge=0):  
+      Number of tests that provide a numeric value outside the 'minimum' or 'maximum' constraints. These tests verify range checks.
+    - **`negative_length`** (`int`, default=1, ge=0):  
+      Number of tests that provide a string or array violating 'minLength' or 'maxLength' constraints. These tests check length validation.
+    - **`negative_pattern`** (`int`, default=1, ge=0):  
+      Number of tests that provide a string violating a parameter's 'pattern' (regex) constraint. These tests ensure pattern validation.
+
+    #### Edge Case Strategies
+    - **`edge_empty`** (`int`, default=1, ge=0):  
+      Number of tests that use empty values (e.g., empty string, list, object) where applicable. These tests check how the tool handles empty inputs.
+    - **`edge_null`** (`int`, default=1, ge=0):  
+      Number of tests that use null/None for optional parameters or those explicitly allowing null. These tests verify null handling.
+    - **`edge_boundary_min`** (`int`, default=1, ge=0):  
+      Number of tests that use the exact 'minimum' or 'minLength' value. These tests check minimum boundary conditions.
+    - **`edge_boundary_max`** (`int`, default=1, ge=0):  
+      Number of tests that use the exact 'maximum' or 'maxLength' value. These tests check maximum boundary conditions.
+
+    #### LLM-Driven Strategies
+    - **`llm_realistic_combo`** (`int`, default=3, ge=0):  
+      Number of tests generated by an LLM to simulate realistic, potentially complex combinations of parameters based on the tool's documentation.
+    - **`llm_ambiguity_probe`** (`int`, default=2, ge=0):  
+      Number of tests generated by an LLM specifically to probe potential ambiguities or underspecified aspects of the documentation.
+    - **`llm_simulation_based`** (`int`, default=1, ge=0):  
+      Number of tests derived directly from failed agent simulation attempts (if simulations are run). These tests focus on areas where the agent struggled.
+
+    ### Properties
+    - **`total_requested`** (`int`):  
+      A computed property that returns the sum of all individual strategy counts. This represents the total number of test cases requested before any capping by `MAX_TEST_QUERIES_PER_TOOL`. Calculated as the sum of all fields:  
+      `positive_required_only + positive_optional_mix + positive_all_optional + negative_type + negative_required + negative_enum + negative_format + negative_range + negative_length + negative_pattern + edge_empty + edge_null + edge_boundary_min + edge_boundary_max + llm_realistic_combo + llm_ambiguity_probe + llm_simulation_based`.
+
+    ### Constraints
+    - All fields must be non-negative integers (`ge=0`), enforced by the `Field` validation.
+
+    ### Usage Notes
+    - The total number of tests generated may be limited by `MAX_TEST_QUERIES_PER_TOOL` to prevent excessive resource usage.
+    - Adjust the counts for each strategy based on the tool's complexity or observed failure patterns. For example, increase `negative_type` if type-related errors are frequent.
+    - This model is likely used within a larger testing framework for tools or APIs to ensure comprehensive validation.
+
+    ### Example
+    ```python
+    strategy = TestCaseGenerationStrategy(
+        positive_required_only=5,
+        negative_type=3,
+        edge_boundary_min=2
+    )
+    print(strategy.total_requested)  # Output: 10 (5 + 3 + 2)
+    ```
     """
     # --- Positive Strategies ---
     positive_required_only: int = Field(
@@ -293,31 +414,60 @@ class TestCaseGenerationStrategy(BaseModel):
 
     @property
     def total_requested(self) -> int:
-        """Calculate the total number of tests requested by this configuration."""
-        return sum(getattr(self, field_name) for field_name in self.model_fields)
+        strategy_fields = [
+            "positive_required_only", "positive_optional_mix", "positive_all_optional",
+            "negative_type", "negative_required", "negative_enum", "negative_format",
+            "negative_range", "negative_length", "negative_pattern",
+            "edge_empty", "edge_null", "edge_boundary_min", "edge_boundary_max",
+            "llm_realistic_combo", "llm_ambiguity_probe", "llm_simulation_based"
+        ]
+        return sum(getattr(self, field) for field in strategy_fields)
     
 # --- Helper Functions ---
 
-async def _estimate_cost(prompt_tokens: int, completion_tokens: int, model_id: str) -> float:
-    """Estimate cost based on token counts and model ID."""
-    cost_data = COST_PER_MILLION_TOKENS.get(model_id)
-    resolved_model_key = model_id
-    if not cost_data and '/' in model_id:
-        potential_short_key = model_id.split('/')[-1]
-        cost_data = COST_PER_MILLION_TOKENS.get(potential_short_key)
-        if cost_data: 
-            resolved_model_key = potential_short_key
-
-    if not cost_data:
-        logger.warning(f"Cost data unavailable for model '{model_id}' (using key '{resolved_model_key}'). Cannot estimate cost.")
-        return 0.0
-
-    input_cost = (prompt_tokens / 1_000_000) * cost_data["input"]
-    output_cost = (completion_tokens / 1_000_000) * cost_data["output"]
-    return input_cost + output_cost
-
 def _create_diff(original: str, proposed: str, fromfile: str, tofile: str) -> Optional[str]:
-    """Creates a unified diff string, truncated if necessary."""
+    """
+    Creates a unified diff string comparing two texts, with truncation for long diffs.
+
+    This function generates a unified diff to highlight differences between the `original` and `proposed` strings using Python's `difflib`. It is useful for displaying changes in a readable format, such as in logs or version control. If the diff exceeds 8000 characters, it is truncated with a notice.
+
+    ### Args:
+        **original** (`str`):  
+            The original text to compare.
+
+        **proposed** (`str`):  
+            The proposed or updated text to compare against the original.
+
+        **fromfile** (`str`):  
+            A label for the original text in the diff header (e.g., "original.txt").
+
+        **tofile** (`str`):  
+            A label for the proposed text in the diff header (e.g., "proposed.txt").
+
+    ### Returns:
+        **`Optional[str]`**:  
+            A unified diff string if differences exist, truncated if over 8000 characters. Returns `None` if the texts are identical.
+
+    ### Behavior:
+        - **Diff Creation**:  
+          Splits the texts into lines and uses `difflib.unified_diff` with `\n` line endings to generate the diff.
+
+        - **No Changes**:  
+          Returns `None` if the texts are identical or no diff lines are produced.
+
+        - **Truncation**:  
+          If the diff exceeds `MAX_DIFF_LEN` (8000 characters), it is cut off and appended with "... [Diff Truncated] ...".
+
+    ### Notes:
+        - Uses the standard unified diff format, familiar from tools like `git diff`.  
+        - The truncation limit prevents excessive memory use or log clutter.
+
+    ### Example:
+        ```python
+        diff = _create_diff("Line 1\nLine 2", "Line 1\nLine 2 modified", "original.txt", "proposed.txt")
+        # Returns a diff string showing the change on line 2
+        ```
+    """
     if original == proposed: 
         return None
     diff_lines = list(difflib.unified_diff(
@@ -335,7 +485,41 @@ def _create_diff(original: str, proposed: str, fromfile: str, tofile: str) -> Op
     return diff_str
 
 def _create_schema_diff(original_schema: JsonDict, patched_schema: JsonDict) -> Optional[str]:
-    """Creates a diff between two schema dictionaries."""
+    """
+    Creates a unified diff string comparing two JSON schemas.
+
+    This function serializes the `original_schema` and `patched_schema` dictionaries to JSON strings with consistent formatting (indented and sorted keys) and generates a diff using `_create_diff`. It is useful for visualizing schema changes in a human-readable way.
+
+    ### Args:
+        **original_schema** (`JsonDict`):  
+            The original JSON schema dictionary.
+
+        **patched_schema** (`JsonDict`):  
+            The updated or patched JSON schema dictionary.
+
+    ### Returns:
+        **`Optional[str]`**:  
+            A unified diff string if the schemas differ, or `None` if they are identical.
+
+    ### Behavior:
+        - **Serialization**:  
+          Converts both schemas to JSON strings with 2-space indentation and sorted keys for consistent comparison.
+
+        - **Diff Generation**:  
+          Calls `_create_diff` with fixed labels "original_schema.json" and "proposed_schema.json".
+
+    ### Notes:
+        - Sorting keys ensures that key order differences do not appear as changes.  
+        - Relies on `_create_diff` for truncation and formatting.
+
+    ### Example:
+        ```python
+        original = {"type": "object", "properties": {"a": {"type": "string"}}}
+        patched = {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "integer"}}}
+        diff = _create_schema_diff(original, patched)
+        # Returns a diff showing the addition of property "b"
+        ```
+    """
     return _create_diff(
         json.dumps(original_schema, indent=2, sort_keys=True),
         json.dumps(patched_schema, indent=2, sort_keys=True),
@@ -344,7 +528,49 @@ def _create_schema_diff(original_schema: JsonDict, patched_schema: JsonDict) -> 
     )
 
 def _apply_schema_patches(base_schema: JsonDict, patch_suggestions: List[ParameterSchemaPatch]) -> Tuple[JsonDict, List[str], List[JsonDict]]:
-    """Applies validated patches, returns patched schema, errors, and applied patches."""
+    """
+    Applies JSON Patch operations to a base schema, validates the result, and returns the outcome.
+
+    This function applies a series of patch operations to a JSON schema, ensuring the result is a valid schema using `jsonschema`. It tracks errors and successful patches, returning the patched schema (or original if errors occur), a list of errors, and applied patches.
+
+    ### Args:
+        **base_schema** (`JsonDict`):  
+            The original JSON schema to patch.
+
+        **patch_suggestions** (`List[ParameterSchemaPatch]`):  
+            A list of patch suggestions, each containing `patch_ops` (JSON Patch operations).
+
+    ### Returns:
+        **`Tuple[JsonDict, List[str], List[JsonDict]]`**:  
+            - **`JsonDict`**: The patched schema if successful, otherwise a copy of `base_schema`.  
+            - **`List[str]`**: Errors encountered during patching or validation.  
+            - **`List[JsonDict]`**: Successfully applied patch operations.
+
+    ### Behavior:
+        - **Patch Collection**:  
+          Gathers all `patch_ops` from `patch_suggestions` into a single list.
+
+        - **Application**:  
+          Applies the patches to a deep copy of `base_schema` using `apply_patch`.
+
+        - **Validation**:  
+          Checks the result with `jsonschema.Draft7Validator` and ensures all `required` properties are in `properties`. If valid, returns the patched schema and applied patches.
+
+        - **Error Handling**:  
+          Logs and records errors for patch application failures, validation issues, or unexpected exceptions, reverting to the original schema.
+
+    ### Notes:
+        - Uses deep copying to preserve the original schema.  
+        - Validates beyond basic schema rules by checking required properties.
+
+    ### Example:
+        ```python
+        base = {"type": "object", "properties": {"a": {"type": "string"}}}
+        patches = [ParameterSchemaPatch(patch_ops=[{"op": "add", "path": "/properties/b", "value": {"type": "integer"}}])]
+        patched, errors, applied = _apply_schema_patches(base, patches)
+        # Returns updated schema, [], and the applied patch if successful
+        ```
+    """
     patched_schema = copy.deepcopy(base_schema)
     errors = []
     successfully_applied_patches: List[JsonDict] = []
@@ -374,10 +600,6 @@ def _apply_schema_patches(base_schema: JsonDict, patch_suggestions: List[Paramet
                 errors.append(f"Schema validation failed after patching: {val_err}. Patches: {all_ops}")
                 logger.error(f"Schema validation failed after patching: {val_err}. Patches: {all_ops}")
                 return copy.deepcopy(base_schema), errors, []
-        else:
-            logger.warning("jsonschema not available, skipping post-patch validation.")
-            successfully_applied_patches = all_ops
-            return result_schema, errors, successfully_applied_patches
 
     except (JsonPatchException, JsonPointerException) as e:
         errors.append(f"Failed to apply schema patches: {e}. Patches: {all_ops}")
@@ -389,7 +611,46 @@ def _apply_schema_patches(base_schema: JsonDict, patch_suggestions: List[Paramet
         return copy.deepcopy(base_schema), errors, []
 
 def _validate_args_against_schema(args: JsonDict, schema: JSONSchemaObject) -> Optional[str]:
-    """Validate arguments against schema using jsonschema."""
+    """
+    Validates a set of arguments against a JSON schema using `jsonschema`.
+
+    This function ensures that the provided arguments conform to the rules defined in the schema, returning an error message if validation fails or `None` if successful. It is useful for checking inputs before processing.
+
+    ### Args:
+        **args** (`JsonDict`):  
+            The arguments to validate, as a dictionary.
+
+        **schema** (`JSONSchemaObject`):  
+            The JSON schema defining the expected structure and constraints.
+
+    ### Returns:
+        **`Optional[str]`**:  
+            - `None` if the arguments are valid.  
+            - A string with an error message if validation fails, including the reason and path to the issue.
+
+    ### Behavior:
+        - **Validation**:  
+          Uses `jsonschema.validate` to check `args` against `schema`.
+
+        - **Error Reporting**:  
+          For `ValidationError`, returns a detailed message with the error and path. For other exceptions, logs the error and returns a generic message.
+
+    ### Notes:
+        - Provides detailed feedback for debugging invalid inputs.  
+        - Handles unexpected errors gracefully with logging.
+
+    ### Example:
+        ```python
+        schema = {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}
+        args = {"a": 5}
+        result = _validate_args_against_schema(args, schema)
+        # Returns None (valid)
+
+        args = {"a": "string"}
+        result = _validate_args_against_schema(args, schema)
+        # Returns "Schema validation failed: 'string' is not of type 'integer' (Path: a)"
+        ```
+    """
     try:
         jsonschema.validate(instance=args, schema=schema)
         return None
@@ -400,7 +661,66 @@ def _validate_args_against_schema(args: JsonDict, schema: JSONSchemaObject) -> O
         return f"Unexpected validation error: {str(e)}"
 
 def _create_value_for_schema(schema: JsonDict, strategy: str = "positive", history: Optional[List[Any]] = None) -> Any:
-    """Generates a single value based on JSON schema type, format, constraints, and strategy."""
+    """
+    Generates a single value that conforms to the given JSON schema, considering the specified strategy and avoiding repetition based on history.
+
+    This function is designed for schema-driven test data generation. It interprets a JSON schema to produce a value that aligns with the schema's type, format, and constraints, such as generating valid data for testing, invalid data to check error handling, or edge cases to explore boundaries. The function is flexible, supporting various testing strategies and optionally tracking previously generated values to ensure diversity.
+
+    ### Args:
+        **schema** (`JsonDict`):  
+            A dictionary representing the JSON schema that defines the value to be generated. At minimum, it should include a 'type' key (e.g., `"string"`, `"integer"`, `"object"`), and may specify additional constraints like `"enum"`, `"minimum"`, `"maximum"`, `"pattern"`, or `"format"`.
+
+        **strategy** (`str`, default=`"positive"`):  
+            Determines the kind of value to generate. Supported strategies include:  
+            - `"positive"`: A valid value that satisfies all schema constraints.  
+            - `"negative_type"`: A value of an incorrect type (e.g., a string instead of a number).  
+            - `"negative_constraint"`: A value that violates a schema constraint (e.g., a number below the minimum).  
+            - `"edge"`: A value at the boundary of the schema's constraints (e.g., the minimum or maximum value).
+
+        **history** (`Optional[List[Any]]`, default=`None`):  
+            A list of previously generated values for this schema. When provided, the function avoids duplicates by referencing this history, promoting variety in the generated test data.
+
+    ### Returns:
+        **Any**:  
+            A value matching the schema and strategy, with its type determined by the schema's `"type"` field (e.g., `str`, `int`, `float`, `bool`, `list`, `dict`, or `None`).
+
+    ### Behavior:
+        - **Positive Strategy**: Creates a value that fully adheres to the schema. For example, a schema with `{"type": "integer", "minimum": 5}` might yield `7`.
+        - **Negative Strategies**:  
+          - `"negative_type"`: Produces a value of a different type than specified (e.g., `"text"` for an integer schema).  
+          - `"negative_constraint"`: Generates a value that breaks a constraint (e.g., `3` for a schema with `"minimum": 5`).  
+        - **Edge Strategy**: Targets boundary conditions, such as the exact `"minimum"` or `"maximum"` value in a numeric schema.  
+        - **History Handling**: If `history` is provided, the function checks it to avoid repeating values, regenerating if necessary (within reasonable limits).
+
+    ### Notes:
+        - **Supported Types**: Handles JSON schema types like `"string"`, `"integer"`, `"number"`, `"boolean"`, `"array"`, `"object"`, and `"null"`.  
+        - **Constraints**: Respects schema constraints such as `"enum"`, `"minLength"`, `"maxLength"`, `"pattern"`, and `"format"` (e.g., `"email"`, `"date"`).  
+        - **Complex Types**: Recursively generates values for `"array"` items or `"object"` properties.  
+        - **Fallback**: If the schema lacks a `"type"`, it defaults to `"any"` and generates a reasonable value or logs a warning, depending on implementation.
+
+    ### Examples:
+        ```python
+        # Positive value for a string schema with a pattern
+        schema = {"type": "string", "pattern": "^[a-z]+$"}
+        value = _create_value_for_schema(schema, strategy="positive")
+        # Output: "hello" (a valid lowercase string)
+
+        # Negative type value for an integer schema
+        schema = {"type": "integer"}
+        value = _create_value_for_schema(schema, strategy="negative_type")
+        # Output: "123" (a string instead of an integer)
+
+        # Edge case for a number schema with bounds
+        schema = {"type": "number", "minimum": 0, "maximum": 100}
+        value = _create_value_for_schema(schema, strategy="edge")
+        # Output: 0 (the minimum value)
+        ```
+
+    ### Raises:
+        **ValueError**:  
+            - If the schema is invalid (e.g., unknown type or contradictory constraints).  
+            - If the strategy is unsupported or incompatible with the schema.
+    """
     schema_type = schema.get("type", "any")
     fmt = schema.get("format")
     enum = schema.get("enum")
@@ -506,12 +826,18 @@ def _create_value_for_schema(schema: JsonDict, strategy: str = "positive", histo
         item_schema = schema.get("items", {"type": "string"})
         val = [_create_value_for_schema(item_schema, "positive", history + [num]) for _ in range(num)]
     elif schema_type == "object":
-        props = schema.get("properties", {f"key{random.randint(1,2)}": {"type": "string"}})
+        if "properties" not in schema or not isinstance(schema["properties"], dict):
+            logger.warning(f"Schema for object type lacks valid 'properties': {schema}")
+            return {}
+        props = schema["properties"]
         required = set(schema.get("required", []))
         obj = {}
         for p_name, p_schema in props.items():
-             if p_name in required or random.choice([True, False]):
-                  obj[p_name] = _create_value_for_schema(p_schema, "positive", history + [p_name])
+            if not isinstance(p_schema, dict):
+                logger.warning(f"Invalid property schema for '{p_name}': {p_schema}")
+                continue
+            if p_name in required or random.choice([True, False]):
+                obj[p_name] = _create_value_for_schema(p_schema, "positive", history + [p_name])
         val = obj
     elif schema_type == "null": 
         val = None
@@ -522,27 +848,74 @@ def _create_value_for_schema(schema: JsonDict, strategy: str = "positive", histo
         return _create_value_for_schema(schema, strategy, history + [val])
     return val
 
-
 def _select_test_strategies(
     num_tests: int,
     schema: JSONSchemaObject,
-    previous_results: Optional[List['TestExecutionResult']] = None # Use forward ref
+    previous_results: Optional[List['TestExecutionResult']] = None  # Use forward ref
 ) -> List[Tuple[TestStrategy, int]]:
     """
-    Selects test strategies and counts based on schema complexity and previous results.
+    Determines the optimal distribution of test strategies based on the complexity of the tool's input schema and insights from previous test results.
 
-    Prioritizes strategies likely to uncover errors based on schema features
-    and past failures, then distributes the requested number of tests proportionally.
+    This function is a core component of an adaptive testing framework, designed to intelligently allocate a specified number of test cases (`num_tests`) across various testing strategies. It analyzes the provided JSON schema to assess the structure and constraints of the tool's input parameters, such as required fields, optional parameters, or specific value ranges. Additionally, if previous test results are supplied, it adjusts the allocation to focus on strategies that previously revealed issues, enhancing the efficiency and effectiveness of the testing process.
 
-    Args:
-        num_tests: Total number of test cases to generate across all strategies.
-        schema: The JSON Schema object for the tool's input.
-        previous_results: Optional list of results from the previous refinement iteration.
+    ### Args:
+        **num_tests** (`int`):  
+            The total number of test cases to be generated and distributed across the selected strategies. This serves as a target value, though the actual number may be slightly adjusted to ensure each strategy receives an integer number of tests.
 
-    Returns:
-        A list of tuples, where each tuple contains a TestStrategy and the
-        integer count of tests to generate for that strategy. The sum of counts
-        will equal num_tests.
+        **schema** (`JSONSchemaObject`):  
+            The JSON schema defining the input parameters for the tool. The function examines this schema to determine the most relevant test strategies. For example:
+            - A schema with many optional parameters may prioritize strategies that test different parameter combinations.
+            - A schema with constraints (e.g., enums, minimum/maximum values) may emphasize strategies that probe these limits.
+
+        **previous_results** (`Optional[List['TestExecutionResult']]`, default=`None`):  
+            A list of results from prior test executions. When provided, the function uses this data to refine strategy weights, increasing the focus on strategies that previously resulted in failures. This adaptability ensures that testing efforts target areas with a history of issues.
+
+    ### Returns:
+        `List[Tuple[TestStrategy, int]]`:  
+            A list of tuples, where each tuple contains:
+            - **TestStrategy**: The type of testing strategy (e.g., positive tests, negative tests, edge cases).
+            - **int**: The number of test cases assigned to that strategy.  
+            The sum of the counts in these tuples equals `num_tests`, fulfilling the total test case requirement.
+
+    ### Behavior:
+        - **Weight Calculation**:  
+          The function starts with predefined base weights for each test strategy, reflecting their general significance (e.g., positive tests for basic functionality, edge cases for boundary conditions). These weights are then adjusted based on:
+            - **Schema Complexity**: Factors such as the number of parameters, presence of optional fields, or constraints like enums and ranges influence the weights. For instance, a schema with a range constraint might increase the weight of edge-case strategies.
+            - **Previous Results**: If failures were observed in prior tests, the function boosts the weights of strategies linked to those failures, ensuring deeper scrutiny of problematic areas.
+
+        - **Test Case Allocation**:  
+          Using the adjusted weights, the function proportionally distributes `num_tests` across the strategies. It ensures integer allocations (e.g., rounding where necessary) and adjusts the final counts to match the exact `num_tests` value. Critical strategies, such as positive tests, receive a minimum allocation to maintain baseline coverage, even if their weights are low.
+
+    ### Notes:
+        - **Supported Strategies**: Examples include:
+          - **Positive Tests**: Verify expected behavior with valid inputs.
+          - **Negative Tests**: Test error handling with invalid inputs (e.g., incorrect types, missing required fields).
+          - **Edge Cases**: Explore boundary conditions (e.g., minimum/maximum values).
+          - **Combination Tests**: Assess interactions among optional parameters.
+        - **Adaptability**: By leveraging schema analysis and historical data, the function dynamically optimizes test coverage over time.
+
+    ### Example:
+        ```python
+        # Example with a schema and previous failure
+        schema = {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer", "minimum": 1},
+                "name": {"type": "string"}
+            },
+            "required": ["id"]
+        }
+        previous_results = [TestExecutionResult(success=False, error="id must be >= 1")]
+        strategies = _select_test_strategies(num_tests=8, schema=schema, previous_results=previous_results)
+        # Possible output: [('positive', 2), ('negative_type', 1), ('edge_boundary_min', 3), ('negative_missing', 2)]
+        # Note the emphasis on edge cases due to the prior failure at the minimum boundary.
+        ```
+
+    ### Raises:
+        **ValueError**:  
+            - If `num_tests` is negative.
+            - If `schema` is malformed or cannot be parsed (e.g., invalid JSON structure).
+
     """
     # --- Base Weights ---
     # Start with default weights representing general importance/likelihood of issues
@@ -767,29 +1140,74 @@ async def _generate_test_cases(
     num_tests: int,
     refinement_model_config: Dict[str, Any],
     validation_level: str,
-    previous_results: Optional[List['TestExecutionResult']] = None, # Forward reference
-    agent_sim_results: Optional[List['AgentSimulationResult']] = None # Forward reference
+    previous_results: Optional[List['TestExecutionResult']] = None,  # Forward reference
+    agent_sim_results: Optional[List['AgentSimulationResult']] = None  # Forward reference
 ) -> Tuple[List[TestCase], float]:
     """
-    Generate diverse test cases using adaptive strategy, schema validation, and simulation guidance.
+    Generate a diverse set of test cases for the specified MCP tool using an adaptive strategy that incorporates schema validation, previous test results, and agent simulation insights.
 
-    Args:
-        tool_name: Name of the tool.
-        tool_schema: JSON schema for the tool's input.
-        tool_description: Current description of the tool.
-        num_tests: Target number of test cases to generate.
-        refinement_model_config: LLM configuration for generating realistic tests.
-        validation_level: Level of schema validation ('none', 'basic', 'full').
-        previous_results: Results from the previous iteration to guide strategy.
-        agent_sim_results: Results from agent simulation to guide strategy.
+    This asynchronous function combines schema-based generation with language model (LLM)-driven approaches to produce test cases that explore a variety of scenarios, including positive (valid inputs), negative (schema violations), and edge cases. The adaptive strategy dynamically adjusts the mix of test strategies based on the complexity of the tool's schema and insights from prior test executions or simulations, ensuring thorough and targeted testing.
 
-    Returns:
-        Tuple containing a list of generated TestCase objects and the estimated cost
-        of LLM calls during test generation.
+    ### Args:
+        **tool_name** (`str`):  
+            The name of the MCP tool for which test cases are being generated. This identifies the tool under test.
+
+        **tool_schema** (`JSONSchemaObject`):  
+            The JSON schema defining the expected input structure for the tool. Used to generate schema-compliant test cases and validate inputs.
+
+        **tool_description** (`str`):  
+            A textual description of the tool's purpose and behavior. This guides the LLM in generating contextually relevant test cases.
+
+        **num_tests** (`int`):  
+            The target number of test cases to generate. Note that the actual number may vary slightly due to strategy weighting and deduplication efforts.
+
+        **refinement_model_config** (`Dict[str, Any]`):  
+            Configuration settings for the LLM used to create realistic test cases or probe ambiguities. Includes parameters like model type, temperature, etc.
+
+        **validation_level** (`str`):  
+            Specifies the extent of schema validation applied to generated test cases. Valid options are:  
+            - `'none'`: No validation is performed.  
+            - `'basic'`: Validation is applied only to positive test cases.  
+            - `'full'`: All test cases are validated against the schema.
+
+        **previous_results** (`Optional[List['TestExecutionResult']]`, default=`None`):  
+            A list of results from the previous test execution iteration. Used to refine the adaptive strategy by focusing on areas with past failures or ambiguities.
+
+        **agent_sim_results** (`Optional[List['AgentSimulationResult']]`, default=`None`):  
+            Simulation results from agent-based testing. These guide the LLM in generating test cases that reflect simulated agent behaviors or uncover potential issues.
+
+    ### Returns:
+        `Tuple[List[TestCase], float]`:  
+            A tuple containing:  
+            - **List[TestCase]**: A list of `TestCase` objects, each encapsulating a unique test case with attributes like strategy type, input arguments, description, and optionally a `schema_validation_error` if validation fails.  
+            - **float**: The estimated cost (e.g., in tokens or compute resources) of LLM calls made during test case generation.
+
+    ### Notes:
+        - **Adaptive Strategy**: The function dynamically selects test strategies (e.g., positive, negative, edge) and their proportions based on the schema's complexity and feedback from `previous_results`. This ensures focus on high-risk areas.
+        - **Schema-Based Generation**: Produces test cases that test valid inputs, deliberate schema violations, and boundary conditions.
+        - **LLM-Driven Generation**: Leverages the configured LLM to craft realistic inputs, probe ambiguities in the `tool_description`, or align with `agent_sim_results`.
+        - **Deduplication**: Test cases are checked for uniqueness using argument hashes to avoid redundancy.
+        - **Validation**: When enabled, schema validation may attach a `schema_validation_error` to test cases, aiding debugging.
+        - **Fallback**: If generation struggles (e.g., due to complex schemas or LLM failures), a default positive test case is ensured as a minimum output.
+
+    ### Example:
+        ```python
+        schema = JSONSchemaObject({"type": "object", "properties": {"x": {"type": "integer"}}})
+        config = {"model": "gpt-3.5-turbo", "temperature": 0.7}
+        cases, cost = await _generate_test_cases(
+            tool_name="example_tool",
+            tool_schema=schema,
+            tool_description="A tool that processes integer inputs.",
+            num_tests=5,
+            refinement_model_config=config,
+            validation_level="full"
+        )
+        # Returns a list of TestCase objects and the LLM cost
+        ```
     """
     total_cost = 0.0
     test_cases: List[TestCase] = []
-    seen_args_hashes = set() # Track generated args to avoid exact duplicates
+    seen_args_hashes = set()  # Track generated args to avoid exact duplicates
 
     # --- 1. Select Test Strategies Adaptively ---
     logger.debug(f"Selecting test strategies for {tool_name} based on schema and previous results...")
@@ -999,7 +1417,6 @@ Output ONLY a valid JSON list of {count} argument dictionaries.""" # Don't overl
         except Exception as e:
             logger.error(f"Error during LLM ({llm_strategy}) test gen for {tool_name}: {e}", exc_info=True)
 
-
     # --- 4. Ensure Minimum Tests & Apply Cap ---
     if not test_cases:
         logger.warning(f"No test cases generated for {tool_name}, creating a default positive case.")
@@ -1016,24 +1433,67 @@ Output ONLY a valid JSON list of {count} argument dictionaries.""" # Don't overl
 async def _execute_tool_tests(
     mcp_instance: Any,
     tool_name: str,
-    test_cases: List[TestCase] # Use V6/Apex++ test case type
+    test_cases: List[TestCase]
 ) -> Tuple[List[TestExecutionResult], float]:
     """
-    Executes a list of test cases against a specified tool concurrently,
-    capturing detailed results, errors, and estimated costs.
+    Concurrently executes a list of test cases against the specified MCP tool, capturing detailed results, errors, and estimated costs for each test execution.
 
-    Args:
-        mcp_instance: The MCP server instance (e.g., FastMCP) with a `call_tool` method.
-        tool_name: The name of the tool to execute.
-        test_cases: A list of TestCase objects containing arguments and metadata.
+    This asynchronous function leverages a semaphore to manage concurrency, ensuring that no more than `MAX_CONCURRENT_TESTS` (a predefined constant) test cases run simultaneously. It invokes the `call_tool` method of the provided MCP server instance (`mcp_instance`) for each test case, processes the outcomes (successes or failures), and aggregates any reported costs from successful executions. The function is designed to test tool behavior under various scenarios while maintaining efficient resource usage and providing detailed feedback.
 
-    Returns:
-        A tuple containing:
-        - A list of TestExecutionResult objects detailing the outcome of each test.
-        - The total estimated cost (float) accumulated from successful tool calls
-          that reported a cost.
-    """
-    # Use the correct constant name defined previously
+    ### Args:
+        **mcp_instance** (`Any`):  
+            The MCP server instance (e.g., an instance of `FastMCP`) that provides the `call_tool` method. This method is used to execute the specified tool with the arguments provided in each test case.
+
+        **tool_name** (`str`):  
+            The identifier of the MCP tool to be tested. This string is passed to `mcp_instance.call_tool` to invoke the correct tool.
+
+        **test_cases** (`List[TestCase]`):  
+            A list of `TestCase` objects, where each object encapsulates the arguments to pass to the tool, along with metadata such as the testing strategy (e.g., "positive" or "negative_") and a description of the test scenario.
+
+    ### Returns:
+        `Tuple[List[TestExecutionResult], float]`:  
+            A tuple containing two elements:  
+            - **List[TestExecutionResult]**: A list of `TestExecutionResult` objects, each corresponding to a test case. Each result includes details such as whether the test succeeded, a preview of the output (if successful), error information (if failed), and execution timing.  
+            - **float**: The total estimated cost (e.g., in tokens or compute resources) accumulated from all successful tool calls that reported a cost. Costs from failed executions are excluded.
+
+    ### Behavior:
+        - **Concurrency Management**:  
+          An `asyncio.Semaphore` limits the number of concurrent test executions to `MAX_CONCURRENT_TESTS`, preventing system overload and ensuring efficient resource allocation.
+        - **Test Execution**:  
+          - For each test case, the function calls `mcp_instance.call_tool` with the specified `tool_name` and the test case's arguments.  
+          - Test cases with schema pre-validation errors are skipped unless they are negative tests (e.g., strategy starts with "negative_"), as these are expected to fail validation intentionally.  
+          - Execution time is tracked for each test to provide performance insights.
+        - **Result Handling**:  
+          - **Success**: If the tool call succeeds, the function captures a concise preview of the result (excluding verbose fields like `content` or `raw_response`) and any reported cost.  
+          - **Failure**: If an error occurs (e.g., `ToolInputError`, `ProviderError`, or unexpected exceptions), the function records the error type, code, message, and details for diagnostic purposes.
+        - **Exception Handling**:  
+          - Errors during individual test executions are caught and logged as part of the `TestExecutionResult` for that test case, allowing remaining tests to proceed.  
+          - Unexpected exceptions outside the execution flow (e.g., during task scheduling with `asyncio.gather`) are captured and categorized (e.g., `TOOL_EXECUTION_ERROR` if "tool" appears in the message).
+        - **Cost Tracking**:  
+          - Costs reported by successful tool calls are summed to provide a total estimate of resource usage. Failed executions do not contribute to this total.
+
+    ### Notes:
+        - **Schema Validation**: Test cases failing schema validation are skipped unless explicitly designed as negative tests, ensuring only valid tests (or intentional failures) are executed.  
+        - **Error Categorization**: For unexpected exceptions, an `error_category_guess` is inferred from the exception message to aid in debugging.  
+        - **Result Preview**: The `result_preview` field in `TestExecutionResult` omits large or redundant data to keep logs concise and readable.  
+        - **Asynchronous Design**: The use of `async` and `asyncio.Semaphore` ensures non-blocking execution and controlled concurrency, ideal for testing multiple scenarios efficiently.
+
+    ### Example:
+        ```python
+        # Example usage with a hypothetical MCP server instance
+        mcp = FastMCP()  # MCP server instance
+        tool = "math_add"  # Tool to test
+        test_cases = [
+            TestCase(strategy_used="positive", arguments={"a": 2, "b": 3}, description="Add two numbers"),
+            TestCase(strategy_used="negative_invalid_input", arguments={"a": "invalid"}, description="Test invalid input")
+        ]
+        results, total_cost = await _execute_tool_tests(mcp, tool, test_cases)
+        # 'results' contains TestExecutionResult objects for each test case
+        # 'total_cost' reflects the summed cost of successful executions
+        for result in results:
+            print(f"Test: {result.description}, Success: {result.success}, Cost: {result.cost or 0}")
+        print(f"Total Cost: {total_cost}")
+    """        
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_TESTS)
 
     async def run_single_test(test_case: TestCase) -> Tuple[TestExecutionResult, float]:
@@ -1047,23 +1507,20 @@ async def _execute_tool_tests(
             error_code = None
             error_details = None
             test_run_cost = 0.0
-            call_result: Optional[Dict[str, Any]] = None # Store raw result for cost extraction
+            call_result: Optional[Dict[str, Any]] = None  # Store raw result for cost extraction
 
             # Determine if execution should be skipped due to pre-validation failure
-            # Only skip if validation failed AND it wasn't specifically a negative test
-            # designed to potentially trigger validation errors.
             is_negative_strategy = test_case.strategy_used.startswith("negative_")
             skip_execution = test_case.schema_validation_error and not is_negative_strategy
 
             if skip_execution:
                 error_message = f"Skipped Execution: Schema pre-validation failed ({test_case.schema_validation_error})"
                 error_code = "SCHEMA_VALIDATION_FAILED_PRE_CALL"
-                error_type = "ToolInputError" # Treat as input error
+                error_type = "ToolInputError"  # Treat as input error
                 logger.debug(f"Skipping execution for test case (Strategy: {test_case.strategy_used}) due to pre-validation error: {test_case.arguments}")
             else:
                 # --- Execute the tool ---
                 try:
-                    # Make the actual tool call via the MCP instance
                     call_result = await mcp_instance.call_tool(
                         tool_name=tool_name,
                         arguments=test_case.arguments
@@ -1071,60 +1528,48 @@ async def _execute_tool_tests(
 
                     # --- Analyze Result ---
                     if isinstance(call_result, dict):
-                        # Check for standard MCP ToolResult error format first
                         is_mcp_tool_error = call_result.get("isError", False)
-                        # Then check for JSON-RPC error format
                         is_jsonrpc_error = "error" in call_result and "id" in call_result
 
                         if is_mcp_tool_error or is_jsonrpc_error:
-                             # Handle error structure
-                             error_data = call_result.get("error", {})
-                             if not isinstance(error_data, dict): # Handle cases where error might be just a string
-                                 error_message = str(error_data)
-                                 error_code = "TOOL_REPORTED_ERROR_STRING"
-                                 error_type = "ToolError"
-                             else:
-                                 error_message = error_data.get("message", "Tool reported an unknown error.")
-                                 error_code = error_data.get("error_code", "TOOL_REPORTED_ERROR") # Get specific code
-                                 error_type = error_data.get("error_type", "ToolError") # Get specific type
-                                 error_details = error_data.get("details") # Get details dict
-                        else: # Success case
+                            error_data = call_result.get("error", {})
+                            if not isinstance(error_data, dict):  # Handle string errors
+                                error_message = str(error_data)
+                                error_code = "TOOL_REPORTED_ERROR_STRING"
+                                error_type = "ToolError"
+                            else:
+                                error_message = error_data.get("message", "Tool reported an unknown error.")
+                                error_code = error_data.get("error_code", "TOOL_REPORTED_ERROR")
+                                error_type = error_data.get("error_type", "ToolError")
+                                error_details = error_data.get("details")
+                        else:  # Success case
                             success = True
-                            # Create a preview string, excluding verbose fields
-                            preview_items = []
-                            for k, v in call_result.items():
-                                if k in ["content", "raw_response", "_meta", "success", "isError", "cost", "tokens"]: 
-                                    continue
-                                try:
-                                     v_repr = repr(v)
-                                except Exception:
-                                     v_repr = "<unrepresentable>"
-                                preview_items.append(f"{k}: {v_repr[:40]}{'...' if len(v_repr)>40 else ''}")
+                            preview_items = [
+                                f"{k}: {repr(v)[:40]}{'...' if len(repr(v)) > 40 else ''}"
+                                for k, v in call_result.items()
+                                if k not in ["content", "raw_response", "_meta", "success", "isError", "cost", "tokens"]
+                            ]
                             result_preview = "{ " + ", ".join(preview_items) + " }"
-                            # Extract cost if available
                             if call_result.get("cost") is not None:
-                                 try: 
-                                     test_run_cost = float(call_result["cost"])
-                                 except (ValueError, TypeError): 
-                                     pass
-
-                    else: # Non-dict success result (less common for complex tools)
+                                try:
+                                    test_run_cost = float(call_result["cost"])
+                                except (ValueError, TypeError):
+                                    pass
+                    else:  # Non-dict success result
                         success = True
                         try:
                             result_preview = repr(call_result)[:80] + ('...' if len(repr(call_result)) > 80 else '')
                         except Exception:
-                             result_preview = "<unrepresentable result>"
+                            result_preview = "<unrepresentable result>"
 
                 # --- Handle Exceptions During Execution ---
                 except (ToolInputError, ProviderError, ToolError) as known_exec_err:
-                    # These errors are often raised by the tool's own logic or wrappers
                     error_message = f"{type(known_exec_err).__name__}: {str(known_exec_err)}"
                     error_type = type(known_exec_err).__name__
                     error_code = getattr(known_exec_err, 'error_code', "TOOL_EXECUTION_FAILED")
                     error_details = getattr(known_exec_err, 'details', None)
                     logger.warning(f"Tool execution caught known error for {tool_name}: {error_message}")
                 except Exception as exec_err:
-                    # Catch unexpected errors during the call_tool process
                     error_message = f"Unexpected Execution Error: {type(exec_err).__name__}: {str(exec_err)}"
                     error_type = type(exec_err).__name__
                     error_code = "UNEXPECTED_EXECUTION_ERROR"
@@ -1144,8 +1589,7 @@ async def _execute_tool_tests(
                 error_type=error_type,
                 error_code=error_code,
                 error_details=error_details
-                # error_category_guess could be added here or later by analysis
-            ), test_run_cost # Return cost associated with this specific run
+            ), test_run_cost  # Return cost associated with this specific run
 
     # --- Gather results and costs ---
     if not test_cases:
@@ -1153,26 +1597,29 @@ async def _execute_tool_tests(
         return [], 0.0
 
     test_tasks = [run_single_test(tc) for tc in test_cases]
-    # Use return_exceptions=True to ensure all tasks complete even if some fail
     results_with_costs = await asyncio.gather(*test_tasks, return_exceptions=True)
 
     # Process results, handling potential exceptions from gather itself
     final_results: List[TestExecutionResult] = []
     accumulated_cost = 0.0
     for i, res_or_exc in enumerate(results_with_costs):
-        test_case_used = test_cases[i] # Get corresponding input test case
+        test_case_used = test_cases[i]  # Get corresponding input test case
         if isinstance(res_or_exc, Exception):
             # An error occurred in run_single_test *outside* its try/except, or gather failed
             logger.error(f"Gather caught exception for test case {i} (Strategy: {test_case_used.strategy_used}): {res_or_exc}", exc_info=res_or_exc)
-            # Create a TestExecutionResult indicating this failure
+            # Guess the error category based on the exception message
+            error_category = ErrorCategory.TOOL_EXECUTION_ERROR if "tool" in str(res_or_exc).lower() else ErrorCategory.UNKNOWN
+            # Create a TestExecutionResult indicating this failure with error category
             fail_result = TestExecutionResult(
                 test_case=test_case_used,
-                start_time=time.time(), end_time=time.time(), # Times are inaccurate here
+                start_time=time.time(),
+                end_time=time.time(),  # Times are approximate as exception occurred outside normal flow
                 success=False,
                 error_message=f"Gather Exception: {type(res_or_exc).__name__}: {str(res_or_exc)}",
                 error_type=type(res_or_exc).__name__,
                 error_code="GATHER_EXECUTION_ERROR",
-                error_details={"traceback": traceback.format_exception(res_or_exc)} # Use specific formatter
+                error_details={"traceback": traceback.format_exception(type(res_or_exc), res_or_exc, res_or_exc.__traceback__)},
+                error_category_guess=error_category
             )
             final_results.append(fail_result)
         elif isinstance(res_or_exc, tuple) and len(res_or_exc) == 2:
@@ -1182,49 +1629,343 @@ async def _execute_tool_tests(
             accumulated_cost += run_cost
         else:
             # Unexpected result format from gather/run_single_test
-             logger.error(f"Unexpected result type from gather for test case {i}: {type(res_or_exc)}")
-             fail_result = TestExecutionResult(
-                 test_case=test_case_used,
-                 start_time=time.time(), end_time=time.time(),
-                 success=False,
-                 error_message=f"Internal Error: Unexpected result type from task execution ({type(res_or_exc).__name__})",
-                 error_type="InternalError", error_code="UNEXPECTED_GATHER_RESULT"
-             )
-             final_results.append(fail_result)
-
+            logger.error(f"Unexpected result type from gather for test case {i}: {type(res_or_exc)}")
+            fail_result = TestExecutionResult(
+                test_case=test_case_used,
+                start_time=time.time(),
+                end_time=time.time(),
+                success=False,
+                error_message=f"Internal Error: Unexpected result type from task execution ({type(res_or_exc).__name__})",
+                error_type="InternalError",
+                error_code="UNEXPECTED_GATHER_RESULT"
+            )
+            final_results.append(fail_result)
 
     logger.debug(f"Executed {len(final_results)} tests for tool '{tool_name}'. Accumulated cost: ${accumulated_cost:.6f}")
     return final_results, accumulated_cost
 
+async def _generate_examples(
+    tool_name: str,
+    description: str,
+    schema: JSONSchemaObject,
+    success_cases: List['TestExecutionResult'],  # Use forward reference
+    failure_cases: List['TestExecutionResult'],  # Use forward reference
+    refinement_model_config: Dict[str, Any],
+    validation_level: Literal['full', 'basic'] = 'full'
+) -> Tuple[List['GeneratedExample'], float]:  # Use forward reference
+    """
+    Generates illustrative usage examples for a tool using a language model (LLM), incorporating insights from both successful and failed test cases to ensure the examples are informative and address common issues.
+
+    This asynchronous function constructs a prompt for the LLM that includes the tool's name, description, schema, and examples of both successful and failed usage. The LLM is then tasked with generating new examples that illustrate correct usage and help avoid common mistakes. The generated examples are validated against the tool's schema based on the specified validation level.
+
+    ### Args:
+        **tool_name** (`str`):  
+            The name of the tool for which examples are being generated.
+
+        **description** (`str`):  
+            A textual description of the tool's functionality and usage.
+
+        **schema** (`JSONSchemaObject`):  
+            The JSON schema defining the expected input structure for the tool.
+
+        **success_cases** (`List['TestExecutionResult']`):  
+            A list of test execution results where the tool was used successfully.
+
+        **failure_cases** (`List['TestExecutionResult']`):  
+            A list of test execution results where the tool usage failed.
+
+        **refinement_model_config** (`Dict[str, Any]`):  
+            Configuration settings for the LLM, such as model name, temperature, etc.
+
+        **validation_level** (`Literal['full', 'basic']`, default=`'full'`):  
+            The level of validation to apply to the generated examples:  
+            - `'full'`: Validate all generated examples against the schema.  
+            - `'basic'`: Perform minimal validation.
+
+    ### Returns:
+        `Tuple[List['GeneratedExample'], float]`:  
+            A tuple containing:  
+            - **List['GeneratedExample']**: A list of objects, each containing an example of correct tool usage, including the arguments and a comment explaining the example.  
+            - **float**: The estimated cost associated with the LLM call used to generate the examples.
+
+    ### Notes:
+        - If no success or failure cases are provided, or if the schema lacks properties, the function may skip example generation to avoid unnecessary computation.
+        - The function uses forward references for `TestExecutionResult` and `GeneratedExample` to handle type hinting for classes defined later in the code.
+        - The validation level affects how strictly the generated examples are checked against the schema, with `'full'` ensuring all examples conform to the schema and `'basic'` performing minimal checks.
+
+    ### Behavior:
+        - **Prompt Construction**:  
+          The function builds a prompt that includes the tool's name, description, schema, and a selection of successful and failed test cases. This prompt guides the LLM to generate examples that demonstrate correct usage and address common pitfalls observed in the failure cases.
+
+        - **LLM Interaction**:  
+          The LLM is configured using `refinement_model_config` and generates a list of usage examples in JSON format. The function parses the LLM's response, validates the generated examples against the schema (based on `validation_level`), and filters out invalid examples.
+
+        - **Cost Tracking**:  
+          The function calculates and returns the estimated cost of the LLM call, ensuring transparency in resource usage.
+
+        - **Edge Cases**:  
+          If there are no success or failure cases, or if the schema is minimal (e.g., no properties), the function may return an empty list to avoid generating uninformative examples.
+
+    ### Example:
+        ```python
+        # Generate examples for a tool with some success and failure cases
+        success_cases = [TestExecutionResult(success=True, arguments={"a": 5, "b": 3})]
+        failure_cases = [TestExecutionResult(success=False, arguments={"a": "invalid", "b": 3})]
+        schema = {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}}
+        config = {"model": "gpt-3.5-turbo", "provider": "openai", "temperature": 0.7}
+        examples, cost = await _generate_examples(
+            tool_name="add_numbers",
+            description="Adds two numbers.",
+            schema=schema,
+            success_cases=success_cases,
+            failure_cases=failure_cases,
+            refinement_model_config=config,
+            validation_level="full"
+        )
+        # 'examples' contains GeneratedExample objects with arguments and comments
+        # 'cost' reflects the estimated cost of the LLM call
+        ```
+
+    """
+    cost = 0.0
+    # Don't bother generating examples if there's nothing to base them on
+    # or if the schema itself is minimal (no properties likely means no args needed)
+    if not schema.get("properties") and not success_cases and not failure_cases:
+        logger.debug(f"Skipping example generation for '{tool_name}': No properties, successes, or failures provided.")
+        return [], cost
+    if not description and not schema.get("properties"):
+         logger.debug(f"Skipping example generation for '{tool_name}': No description or properties.")
+         return [], cost
+
+
+    # --- Format Inputs for Prompt ---
+    schema_str = json.dumps(schema, indent=2)
+
+    # Limit the number of examples shown in the prompt to manage context size
+    max_prompt_examples = 3
+    success_examples_str = "\n".join([f"- Args: {json.dumps(r.test_case.arguments, default=str)}"
+                                      for r in success_cases[:max_prompt_examples]])
+    failure_examples_str = ""
+    if failure_cases:
+        failure_examples_str += "Examples of Failed Calls (Args -> Error Type: Error Code -> Message):\n"
+        for r in failure_cases[:max_prompt_examples]:
+             error_info = f"{r.error_type or 'UnknownType'}:{r.error_code or 'UnknownCode'} -> {r.error_message or 'No message'}"
+             failure_examples_str += f"- {json.dumps(r.test_case.arguments, default=str)} -> {error_info[:150]}...\n" # Limit error message length
+
+    # --- Construct Prompt ---
+    prompt = f"""# Task: Generate Usage Examples for MCP Tool
+
+Given the documentation for the MCP tool '{tool_name}', along with examples of successful and failed attempts to use it by an LLM agent, generate 2-4 diverse and clear usage examples.
+
+## Tool Documentation
+
+**Description:**
+{description or '(No description provided)'}
+
+**Input Schema:**
+```json
+{schema_str}
+```
+
+## Observed Usage
+
+**Successful Args Examples:**
+```json
+{success_examples_str or '(None provided or none succeeded)'}
+```
+
+**Failed Args & Errors Examples:**
+```
+{failure_examples_str or '(None observed)'}
+```
+
+## Instructions
+
+1.  Create 2-4 concise, valid usage examples based on the schema and description.
+2.  **Prioritize examples that demonstrate how to *avoid* the observed failures.** If failures involved specific parameters or constraints, show the *correct* way to use them.
+3.  Include examples showcasing common or important successful use cases reflected in the `Successful Args Examples`.
+4.  Ensure the `args` in your examples are valid according to the provided JSON schema.
+5.  For each example, provide a brief `comment` explaining its purpose or what key aspect it demonstrates (e.g., "Minimal call with only required fields", "Using the 'advanced_filter' optional parameter", "Correctly formatting the date string to avoid errors").
+6.  If an example specifically addresses a failure pattern (like an error code or type from the failures list), optionally include the relevant `addresses_failure_pattern` key (e.g., "ToolInputError:INVALID_PARAMETER:param:date").
+
+## Output Format
+
+Respond ONLY with a single, valid JSON list. Each element in the list must be an object with the following keys:
+- `args`: (Object) The valid arguments for the tool call.
+- `comment`: (String) A brief explanation of the example.
+- `addresses_failure_pattern`: (Optional[String]) The key identifying the failure pattern this example helps avoid.
+
+Example Output:
+```json
+[
+  {{
+    "args": {{ "required_param": "value1" }},
+    "comment": "Minimal usage with only the required parameter."
+  }},
+  {{
+    "args": {{ "required_param": "value2", "optional_param": true, "filter": {{"type": "user", "min_score": 0.8}} }},
+    "comment": "Using optional parameters and a nested filter object.",
+    "addresses_failure_pattern": "ToolInputError:INVALID_PARAMETER:param:filter"
+  }},
+  {{
+    "args": {{ "required_param": "value3", "format": "YYYY-MM-DD" }},
+    "comment": "Demonstrating the correct 'format' enum value."
+  }}
+]
+```
+
+JSON Output:
+"""
+    # --- Call LLM ---
+    try:
+        logger.debug(f"Generating examples for tool '{tool_name}' using model '{refinement_model_config.get('model')}'...")
+        result = await generate_completion(
+            prompt=prompt,
+            **refinement_model_config,
+            temperature=0.4, # Moderate temperature for slightly diverse examples
+            max_tokens=1500, # Allow decent space for examples
+            # Use JSON mode if supported by the provider
+            additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None
+        )
+        if not result.get("success"):
+            raise ToolError(f"LLM call failed during example generation: {result.get('error')}")
+
+        cost += result.get("cost", 0.0)
+        examples_text = result["text"]
+        logger.debug(f"Raw examples response from LLM: {examples_text[:500]}...")
+
+        # --- Parse and Validate Response ---
+        try:
+            # Clean potential markdown fences first
+            examples_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", examples_text.strip())
+            # Attempt to parse the cleaned text
+            examples_list_raw = json.loads(examples_text_cleaned)
+
+            # Validate structure using Pydantic
+            validated_examples: List[GeneratedExample] = []
+            if isinstance(examples_list_raw, list):
+                for i, ex_data in enumerate(examples_list_raw):
+                    if isinstance(ex_data, dict):
+                        try:
+                            # Validate each example dictionary
+                            validated_ex = GeneratedExample(**ex_data)
+                            # Optional: Further validate example 'args' against the tool's schema
+                            if validation_level != 'none':
+                                validation_error = _validate_args_against_schema(validated_ex.args, schema)
+                                if validation_error:
+                                     logger.warning(f"LLM generated example {i+1} for '{tool_name}' failed schema validation: {validation_error}. Skipping example.")
+                                     continue # Skip examples that don't validate against the schema
+                            validated_examples.append(validated_ex)
+                        except ValidationError as pydantic_err:
+                            logger.warning(f"Skipping invalid example structure at index {i} for '{tool_name}': {pydantic_err}. Data: {ex_data}")
+                        except Exception as val_err: # Catch other potential validation errors
+                            logger.warning(f"Error processing example item {i} for '{tool_name}': {val_err}. Data: {ex_data}")
+                    else:
+                        logger.warning(f"Skipping non-dictionary item in examples list for '{tool_name}' at index {i}.")
+            else:
+                # LLM did not return a list as requested
+                raise ValueError(f"LLM response was not a JSON list as expected. Type: {type(examples_list_raw)}")
+
+            logger.info(f"Successfully generated and validated {len(validated_examples)} examples for '{tool_name}'.")
+            return validated_examples, cost
+
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            # Catch errors during parsing or validation
+            logger.error(f"Failed to parse or validate LLM examples JSON for '{tool_name}': {e}. Raw response: {examples_text}", exc_info=True)
+            # Return empty list and cost incurred so far
+            return [], cost
+
+    except Exception as e:
+        # Catch errors during the generate_completion call or other unexpected issues
+        logger.error(f"Error generating examples for tool '{tool_name}': {e}", exc_info=True)
+        return [], cost # Return empty list and accumulated cost
+
 async def _analyze_and_propose(
     tool_name: str,
     iteration: int,
-    current_docs: ProposedChanges, # Documentation used for this iteration's tests
-    current_schema: JSONSchemaObject, # Schema used for this iteration's tests
-    test_results: List[TestExecutionResult], # Results from this iteration
-    refinement_model_configs: List[Dict[str, Any]], # List of LLM configs for analysis
-    original_schema: JSONSchemaObject, # Original schema for context (optional use)
-    validation_level: str # Validation level used ('none', 'basic', 'full')
+    current_docs: ProposedChanges,  # Documentation used for this iteration's tests
+    current_schema: JSONSchemaObject,  # Schema used for this iteration's tests
+    test_results: List[TestExecutionResult],  # Results from this iteration
+    refinement_model_configs: List[Dict[str, Any]],  # List of LLM configs for analysis
+    original_schema: JSONSchemaObject,  # Original schema for context (optional use)
+    validation_level: str  # Validation level used ('none', 'basic', 'full')
 ) -> Tuple[Optional['RefinementAnalysis'], Optional['ProposedChanges'], float]:
     """
-    Analyzes test failures, proposes documentation/schema improvements using an
-    ensemble of LLMs, generates relevant examples, and calculates costs.
+    Analyzes test failures from the current iteration, proposes improvements to the tool's documentation and schema using an ensemble of language models (LLMs), generates relevant usage examples, and calculates the associated costs.
 
-    Args:
-        tool_name: Name of the tool being analyzed.
-        iteration: Current refinement iteration number.
-        current_docs: The documentation (ProposedChanges) used for the tests in this iteration.
-        current_schema: The schema used for validation in this iteration.
-        test_results: List of TestExecutionResult objects from this iteration.
-        refinement_model_configs: List of LLM configurations for the analysis ensemble.
-        original_schema: The initial schema of the tool (for reference).
-        validation_level: The schema validation level used during testing.
+    This asynchronous function plays a central role in an iterative refinement process for tool documentation and schema validation. It evaluates test execution outcomes, identifies issues in the current documentation (`current_docs`) and schema (`current_schema`), and uses an ensemble of LLMs to propose targeted enhancements. These enhancements may include updates to the tool's description, schema modifications, and new usage examples tailored to address observed issues or improve clarity.
 
-    Returns:
-        A tuple containing:
-        - Optional[RefinementAnalysis]: The analysis results (or None if no failures).
-        - Optional[ProposedChanges]: The proposed documentation/schema changes (or None if no changes suggested).
-        - float: The total estimated cost incurred during analysis and example generation.
+    ### Args:
+        **tool_name** (`str`):  
+            The name of the tool under analysis. This is used for logging purposes and to provide context in prompts sent to the LLMs.
+
+        **iteration** (`int`):  
+            The current iteration number in the refinement process. This helps track progress across multiple cycles of analysis and improvement.
+
+        **current_docs** (`ProposedChanges`):  
+            The documentation object (`ProposedChanges`) used during this iteration's tests. It contains the tool's description, usage examples, and any schema patches applied up to this point.
+
+        **current_schema** (`JSONSchemaObject`):  
+            The JSON schema applied for input validation in this iteration's tests. This schema may differ from the `original_schema` due to refinements from prior iterations.
+
+        **test_results** (`List[TestExecutionResult]`):  
+            A list of `TestExecutionResult` objects representing the outcomes (successes and failures) of test cases executed in this iteration.
+
+        **refinement_model_configs** (`List[Dict[str, Any]]`):  
+            A list of configuration dictionaries for the LLMs forming the analysis ensemble. Each dictionary specifies details such as the model name, provider, and other parameters needed to instantiate an LLM.
+
+        **original_schema** (`JSONSchemaObject`):  
+            The initial JSON schema of the tool, included for reference. It allows comparison with the `current_schema` and provides context for understanding the evolution of the schema.
+
+        **validation_level** (`str`):  
+            The level of schema validation used during testing, with possible values: `'none'`, `'basic'`, or `'full'`. This influences how validation-related failures are interpreted.
+
+    ### Returns:
+        `Tuple[Optional['RefinementAnalysis'], Optional['ProposedChanges'], float]`:  
+            A tuple containing three elements:  
+            - **Optional[RefinementAnalysis]**: An object summarizing the analysis of test failures, including identified error patterns, diagnosed documentation flaws, and proposed fixes. Returns `None` if no failures are detected.  
+            - **Optional[ProposedChanges]**: A `ProposedChanges` object with suggested updates to the description, schema patches (as JSON Patch operations), and new usage examples. Returns `None` if no changes are deemed necessary.  
+            - **float**: The total estimated cost (e.g., in tokens, compute resources, or monetary units) of the LLM operations performed during analysis and example generation.
+
+    ### Behavior:
+        - **Failure Detection and Analysis**:  
+          - The function begins by separating `test_results` into failures and successes. If no failures are found, it skips in-depth analysis and returns a basic `RefinementAnalysis` indicating no issues, along with the current documentation potentially enriched with new examples.  
+          - For iterations with failures, it categorizes them by error type, error code, or affected parameters to pinpoint recurring issues.
+
+        - **LLM Ensemble Processing**:  
+          - Using the `refinement_model_configs`, an ensemble of LLMs evaluates the failure patterns, linking them to deficiencies in the documentation or schema.  
+          - Each LLM generates its own analysis and improvement proposals, and the function selects the proposal with the highest confidence score for inclusion in the output.
+
+        - **Example Generation**:  
+          - Regardless of test outcomes, the function employs the primary LLM to generate new usage examples. These examples aim to clarify correct tool usage, address observed failures, and enhance the overall documentation quality.
+
+        - **Cost Calculation**:  
+          - All LLM operations (analysis and example generation) are tracked, and their estimated costs are summed into the returned `float` value, ensuring transparency in resource usage.
+
+    ### Notes:
+        - **Ensemble Benefits**: The use of multiple LLMs increases the reliability of the analysis by combining diverse insights, with the final proposal chosen based on confidence scoring.  
+        - **Schema Modifications**: Proposed schema changes are formatted as JSON Patch operations, allowing precise, incremental updates that can be easily applied or reversed.  
+        - **Proactive Example Enrichment**: Even without failures, new examples are added to preempt potential user confusion and improve documentation robustness.  
+        - **Cost Awareness**: The returned cost value helps users monitor the resource impact of the refinement process, which is particularly useful in large-scale applications.
+
+    ### Example:
+        ```python
+        # Example invocation within a refinement workflow
+        analysis, proposed_changes, cost = await _analyze_and_propose(
+            tool_name="data_processor",
+            iteration=3,
+            current_docs=ProposedChanges(description="Processes input data", examples=["input: 5"]),
+            current_schema={"type": "object", "properties": {"value": {"type": "number"}}},
+            test_results=[TestExecutionResult(success=False, error="Invalid type"), ...],
+            refinement_model_configs=[{"model": "gpt-3.5-turbo", "provider": "openai"}],
+            original_schema={"type": "object", "properties": {"value": {"type": "number"}}},
+            validation_level="basic"
+        )
+        # 'analysis' details the failure diagnosis and confidence in proposed fixes
+        # 'proposed_changes' includes updated description, schema patches, and new examples
+        # 'cost' indicates the resource expenditure for this step
+        ```
+
     """
     total_analysis_cost = 0.0
     failures = [r for r in test_results if not r.success]
@@ -1316,7 +2057,7 @@ async def _analyze_and_propose(
     # Include current examples in the context for the analysis LLM
     current_examples_str = json.dumps([e.model_dump() for e in current_docs.examples], indent=2)
 
-    prompt = f"""# Task: Refine MCP Tool Documentation (Apex++ Analysis)
+    prompt = f"""# Task: Refine MCP Tool Documentation
 
 You are an expert technical writer and API designer diagnosing LLM agent failures when using an MCP tool. Your goal is to identify *root causes* in the documentation (description, schema, examples) and propose specific, structured improvements (JSON Patches for schema, revised description, targeted examples).
 
@@ -1464,119 +2205,407 @@ JSON Output:"""
 
     return best_analysis, best_proposed_changes, total_analysis_cost
 
-async def _generate_examples(
+async def _simulate_agent_usage(
     tool_name: str,
-    description: str,
-    schema: JSONSchemaObject,
-    success_cases: List[TestExecutionResult],
-    failure_cases: List[TestExecutionResult],
-    refinement_model_config: Dict[str, Any]
-) -> Tuple[List[GeneratedExample], float]:
-    """Generate examples addressing failures and showcasing success."""
-    # (Implementation from V6 - Reuse)
-    # ... Assume V6 implementation is present ...
-    # NOTE: For brevity, omitting full copy-paste. Assume V6 logic is used.
-    cost = 0.0
-    if not success_cases and not failure_cases: 
-        return [], cost
-    schema_str = json.dumps(schema, indent=2)
-    success_str = "\n".join([f"- Args: {json.dumps(r.test_case.arguments, default=str)}" for r in success_cases[:2]])
-    failure_str = "Examples of Failed Calls (Args -> Error):\n" + "\n".join([f"- {json.dumps(r.test_case.arguments, default=str)} -> {r.error_message}" for r in failure_cases[:2]]) if failure_cases else "None"
+    current_docs: 'ProposedChanges',  # Use forward reference for ProposedChanges
+    current_schema: JSONSchemaObject,
+    refinement_model_config: Dict[str, Any],
+    num_simulations: int = 3
+) -> Tuple[List['AgentSimulationResult'], float]:  # Use forward reference
+    """
+    Simulates an LLM agent attempting to select and use the specified MCP tool for a variety of tasks, relying solely on the provided documentation and schema.
 
-    prompt = f"""Given the MCP tool documentation, successful usage examples, and observed failures:
+    This asynchronous function mimics the behavior of a language learning model (LLM) agent by generating a set of generic task scenarios and evaluating whether the agent would correctly select the specified tool and formulate valid arguments based on the given documentation. Each simulation involves prompting the LLM to:
+    1. Decide if the tool is appropriate for the task.
+    2. Formulate the necessary arguments if the tool is selected.
+    3. Provide reasoning and confidence in its decisions.
 
-**Tool Name:** `{tool_name}`
-**Description:** {description or '(None)'}
-**Schema:**
+    The function is particularly valuable for testing and refining tool documentation, as it highlights gaps, ambiguities, or areas where the documentation may not adequately guide the agent to correct usage.
+
+    ### Args:
+        **tool_name** (`str`):  
+            The name of the MCP tool under evaluation. This identifier is used in prompts and logs to track the tool being simulated.
+
+        **current_docs** (`ProposedChanges`):  
+            A `ProposedChanges` object that contains the current description of the tool and usage examples. This serves as the sole source of documentation for the simulated agent.
+
+        **current_schema** (`JSONSchemaObject`):  
+            The JSON schema defining the expected input structure for the tool. The simulated agent uses this schema to ensure the arguments it formulates are valid.
+
+        **refinement_model_config** (`Dict[str, Any]`):  
+            A dictionary containing configuration settings for the LLM used in the simulation, such as model name, provider, temperature, and other parameters that influence the LLM's behavior.
+
+        **num_simulations** (`int`, default=`3`):  
+            The number of distinct task scenarios to simulate. Increasing this value provides a broader range of insights into how the documentation performs across different use cases.
+
+    ### Returns:
+        `Tuple[List['AgentSimulationResult'], float]`:  
+            A tuple containing:  
+            - **List[AgentSimulationResult]**: A list of `AgentSimulationResult` objects, each representing the outcome of a single simulation. Each result includes details such as whether the tool was selected, the arguments generated (if applicable), the agent's reasoning, confidence level, and any errors encountered.  
+            - **float**: The total estimated cost of the LLM calls made during the simulations, which could represent tokens used, compute resources, or monetary cost, depending on the implementation.
+
+    ### Behavior:
+        - **Task Generation**: The function generates a variety of generic task descriptions (e.g., "Solve a problem using the tool's primary function") to test the agent's decision-making process. These tasks are intentionally broad to challenge the agent's reliance on the documentation.
+        - **Simulation Process**: For each task, the LLM is prompted to:  
+          - **Tool Selection**: Determine if the specified tool is suitable based on the `current_docs`.  
+          - **Argument Formulation**: If selected, generate arguments that conform to the `current_schema`.  
+          - **Reasoning and Confidence**: Provide an explanation for its choices and a confidence score (e.g., 0.0 to 1.0) for the arguments.  
+        - **Error Handling**: If the LLM produces invalid responses (e.g., malformed JSON), the error is logged in the `AgentSimulationResult` for analysis.  
+        - **Cost Tracking**: The function calculates and aggregates the cost of all LLM calls, returning it alongside the simulation results.
+
+    ### Notes:
+        - The simulation relies entirely on the `current_docs` and `current_schema`, making it an excellent tool for identifying documentation weaknesses.  
+        - Multiple simulations enhance the robustness of insights, revealing both successful usage and potential misinterpretations.  
+        - The cost estimate helps users manage resource usage, especially in large-scale testing environments.
+
+    ### Example:
+        ```python
+        # Simulating agent usage for a simple addition tool
+        docs = ProposedChanges(description="Adds two numbers.", examples=["{'a': 5, 'b': 3} -> 8"])
+        schema = {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}}
+        config = {"model": "gpt-4", "provider": "openai", "temperature": 0.7}
+        results, cost = await _simulate_agent_usage(
+            tool_name="add_numbers",
+            current_docs=docs,
+            current_schema=schema,
+            refinement_model_config=config,
+            num_simulations=2
+        )
+        for result in results:
+            print(f"Task: {result.task_description}")
+            print(f"Tool Selected: {result.tool_selected}, Success: {result.formulation_success}")
+        print(f"Total Cost: {cost}")
+        ```
+        This example demonstrates how the function evaluates a tool's documentation for an addition task, returning simulation results and the associated cost.
+
+    """
+    sim_results: List[AgentSimulationResult] = []
+    total_cost = 0.0
+
+    # --- Define Generic Task Scenarios ---
+    # These tasks are designed to be potentially solvable by various tools,
+    # forcing the simulation agent to decide if *this specific tool* is appropriate.
+    generic_tasks = [
+        f"Perform the core function described for the '{tool_name}' tool.",
+        f"I need to process data related to '{tool_name}'. What arguments should I use?",
+        f"Use the '{tool_name}' tool to handle the following input: [Provide Plausible Input Here - LLM will adapt].",
+        f"Is '{tool_name}' the right tool for analyzing recent performance metrics?",
+        f"How would I use '{tool_name}' to get information about 'example_entity'?",
+        f"Configure '{tool_name}' for a quick, low-detail execution.",
+        f"Execute '{tool_name}' with all optional parameters specified for maximum detail.",
+        f"Compare the output of '{tool_name}' with a hypothetical alternative approach.",
+        f"Use tool '{tool_name}' to extract key information about a user request.",
+        f"Generate a report using the '{tool_name}' tool based on last week's data."
+    ]
+    # Select a diverse subset of tasks for simulation
+    tasks_to_simulate = random.sample(generic_tasks, k=min(num_simulations, len(generic_tasks)))
+    if not tasks_to_simulate:
+        logger.warning(f"No tasks selected for agent simulation for tool '{tool_name}'.")
+        return [], 0.0
+
+    # --- Prepare Documentation Snippets for Prompt ---
+    schema_str = json.dumps(current_schema, indent=2)
+    # Limit examples in prompt to save tokens, focus on description/schema
+    examples_str = json.dumps([ex.model_dump() for ex in current_docs.examples[:1]], indent=2) if current_docs.examples else "(No examples provided)"
+
+    # --- Run Simulation for each Task ---
+    for task_desc in tasks_to_simulate:
+        prompt = f"""You are an AI assistant evaluating how to use an MCP tool based *only* on its provided documentation to accomplish a specific task.
+
+**Your Assigned Task:** "{task_desc}"
+
+**Tool Documentation Available:**
+
+Tool Name: `{tool_name}`
+
+Description:
+```
+{current_docs.description or '(No description provided)'}
+```
+
+Input Schema (JSON Schema):
 ```json
 {schema_str}
 ```
-**Successful Args:**
+
+Usage Examples:
 ```json
-{success_str or '(None observed)'}
-```
-**Failed Args & Errors:**
-```
-{failure_str or '(None observed)'}
+{examples_str}
 ```
 
-Generate 2-4 diverse, clear usage examples as a JSON list. Each example MUST be a dictionary `{{ "args": {{...}}, "comment": "...", "addresses_failure_pattern": "Optional[ErrorKey]" }}`.
-- Prioritize examples that demonstrate how to *avoid* the observed failures.
-- Include examples showcasing common or important successful use cases.
-- Ensure the `args` are valid according to the schema.
-- The `comment` should explain the purpose or key aspect demonstrated by the example.
-- If an example addresses a specific failure pattern key (from the failure summary, e.g., "ToolInputError:INVALID_PARAMETER:param:some_param"), include that key in `addresses_failure_pattern`.
+**Your Evaluation Steps:**
 
-Output ONLY the valid JSON list."""
+1.  **Tool Selection:** Based *only* on the documentation, decide if `{tool_name}` is the *most appropriate* tool available to you for the assigned task. Explain your reasoning. If not appropriate, state why and set `tool_selected` to `null`.
+2.  **Argument Formulation:** If you selected `{tool_name}`, formulate the *exact* arguments (as a JSON object) you would pass to it, strictly following the Input Schema and using information from the Description and Examples. If you cannot formulate valid arguments due to documentation issues (ambiguity, missing info, conflicting constraints), explain the problem clearly. Set `arguments_formulated` to `null` if formulation fails.
+3.  **Reasoning:** Detail your step-by-step thought process for both selection and formulation. Highlight any parts of the documentation that were unclear, ambiguous, or potentially misleading.
+4.  **Confidence:** Estimate your confidence (0.0 to 1.0) that the formulated arguments (if any) are correct and will lead to successful tool execution based *solely* on the documentation.
+5.  **Success Flags:** Set `formulation_success` to `true` only if you successfully formulated arguments you believe are correct based on the documentation. Set `selection_error` or `formulation_error` with a brief explanation if applicable.
 
-    try:
-        result = await generate_completion(
-            prompt=prompt, **refinement_model_config, temperature=0.4, max_tokens=1500, # Increased token limit
-            additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None
-        )
-        if not result.get("success"):
-            raise ToolError(f"LLM example gen fail: {result.get('error')}")
-        cost += result.get("cost", 0.0)
-        examples_text = result["text"]
+**Output Format:** Respond ONLY with a single, valid JSON object adhering precisely to this structure:
+
+```json
+{{
+  "tool_selected": "{tool_name}" or null,
+  "arguments_formulated": {{...}} or null,
+  "formulation_success": true or false,
+  "reasoning": "(String) Your detailed step-by-step reasoning for selection and formulation.",
+  "confidence_score": "(Float) 0.0-1.0",
+  "selection_error": "(String) Reason tool was deemed inappropriate, or null.",
+  "formulation_error": "(String) Reason arguments could not be formulated correctly, or null."
+}}
+```
+
+JSON Output:
+"""
         try:
-            examples_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", examples_text.strip())
-            examples_list_raw = json.loads(examples_text_cleaned)
-            # Validate structure using Pydantic
-            validated_examples = [GeneratedExample(**ex) for ex in examples_list_raw if isinstance(ex, dict)]
-            return validated_examples, cost
-        except (json.JSONDecodeError, ValidationError, TypeError) as e:
-            logger.error(f"Failed parse/validate examples JSON: {e}. Raw: {examples_text}", exc_info=True)
-            return [], cost
-    except Exception as e:
-        logger.error(f"Error generating examples: {e}", exc_info=True)
-        return [], cost
+            logger.debug(f"Running agent simulation for task: '{task_desc}' (Tool: {tool_name})")
+            result = await generate_completion(
+                prompt=prompt,
+                **refinement_model_config,
+                temperature=0.4, # Balance creativity and adherence for simulation
+                max_tokens=2000, # Allow space for reasoning
+                additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None
+            )
+            total_cost += result.get("cost", 0.0)
 
+            if not result.get("success"):
+                raise ToolError(f"LLM simulation call failed: {result.get('error')}")
 
+            sim_text = result["text"]
+            logger.debug(f"Raw simulation response for task '{task_desc}': {sim_text[:500]}...")
+
+            # --- Parse and Validate Response ---
+            try:
+                sim_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", sim_text.strip())
+                sim_data = json.loads(sim_text_cleaned)
+
+                # Validate required fields manually or using Pydantic partial validation if needed
+                if not all(k in sim_data for k in ["formulation_success", "reasoning"]):
+                    raise ValueError("Simulation response missing required fields.")
+
+                # Use Pydantic model for structured data, handling potential missing optional keys
+                sim_result_obj = AgentSimulationResult(
+                    task_description=task_desc,
+                    tool_selected=sim_data.get("tool_selected"),
+                    arguments_formulated=sim_data.get("arguments_formulated"),
+                    formulation_success=sim_data.get("formulation_success", False), # Default to False
+                    reasoning=sim_data.get("reasoning"),
+                    confidence_score=sim_data.get("confidence_score"),
+                    selection_error=sim_data.get("selection_error"),
+                    formulation_error=sim_data.get("formulation_error")
+                )
+                sim_results.append(sim_result_obj)
+
+            except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as e:
+                logger.error(f"Failed to parse/validate simulation result JSON for task '{task_desc}': {e}. Raw: {sim_text}", exc_info=True)
+                # Append an error result
+                sim_results.append(AgentSimulationResult(
+                    task_description=task_desc,
+                    formulation_success=False,
+                    formulation_error=f"Failed to parse simulation response: {e}. Raw: {sim_text[:200]}...",
+                    reasoning=f"LLM output was not valid JSON or did not match expected structure. Raw: {sim_text[:200]}..."
+                ))
+
+        except Exception as e:
+            # Catch errors during the generate_completion call or other unexpected issues
+            logger.error(f"Error during agent simulation LLM call for task '{task_desc}': {e}", exc_info=True)
+            sim_results.append(AgentSimulationResult(
+                task_description=task_desc,
+                formulation_success=False,
+                formulation_error=f"Simulation LLM call failed: {type(e).__name__}: {str(e)}",
+                reasoning="The LLM call to simulate agent behavior failed."
+            ))
+
+    logger.info(f"Agent simulation completed for tool '{tool_name}' ({len(sim_results)} scenarios).")
+    return sim_results, total_cost
 
 async def _winnow_documentation(
     tool_name: str,
-    current_docs: ProposedChanges,
-    current_schema: JSONSchemaObject,
+    current_docs: ProposedChanges,  # Input includes description, examples, patches
+    current_schema: JSONSchemaObject,  # Pass schema for context
     refinement_model_config: Dict[str, Any]
-) -> Tuple[ProposedChanges, float]:
-    """Simplifies documentation after refinement stabilizes."""
-    # (Implementation from V6 - Reuse)
-    # ... Assume V6 implementation ...
-    # NOTE: For brevity, omitting full copy-paste. Assume V6 logic is used.
+) -> Tuple[ProposedChanges, float]:  # Return type includes patches
+    """
+    Simplifies and optimizes the refined tool documentation for conciseness after the refinement process has stabilized.
+
+    This asynchronous function leverages a language model (LLM) to rewrite the tool's description and select the most essential usage examples, ensuring the documentation remains clear and effective while reducing unnecessary verbosity. The function is invoked once the tool's documentation has reached a stable state (e.g., after multiple iterations of refinement with high test success rates). Importantly, it preserves any schema patches that have been validated during the refinement process, focusing solely on optimizing the description and examples.
+
+    ### Args:
+        **tool_name** (`str`):  
+            The name of the tool whose documentation is being winnowed. This is used for logging and to provide context in the LLM prompt.
+
+        **current_docs** (`ProposedChanges`):  
+            A `ProposedChanges` object containing the latest refined documentation, which includes:  
+            - The tool's description.  
+            - A list of usage examples.  
+            - Any schema patches that have been applied and validated during the refinement process.  
+            This object serves as the input for winnowing and is optimized without altering the schema patches.
+
+        **current_schema** (`JSONSchemaObject`):  
+            The JSON schema corresponding to the tool's input, provided for context. While the schema itself is not modified, it is included in the LLM prompt to ensure the rewritten description and examples remain aligned with the tool's input requirements.
+
+        **refinement_model_config** (`Dict[str, Any]`):  
+            A dictionary containing configuration settings for the LLM used in the winnowing process. This includes parameters such as the model name, provider, temperature, and other settings that influence the LLM's behavior during text generation.
+
+    ### Returns:
+        `Tuple[ProposedChanges, float]`:  
+            A tuple containing:  
+            - **ProposedChanges**: A new `ProposedChanges` object with a potentially more concise description and a pruned list of the most essential examples. The schema patches from the input `current_docs` are preserved unchanged. If the winnowing process fails (e.g., due to an invalid LLM response), a deep copy of the input `current_docs` is returned.  
+            - **float**: The estimated cost (e.g., in tokens, compute resources, or monetary units) of the LLM call made during the winnowing process.
+
+    ### Behavior:
+        - **Winnowing Process**:  
+          - The function constructs a prompt for the LLM that includes the current description, schema, and examples.  
+          - It instructs the LLM to:  
+            1. Rewrite the description to be more concise while retaining all essential information.  
+            2. Select only the most informative 1 or 2 examples that best illustrate correct usage or clarify potential points of confusion.  
+            3. Ensure that the revised description and examples remain fully consistent with the provided schema.  
+          - The LLM's response is expected to be a JSON object containing the revised description and the selected examples.
+
+        - **Schema Preservation**:  
+          - The function does not modify the schema or its patches; it only optimizes the description and examples. The returned `ProposedChanges` object includes the same schema patches as the input.
+
+        - **Error Handling**:  
+          - If the LLM fails to produce a valid JSON response or if the response cannot be parsed, the function logs the error and returns a deep copy of the input `current_docs`, ensuring no data is lost.  
+          - Similarly, if the LLM's output does not meet the expected format, the function defaults to preserving the original documentation.
+
+        - **Cost Tracking**:  
+          - The function calculates and returns the estimated cost of the LLM call, allowing users to monitor resource usage during the winnowing step.
+
+    ### Notes:
+        - **Purpose of Winnowing**: This function is intended to be used after the documentation has been refined through multiple iterations and is considered stable. It focuses on making the documentation more efficient without compromising clarity or correctness.  
+        - **Schema Integrity**: Since schema patches are preserved, any changes made during refinement are maintained, ensuring that the tool's input validation remains consistent.  
+        - **LLM Configuration**: The `refinement_model_config` should be tuned to favor concise and precise outputs, as the goal is to reduce verbosity while retaining essential information.
+
+    ### Example:
+        ```python
+        # Example of winnowing documentation for a stable tool
+        current_docs = ProposedChanges(
+            description="This tool adds two numbers and returns their sum. It can handle both integers and floats, but be cautious with very large numbers as they may cause overflow.",
+            examples=[
+                GeneratedExample(args={"a": 5, "b": 3}, comment="Adding two integers"),
+                GeneratedExample(args={"a": 2.5, "b": 1.5}, comment="Adding two floats"),
+                GeneratedExample(args={"a": 1000000, "b": 999999}, comment="Testing large numbers")
+            ],
+            schema_patches=[{"op": "add", "path": "/properties/a", "value": {"type": "number"}}]
+        )
+        schema = {"type": "object", "properties": {"a": {"type": "number"}, "b": {"type": "number"}}}
+        config = {"model": "gpt-3.5-turbo", "provider": "openai", "temperature": 0.3}
+        winnowed_docs, cost = await _winnow_documentation(
+            tool_name="add_numbers",
+            current_docs=current_docs,
+            current_schema=schema,
+            refinement_model_config=config
+        )
+        # 'winnowed_docs' might have a shorter description and fewer examples, but the same schema patches
+        # 'cost' reflects the LLM usage for this operation
+        ```
+
+    """
     cost = 0.0
-    logger.info(f"Winnowing documentation for '{tool_name}'...")
+    logger.info(f"Winnowing documentation for stable tool '{tool_name}'...")
+
+    # Prepare context for the winnowing LLM
     schema_str = json.dumps(current_schema, indent=2)
+    # Include all current examples as context for the LLM to choose from
     examples_str = json.dumps([ex.model_dump() for ex in current_docs.examples], indent=2)
 
-    prompt = f"""Winnow documentation for tool '{tool_name}'. Make description concise, keep 1-2 best examples demonstrating core use and avoiding past pitfalls. Preserve schema patches.
-Current Desc: {current_docs.description}
-Schema: {schema_str}
-Current Examples: {examples_str}
-Output JSON: {{"description": "concise_desc", "examples": [...]}}""" # Examples field only
+    # --- Construct Winnowing Prompt ---
+    prompt = f"""# Task: Winnow Stable MCP Tool Documentation
+
+The documentation for tool `{tool_name}` has been iteratively refined and is considered stable (high success rate in tests). Your goal is to make it more **concise** and **efficient** for an LLM agent to process, while preserving all *essential* information and correctness.
+
+## Current Documentation (Input)
+
+**Description:**
+```
+{current_docs.description or '(No description provided)'}
+```
+
+**Input Schema (for context):**
+```json
+{schema_str}
+```
+
+**Current Examples:**
+```json
+{examples_str or '(None provided)'}
+```
+
+## Instructions
+
+1.  **Rewrite Description:** Create a concise version of the description.
+    *   Focus on the core purpose and *critical* parameters/constraints.
+    *   Remove redundancy or verbose explanations if the schema itself is clear enough (assume the schema is now relatively accurate).
+    *   Retain essential warnings or critical usage notes.
+2.  **Select Essential Examples:** Choose only the **1 or 2 most informative examples** from the `Current Examples` list.
+    *   Prioritize examples that illustrate the most common use case or clarify a previously identified point of confusion (even if not explicitly stated, choose diverse ones).
+    *   Ensure selected examples are minimal yet correct according to the schema. Keep comments concise.
+3.  **Do NOT modify the schema itself.** Your output only includes the revised description and pruned examples.
+
+## Output Format (Strict JSON Object):
+
+```json
+{{
+  "description": "(String) The concise, winnowed description.",
+  "examples": [
+    {{ "args": {{...}}, "comment": "Concise comment for example 1" }},
+    // (Optional) Include a second example if truly necessary for clarity
+    {{ "args": {{...}}, "comment": "Concise comment for example 2" }}
+  ]
+}}
+```
+
+JSON Output:
+"""
+
+    # --- Call LLM for Winnowing ---
     try:
-        result = await generate_completion(prompt=prompt, **refinement_model_config, temperature=0.2, max_tokens=1800, additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None)
-        if not result.get("success"): 
-            raise ToolError(f"LLM winnow fail: {result.get('error')}")
+        logger.debug(f"Sending winnowing prompt for '{tool_name}' to {refinement_model_config.get('model')}")
+        result = await generate_completion(
+            prompt=prompt,
+            **refinement_model_config,
+            temperature=0.1, # Low temperature for precise editing
+            max_tokens=2000, # Ample space, but expect shorter output
+            additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None
+        )
+
+        if not result.get("success"):
+            raise ToolError(f"LLM winnowing call failed: {result.get('error')}")
+
         cost += result.get("cost", 0.0)
         winnow_text = result["text"]
+        logger.debug(f"Raw winnowing response: {winnow_text[:500]}...")
+
+        # --- Parse and Validate Response ---
         try:
             winnow_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", winnow_text.strip())
             winnow_data = json.loads(winnow_text_cleaned)
+
+            # Validate the structure and content using Pydantic (for examples)
+            # We create a new ProposedChanges object, preserving original schema patches
             winnowed_proposal = ProposedChanges(
-                description=winnow_data.get("description", current_docs.description),
-                schema_patches=current_docs.schema_patches, # Keep existing patches
+                description=winnow_data.get("description", current_docs.description), # Fallback
+                schema_patches=current_docs.schema_patches, # IMPORTANT: Keep original patches
                 examples=[GeneratedExample(**ex) for ex in winnow_data.get("examples", []) if isinstance(ex, dict)]
             )
+
+            # Basic sanity check on example count
+            if len(winnowed_proposal.examples) > 3: # Allow maybe 3 max, even if asked for 1-2
+                logger.warning(f"Winnowing returned {len(winnowed_proposal.examples)} examples, expected 1-2. Keeping all.")
+
+            logger.info(f"Successfully winnowed documentation for '{tool_name}'.")
             return winnowed_proposal, cost
+
         except (json.JSONDecodeError, ValidationError, TypeError) as e:
-            logger.error(f"Failed parse/validate winnowing JSON: {e}. Raw: {winnow_text}", exc_info=True)
+            logger.error(f"Failed to parse/validate winnowing JSON for '{tool_name}': {e}. Raw: {winnow_text}", exc_info=True)
+            # On failure, return the *original* ProposedChanges object, indicating winnowing failed
             return current_docs.model_copy(deep=True), cost
+
     except Exception as e:
-        logger.error(f"Error winnowing {tool_name}: {e}", exc_info=True)
+        logger.error(f"Error during winnowing LLM call or processing for '{tool_name}': {e}", exc_info=True)
+        # Return the *original* ProposedChanges object on any execution error
         return current_docs.model_copy(deep=True), cost
-
-
-# --- Main Tool Function ---
 
 @with_tool_metrics
 @with_error_handling
@@ -1587,30 +2616,95 @@ async def refine_tool_documentation(
     max_iterations: int = 1,
     refinement_model_config: Optional[JsonDict] = None,
     analysis_ensemble_configs: Optional[List[JsonDict]] = None,
-    validation_level: Optional[Literal['none', 'basic', 'full']] = None, # Made optional, default below
+    validation_level: Optional[Literal['none', 'basic', 'full']] = None,  # Made optional, default below
     enable_winnowing: bool = True,
     progress_callback: ProgressCallback = None,
     ctx: McpContext = None
 ) -> JsonDict:
     """
-    Apex++ Synergetic: Autonomously refines MCP tool documentation via agent simulation,
-    schema-aware adaptive testing, validated JSON Patch schema evolution, ensemble analysis,
-    failure-driven example generation, optional winnowing, and detailed reporting.
+    Autonomously refines the documentation of MCP tools through an iterative process that integrates agent simulation, schema-aware adaptive testing, validated JSON Patch schema evolution, ensemble analysis, failure-driven example generation, optional winnowing for conciseness, and detailed reporting.
 
-    Args:
-        tool_names: Specific tool names (e.g., ["server:tool"]) to refine. Use EITHER this OR `refine_all_available`.
-        refine_all_available: If True, refine all registered tools. Overrides `tool_names`. Default False.
-        generation_config: (Optional) Dict controlling test case counts per strategy (`TestCaseGenerationStrategy`).
-        max_iterations: (Optional) Max internal test-analyze-patch-suggest cycles per tool. Default 1. Max capped.
-        refinement_model_config: (Optional) Primary LLM config for analysis/generation. Uses capable default if None.
-        analysis_ensemble_configs: (Optional) List of additional LLM configs for ensemble analysis.
-        validation_level: (Optional) How strictly to validate generated test args ('none', 'basic', 'full'). Defaults to 'full' if jsonschema available, else 'none'.
-        enable_winnowing: (Optional) If True, run final pass to make documentation concise. Default True.
-        progress_callback: (Optional) Async function to call with `RefinementProgressEvent` updates.
-        ctx: MCP context object (required).
+    This asynchronous function serves as the backbone of a self-improving documentation system within the MCP framework. It employs language learning models (LLMs) and structured testing methodologies to evaluate and enhance tool documentation, making it clearer, more accurate, and more usable. Users can target specific tools or refine all available tools, with extensive configuration options to tailor the refinement process to their needs.
 
-    Returns:
-        Dictionary structured by `DocstringRefinementResult`.
+    ### Args:
+        **tool_names** (`Optional[List[str]]`, default=`None`):  
+            A list of specific tool names (e.g., `["server:tool"]`) to refine. If provided, only these tools will be processed. Use this parameter OR `refine_all_available`, but not both. If neither is specified, the function will raise an error.
+
+        **refine_all_available** (`bool`, default=`False`):  
+            If `True`, refines all tools registered in the MCP context, ignoring `tool_names`. Ideal for comprehensive documentation updates across all tools.
+
+        **generation_config** (`Optional[JsonDict]`, default=`None`):  
+            A dictionary specifying the number of test cases to generate for each testing strategy (as defined by `TestCaseGenerationStrategy`). If omitted, default test case counts are applied.
+
+        **max_iterations** (`int`, default=`1`):  
+            The maximum number of refinement cycles (test-analyze-patch-suggest) per tool. Each cycle improves the documentation based on test outcomes and LLM analysis. A predefined cap limits excessive iterations to manage resource usage.
+
+        **refinement_model_config** (`Optional[JsonDict]`, default=`None`):  
+            Configuration for the primary LLM used for analysis and content generation. If `None`, a capable default model is selected automatically.
+
+        **analysis_ensemble_configs** (`Optional[List[JsonDict]]`, default=`None`):  
+            A list of configurations for additional LLMs forming an ensemble. This ensemble enhances the refinement process by providing diverse perspectives and improving the quality of suggested changes.
+
+        **validation_level** (`Optional[Literal['none', 'basic', 'full']]`, default=`None`):  
+            Controls the strictness of schema validation for generated test arguments:  
+            - `'none'`: No validation.  
+            - `'basic'`: Validates only positive test cases.  
+            - `'full'`: Validates all test cases against the schema.  
+            If `None`, defaults to `'full'` if the `jsonschema` library is available, otherwise `'none'`.
+
+        **enable_winnowing** (`bool`, default=`True`):  
+            If `True`, performs a final pass to streamline the documentation, making it concise using an LLM while retaining critical information and schema patches.
+
+        **progress_callback** (`ProgressCallback`, default=`None`):  
+            An optional asynchronous callback function that receives `RefinementProgressEvent` updates, enabling real-time tracking of the refinement process.
+
+        **ctx** (`McpContext`, default=`None`):  
+            The MCP context object, required for accessing the MCP server instance and registered tools. The function cannot operate without a valid context.
+
+    ### Returns:
+        **`JsonDict`**:  
+            A dictionary conforming to the `DocstringRefinementResult` structure, containing:  
+            - **Refined Tool Results**: Details for each tool, including iteration outcomes, final proposed documentation changes, success rates, and any errors encountered.  
+            - **Summary Statistics**: Total iterations, test calls, failures, and estimated costs from LLM and tool operations.  
+            - **Success Flag**: Indicates whether the refinement completed without critical failures.
+
+    ### Behavior:
+        - **Input Validation**: Ensures a valid MCP context and either `tool_names` or `refine_all_available` is provided.  
+        - **Tool Selection**: Refines specified tools or all registered tools based on input parameters.  
+        - **Refinement Process**: For each tool, up to `max_iterations` cycles are executed:  
+            1. **Agent Simulation**: Evaluates documentation usability.  
+            2. **Test Generation**: Creates adaptive test cases based on schema and prior results.  
+            3. **Testing**: Executes tests to identify documentation weaknesses.  
+            4. **Analysis**: Uses LLMs (primary and ensemble) to propose improvements.  
+            5. **Schema Patching**: Applies JSON Patch operations in-memory for the next cycle.  
+        - **Winnowing**: If enabled, optimizes documentation conciseness post-refinement.  
+        - **Progress Updates**: Sends events to `progress_callback` if provided.  
+        - **Error Handling**: Managed by the `@with_error_handling` decorator, allowing the function to log errors and proceed with remaining tools.  
+        - **Metrics**: The `@with_tool_metrics` decorator tracks performance and costs.
+
+    ### Notes:
+        - **Concurrency**: Tools are processed in parallel using `asyncio.gather`, with limits to prevent overload.  
+        - **Schema Evolution**: Incremental schema improvements are proposed and applied in-memory.  
+        - **Cost Tracking**: Accumulates and reports costs from LLM and tool operations.  
+        - **Flexibility**: Ensemble analysis and configurable validation levels allow customization of the refinement rigor.
+
+    ### Example:
+        ```python
+        # Refine documentation for two tools with custom settings
+        result = await refine_tool_documentation(
+            tool_names=["math_add", "math_subtract"],
+            generation_config={"positive": 5, "negative": 3},
+            max_iterations=2,
+            refinement_model_config={"model": "gpt-4", "provider": "openai"},
+            analysis_ensemble_configs=[{"model": "claude-2", "provider": "anthropic"}],
+            validation_level="full",
+            enable_winnowing=True,
+            progress_callback=my_progress_callback,
+            ctx=mcp_context
+        )
+        print(result)  # View refinement results, including changes and costs
+        ```
+
     """
     start_time = time.time()
     refined_tools_list: List[RefinedToolResult] = []
@@ -1625,12 +2719,14 @@ async def refine_tool_documentation(
     # Determine effective validation level
     eff_validation_level = validation_level or ('full')
 
-    async def _emit_progress(event_data: Dict[str, Any]):
+    async def _emit_progress(event_data: Dict[str, Any], raise_on_error: bool = False):
         if progress_callback:
-            try: 
+            try:
                 await progress_callback(RefinementProgressEvent(**event_data))
-            except Exception as cb_err: 
+            except Exception as cb_err:
                 logger.warning(f"Progress callback failed: {cb_err}")
+                if raise_on_error:
+                    raise
 
     # --- Validate Inputs and Context ---
     if not ctx or not hasattr(ctx, 'mcp') or ctx.mcp is None:
@@ -1671,7 +2767,7 @@ async def refine_tool_documentation(
     if analysis_ensemble_configs: 
         analysis_configs.extend([c for c in analysis_ensemble_configs if isinstance(c, dict) and c != primary_refinement_config])
 
-    logger.info(f"Starting Apex++ refinement for {len(target_tool_names)} tools...")
+    logger.info(f"Starting refinement for {len(target_tool_names)} tools...")
 
     # --- Function to process a single tool ---
     async def process_single_tool(tool_name: str) -> RefinedToolResult:
@@ -1876,44 +2972,6 @@ async def refine_tool_documentation(
         return final_tool_result
 
     # --- Parallel Tool Processing ---
-    processing_tasks = [process_single_tool(name) for name in target_tool_names]
-    results_from_gather = await asyncio.gather(*processing_tasks, return_exceptions=True)
-
-    # --- Process Results & Accumulate Totals ---
-    for res in results_from_gather:
-         if isinstance(res, RefinedToolResult):
-              refined_tools_list.append(res)
-              if res.process_error: 
-                  refinement_process_errors_overall.append(res.process_error)
-              # Accumulate costs/stats from the result object if needed (already tracked globally though)
-         elif isinstance(res, Exception):
-              err_msg = f"Unexpected error during parallel processing: {type(res).__name__}: {str(res)}"
-              logger.error(err_msg, exc_info=res)
-              refinement_process_errors_overall.append(err_msg)
-
-    # --- Final Overall Result ---
-    processing_time = time.time() - start_time
-    overall_success = not bool(refinement_process_errors_overall)
-    final_result = DocstringRefinementResult(
-        refined_tools=refined_tools_list,
-        refinement_model_configs=analysis_configs, # Use cleaned list
-        total_iterations_run=total_iterations_run_all_tools,
-        total_test_calls_attempted=total_tests_attempted_overall,
-        total_test_calls_failed=total_tests_failed_overall,
-        total_schema_validation_failures=total_schema_validation_failures,
-        total_agent_simulation_failures=total_agent_simulation_failures,
-        total_refinement_cost=total_refinement_cost_overall,
-        total_processing_time=processing_time,
-        errors_during_refinement_process=refinement_process_errors_overall,
-        success=overall_success
-    )
-
-    logger.success("Apex++ Docstring Refinement V6 completed.", time=processing_time)
-    await _emit_progress({"tool_name": "ALL", "iteration": max_iterations, "total_iterations": max_iterations, "stage": "tool_complete", "message": "Overall refinement process finished.", "details": {"success": overall_success}})
-
-    return final_result.model_dump()
-
-    # --- Parallel Tool Processing ---
     # Wrap process_single_tool to handle potential None return if validation fails early
     async def safe_process_single_tool(name: str) -> Optional[RefinedToolResult]:
          try:
@@ -1931,8 +2989,6 @@ async def refine_tool_documentation(
 
     # Filter out None results and add to the final list
     refined_tools_list = [res for res in results_from_gather if res is not None]
-    # Update overall error list with errors caught during gather/task execution
-    # (already handled by appending within safe_process_single_tool)
 
     # --- Final Overall Result ---
     processing_time = time.time() - start_time
@@ -1959,481 +3015,3 @@ async def refine_tool_documentation(
     })
 
     return final_result.model_dump()
-
-async def _generate_examples(
-    tool_name: str,
-    description: str,
-    schema: JSONSchemaObject,
-    success_cases: List['TestExecutionResult'], # Use forward reference
-    failure_cases: List['TestExecutionResult'], # Use forward reference
-    refinement_model_config: Dict[str, Any],
-    validation_level: Literal['full', 'basic'] = 'full'
-) -> Tuple[List['GeneratedExample'], float]: # Use forward reference
-    """
-    Generates illustrative usage examples for a tool using an LLM.
-
-    It considers the tool's documentation, successful execution arguments, and
-    arguments that led to failures to create examples that demonstrate correct usage
-    and potentially address common pitfalls.
-
-    Args:
-        tool_name: Name of the tool.
-        description: Current description of the tool.
-        schema: Current JSON schema of the tool's input.
-        success_cases: List of successful test execution results.
-        failure_cases: List of failed test execution results.
-        refinement_model_config: LLM configuration for generating the examples.
-
-    Returns:
-        A tuple containing:
-        - A list of GeneratedExample objects.
-        - The estimated cost (float) of the LLM call for example generation.
-    """
-    cost = 0.0
-    # Don't bother generating examples if there's nothing to base them on
-    # or if the schema itself is minimal (no properties likely means no args needed)
-    if not schema.get("properties") and not success_cases and not failure_cases:
-        logger.debug(f"Skipping example generation for '{tool_name}': No properties, successes, or failures provided.")
-        return [], cost
-    if not description and not schema.get("properties"):
-         logger.debug(f"Skipping example generation for '{tool_name}': No description or properties.")
-         return [], cost
-
-
-    # --- Format Inputs for Prompt ---
-    schema_str = json.dumps(schema, indent=2)
-
-    # Limit the number of examples shown in the prompt to manage context size
-    max_prompt_examples = 3
-    success_examples_str = "\n".join([f"- Args: {json.dumps(r.test_case.arguments, default=str)}"
-                                      for r in success_cases[:max_prompt_examples]])
-    failure_examples_str = ""
-    if failure_cases:
-        failure_examples_str += "Examples of Failed Calls (Args -> Error Type: Error Code -> Message):\n"
-        for r in failure_cases[:max_prompt_examples]:
-             error_info = f"{r.error_type or 'UnknownType'}:{r.error_code or 'UnknownCode'} -> {r.error_message or 'No message'}"
-             failure_examples_str += f"- {json.dumps(r.test_case.arguments, default=str)} -> {error_info[:150]}...\n" # Limit error message length
-
-    # --- Construct Prompt ---
-    prompt = f"""# Task: Generate Usage Examples for MCP Tool
-
-Given the documentation for the MCP tool '{tool_name}', along with examples of successful and failed attempts to use it by an LLM agent, generate 2-4 diverse and clear usage examples.
-
-## Tool Documentation
-
-**Description:**
-{description or '(No description provided)'}
-
-**Input Schema:**
-```json
-{schema_str}
-```
-
-## Observed Usage
-
-**Successful Args Examples:**
-```json
-{success_examples_str or '(None provided or none succeeded)'}
-```
-
-**Failed Args & Errors Examples:**
-```
-{failure_examples_str or '(None observed)'}
-```
-
-## Instructions
-
-1.  Create 2-4 concise, valid usage examples based on the schema and description.
-2.  **Prioritize examples that demonstrate how to *avoid* the observed failures.** If failures involved specific parameters or constraints, show the *correct* way to use them.
-3.  Include examples showcasing common or important successful use cases reflected in the `Successful Args Examples`.
-4.  Ensure the `args` in your examples are valid according to the provided JSON schema.
-5.  For each example, provide a brief `comment` explaining its purpose or what key aspect it demonstrates (e.g., "Minimal call with only required fields", "Using the 'advanced_filter' optional parameter", "Correctly formatting the date string to avoid errors").
-6.  If an example specifically addresses a failure pattern (like an error code or type from the failures list), optionally include the relevant `addresses_failure_pattern` key (e.g., "ToolInputError:INVALID_PARAMETER:param:date").
-
-## Output Format
-
-Respond ONLY with a single, valid JSON list. Each element in the list must be an object with the following keys:
-- `args`: (Object) The valid arguments for the tool call.
-- `comment`: (String) A brief explanation of the example.
-- `addresses_failure_pattern`: (Optional[String]) The key identifying the failure pattern this example helps avoid.
-
-Example Output:
-```json
-[
-  {{
-    "args": {{ "required_param": "value1" }},
-    "comment": "Minimal usage with only the required parameter."
-  }},
-  {{
-    "args": {{ "required_param": "value2", "optional_param": true, "filter": {{"type": "user", "min_score": 0.8}} }},
-    "comment": "Using optional parameters and a nested filter object.",
-    "addresses_failure_pattern": "ToolInputError:INVALID_PARAMETER:param:filter"
-  }},
-  {{
-    "args": {{ "required_param": "value3", "format": "YYYY-MM-DD" }},
-    "comment": "Demonstrating the correct 'format' enum value."
-  }}
-]
-```
-
-JSON Output:
-"""
-
-    # --- Call LLM ---
-    try:
-        logger.debug(f"Generating examples for tool '{tool_name}' using model '{refinement_model_config.get('model')}'...")
-        result = await generate_completion(
-            prompt=prompt,
-            **refinement_model_config,
-            temperature=0.4, # Moderate temperature for slightly diverse examples
-            max_tokens=1500, # Allow decent space for examples
-            # Use JSON mode if supported by the provider
-            additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None
-        )
-        if not result.get("success"):
-            raise ToolError(f"LLM call failed during example generation: {result.get('error')}")
-
-        cost += result.get("cost", 0.0)
-        examples_text = result["text"]
-        logger.debug(f"Raw examples response from LLM: {examples_text[:500]}...")
-
-        # --- Parse and Validate Response ---
-        try:
-            # Clean potential markdown fences first
-            examples_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", examples_text.strip())
-            # Attempt to parse the cleaned text
-            examples_list_raw = json.loads(examples_text_cleaned)
-
-            # Validate structure using Pydantic
-            validated_examples: List[GeneratedExample] = []
-            if isinstance(examples_list_raw, list):
-                for i, ex_data in enumerate(examples_list_raw):
-                    if isinstance(ex_data, dict):
-                        try:
-                            # Validate each example dictionary
-                            validated_ex = GeneratedExample(**ex_data)
-                            # Optional: Further validate example 'args' against the tool's schema
-                            if validation_level != 'none':
-                                validation_error = _validate_args_against_schema(validated_ex.args, schema)
-                                if validation_error:
-                                     logger.warning(f"LLM generated example {i+1} for '{tool_name}' failed schema validation: {validation_error}. Skipping example.")
-                                     continue # Skip examples that don't validate against the schema
-                            validated_examples.append(validated_ex)
-                        except ValidationError as pydantic_err:
-                            logger.warning(f"Skipping invalid example structure at index {i} for '{tool_name}': {pydantic_err}. Data: {ex_data}")
-                        except Exception as val_err: # Catch other potential validation errors
-                            logger.warning(f"Error processing example item {i} for '{tool_name}': {val_err}. Data: {ex_data}")
-                    else:
-                        logger.warning(f"Skipping non-dictionary item in examples list for '{tool_name}' at index {i}.")
-            else:
-                # LLM did not return a list as requested
-                raise ValueError(f"LLM response was not a JSON list as expected. Type: {type(examples_list_raw)}")
-
-            logger.info(f"Successfully generated and validated {len(validated_examples)} examples for '{tool_name}'.")
-            return validated_examples, cost
-
-        except (json.JSONDecodeError, ValueError, TypeError) as e:
-            # Catch errors during parsing or validation
-            logger.error(f"Failed to parse or validate LLM examples JSON for '{tool_name}': {e}. Raw response: {examples_text}", exc_info=True)
-            # Return empty list and cost incurred so far
-            return [], cost
-
-    except Exception as e:
-        # Catch errors during the generate_completion call or other unexpected issues
-        logger.error(f"Error generating examples for tool '{tool_name}': {e}", exc_info=True)
-        return [], cost # Return empty list and accumulated cost
-
-async def _simulate_agent_usage(
-    tool_name: str,
-    current_docs: 'ProposedChanges', # Use forward reference for ProposedChanges
-    current_schema: JSONSchemaObject,
-    refinement_model_config: Dict[str, Any],
-    num_simulations: int = 3
-) -> Tuple[List['AgentSimulationResult'], float]: # Use forward reference
-    """
-    Simulates an LLM agent attempting to select and use the specified tool
-    for various tasks, based ONLY on the provided documentation.
-
-    Args:
-        tool_name: Name of the tool being evaluated.
-        current_docs: The ProposedChanges object containing the current description and examples.
-        current_schema: The current JSON schema for the tool's input.
-        refinement_model_config: LLM configuration for running the simulation.
-        num_simulations: The number of different task scenarios to simulate.
-
-    Returns:
-        A tuple containing:
-        - List[AgentSimulationResult]: Results of each simulation attempt.
-        - float: Estimated cost incurred by the simulation LLM calls.
-    """
-    sim_results: List[AgentSimulationResult] = []
-    total_cost = 0.0
-
-    # --- Define Generic Task Scenarios ---
-    # These tasks are designed to be potentially solvable by various tools,
-    # forcing the simulation agent to decide if *this specific tool* is appropriate.
-    generic_tasks = [
-        f"Perform the core function described for the '{tool_name}' tool.",
-        f"I need to process data related to '{tool_name}'. What arguments should I use?",
-        f"Use the '{tool_name}' tool to handle the following input: [Provide Plausible Input Here - LLM will adapt].",
-        f"Is '{tool_name}' the right tool for analyzing recent performance metrics?",
-        f"How would I use '{tool_name}' to get information about 'example_entity'?",
-        f"Configure '{tool_name}' for a quick, low-detail execution.",
-        f"Execute '{tool_name}' with all optional parameters specified for maximum detail.",
-        f"Compare the output of '{tool_name}' with a hypothetical alternative approach.",
-        f"Use tool '{tool_name}' to extract key information about a user request.",
-        f"Generate a report using the '{tool_name}' tool based on last week's data."
-    ]
-    # Select a diverse subset of tasks for simulation
-    tasks_to_simulate = random.sample(generic_tasks, k=min(num_simulations, len(generic_tasks)))
-    if not tasks_to_simulate:
-        logger.warning(f"No tasks selected for agent simulation for tool '{tool_name}'.")
-        return [], 0.0
-
-    # --- Prepare Documentation Snippets for Prompt ---
-    schema_str = json.dumps(current_schema, indent=2)
-    # Limit examples in prompt to save tokens, focus on description/schema
-    examples_str = json.dumps([ex.model_dump() for ex in current_docs.examples[:1]], indent=2) if current_docs.examples else "(No examples provided)"
-
-    # --- Run Simulation for each Task ---
-    for task_desc in tasks_to_simulate:
-        prompt = f"""You are an AI assistant evaluating how to use an MCP tool based *only* on its provided documentation to accomplish a specific task.
-
-**Your Assigned Task:** "{task_desc}"
-
-**Tool Documentation Available:**
-
-Tool Name: `{tool_name}`
-
-Description:
-```
-{current_docs.description or '(No description provided)'}
-```
-
-Input Schema (JSON Schema):
-```json
-{schema_str}
-```
-
-Usage Examples:
-```json
-{examples_str}
-```
-
-**Your Evaluation Steps:**
-
-1.  **Tool Selection:** Based *only* on the documentation, decide if `{tool_name}` is the *most appropriate* tool available to you for the assigned task. Explain your reasoning. If not appropriate, state why and set `tool_selected` to `null`.
-2.  **Argument Formulation:** If you selected `{tool_name}`, formulate the *exact* arguments (as a JSON object) you would pass to it, strictly following the Input Schema and using information from the Description and Examples. If you cannot formulate valid arguments due to documentation issues (ambiguity, missing info, conflicting constraints), explain the problem clearly. Set `arguments_formulated` to `null` if formulation fails.
-3.  **Reasoning:** Detail your step-by-step thought process for both selection and formulation. Highlight any parts of the documentation that were unclear, ambiguous, or potentially misleading.
-4.  **Confidence:** Estimate your confidence (0.0 to 1.0) that the formulated arguments (if any) are correct and will lead to successful tool execution based *solely* on the documentation.
-5.  **Success Flags:** Set `formulation_success` to `true` only if you successfully formulated arguments you believe are correct based on the documentation. Set `selection_error` or `formulation_error` with a brief explanation if applicable.
-
-**Output Format:** Respond ONLY with a single, valid JSON object adhering precisely to this structure:
-
-```json
-{{
-  "tool_selected": "{tool_name}" or null,
-  "arguments_formulated": {{...}} or null,
-  "formulation_success": true or false,
-  "reasoning": "(String) Your detailed step-by-step reasoning for selection and formulation.",
-  "confidence_score": "(Float) 0.0-1.0",
-  "selection_error": "(String) Reason tool was deemed inappropriate, or null.",
-  "formulation_error": "(String) Reason arguments could not be formulated correctly, or null."
-}}
-```
-
-JSON Output:
-"""
-
-        try:
-            logger.debug(f"Running agent simulation for task: '{task_desc}' (Tool: {tool_name})")
-            result = await generate_completion(
-                prompt=prompt,
-                **refinement_model_config,
-                temperature=0.4, # Balance creativity and adherence for simulation
-                max_tokens=2000, # Allow space for reasoning
-                additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None
-            )
-            total_cost += result.get("cost", 0.0)
-
-            if not result.get("success"):
-                raise ToolError(f"LLM simulation call failed: {result.get('error')}")
-
-            sim_text = result["text"]
-            logger.debug(f"Raw simulation response for task '{task_desc}': {sim_text[:500]}...")
-
-            # --- Parse and Validate Response ---
-            try:
-                sim_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", sim_text.strip())
-                sim_data = json.loads(sim_text_cleaned)
-
-                # Validate required fields manually or using Pydantic partial validation if needed
-                if not all(k in sim_data for k in ["formulation_success", "reasoning"]):
-                    raise ValueError("Simulation response missing required fields.")
-
-                # Use Pydantic model for structured data, handling potential missing optional keys
-                sim_result_obj = AgentSimulationResult(
-                    task_description=task_desc,
-                    tool_selected=sim_data.get("tool_selected"),
-                    arguments_formulated=sim_data.get("arguments_formulated"),
-                    formulation_success=sim_data.get("formulation_success", False), # Default to False
-                    reasoning=sim_data.get("reasoning"),
-                    confidence_score=sim_data.get("confidence_score"),
-                    selection_error=sim_data.get("selection_error"),
-                    formulation_error=sim_data.get("formulation_error")
-                )
-                sim_results.append(sim_result_obj)
-
-            except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as e:
-                logger.error(f"Failed to parse/validate simulation result JSON for task '{task_desc}': {e}. Raw: {sim_text}", exc_info=True)
-                # Append an error result
-                sim_results.append(AgentSimulationResult(
-                    task_description=task_desc,
-                    formulation_success=False,
-                    formulation_error=f"Failed to parse simulation response: {e}. Raw: {sim_text[:200]}...",
-                    reasoning=f"LLM output was not valid JSON or did not match expected structure. Raw: {sim_text[:200]}..."
-                ))
-
-        except Exception as e:
-            # Catch errors during the generate_completion call or other unexpected issues
-            logger.error(f"Error during agent simulation LLM call for task '{task_desc}': {e}", exc_info=True)
-            sim_results.append(AgentSimulationResult(
-                task_description=task_desc,
-                formulation_success=False,
-                formulation_error=f"Simulation LLM call failed: {type(e).__name__}: {str(e)}",
-                reasoning="The LLM call to simulate agent behavior failed."
-            ))
-
-    logger.info(f"Agent simulation completed for tool '{tool_name}' ({len(sim_results)} scenarios).")
-    return sim_results, total_cost
-
-async def _winnow_documentation(
-    tool_name: str,
-    current_docs: ProposedChanges, # Input includes description, examples, patches
-    current_schema: JSONSchemaObject, # Pass schema for context
-    refinement_model_config: Dict[str, Any]
-) -> Tuple[ProposedChanges, float]: # Return type includes patches
-    """
-    Simplifies refined tool documentation for conciseness after stability is reached.
-
-    Uses an LLM to rewrite the description and select the most essential examples,
-    while preserving the existing (validated) schema patches.
-
-    Args:
-        tool_name: Name of the tool being winnowed.
-        current_docs: The ProposedChanges object containing the latest refined
-                      description, examples, and schema patches.
-        current_schema: The JSON schema corresponding to the current_docs (used for context).
-        refinement_model_config: LLM configuration for the winnowing task.
-
-    Returns:
-        A tuple containing:
-        - ProposedChanges: A new object with the potentially more concise description
-                          and pruned examples, but the *same* schema patches as input.
-                          Returns a copy of input `current_docs` on failure.
-        - float: Estimated cost of the LLM call during winnowing.
-    """
-    cost = 0.0
-    logger.info(f"Winnowing documentation for stable tool '{tool_name}'...")
-
-    # Prepare context for the winnowing LLM
-    schema_str = json.dumps(current_schema, indent=2)
-    # Include all current examples as context for the LLM to choose from
-    examples_str = json.dumps([ex.model_dump() for ex in current_docs.examples], indent=2)
-
-    # --- Construct Winnowing Prompt ---
-    prompt = f"""# Task: Winnow Stable MCP Tool Documentation
-
-The documentation for tool `{tool_name}` has been iteratively refined and is considered stable (high success rate in tests). Your goal is to make it more **concise** and **efficient** for an LLM agent to process, while preserving all *essential* information and correctness.
-
-## Current Documentation (Input)
-
-**Description:**
-```
-{current_docs.description or '(No description provided)'}
-```
-
-**Input Schema (for context):**
-```json
-{schema_str}
-```
-
-**Current Examples:**
-```json
-{examples_str or '(None provided)'}
-```
-
-## Instructions
-
-1.  **Rewrite Description:** Create a concise version of the description.
-    *   Focus on the core purpose and *critical* parameters/constraints.
-    *   Remove redundancy or verbose explanations if the schema itself is clear enough (assume the schema is now relatively accurate).
-    *   Retain essential warnings or critical usage notes.
-2.  **Select Essential Examples:** Choose only the **1 or 2 most informative examples** from the `Current Examples` list.
-    *   Prioritize examples that illustrate the most common use case or clarify a previously identified point of confusion (even if not explicitly stated, choose diverse ones).
-    *   Ensure selected examples are minimal yet correct according to the schema. Keep comments concise.
-3.  **Do NOT modify the schema itself.** Your output only includes the revised description and pruned examples.
-
-## Output Format (Strict JSON Object):
-
-```json
-{{
-  "description": "(String) The concise, winnowed description.",
-  "examples": [
-    {{ "args": {{...}}, "comment": "Concise comment for example 1" }},
-    // (Optional) Include a second example if truly necessary for clarity
-    {{ "args": {{...}}, "comment": "Concise comment for example 2" }}
-  ]
-}}
-```
-
-JSON Output:
-"""
-
-    # --- Call LLM for Winnowing ---
-    try:
-        logger.debug(f"Sending winnowing prompt for '{tool_name}' to {refinement_model_config.get('model')}")
-        result = await generate_completion(
-            prompt=prompt,
-            **refinement_model_config,
-            temperature=0.1, # Low temperature for precise editing
-            max_tokens=2000, # Ample space, but expect shorter output
-            additional_params={"response_format": {"type": "json_object"}} if refinement_model_config.get("provider") == Provider.OPENAI.value else None
-        )
-
-        if not result.get("success"):
-            raise ToolError(f"LLM winnowing call failed: {result.get('error')}")
-
-        cost += result.get("cost", 0.0)
-        winnow_text = result["text"]
-        logger.debug(f"Raw winnowing response: {winnow_text[:500]}...")
-
-        # --- Parse and Validate Response ---
-        try:
-            winnow_text_cleaned = re.sub(r"^\s*```json\n?|\n?```\s*$", "", winnow_text.strip())
-            winnow_data = json.loads(winnow_text_cleaned)
-
-            # Validate the structure and content using Pydantic (for examples)
-            # We create a new ProposedChanges object, preserving original schema patches
-            winnowed_proposal = ProposedChanges(
-                description=winnow_data.get("description", current_docs.description), # Fallback
-                schema_patches=current_docs.schema_patches, # IMPORTANT: Keep original patches
-                examples=[GeneratedExample(**ex) for ex in winnow_data.get("examples", []) if isinstance(ex, dict)]
-            )
-
-            # Basic sanity check on example count
-            if len(winnowed_proposal.examples) > 3: # Allow maybe 3 max, even if asked for 1-2
-                logger.warning(f"Winnowing returned {len(winnowed_proposal.examples)} examples, expected 1-2. Keeping all.")
-
-            logger.info(f"Successfully winnowed documentation for '{tool_name}'.")
-            return winnowed_proposal, cost
-
-        except (json.JSONDecodeError, ValidationError, TypeError) as e:
-            logger.error(f"Failed to parse/validate winnowing JSON for '{tool_name}': {e}. Raw: {winnow_text}", exc_info=True)
-            # On failure, return the *original* ProposedChanges object, indicating winnowing failed
-            return current_docs.model_copy(deep=True), cost
-
-    except Exception as e:
-        logger.error(f"Error during winnowing LLM call or processing for '{tool_name}': {e}", exc_info=True)
-        # Return the *original* ProposedChanges object on any execution error
-        return current_docs.model_copy(deep=True), cost
