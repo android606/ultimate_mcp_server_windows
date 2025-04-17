@@ -179,6 +179,7 @@ from rich.tree import Tree
 # Project imports
 from llm_gateway.constants import Provider
 from llm_gateway.core.server import Gateway
+from llm_gateway.tools.base import with_error_handling
 from llm_gateway.tools.docstring_refiner import (
     RefinementProgressEvent,
 )
@@ -327,17 +328,22 @@ def parse_arguments():
 async def setup_gateway_and_tools(create_flawed_tools=False):
     """Set up the gateway and ensure docstring refiner tool is available."""
     global mcp
+    logger.debug("Initializing Gateway for docstring refiner demo...")
     logger.info("Initializing Gateway for docstring refiner demo...", emoji_key="start")
     
     # Create Gateway instance with minimal tools
+    logger.debug("Creating Gateway instance with minimal tools")
     gateway = Gateway("docstring-refiner-demo", register_tools=False)
     
     # Initialize providers (needed for the tool to function)
     try:
+        logger.debug("Initializing providers...")
         await gateway._initialize_providers()
         logger.success("Successfully initialized providers", emoji_key="success")
+        logger.debug("Successfully initialized providers")
     except Exception as e:
         logger.error(f"Error initializing providers: {e}", emoji_key="error", exc_info=True)
+        logger.exception("Error initializing providers")
         console.print(Panel(
             f"Error initializing providers: {escape(str(e))}\n\n"
             "Check that your API keys are set correctly in environment variables:\n"
@@ -352,8 +358,10 @@ async def setup_gateway_and_tools(create_flawed_tools=False):
     
     # Store the MCP server instance
     mcp = gateway.mcp
+    logger.debug("Stored MCP server instance")
     
     # Display available providers with available models
+    logger.debug("Getting provider information")
     provider_tree = Tree("[bold cyan]Available Providers & Models[/bold cyan]")
     provider_info = []
     
@@ -395,6 +403,7 @@ async def setup_gateway_and_tools(create_flawed_tools=False):
                 provider_info.append(f"{provider_name} (default: {default_model})")
             except Exception as e:
                 logger.warning(f"Could not get models for {provider_name}: {e}", emoji_key="warning")
+                logger.warning(f"Could not get models for {provider_name}: {e}")
                 provider_info.append(f"{provider_name} (models unavailable)")
                 provider_branch = provider_tree.add(f"[yellow]{provider_name}[/yellow]")
                 provider_branch.add(f"[red]Error listing models: {escape(str(e))}[/red]")
@@ -411,8 +420,10 @@ async def setup_gateway_and_tools(create_flawed_tools=False):
         ))
     
     # Verify the docstring_refiner tool is available
+    logger.debug("Checking for available tools")
     tool_list = await mcp.list_tools()
     available_tools = [t.name for t in tool_list]
+    logger.debug(f"Available tools before registration: {available_tools}")
     
     # Display all available tools
     tool_tree = Tree("[bold cyan]Available MCP Tools[/bold cyan]")
@@ -452,13 +463,74 @@ async def setup_gateway_and_tools(create_flawed_tools=False):
     else:
         logger.warning("refine_tool_documentation tool not found in available tools list.", emoji_key="warning")
         console.print(Panel(
-            "The docstring_refiner tool may not be registered automatically.\n"
-            "This demo will skip attempting to register it directly due to known Pydantic definition issues.",
+            "The refine_tool_documentation tool is not registered automatically.\n"
+            "This demo will attempt to register it manually as a fallback.",
             title="⚠️ Tool Availability Notice", 
             border_style="yellow"
         ))
         
-        # Note: We're intentionally skipping the manual registration due to the Pydantic error
+        # Manually register the refine_tool_documentation tool as a fallback
+        # Note: This should no longer be necessary since the tool is now included in STANDALONE_TOOL_FUNCTIONS
+        # in llm_gateway/tools/__init__.py, but we keep it as a fallback in case of issues
+        try:
+            print("Attempting to manually register refine_tool_documentation tool as fallback...")
+            from llm_gateway.tools.docstring_refiner import refine_tool_documentation
+            print("Imported refine_tool_documentation successfully")
+
+            # Create a simplified wrapper to avoid Pydantic validation issues
+            @with_error_handling
+            async def docstring_refiner_wrapper(
+                tool_names=None,
+                refine_all_available=False,
+                max_iterations=1,
+                ctx=None
+            ):
+                """
+                Refine the documentation of MCP tools.
+                
+                Args:
+                    tool_names: List of tools to refine, or None to use refine_all_available
+                    refine_all_available: Whether to refine all available tools
+                    max_iterations: Maximum number of refinement iterations
+                    ctx: MCP context
+                
+                Returns:
+                    Refinement results
+                """
+                print(f"Wrapper called with tool_names={tool_names}, refine_all_available={refine_all_available}")
+                # Simply pass through to the actual implementation
+                return await refine_tool_documentation(
+                    tool_names=tool_names,
+                    refine_all_available=refine_all_available,
+                    max_iterations=max_iterations,
+                    ctx=ctx
+                )
+            
+            # Register our simplified wrapper instead
+            mcp.tool(name="refine_tool_documentation")(docstring_refiner_wrapper)
+            print("Registered fallback wrapper tool successfully")
+            logger.success("Successfully registered fallback wrapper for refine_tool_documentation tool", emoji_key="success")
+        except Exception as e:
+            logger.error(f"Failed to register fallback refine_tool_documentation tool: {e}", emoji_key="error", exc_info=True)
+            print(f"Error registering fallback tool: {type(e).__name__}: {str(e)}")
+            import traceback
+            print("Stack trace:")
+            traceback.print_exc()
+            console.print(Panel(
+                f"Error registering the fallback refine_tool_documentation tool: {escape(str(e))}\n\n"
+                "This demo requires the docstring_refiner tool to be properly registered.",
+                title="❌ Registration Failed",
+                border_style="red",
+                expand=False
+            ))
+            console.print(Panel(
+                "This demo requires the docstring_refiner tool to be properly registered.\n"
+                "Check that you have the correct version of the LLM Gateway and dependencies installed.",
+                title="⚠️ Demo Requirements Not Met",
+                border_style="red",
+                expand=False
+            ))
+            return gateway
     
     # Create flawed example tools if requested
     if create_flawed_tools:
@@ -2769,31 +2841,89 @@ async def demo_practical_testing(
 
 async def main():
     """Main entry point for the demo."""
-    args = parse_arguments()
+    try:
+        print("Starting demo...")
+        logger.debug("Starting demo...")
+        args = parse_arguments()
+        print(f"Args parsed: {args}")
+        logger.debug(f"Args parsed: {args}")
+        
+        # Set up gateway
+        print("Setting up gateway...")
+        gateway = await setup_gateway_and_tools(create_flawed_tools=args.create_flawed)  # noqa: F841
+        print("Gateway setup complete")
+        
+        # Initialize cost tracker
+        tracker = CostTracker(limit=SETTINGS["cost_limit"])
+        
+        # Check if the tool was successfully registered
+        print("Checking if tool is registered...")
+        tool_list = await mcp.list_tools()
+        available_tools = [t.name for t in tool_list]
+        print(f"Available tools: {available_tools}")
+        
+        if "refine_tool_documentation" in available_tools:
+            print("Tool is available, proceeding with demo")
+            logger.info("Tool successfully registered, proceeding with demo", emoji_key="success")
+            
+            # Run a simple demo with one of the flawed tools
+            if args.create_flawed or args.demo == "practical":
+                print(f"Running demo: {args.demo}")
+                # Select a demo based on specified arguments
+                if args.demo == "single" or args.demo == "all":
+                    print("Running single tool refinement demo")
+                    result = await demo_single_tool_refinement(
+                        gateway, 
+                        tracker,
+                        target_tool=args.tool or "flawed_process_text",
+                        refinement_provider=args.provider,
+                        refinement_model=args.model,
+                        max_iterations=args.iterations or 1
+                    )
+                    if result:
+                        logger.success("Single tool refinement demo completed", emoji_key="success")
+                
+                elif args.demo == "practical":
+                    # Run the practical demo with flawed tools
+                    print("Running practical testing demo")
+                    result = await demo_practical_testing(gateway, tracker)
+                    if result:
+                        logger.success("Practical testing demo completed", emoji_key="success")
+            else:
+                print("No demo was specified to run")
+                console.print(Panel(
+                    "No demo was run. To see a demonstration with flawed tools, use --create-flawed or --demo practical.",
+                    title="ℹ️ Demo Information",
+                    border_style="cyan",
+                    expand=False
+                ))
+        else:
+            print("Tool is not available")
+            # Tool not available, show error message
+            console.print(Panel(
+                "This demo requires the docstring_refiner tool to be properly registered.\n"
+                "Due to known issues with Pydantic definitions, the tool can't be registered in this demo.\n\n"
+                "Check that you have the correct version of the LLM Gateway and dependencies installed.",
+                title="⚠️ Demo Requirements Not Met",
+                border_style="red",
+                expand=False
+            ))
+        
+        # Display cost summary
+        console.print(Rule("[bold green]Total Demo Cost Summary[/bold green]", style="green"))
+        tracker.display_costs(console=console)
+        
+        logger.info("Docstring Refiner Demo completed successfully", emoji_key="success")
+        console.print(Rule("[bold green]Demo Complete[/bold green]", style="green"))
+        print("Demo completed successfully")
+        
+    except Exception as e:
+        print(f"Error in main: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return 1
     
-    # Set up gateway
-    gateway = await setup_gateway_and_tools(create_flawed_tools=args.create_flawed)  # noqa: F841
-    
-    # Initialize cost tracker
-    tracker = CostTracker(limit=SETTINGS["cost_limit"])
-    
-    # For this demo, we'll skip any operations requiring the docstring_refiner tool
-    # since we know it's not available
-    console.print(Panel(
-        "This demo requires the docstring_refiner tool to be properly registered.\n"
-        "Due to known issues with Pydantic definitions, the tool can't be registered in this demo.\n\n"
-        "Check that you have the correct version of the LLM Gateway and dependencies installed.",
-        title="⚠️ Demo Requirements Not Met",
-        border_style="yellow",
-        expand=False
-    ))
-    
-    # Display cost summary
-    console.print(Rule("[bold green]Total Demo Cost Summary[/bold green]", style="green"))
-    tracker.display_costs(console=console)
-    
-    logger.info("Docstring Refiner Demo completed successfully", emoji_key="success")
-    console.print(Rule("[bold green]Demo Complete[/bold green]", style="green"))
+    return 0
 
 
 if __name__ == "__main__":

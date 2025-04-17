@@ -23,7 +23,7 @@ import os
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -187,6 +187,11 @@ class LinkType(str, Enum):
 # ======================================================
 
 # Note: Using TEXT for IDs (UUIDs) and TIMESTAMP for datetimes (ISO format strings)
+# ======================================================
+# Database Schema (Merged & Refined)
+# ======================================================
+
+# Note: Using TEXT for IDs (UUIDs) and INTEGER for datetimes (Unix timestamp seconds)
 # Note: Added comments explaining origins and modifications.
 
 SCHEMA_SQL = """
@@ -199,22 +204,22 @@ PRAGMA cache_size=-32000;
 PRAGMA mmap_size=2147483647;
 PRAGMA busy_timeout=30000;
 
--- Workflows table (Based on agent_memory, kept fields from cognitive_memory if overlapping)
+-- Workflows table ---
 CREATE TABLE IF NOT EXISTS workflows (
     workflow_id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,              -- From agent_memory
-    description TEXT,                 -- From agent_memory & cognitive_memory
-    goal TEXT,                        -- From agent_memory
-    status TEXT NOT NULL,             -- From agent_memory (uses WorkflowStatus enum)
-    created_at TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP NOT NULL,
-    completed_at TIMESTAMP,           -- From agent_memory
-    parent_workflow_id TEXT,          -- From agent_memory
-    metadata TEXT,                    -- JSON serialized, combined concept
-    last_active INTEGER               -- From cognitive_memory (Unix timestamp for potential sorting)
+    title TEXT NOT NULL,             
+    description TEXT,                
+    goal TEXT,                       
+    status TEXT NOT NULL,            
+    created_at INTEGER NOT NULL,     
+    updated_at INTEGER NOT NULL,     
+    completed_at INTEGER,            
+    parent_workflow_id TEXT,         
+    metadata TEXT,                   
+    last_active INTEGER              
 );
 
--- Actions table (From agent_memory)
+-- Actions table ---
 CREATE TABLE IF NOT EXISTS actions (
     action_id TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL,
@@ -226,14 +231,14 @@ CREATE TABLE IF NOT EXISTS actions (
     tool_args TEXT,                   -- JSON serialized
     tool_result TEXT,                 -- JSON serialized
     status TEXT NOT NULL,             -- Uses ActionStatus enum
-    started_at TIMESTAMP NOT NULL,
-    completed_at TIMESTAMP,
+    started_at INTEGER NOT NULL,      
+    completed_at INTEGER,             
     sequence_number INTEGER,
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (parent_action_id) REFERENCES actions(action_id) ON DELETE SET NULL
 );
 
--- Artifacts table (From agent_memory)
+-- Artifacts table ---
 CREATE TABLE IF NOT EXISTS artifacts (
     artifact_id TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL,
@@ -244,7 +249,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
     path TEXT,                        -- Filesystem path
     content TEXT,                     -- For text-based artifacts
     metadata TEXT,                    -- JSON serialized
-    created_at TIMESTAMP NOT NULL,
+    created_at INTEGER NOT NULL,      
     is_output BOOLEAN DEFAULT FALSE,
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL
@@ -256,7 +261,7 @@ CREATE TABLE IF NOT EXISTS thought_chains (
     workflow_id TEXT NOT NULL,
     action_id TEXT,                   -- Optional action context
     title TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL,
+    created_at INTEGER NOT NULL,      
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL
 );
@@ -269,18 +274,19 @@ CREATE TABLE IF NOT EXISTS thoughts (
     thought_type TEXT NOT NULL,        -- Uses ThoughtType enum
     content TEXT NOT NULL,
     sequence_number INTEGER NOT NULL,
-    created_at TIMESTAMP NOT NULL,
+    created_at INTEGER NOT NULL,       
     relevant_action_id TEXT,           -- Action this thought relates to/caused
     relevant_artifact_id TEXT,         -- Artifact this thought relates to
-    relevant_memory_id TEXT,           -- *** NEW FK: Memory entry this thought relates to ***
+    relevant_memory_id TEXT,           -- *** FK: Memory entry this thought relates to ***
     FOREIGN KEY (thought_chain_id) REFERENCES thought_chains(thought_chain_id) ON DELETE CASCADE,
     FOREIGN KEY (parent_thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL,
     FOREIGN KEY (relevant_action_id) REFERENCES actions(action_id) ON DELETE SET NULL,
-    FOREIGN KEY (relevant_artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL,
-    FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL -- *** NEW FK ***
+    FOREIGN KEY (relevant_artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL
+    -- Defer circular FK to memories table definition below
+    -- FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL -- *** FK ***
 );
 
--- Memories table (Based on cognitive_memory, modified)
+-- Memories table ---
 CREATE TABLE IF NOT EXISTS memories (
     memory_id TEXT PRIMARY KEY,        -- Renamed from 'id' for clarity
     workflow_id TEXT NOT NULL,
@@ -294,47 +300,48 @@ CREATE TABLE IF NOT EXISTS memories (
     source TEXT,                       -- Origin (tool name, file, user, etc.)
     context TEXT,                      -- JSON context of memory creation
     tags TEXT,                         -- JSON array of tags
-    created_at INTEGER NOT NULL,       -- Unix timestamp (kept from cognitive_memory for relevance calcs)
-    updated_at INTEGER NOT NULL,       -- Unix timestamp
-    last_accessed INTEGER,             -- Unix timestamp
+    created_at INTEGER NOT NULL,       
+    updated_at INTEGER NOT NULL,       
+    last_accessed INTEGER,             
     access_count INTEGER DEFAULT 0,
     ttl INTEGER DEFAULT 0,             -- TTL in seconds (0 = permanent)
     embedding_id TEXT,                 -- FK to embeddings table
-    action_id TEXT,                    -- *** NEW FK: Action associated with this memory ***
-    thought_id TEXT,                   -- *** NEW FK: Thought associated with this memory ***
-    artifact_id TEXT,                  -- *** NEW FK: Artifact associated with this memory ***
+    action_id TEXT,                    -- *** FK: Action associated with this memory ***
+    thought_id TEXT,                   -- *** FK: Thought associated with this memory ***
+    artifact_id TEXT,                  -- *** FK: Artifact associated with this memory ***
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
     FOREIGN KEY (embedding_id) REFERENCES embeddings(id) ON DELETE SET NULL,
-    FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL, -- *** NEW FK ***
-    FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL, -- *** NEW FK ***
-    FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL -- *** NEW FK ***
+    FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL, -- *** FK ***
+    -- Defer circular FK to thoughts table definition below
+    -- FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL, -- *** FK ***
+    FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL -- *** FK ***
 );
 
--- Memory links table (From cognitive_memory)
+-- Memory links table ---
 CREATE TABLE IF NOT EXISTS memory_links (
-    link_id TEXT PRIMARY KEY,         -- Renamed from 'id'
-    source_memory_id TEXT NOT NULL,   -- Renamed from 'source_id'
-    target_memory_id TEXT NOT NULL,   -- Renamed from 'target_id'
+    link_id TEXT PRIMARY KEY,        
+    source_memory_id TEXT NOT NULL,  
+    target_memory_id TEXT NOT NULL,  
     link_type TEXT NOT NULL,          -- Uses LinkType enum
     strength REAL DEFAULT 1.0,
     description TEXT,
-    created_at INTEGER NOT NULL,       -- Unix timestamp
+    created_at INTEGER NOT NULL,       
     FOREIGN KEY (source_memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE,
     FOREIGN KEY (target_memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE,
     UNIQUE(source_memory_id, target_memory_id, link_type)
 );
 
--- Embeddings table (From cognitive_memory)
+-- Embeddings table ---
 CREATE TABLE IF NOT EXISTS embeddings (
     id TEXT PRIMARY KEY,               -- Embedding hash ID
     memory_id TEXT UNIQUE,             -- Link back to the memory
     model TEXT NOT NULL,               -- Embedding model used
     embedding BLOB NOT NULL,           -- Serialized vector
-    created_at INTEGER NOT NULL,       -- Unix timestamp
+    created_at INTEGER NOT NULL,       
     FOREIGN KEY (memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE
 );
 
--- Cognitive states table (From agent_memory, will store memory_ids)
+-- Cognitive states table (will store memory_ids)
 CREATE TABLE IF NOT EXISTS cognitive_states (
     state_id TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL,
@@ -343,26 +350,26 @@ CREATE TABLE IF NOT EXISTS cognitive_states (
     focus_areas TEXT,                  -- JSON array of memory_ids or descriptive strings
     context_actions TEXT,              -- JSON array of relevant action_ids
     current_goals TEXT,                -- JSON array of goal descriptions or thought_ids
-    created_at TIMESTAMP NOT NULL,
+    created_at INTEGER NOT NULL,       
     is_latest BOOLEAN NOT NULL,
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
 );
 
--- Reflections table (From cognitive_memory - for meta-cognitive analysis)
+-- Reflections table (for meta-cognitive analysis)
 CREATE TABLE IF NOT EXISTS reflections (
-    reflection_id TEXT PRIMARY KEY,    -- Renamed from 'id'
+    reflection_id TEXT PRIMARY KEY,    
     workflow_id TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
     reflection_type TEXT NOT NULL,     -- summary, insight, planning, etc.
-    created_at INTEGER NOT NULL,       -- Unix timestamp
+    created_at INTEGER NOT NULL,       
     referenced_memories TEXT,          -- JSON array of memory_ids
     FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
 );
 
--- Memory operations log (From cognitive_memory - for auditing/debugging)
+-- Memory operations log (for auditing/debugging) 
 CREATE TABLE IF NOT EXISTS memory_operations (
-    operation_log_id TEXT PRIMARY KEY, -- Renamed from 'id'
+    operation_log_id TEXT PRIMARY KEY, 
     workflow_id TEXT NOT NULL,
     memory_id TEXT,                    -- Related memory, if applicable
     action_id TEXT,                    -- Related action, if applicable
@@ -374,16 +381,16 @@ CREATE TABLE IF NOT EXISTS memory_operations (
     FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL
 );
 
--- Tags table (From agent_memory)
+-- Tags table ---
 CREATE TABLE IF NOT EXISTS tags (
     tag_id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     description TEXT,
     category TEXT,
-    created_at TIMESTAMP NOT NULL
+    created_at INTEGER NOT NULL
 );
 
--- Junction Tables for Tags (From agent_memory)
+-- Junction Tables for Tags ---
 CREATE TABLE IF NOT EXISTS workflow_tags (
     workflow_id TEXT NOT NULL,
     tag_id INTEGER NOT NULL,
@@ -408,22 +415,35 @@ CREATE TABLE IF NOT EXISTS artifact_tags (
     FOREIGN KEY (tag_id) REFERENCES tags(tag_id) ON DELETE CASCADE
 );
 
--- Dependencies table (From agent_memory)
+-- Dependencies table ---
 CREATE TABLE IF NOT EXISTS dependencies (
     dependency_id INTEGER PRIMARY KEY AUTOINCREMENT,
     source_action_id TEXT NOT NULL,    -- The action that depends on the target
     target_action_id TEXT NOT NULL,    -- The action that is depended upon
     dependency_type TEXT NOT NULL,     -- Type of dependency (e.g., 'requires', 'informs')
-    created_at TIMESTAMP NOT NULL,     -- When the dependency was created
+    created_at INTEGER NOT NULL,       -- When the dependency was created
     FOREIGN KEY (source_action_id) REFERENCES actions (action_id) ON DELETE CASCADE,
     FOREIGN KEY (target_action_id) REFERENCES actions (action_id) ON DELETE CASCADE,
     UNIQUE(source_action_id, target_action_id, dependency_type)
 );
--- Create Indices (Combined & Updated)
+
+-- Deferrable Circular Foreign Key Constraints for thoughts <-> memories
+-- (Execute after tables are created)
+-- ALTER TABLE thoughts ADD CONSTRAINT fk_thoughts_memory FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+-- ALTER TABLE memories ADD CONSTRAINT fk_memories_thought FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+-- NOTE: Adding constraints via ALTER TABLE needs separate handling or adjustment in DBConnection __aenter__ if schema init logic is complex.
+-- For simplicity in this example, we'll stick to inline definition and correct ordering + deferred FK for circular refs if needed later.
+-- Let's re-add the inline FKs but ensure correct order (memories before thoughts)
+-- Re-adding FKs inline now that memories table is defined first:
+ALTER TABLE thoughts ADD CONSTRAINT fk_thoughts_memory FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+ALTER TABLE memories ADD CONSTRAINT fk_memories_thought FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id) ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+
+
+-- Create Indices ---
 -- Workflow indices
 CREATE INDEX IF NOT EXISTS idx_workflows_status ON workflows(status);
 CREATE INDEX IF NOT EXISTS idx_workflows_parent ON workflows(parent_workflow_id);
-CREATE INDEX IF NOT EXISTS idx_workflows_last_active ON workflows(last_active DESC); -- For cognitive_memory feature
+CREATE INDEX IF NOT EXISTS idx_workflows_last_active ON workflows(last_active DESC);
 -- Action indices
 CREATE INDEX IF NOT EXISTS idx_actions_workflow_id ON actions(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_actions_parent ON actions(parent_action_id);
@@ -438,6 +458,7 @@ CREATE INDEX IF NOT EXISTS idx_thought_chains_workflow ON thought_chains(workflo
 CREATE INDEX IF NOT EXISTS idx_thoughts_chain ON thoughts(thought_chain_id);
 CREATE INDEX IF NOT EXISTS idx_thoughts_sequence ON thoughts(thought_chain_id, sequence_number);
 CREATE INDEX IF NOT EXISTS idx_thoughts_type ON thoughts(thought_type);
+CREATE INDEX IF NOT EXISTS idx_thoughts_relevant_memory ON thoughts(relevant_memory_id);
 -- Memory indices (Updated for new table and FKs)
 CREATE INDEX IF NOT EXISTS idx_memories_workflow ON memories(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_memories_level ON memories(memory_level);
@@ -447,9 +468,9 @@ CREATE INDEX IF NOT EXISTS idx_memories_confidence ON memories(confidence DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(last_accessed DESC);
 CREATE INDEX IF NOT EXISTS idx_memories_embedding ON memories(embedding_id);
-CREATE INDEX IF NOT EXISTS idx_memories_action_id ON memories(action_id); -- New Index
-CREATE INDEX IF NOT EXISTS idx_memories_thought_id ON memories(thought_id); -- New Index
-CREATE INDEX IF NOT EXISTS idx_memories_artifact_id ON memories(artifact_id); -- New Index
+CREATE INDEX IF NOT EXISTS idx_memories_action_id ON memories(action_id);
+CREATE INDEX IF NOT EXISTS idx_memories_thought_id ON memories(thought_id);
+CREATE INDEX IF NOT EXISTS idx_memories_artifact_id ON memories(artifact_id);
 -- Link indices
 CREATE INDEX IF NOT EXISTS idx_memory_links_source ON memory_links(source_memory_id);
 CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_memory_id);
@@ -472,17 +493,17 @@ CREATE INDEX IF NOT EXISTS idx_artifact_tags ON artifact_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_dependencies_source ON dependencies(source_action_id);
 CREATE INDEX IF NOT EXISTS idx_dependencies_target ON dependencies(target_action_id);
 
--- FTS5 virtual table for memories (Updated from cognitive_memory)
+-- Virtual table for memories ---
 CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-    content, description, reasoning, tags, -- Index more fields
+    content, description, reasoning, tags,
     workflow_id UNINDEXED,
     memory_id UNINDEXED,
     content='memories',
     content_rowid='rowid',
-    tokenize='porter unicode61' -- Or consider 'trigram' for substring search
+    tokenize='porter unicode61'
 );
 
--- Triggers to keep FTS5 table in sync (Updated for new table/columns)
+-- Triggers to keep virtual table in sync (Updated for new table/columns)
 CREATE TRIGGER IF NOT EXISTS memories_after_insert AFTER INSERT ON memories BEGIN
     INSERT INTO memory_fts(rowid, content, description, reasoning, tags, workflow_id, memory_id)
     VALUES (new.rowid, new.content, new.description, new.reasoning, new.tags, new.workflow_id, new.memory_id);
@@ -767,7 +788,7 @@ class MemoryUtils:
         id_column = f"{entity_type}_id"
         tag_ids_to_link = []
         unique_tags = list(set(str(tag).strip().lower() for tag in tags if str(tag).strip())) # Clean, lowercase, unique tags
-        now_ts = datetime.utcnow().isoformat()
+        now_unix = int(time.time())
 
         if not unique_tags:
             return # Nothing to do if tags are empty after cleaning
@@ -780,16 +801,18 @@ class MemoryUtils:
                 INSERT INTO tags (name, created_at) VALUES (?, ?)
                 ON CONFLICT(name) DO NOTHING;
                 """,
-                (tag_name, now_ts)
+                (tag_name, now_unix)
             )
             # Retrieve the tag_id (whether newly inserted or existing)
-            async with conn.execute("SELECT tag_id FROM tags WHERE name = ?", (tag_name,)) as cursor:
-                row = cursor.fetchone()
-                if row:
-                    tag_ids_to_link.append(row["tag_id"])
-                else:
-                    # This should ideally not happen due to the upsert logic, but log if it does
-                    logger.warning(f"Could not find or create tag_id for tag: {tag_name}")
+            cursor = await conn.execute("SELECT tag_id FROM tags WHERE name = ?", (tag_name,))
+            row = cursor.fetchone()
+            await cursor.close() # Close cursor
+
+            if row:
+                tag_ids_to_link.append(row["tag_id"])
+            else:
+                # This should ideally not happen due to the upsert logic, but log if it does
+                logger.warning(f"Could not find or create tag_id for tag: {tag_name}")
 
         # Link the retrieved tag IDs to the entity in the junction table
         if tag_ids_to_link:
@@ -1122,14 +1145,15 @@ async def create_workflow(
 
     Returns:
         Dictionary containing information about the created workflow and its primary thought chain.
+        Timestamps are returned as ISO 8601 strings.
         {
             "workflow_id": "uuid-string",
             "title": "Workflow Title",
             "description": "...",
             "goal": "...",
             "status": "active",
-            "created_at": "iso-timestamp",
-            "updated_at": "iso-timestamp",
+            "created_at": "iso-timestampZ",
+            "updated_at": "iso-timestampZ",
             "tags": ["tag1"],
             "primary_thought_chain_id": "uuid-string",
             "success": true
@@ -1145,16 +1169,18 @@ async def create_workflow(
 
     # Generate IDs and timestamps
     workflow_id = MemoryUtils.generate_id()
-    now_iso = datetime.utcnow().isoformat()
-    now_unix = int(time.time()) # For last_active timestamp
+    now_unix = int(time.time())
 
     try:
         async with DBConnection(db_path) as conn:
             # Check parent workflow existence if provided
             if parent_workflow_id:
-                async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (parent_workflow_id,)) as cursor:
-                    if not cursor.fetchone():
-                        raise ToolInputError(f"Parent workflow not found: {parent_workflow_id}", param_name="parent_workflow_id")
+                # Use fetchone() correctly after execute
+                cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (parent_workflow_id,))
+                parent_exists = cursor.fetchone()
+                await cursor.close() # Close cursor
+                if not parent_exists:
+                    raise ToolInputError(f"Parent workflow not found: {parent_workflow_id}", param_name="parent_workflow_id")
 
             # Serialize metadata
             metadata_json = await MemoryUtils.serialize(metadata)
@@ -1167,7 +1193,7 @@ async def create_workflow(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (workflow_id, title, description, goal, WorkflowStatus.ACTIVE.value,
-                 now_iso, now_iso, parent_workflow_id, metadata_json, now_unix)
+                 now_unix, now_unix, parent_workflow_id, metadata_json, now_unix) # *** CHANGED: Use now_unix ***
             )
 
             # Process and associate tags with the workflow
@@ -1178,7 +1204,7 @@ async def create_workflow(
             chain_title = f"Main reasoning for: {title}" # Default title
             await conn.execute(
                 "INSERT INTO thought_chains (thought_chain_id, workflow_id, title, created_at) VALUES (?, ?, ?, ?)",
-                (thought_chain_id, workflow_id, chain_title, now_iso)
+                (thought_chain_id, workflow_id, chain_title, now_unix)
             )
 
             # If a goal was provided, add it as the first thought in the default chain
@@ -1192,24 +1218,30 @@ async def create_workflow(
                     (thought_id, thought_chain_id, thought_type, content, sequence_number, created_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (thought_id, thought_chain_id, ThoughtType.GOAL.value, goal, seq_no, now_iso)
+                    (thought_id, thought_chain_id, ThoughtType.GOAL.value, goal, seq_no, now_unix)
                 )
 
             # Commit the transaction
             await conn.commit()
 
-            # Prepare the result dictionary
+            # Prepare the result dictionary, formatting timestamps for output
+            timestamp_utc = (
+                datetime.fromtimestamp(now_unix, tz=timezone.utc)
+                .isoformat(timespec="seconds")      # e.g. '2025-04-17T20:42:15+00:00'
+                .replace("+00:00", "Z")             # -> '2025-04-17T20:42:15Z'
+            )
+
             result = {
                 "workflow_id": workflow_id,
                 "title": title,
                 "description": description,
                 "goal": goal,
                 "status": WorkflowStatus.ACTIVE.value,
-                "created_at": now_iso,
-                "updated_at": now_iso,
+                "created_at": timestamp_utc,
+                "updated_at": timestamp_utc,
                 "tags": tags or [],
-                "primary_thought_chain_id": thought_chain_id, # Inform agent of the default chain ID
-                "success": True
+                "primary_thought_chain_id": thought_chain_id,  # default chain ID for the agent
+                "success": True,
             }
             logger.info(f"Created workflow '{title}' ({workflow_id}) with primary thought chain {thought_chain_id}", emoji_key="clipboard")
             return result
@@ -1230,31 +1262,35 @@ async def update_workflow_status(
     update_tags: Optional[List[str]] = None,
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
-    """Updates the status of a workflow. (Ported from agent_memory, slightly adapted)."""
-    # [Implementation similar to agent_memory.update_workflow_status, using new DB schema/utils]
-    # ... Includes adding completion message as a thought ...
+    """Updates the status of a workflow. (Ported from agent_memory, adapted).
+       Timestamps are returned as ISO 8601 strings.
+    """
     try:
         status_enum = WorkflowStatus(status.lower())
     except ValueError as e:
         valid_statuses = [s.value for s in WorkflowStatus]
         raise ToolInputError(f"Invalid status '{status}'. Must be one of: {', '.join(valid_statuses)}", param_name="status") from e
 
-    now_iso = datetime.utcnow().isoformat()
     now_unix = int(time.time())
 
     try:
         async with DBConnection(db_path) as conn:
-             # Check existence first
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not cursor.fetchone():
-                    raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
+            # Check existence first
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            exists = cursor.fetchone()
+            await cursor.close()
+            if not exists:
+                raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
 
-            update_params = [status_enum.value, now_iso, now_unix, workflow_id]
+            update_params = [status_enum.value, now_unix, now_unix] # status, updated_at, last_active
             set_clauses = "status = ?, updated_at = ?, last_active = ?"
 
             if status_enum in [WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.ABANDONED]:
                 set_clauses += ", completed_at = ?"
-                update_params.insert(2, now_iso) # Insert completed_at timestamp
+                update_params.append(now_unix)
+            
+            # Add workflow_id to params for WHERE clause
+            update_params.append(workflow_id)
 
             await conn.execute(
                 f"UPDATE workflows SET {set_clauses} WHERE workflow_id = ?",
@@ -1263,33 +1299,46 @@ async def update_workflow_status(
 
             # Add completion message as thought
             if completion_message:
-                 async with conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,)) as cursor:
-                    row = cursor.fetchone()
-                    if row:
-                        thought_chain_id = row["thought_chain_id"]
-                        seq_no = await MemoryUtils.get_next_sequence_number(conn, thought_chain_id, "thoughts", "thought_chain_id")
-                        thought_id = MemoryUtils.generate_id()
-                        thought_type = ThoughtType.SUMMARY.value if status_enum == WorkflowStatus.COMPLETED else ThoughtType.REFLECTION.value
-                        await conn.execute(
-                            "INSERT INTO thoughts (thought_id, thought_chain_id, thought_type, content, sequence_number, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                            (thought_id, thought_chain_id, thought_type, completion_message, seq_no, now_iso)
-                        )
+                 # Use fetchone() correctly
+                 cursor = await conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,))
+                 row = cursor.fetchone()
+                 await cursor.close()
+                 if row:
+                     thought_chain_id = row["thought_chain_id"]
+                     seq_no = await MemoryUtils.get_next_sequence_number(conn, thought_chain_id, "thoughts", "thought_chain_id")
+                     thought_id = MemoryUtils.generate_id()
+                     thought_type = ThoughtType.SUMMARY.value if status_enum == WorkflowStatus.COMPLETED else ThoughtType.REFLECTION.value
+                     await conn.execute(
+                         "INSERT INTO thoughts (thought_id, thought_chain_id, thought_type, content, sequence_number, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                         (thought_id, thought_chain_id, thought_type, completion_message, seq_no, now_unix)
+                     )
 
             # Process additional tags
             await MemoryUtils.process_tags(conn, workflow_id, update_tags or [], "workflow")
             await conn.commit()
 
+            # Format timestamps for output
+            timestamp_utc = (
+                datetime.fromtimestamp(now_unix, tz=timezone.utc)
+                .isoformat(timespec="seconds")      # e.g. '2025-04-17T20:49:30+00:00'
+                .replace("+00:00", "Z")             # -> '2025-04-17T20:49:30Z'
+            )
+
             result = {
                 "workflow_id": workflow_id,
                 "status": status_enum.value,
-                "updated_at": now_iso,
-                "success": True
+                "updated_at": timestamp_utc,
+                "success": True,
             }
-            if status_enum in [WorkflowStatus.COMPLETED, WorkflowStatus.FAILED, WorkflowStatus.ABANDONED]:
-                result["completed_at"] = now_iso
 
-            logger.info(f"Updated workflow {workflow_id} status to '{status_enum.value}'", emoji_key="arrows_counterclockwise")
-            return result
+            if status_enum in (
+                WorkflowStatus.COMPLETED,
+                WorkflowStatus.FAILED,
+                WorkflowStatus.ABANDONED,
+            ):
+                result["completed_at"] = timestamp_utc
+                logger.info(f"Updated workflow {workflow_id} status to '{status_enum.value}'", emoji_key="arrows_counterclockwise")
+                return result
 
     except ToolInputError:
         raise
@@ -1352,25 +1401,30 @@ async def record_action_start(
     # --- Initialization ---
     action_id = MemoryUtils.generate_id()
     memory_id = MemoryUtils.generate_id() # Pre-generate ID for the linked memory
-    now_iso = datetime.utcnow().isoformat()
-    now_unix = int(time.time())
+    now_unix = int(time.time()) 
 
     try:
         async with DBConnection(db_path) as conn:
             # --- Existence Checks (Workflow, Parent Action, Related Thought) ---
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                if not cursor.fetchone():
-                    raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_exists = cursor.fetchone()
+            await cursor.close()
+            if not wf_exists:
+                raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
 
             if parent_action_id:
-                async with conn.execute("SELECT 1 FROM actions WHERE action_id = ? AND workflow_id = ?", (parent_action_id, workflow_id)) as cursor:
-                    if not cursor.fetchone():
-                        raise ToolInputError(f"Parent action '{parent_action_id}' not found or does not belong to workflow '{workflow_id}'.", param_name="parent_action_id")
+                cursor = await conn.execute("SELECT 1 FROM actions WHERE action_id = ? AND workflow_id = ?", (parent_action_id, workflow_id))
+                parent_exists = cursor.fetchone()
+                await cursor.close()
+                if not parent_exists:
+                    raise ToolInputError(f"Parent action '{parent_action_id}' not found or does not belong to workflow '{workflow_id}'.", param_name="parent_action_id")
 
             if related_thought_id:
-                 async with conn.execute("SELECT 1 FROM thoughts t JOIN thought_chains tc ON t.thought_chain_id = tc.thought_chain_id WHERE t.thought_id = ? AND tc.workflow_id = ?", (related_thought_id, workflow_id)) as cursor:
-                      if not cursor.fetchone():
-                           raise ToolInputError(f"Related thought '{related_thought_id}' not found or does not belong to workflow '{workflow_id}'.", param_name="related_thought_id")
+                 cursor = await conn.execute("SELECT 1 FROM thoughts t JOIN thought_chains tc ON t.thought_chain_id = tc.thought_chain_id WHERE t.thought_id = ? AND tc.workflow_id = ?", (related_thought_id, workflow_id))
+                 thought_exists = cursor.fetchone()
+                 await cursor.close()
+                 if not thought_exists:
+                     raise ToolInputError(f"Related thought '{related_thought_id}' not found or does not belong to workflow '{workflow_id}'.", param_name="related_thought_id")
 
             # --- Determine Action Title ---
             sequence_number = await MemoryUtils.get_next_sequence_number(conn, workflow_id, "actions", "workflow_id")
@@ -1393,7 +1447,7 @@ async def record_action_start(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (action_id, workflow_id, parent_action_id, action_type_enum.value, auto_title,
-                 reasoning, tool_name, tool_args_json, ActionStatus.IN_PROGRESS.value, now_iso, sequence_number)
+                 reasoning, tool_name, tool_args_json, ActionStatus.IN_PROGRESS.value, now_unix, sequence_number)
             )
 
             # --- Process Tags for Action ---
@@ -1404,18 +1458,12 @@ async def record_action_start(
                 await conn.execute("UPDATE thoughts SET relevant_action_id = ? WHERE thought_id = ?", (action_id, related_thought_id))
 
             # --- Create Linked Episodic Memory ---
-            # Construct memory content
             memory_content = f"Started action [{sequence_number}] '{auto_title}' ({action_type_enum.value}). Reasoning: {reasoning}"
             if tool_name:
                  memory_content += f" Tool: {tool_name}."
-                 # Optionally include args preview in memory? Maybe too verbose.
-                 # if tool_args: memory_content += f" Args: {str(tool_args)[:50]}..."
-
-            # Construct memory tags
             mem_tags = ["action_start", action_type_enum.value] + (tags or [])
-            mem_tags_json = json.dumps(list(set(mem_tags))) # Ensure unique and serialize
+            mem_tags_json = json.dumps(list(set(mem_tags)))
 
-            # Insert memory record, directly linking to the action_id
             await conn.execute(
                  """
                  INSERT INTO memories (memory_id, workflow_id, action_id, content, memory_level, memory_type,
@@ -1423,18 +1471,23 @@ async def record_action_start(
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  """,
                  (memory_id, workflow_id, action_id, memory_content, MemoryLevel.EPISODIC.value, MemoryType.ACTION_LOG.value,
-                  5.0, 1.0, mem_tags_json, now_unix, now_unix, 0) # Importance 5.0 for action logs
+                  5.0, 1.0, mem_tags_json, now_unix, now_unix, 0) # Memories already use Unix timestamps
             )
-            # Log memory creation operation
             await MemoryUtils._log_memory_operation(conn, workflow_id, "create_from_action_start", memory_id, action_id)
 
             # --- Update Workflow Timestamp ---
-            await conn.execute("UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?", (now_iso, now_unix, workflow_id))
+            await conn.execute("UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?", (now_unix, now_unix, workflow_id))
 
             # --- Commit Transaction ---
             await conn.commit()
 
-            # --- Prepare Result ---
+            # --- Prepare Result (Format timestamp for output) ---
+            timestamp_utc = (
+                datetime.fromtimestamp(now_unix, tz=timezone.utc)
+                .isoformat(timespec="seconds")        # e.g. '2025-04-17T20:55:10+00:00'
+                .replace("+00:00", "Z")               # -> '2025-04-17T20:55:10Z'
+            )
+
             result = {
                 "action_id": action_id,
                 "workflow_id": workflow_id,
@@ -1442,20 +1495,24 @@ async def record_action_start(
                 "title": auto_title,
                 "tool_name": tool_name,
                 "status": ActionStatus.IN_PROGRESS.value,
-                "started_at": now_iso,
+                "started_at": timestamp_utc,     
                 "sequence_number": sequence_number,
                 "tags": tags or [],
-                "linked_memory_id": memory_id, # Provide the ID of the automatically created memory
-                "success": True
+                "linked_memory_id": memory_id,
+                "success": True,
             }
-            logger.info(f"Started action '{auto_title}' ({action_id}) in workflow {workflow_id}", emoji_key="fast_forward")
+
+            logger.info(
+                f"Started action '{auto_title}' ({action_id}) in workflow {workflow_id}",
+                emoji_key="fast_forward"
+            )
+
             return result
 
     except ToolInputError:
         raise # Re-raise for specific handling
     except Exception as e:
         logger.error(f"Error recording action start: {e}", exc_info=True)
-        # Attempt to rollback if conn available? aiosqlite might handle this implicitly on context exit error.
         raise ToolError(f"Failed to record action start: {str(e)}") from e
     
 
@@ -1501,12 +1558,10 @@ async def record_action_completion(
         ToolError: If database operation fails.
     """
     start_time = time.time()
-
     # --- Validate Status ---
     try:
         status_enum = ActionStatus(status.lower())
         if status_enum not in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.SKIPPED]:
-            # Planned and InProgress are not valid *completion* statuses
             raise ValueError("Status must indicate completion, failure, or skipping.")
     except ValueError as e:
         valid_statuses = [s.value for s in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.SKIPPED]]
@@ -1521,23 +1576,20 @@ async def record_action_completion(
              valid_types = [t.value for t in ThoughtType]
              raise ToolInputError(f"Invalid thought type '{conclusion_thought_type}'. Must be one of: {', '.join(valid_types)}", param_name="conclusion_thought_type") from e
 
-    now_iso = datetime.utcnow().isoformat()
     now_unix = int(time.time())
 
     try:
         async with DBConnection(db_path) as conn:
             # --- 1. Verify Action and Get Workflow ID ---
-            # Fetch workflow_id and current status to prevent re-completing
-            async with conn.execute("SELECT workflow_id, status FROM actions WHERE action_id = ?", (action_id,)) as cursor:
-                action_row = cursor.fetchone()
-                if not action_row:
-                    raise ToolInputError(f"Action not found: {action_id}", param_name="action_id")
-                workflow_id = action_row["workflow_id"]
-                current_status = action_row["status"]
-                # Optional: Prevent completing an already completed/failed/skipped action
-                if current_status not in [ActionStatus.IN_PROGRESS.value, ActionStatus.PLANNED.value]:
-                     logger.warning(f"Action {action_id} already has terminal status '{current_status}'. Allowing update anyway.")
-                     # raise ToolInputError(f"Action {action_id} cannot be completed, current status is '{current_status}'.")
+            cursor = await conn.execute("SELECT workflow_id, status FROM actions WHERE action_id = ?", (action_id,))
+            action_row = cursor.fetchone()
+            await cursor.close()
+            if not action_row:
+                raise ToolInputError(f"Action not found: {action_id}", param_name="action_id")
+            workflow_id = action_row["workflow_id"]
+            current_status = action_row["status"]
+            if current_status not in [ActionStatus.IN_PROGRESS.value, ActionStatus.PLANNED.value]:
+                 logger.warning(f"Action {action_id} already has terminal status '{current_status}'. Allowing update anyway.")
 
             # --- 2. Update Action Record ---
             tool_result_json = await MemoryUtils.serialize(tool_result)
@@ -1549,105 +1601,106 @@ async def record_action_completion(
                     tool_result = ?
                 WHERE action_id = ?
                 """,
-                (status_enum.value, now_iso, tool_result_json, action_id)
+                (status_enum.value, now_unix, tool_result_json, action_id) # *** Use now_unix ***
             )
 
             # --- 3. Update Workflow Timestamp ---
             await conn.execute(
                 "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
-                (now_iso, now_unix, workflow_id)
+                (now_unix, now_unix, workflow_id) # *** Use now_unix ***
             )
 
             # --- 4. Add Conclusion Thought (if provided) ---
             conclusion_thought_id = None
             if conclusion_thought and thought_type_enum:
-                # Find the primary thought chain for the workflow
-                async with conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,)) as cursor:
-                    chain_row = cursor.fetchone()
-                    if chain_row:
-                        thought_chain_id = chain_row["thought_chain_id"]
-                        # Get next sequence number within the chain
-                        seq_no = await MemoryUtils.get_next_sequence_number(conn, thought_chain_id, "thoughts", "thought_chain_id")
-                        conclusion_thought_id = MemoryUtils.generate_id()
-                        # Insert the new thought, linking it to the completed action
-                        await conn.execute(
-                            """
-                            INSERT INTO thoughts
-                                (thought_id, thought_chain_id, thought_type, content, sequence_number, created_at, relevant_action_id)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (conclusion_thought_id, thought_chain_id, thought_type_enum.value, conclusion_thought, seq_no, now_iso, action_id)
-                        )
-                        logger.debug(f"Recorded conclusion thought {conclusion_thought_id} for action {action_id}")
-                    else:
-                         logger.warning(f"Could not find primary thought chain for workflow {workflow_id} to add conclusion thought.")
-
-            # --- 5. Update Linked Episodic Memory ---
-            # Find the 'action_log' memory created when the action started
-            async with conn.execute("SELECT memory_id, content FROM memories WHERE action_id = ? AND memory_type = ?", (action_id, MemoryType.ACTION_LOG.value)) as cursor:
-                 memory_row = cursor.fetchone()
-                 if memory_row:
-                    memory_id = memory_row["memory_id"]
-                    original_content = memory_row["content"]
-
-                    # Build the update text to append
-                    update_parts = [f"Completed ({status_enum.value})."]
-                    if summary:
-                        update_parts.append(f"Summary: {summary}")
-                    if tool_result is not None:
-                        # Include a concise representation of the result type/presence
-                        if isinstance(tool_result, dict):
-                             update_parts.append(f"Result: [Dict with {len(tool_result)} keys]")
-                        elif isinstance(tool_result, list):
-                             update_parts.append(f"Result: [List with {len(tool_result)} items]")
-                        elif tool_result:
-                             update_parts.append("Result: Success")
-                        elif tool_result is False:
-                             update_parts.append("Result: Failure")
-                        else:
-                            update_parts.append("Result obtained.") # Generic confirmation
-
-                    update_text = " ".join(update_parts)
-                    new_content = original_content + " " + update_text # Append with space
-
-                    # Adjust importance based on outcome
-                    importance_mult = 1.0
-                    if status_enum == ActionStatus.FAILED:
-                        importance_mult = 1.2 # Failed actions might be important to learn from
-                    elif status_enum == ActionStatus.SKIPPED:
-                        importance_mult = 0.8 # Skipped actions are less important
-
-                    # Update the memory record
+                cursor = await conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,))
+                chain_row = cursor.fetchone()
+                await cursor.close()
+                if chain_row:
+                    thought_chain_id = chain_row["thought_chain_id"]
+                    seq_no = await MemoryUtils.get_next_sequence_number(conn, thought_chain_id, "thoughts", "thought_chain_id")
+                    conclusion_thought_id = MemoryUtils.generate_id()
                     await conn.execute(
                         """
-                        UPDATE memories
-                        SET content = ?,
-                            importance = importance * ?,
-                            updated_at = ?
-                        WHERE memory_id = ?
+                        INSERT INTO thoughts
+                            (thought_id, thought_chain_id, thought_type, content, sequence_number, created_at, relevant_action_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (new_content, importance_mult, now_unix, memory_id)
+                        (conclusion_thought_id, thought_chain_id, thought_type_enum.value, conclusion_thought, seq_no, now_unix, action_id) # *** Use now_unix ***
                     )
-                    # Log the memory update operation
-                    await MemoryUtils._log_memory_operation(conn, workflow_id, "update_from_action_completion", memory_id, action_id, {"status": status_enum.value, "summary_added": bool(summary)})
-                    logger.debug(f"Updated linked memory {memory_id} for completed action {action_id}")
-                 else:
-                      logger.warning(f"Could not find corresponding action_log memory for completed action {action_id} to update.")
+                    logger.debug(f"Recorded conclusion thought {conclusion_thought_id} for action {action_id}")
+                else:
+                     logger.warning(f"Could not find primary thought chain for workflow {workflow_id} to add conclusion thought.")
+
+            # --- 5. Update Linked Episodic Memory ---
+            cursor = await conn.execute("SELECT memory_id, content FROM memories WHERE action_id = ? AND memory_type = ?", (action_id, MemoryType.ACTION_LOG.value))
+            memory_row = cursor.fetchone()
+            await cursor.close()
+            if memory_row:
+                memory_id = memory_row["memory_id"]
+                original_content = memory_row["content"]
+                update_parts = [f"Completed ({status_enum.value})."]
+                if summary: 
+                    update_parts.append(f"Summary: {summary}")
+                if tool_result is not None:
+                    if isinstance(tool_result, dict): 
+                        update_parts.append(f"Result: [Dict with {len(tool_result)} keys]")
+                    elif isinstance(tool_result, list): 
+                        update_parts.append(f"Result: [List with {len(tool_result)} items]")
+                    elif tool_result: 
+                        update_parts.append("Result: Success")
+                    elif tool_result is False: 
+                        update_parts.append("Result: Failure")
+                    else: 
+                        update_parts.append("Result obtained.")
+                update_text = " ".join(update_parts)
+                new_content = original_content + " " + update_text
+                importance_mult = 1.0
+                if status_enum == ActionStatus.FAILED: 
+                    importance_mult = 1.2
+                elif status_enum == ActionStatus.SKIPPED: 
+                    importance_mult = 0.8
+                await conn.execute(
+                    """
+                    UPDATE memories
+                    SET content = ?,
+                        importance = importance * ?,
+                        updated_at = ?
+                    WHERE memory_id = ?
+                    """,
+                    (new_content, importance_mult, now_unix, memory_id)
+                )
+                await MemoryUtils._log_memory_operation(conn, workflow_id, "update_from_action_completion", memory_id, action_id, {"status": status_enum.value, "summary_added": bool(summary)})
+                logger.debug(f"Updated linked memory {memory_id} for completed action {action_id}")
+            else:
+                  logger.warning(f"Could not find corresponding action_log memory for completed action {action_id} to update.")
 
             # --- 6. Commit Transaction ---
             await conn.commit()
 
-            # --- 7. Prepare Result ---
+            # --- 7. Prepare Result (Format timestamp for output) ---
+            timestamp_utc = (
+                datetime.fromtimestamp(now_unix, tz=timezone.utc)
+                .isoformat(timespec="seconds")        # e.g. '2025-04-17T21:02:45+00:00'
+                .replace("+00:00", "Z")               # -> '2025-04-17T21:02:45Z'
+            )
+
             result = {
                 "action_id": action_id,
                 "workflow_id": workflow_id,
                 "status": status_enum.value,
-                "completed_at": now_iso,
-                "conclusion_thought_id": conclusion_thought_id, # Include if one was created
+                "completed_at": timestamp_utc,        # *** FORMATTED OUTPUT ***
+                "conclusion_thought_id": conclusion_thought_id,
                 "success": True,
-                "processing_time": time.time() - start_time # Calculate duration
+                "processing_time": time.time() - start_time,
             }
-            logger.info(f"Completed action {action_id} with status {status_enum.value}", emoji_key="white_check_mark", duration=result["processing_time"])
+
+            logger.info(
+                f"Completed action {action_id} with status {status_enum.value}",
+                emoji_key="white_check_mark",
+                duration=result["processing_time"],
+            )
+
             return result
 
     except ToolInputError:
@@ -2037,24 +2090,26 @@ async def add_action_dependency(
         raise ToolInputError("Dependency type cannot be empty.", param_name="dependency_type")
 
     start_time = time.time()
-    now_iso = datetime.utcnow().isoformat()
+    now_unix = int(time.time()) 
 
     try:
         async with DBConnection(db_path) as conn:
             # --- Validate Actions & Workflow Consistency ---
             source_workflow_id = None
             target_workflow_id = None
-            async with conn.execute("SELECT workflow_id FROM actions WHERE action_id = ?", (source_action_id,)) as cursor:
-                 source_row = cursor.fetchone()
-                 if not source_row:
-                     raise ToolInputError(f"Source action {source_action_id} not found.", param_name="source_action_id")
-                 source_workflow_id = source_row["workflow_id"]
+            cursor = await conn.execute("SELECT workflow_id FROM actions WHERE action_id = ?", (source_action_id,))
+            source_row = cursor.fetchone()
+            await cursor.close()
+            if not source_row:
+                 raise ToolInputError(f"Source action {source_action_id} not found.", param_name="source_action_id")
+            source_workflow_id = source_row["workflow_id"]
 
-            async with conn.execute("SELECT workflow_id FROM actions WHERE action_id = ?", (target_action_id,)) as cursor:
-                 target_row = cursor.fetchone()
-                 if not target_row:
-                     raise ToolInputError(f"Target action {target_action_id} not found.", param_name="target_action_id")
-                 target_workflow_id = target_row["workflow_id"]
+            cursor = await conn.execute("SELECT workflow_id FROM actions WHERE action_id = ?", (target_action_id,))
+            target_row = cursor.fetchone()
+            await cursor.close()
+            if not target_row:
+                 raise ToolInputError(f"Target action {target_action_id} not found.", param_name="target_action_id")
+            target_workflow_id = target_row["workflow_id"]
 
             if source_workflow_id != target_workflow_id:
                 raise ToolInputError(
@@ -2064,42 +2119,39 @@ async def add_action_dependency(
             workflow_id = source_workflow_id # Both actions are in this workflow
 
             # --- Insert Dependency (Ignoring duplicates) ---
-            # The UNIQUE constraint handles preventing exact duplicates.
             dependency_id = None
-            async with conn.execute(
+            cursor = await conn.execute( # Use explicit cursor variable
                 """
                 INSERT OR IGNORE INTO dependencies
                 (source_action_id, target_action_id, dependency_type, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (source_action_id, target_action_id, dependency_type, now_iso)
-            ) as cursor:
-                 # Get the ID of the inserted row (or existing if ignored)
-                 # If IGNORE happened, cursor.lastrowid might be 0 or None depending on version.
-                 # Need to query back based on the unique constraint.
-                 if cursor.rowcount > 0: # Check if a row was actually inserted
-                      dependency_id = cursor.lastrowid
-                      logger.debug(f"Inserted new dependency row with ID: {dependency_id}")
-                 else:
-                      # If IGNORE occurred, fetch the existing dependency_id
-                      async with conn.execute(
-                           "SELECT dependency_id FROM dependencies WHERE source_action_id = ? AND target_action_id = ? AND dependency_type = ?",
-                           (source_action_id, target_action_id, dependency_type)
-                      ) as existing_cursor:
-                           existing_row = existing_cursor.fetchone()
-                           if existing_row:
-                                dependency_id = existing_row["dependency_id"]
-                                logger.debug(f"Dependency already existed. Retrieved existing ID: {dependency_id}")
-                           else:
-                                # This case should be rare if UNIQUE constraint works, but log if it happens
-                                logger.warning(f"Dependency insert was ignored, but couldn't retrieve existing row for ({source_action_id}, {target_action_id}, {dependency_type})")
-                                # Cannot reliably return an ID here.
+                (source_action_id, target_action_id, dependency_type, now_unix) # *** Use now_unix ***
+            )
+            # Check if a row was actually inserted
+            if cursor.rowcount > 0:
+                dependency_id = cursor.lastrowid
+                logger.debug(f"Inserted new dependency row with ID: {dependency_id}")
+            else:
+                # If IGNORE occurred, fetch the existing dependency_id
+                existing_cursor = await conn.execute( # Use different cursor variable
+                     "SELECT dependency_id FROM dependencies WHERE source_action_id = ? AND target_action_id = ? AND dependency_type = ?",
+                     (source_action_id, target_action_id, dependency_type)
+                )
+                existing_row = existing_cursor.fetchone()
+                await existing_cursor.close()
+                if existing_row:
+                    dependency_id = existing_row["dependency_id"]
+                    logger.debug(f"Dependency already existed. Retrieved existing ID: {dependency_id}")
+                else:
+                    logger.warning(f"Dependency insert was ignored, but couldn't retrieve existing row for ({source_action_id}, {target_action_id}, {dependency_type})")
+
+            await cursor.close() # Close the main insertion cursor
 
             # --- Update Workflow Timestamp ---
-            now_unix = int(time.time())
             await conn.execute(
                 "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
-                (now_iso, now_unix, workflow_id)
+                (now_unix, now_unix, workflow_id)
             )
 
             # Log operation (even if ignored, log the attempt)
@@ -2112,15 +2164,25 @@ async def add_action_dependency(
             await conn.commit()
 
             processing_time = time.time() - start_time
-            logger.info(f"Added dependency ({dependency_type}) from {source_action_id} to {target_action_id}", emoji_key="link")
+            logger.info(
+                f"Added dependency ({dependency_type}) from {source_action_id} to {target_action_id}",
+                emoji_key="link",
+            )
+
+            timestamp_utc = (
+                datetime.fromtimestamp(now_unix, tz=timezone.utc)
+                .isoformat(timespec="seconds")     # e.g. '2025-04-17T21:08:30+00:00'
+                .replace("+00:00", "Z")            # -> '2025-04-17T21:08:30Z'
+            )
+
             return {
                 "source_action_id": source_action_id,
                 "target_action_id": target_action_id,
                 "dependency_type": dependency_type,
-                "dependency_id": dependency_id, # May be None if IGNORE failed lookup
-                "created_at": now_iso,
+                "dependency_id": dependency_id,  # May be None if IGNORE failed lookup
+                "created_at": timestamp_utc,     
                 "success": True,
-                "processing_time": processing_time
+                "processing_time": processing_time,
             }
 
     except ToolInputError:

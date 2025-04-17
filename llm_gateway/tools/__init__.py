@@ -47,6 +47,7 @@ from .document import (
     process_document_batch,
     summarize_document,
 )
+from .docstring_refiner import refine_tool_documentation
 from .entity_relation_graph import extract_entity_graph
 
 # Import new standalone functions from extraction.py
@@ -183,6 +184,7 @@ __all__ = [
     "compare_models",
     "recommend_model",
     "execute_optimized_workflow",
+    "refine_tool_documentation",
     
     # Filesystem tools
     "read_file",
@@ -306,6 +308,7 @@ STANDALONE_TOOL_FUNCTIONS = [
     compare_models,
     recommend_model,
     execute_optimized_workflow,
+    refine_tool_documentation,
     
     # Filesystem tools
     read_file,
