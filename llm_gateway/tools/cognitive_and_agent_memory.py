@@ -18,19 +18,22 @@ Key Features:
 """
 
 import asyncio
+import contextlib
 import json
 import os
+import re
 import time
 import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import aiosqlite
-import markdown  # For HTML report generation
+import markdown
 import numpy as np
+from pygments.formatters import HtmlFormatter
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine_similarity
 
 from llm_gateway.constants import Provider as LLMGatewayProvider  # To use provider constants
@@ -512,8 +515,9 @@ CREATE TRIGGER IF NOT EXISTS memories_after_update AFTER UPDATE ON memories BEGI
 END;
 
 -- Deferrable Circular Foreign Key Constraints for thoughts <-> memories
--- Execute after tables are created
-PRAGMA defer_foreign_keys = ON; -- Enable deferral for the transaction applying these constraints
+-- Execute after tables are created and within an explicit transaction
+BEGIN IMMEDIATE TRANSACTION; -- Use IMMEDIATE for exclusive lock during schema change
+PRAGMA defer_foreign_keys = ON; -- Enable deferral specifically for this transaction
 
 ALTER TABLE thoughts ADD CONSTRAINT fk_thoughts_memory
     FOREIGN KEY (relevant_memory_id) REFERENCES memories(memory_id)
@@ -522,6 +526,8 @@ ALTER TABLE thoughts ADD CONSTRAINT fk_thoughts_memory
 ALTER TABLE memories ADD CONSTRAINT fk_memories_thought
     FOREIGN KEY (thought_id) REFERENCES thoughts(thought_id)
     ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED;
+
+COMMIT; -- Commit the transaction containing the PRAGMA and ALTERs
 """
 
 # ======================================================
@@ -571,8 +577,12 @@ class DBConnection:
             logger.info("Database schema not found. Initializing...", emoji_key="gear")
             # Ensure foreign keys are enabled before schema execution for ALTER TABLE
             await conn.execute("PRAGMA foreign_keys = ON;")
+            # Use executescript for potentially multi-statement SCHEMA_SQL
+            # NOTE: executescript implicitly commits before and after execution
+            # This is generally okay for schema setup but problematic for transactions.
+            # The explicit transaction for DEFERRABLE FKs in SCHEMA_SQL is handled separately.
             await conn.executescript(SCHEMA_SQL)
-            await conn.commit()
+            # No explicit commit needed after executescript typically
             logger.success("Database schema initialized successfully.", emoji_key="white_check_mark")
         else:
             # Optionally, add schema migration logic here in the future
@@ -585,6 +595,7 @@ class DBConnection:
         return conn
 
     async def __aenter__(self) -> aiosqlite.Connection:
+        """Acquires the singleton database connection instance."""
         # 1. Quick check without lock
         instance = DBConnection._instance
         if instance is not None:
@@ -630,9 +641,19 @@ class DBConnection:
         return DBConnection._instance
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Releases the connection context (but doesn't close singleton).
+
+        Propagates exceptions that occurred within the context.
+        """
+        # Note: This context manager manages access, not the lifecycle of the singleton connection.
+        # Closing is handled by the explicit close_connection method.
+        # The transaction manager context handles commit/rollback.
         if exc_type is not None:
-             logger.error(f"Database error occurred: {exc_val}", exc_info=(exc_type, exc_val, exc_tb))
-        pass
+             # Log the error that occurred *within* the 'async with DBConnection(...)' block
+             logger.error(f"Database error occurred within DBConnection context: {exc_val}", exc_info=(exc_type, exc_val, exc_tb))
+             # Re-raise the exception to notify the caller
+             raise exc_val
+        pass # If no exception, just pass (commit/rollback handled by transaction manager)
 
     @classmethod
     async def close_connection(cls):
@@ -642,17 +663,46 @@ class DBConnection:
         to ensure resources are released cleanly.
         """
         if cls._instance:
-            logger.info("Attempting to close database connection.", emoji_key="lock")
-            try:
-                await cls._instance.close()
-                logger.success("Database connection closed successfully.", emoji_key="white_check_mark")
-            except Exception as e:
-                logger.error(f"Error closing database connection: {e}", exc_info=True)
-            finally:
-                # Ensure the instance reference is cleared even if close fails
-                cls._instance = None
+            async with cls._lock: # Ensure exclusive access for closing
+                if cls._instance: # Double check after lock
+                    logger.info("Attempting to close database connection.", emoji_key="lock")
+                    try:
+                        await cls._instance.close()
+                        logger.success("Database connection closed successfully.", emoji_key="white_check_mark")
+                    except Exception as e:
+                        logger.error(f"Error closing database connection: {e}", exc_info=True)
+                    finally:
+                        # Ensure the instance reference is cleared even if close fails
+                        cls._instance = None
+                        cls._db_path_used = None
+                else:
+                     logger.info("Database connection was closed by another task while waiting for lock.")
         else:
-            logger.info("No active database connection instance to close.")    
+            logger.info("No active database connection instance to close.")
+
+    # --- NEW TRANSACTION MANAGER ---
+    @contextlib.asynccontextmanager
+    async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Provides an atomic transaction block using the singleton connection."""
+        conn = await self.__aenter__() # Acquire the connection instance
+        try:
+            # Explicitly BEGIN transaction. aiosqlite defaults might differ.
+            # Using DEFERRED is generally fine unless immediate locking is needed.
+            await conn.execute("BEGIN DEFERRED TRANSACTION")
+            logger.debug("DB Transaction Started.")
+            yield conn # Provide the connection to the 'async with' block
+        except Exception as e:
+            logger.error(f"Exception during transaction, rolling back: {e}", exc_info=True)
+            await conn.rollback()
+            logger.warning("DB Transaction Rolled Back.", emoji_key="rewind")
+            raise # Re-raise the exception after rollback
+        else:
+            await conn.commit()
+            logger.debug("DB Transaction Committed.")
+        finally:
+            # __aexit__ for the base DBConnection doesn't close the connection,
+            # so we don't need to call it explicitly here. The transaction is finished.
+            pass
 
 # Custom SQLite helper functions (from cognitive_memory) - Keep these
 def _json_contains(json_text, search_value):
@@ -770,7 +820,7 @@ class MemoryUtils:
                          if not shorter_repr.endswith('\ufffd'):
                               truncated_repr = shorter_repr
 
-                    truncated_repr += "..." # Add ellipsis to indicate truncation
+                    truncated_repr += "[TRUNCATED]" # Add ellipsis to indicate truncation
                     logger.warning(f"Fallback string representation truncated for type {type(obj)}.")
                 else:
                     # No truncation needed for the fallback string itself
@@ -820,7 +870,6 @@ class MemoryUtils:
             # Return the valid JSON string if within limits
             return json_str
 
-
     @staticmethod
     async def deserialize(json_str: Optional[str]) -> Any:
         """Safely deserialize a JSON string back into a Python object.
@@ -831,13 +880,8 @@ class MemoryUtils:
         """
         if json_str is None:
             return None
-        if not isinstance(json_str, str):
-             # If it's not a string, it's probably already deserialized or invalid input
-             logger.warning(f"Attempted to deserialize non-string input: {type(json_str)}. Returning as is.")
-             return json_str
         if not json_str.strip(): # Handle empty strings
              return None
-
         try:
             # Attempt to load the JSON string
             return json.loads(json_str)
@@ -852,6 +896,34 @@ class MemoryUtils:
              return json_str # Return original string as fallback
 
     @staticmethod
+    def _validate_sql_identifier(identifier: str, identifier_type: str = "column/table") -> str:
+        """Validates a string intended for use as an SQL table or column name.
+
+        Prevents SQL injection by ensuring the identifier only contains
+        alphanumeric characters and underscores. Raises ToolInputError if invalid.
+
+        Args:
+            identifier: The string to validate.
+            identifier_type: A description of what the identifier represents (for error messages).
+
+        Returns:
+            The validated identifier if it's safe.
+
+        Raises:
+            ToolInputError: If the identifier is invalid.
+        """
+        # Simple regex: Allows letters, numbers, and underscores. Must start with a letter or underscore.
+        # Adjust regex if more complex identifiers (e.g., quoted) are needed, but keep it strict.
+        if not identifier or not re.fullmatch(r"^[a-zA-Z_][a-zA-Z0-9_]*$", identifier):
+            logger.error(f"Invalid SQL identifier provided: '{identifier}'")
+            raise ToolInputError(f"Invalid {identifier_type} name provided. Must be alphanumeric/underscore.", param_name=identifier_type)
+        # Optional: Check against a known allowlist of tables/columns if possible
+        # known_tables = {"actions", "thoughts", "memories", ...}
+        # if identifier_type == "table" and identifier not in known_tables:
+        #     raise ToolInputError(f"Unknown table name provided: {identifier}", param_name=identifier_type)
+        return identifier
+    
+    @staticmethod
     async def get_next_sequence_number(conn: aiosqlite.Connection, parent_id: str, table: str, parent_col: str) -> int:
         """Get the next sequence number for ordering items within a parent scope.
 
@@ -864,6 +936,11 @@ class MemoryUtils:
         Returns:
             The next available integer sequence number (starting from 1).
         """
+        # --- Validate dynamic identifiers to prevent SQL injection ---
+        validated_table = MemoryUtils._validate_sql_identifier(table, "table")
+        validated_parent_col = MemoryUtils._validate_sql_identifier(parent_col, "parent_col")
+        # --- End Validation ---
+        #         
         # --- Concurrency Note ---
         # This read-then-write operation (SELECT MAX + 1, then INSERT) is
         # generally safe within the transaction managed by the DBConnection
@@ -882,7 +959,8 @@ class MemoryUtils:
         # dedicated sequence manager. For now, we rely on transaction isolation.
         # --- End Concurrency Note ---
 
-        sql = f"SELECT MAX(sequence_number) FROM {table} WHERE {parent_col} = ?"
+        # Use validated identifiers in the f-string
+        sql = f"SELECT MAX(sequence_number) FROM {validated_table} WHERE {validated_parent_col} = ?"
         # Use execute directly on the connection for context management
         async with conn.execute(sql, (parent_id,)) as cursor:
             row = await cursor.fetchone()
@@ -901,13 +979,24 @@ class MemoryUtils:
             conn: The database connection.
             entity_id: The ID of the entity (workflow, action, artifact).
             tags: A list of tag names (strings) to associate. Duplicates are handled.
-            entity_type: The type of the entity ('workflow', 'action', 'artifact').
+            entity_type: The type of the entity ('workflow', 'action', 'artifact'). Must form valid SQL identifiers when combined with '_tags' or '_id'.
         """
         if not tags:
             return # Nothing to do if no tags are provided
 
-        junction_table = f"{entity_type}_tags"
-        id_column = f"{entity_type}_id"
+        # Validate entity_type first as it forms part of identifiers
+        # Allow only specific expected entity types
+        allowed_entity_types = {"workflow", "action", "artifact"}
+        if entity_type not in allowed_entity_types:
+             raise ToolInputError(f"Invalid entity_type for tagging: {entity_type}", param_name="entity_type")
+
+        # Define and validate dynamic identifiers
+        junction_table_name = f"{entity_type}_tags"
+        id_column_name = f"{entity_type}_id"
+        validated_junction_table = MemoryUtils._validate_sql_identifier(junction_table_name, "junction_table")
+        validated_id_column = MemoryUtils._validate_sql_identifier(id_column_name, "id_column")
+        # --- End Validation ---
+
         tag_ids_to_link = []
         unique_tags = list(set(str(tag).strip().lower() for tag in tags if str(tag).strip())) # Clean, lowercase, unique tags
         now_unix = int(time.time())
@@ -940,12 +1029,12 @@ class MemoryUtils:
         if tag_ids_to_link:
             link_values = [(entity_id, tag_id) for tag_id in tag_ids_to_link]
             # Use INSERT OR IGNORE to handle potential race conditions or duplicate calls gracefully
+            # Use validated identifiers in the f-string
             await conn.executemany(
-                f"INSERT OR IGNORE INTO {junction_table} ({id_column}, tag_id) VALUES (?, ?)",
+                f"INSERT OR IGNORE INTO {validated_junction_table} ({validated_id_column}, tag_id) VALUES (?, ?)",
                 link_values
             )
             logger.debug(f"Associated {len(link_values)} tags with {entity_type} {entity_id}")
-
 
     @staticmethod
     async def _log_memory_operation(conn: aiosqlite.Connection, workflow_id: str, operation: str,
@@ -2657,11 +2746,46 @@ async def record_thought(
     parent_thought_id: Optional[str] = None,
     relevant_action_id: Optional[str] = None,
     relevant_artifact_id: Optional[str] = None,
-    relevant_memory_id: Optional[str] = None, # New parameter from merged schema
-    db_path: str = DEFAULT_DB_PATH
+    relevant_memory_id: Optional[str] = None,
+    db_path: str = DEFAULT_DB_PATH,
+    conn: Optional[aiosqlite.Connection] = None # Optional connection for transactions
 ) -> Dict[str, Any]:
     """Records a thought in a reasoning chain, potentially linking to memory and creating an associated memory entry.
-       Timestamps are returned as ISO 8601 strings.
+
+    If an existing database connection (`conn`) is provided, this function will use it
+    and operate within the existing transaction context (no internal commit). Otherwise,
+    it will acquire a new connection and manage its own transaction.
+
+    Args:
+        workflow_id: The ID of the workflow this thought belongs to.
+        content: The textual content of the thought.
+        thought_type: (Optional) Type of thought (e.g., 'goal', 'plan', 'inference'). Default 'inference'.
+        thought_chain_id: (Optional) ID of the chain to add to. If None, adds to the primary chain.
+        parent_thought_id: (Optional) ID of the parent thought in the chain.
+        relevant_action_id: (Optional) ID of an action this thought relates to.
+        relevant_artifact_id: (Optional) ID of an artifact this thought relates to.
+        relevant_memory_id: (Optional) ID of a memory this thought relates to.
+        db_path: (Optional) Path to the SQLite database file. Used if `conn` is not provided.
+        conn: (Optional) An existing `aiosqlite.Connection` to use for database operations.
+              If provided, commit/rollback is handled externally.
+
+    Returns:
+        Dictionary containing information about the recorded thought.
+        Timestamps are returned as ISO 8601 strings.
+        {
+            "thought_id": "uuid-string",
+            "thought_chain_id": "uuid-string",
+            "thought_type": "inference",
+            "content": "Thought content...",
+            "sequence_number": 5,
+            "created_at": "iso-timestampZ",
+            "linked_memory_id": "uuid-string" | None,
+            "success": true
+        }
+
+    Raises:
+        ToolInputError: If required parameters are missing or invalid, or referenced entities don't exist.
+        ToolError: If the database operation fails.
     """
     # --- Input Validation ---
     if not content or not isinstance(content, str):
@@ -2678,145 +2802,169 @@ async def record_thought(
 
     thought_id = MemoryUtils.generate_id()
     now_unix = int(time.time())
+    linked_memory_id = None # Initialize
+
+    async def _perform_db_operations(db_conn: aiosqlite.Connection):
+        """Inner function to perform DB ops using the provided connection."""
+        nonlocal linked_memory_id # Allow modification of outer scope variable
+
+        # --- Existence Checks for Foreign Keys ---
+        cursor = await db_conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+        wf_exists = await cursor.fetchone()
+        await cursor.close()
+        if not wf_exists:
+            raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
+
+        if parent_thought_id:
+             cursor = await db_conn.execute("SELECT 1 FROM thoughts WHERE thought_id = ?", (parent_thought_id,))
+             pthought_exists = await cursor.fetchone()
+             await cursor.close()
+             if not pthought_exists:
+                 raise ToolInputError(f"Parent thought not found: {parent_thought_id}", param_name="parent_thought_id")
+
+        if relevant_action_id:
+             cursor = await db_conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (relevant_action_id,))
+             raction_exists = await cursor.fetchone()
+             await cursor.close()
+             if not raction_exists:
+                 raise ToolInputError(f"Relevant action not found: {relevant_action_id}", param_name="relevant_action_id")
+
+        if relevant_artifact_id:
+             cursor = await db_conn.execute("SELECT 1 FROM artifacts WHERE artifact_id = ?", (relevant_artifact_id,))
+             rartifact_exists = await cursor.fetchone()
+             await cursor.close()
+             if not rartifact_exists:
+                 raise ToolInputError(f"Relevant artifact not found: {relevant_artifact_id}", param_name="relevant_artifact_id")
+
+        if relevant_memory_id:
+             cursor = await db_conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (relevant_memory_id,))
+             rmemory_exists = await cursor.fetchone()
+             await cursor.close()
+             if not rmemory_exists:
+                 raise ToolInputError(f"Relevant memory not found: {relevant_memory_id}", param_name="relevant_memory_id")
+
+        # --- Determine Target Thought Chain ---
+        target_thought_chain_id = thought_chain_id
+        if not target_thought_chain_id:
+            cursor = await db_conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if not row:
+                # If running within a transaction (conn provided), creating the chain here might be complex.
+                # Assume for now the primary chain should exist if adding thoughts without specifying one.
+                # A more robust approach might involve ensuring chain creation happens before thought recording.
+                if conn: # Check if running in external transaction
+                     raise ToolError(f"Primary thought chain for workflow {workflow_id} not found. Cannot auto-create within existing transaction.")
+                else:
+                     # If running standalone, we can create it.
+                     target_thought_chain_id = MemoryUtils.generate_id()
+                     logger.info(f"No existing thought chain found for workflow {workflow_id}, creating default.")
+                     await db_conn.execute(
+                         "INSERT INTO thought_chains (thought_chain_id, workflow_id, title, created_at) VALUES (?, ?, ?, ?)",
+                         (target_thought_chain_id, workflow_id, "Main reasoning", now_unix)
+                     )
+            else:
+                target_thought_chain_id = row["thought_chain_id"]
+        else:
+            cursor = await db_conn.execute("SELECT 1 FROM thought_chains WHERE thought_chain_id = ? AND workflow_id = ?", (target_thought_chain_id, workflow_id))
+            chain_exists = await cursor.fetchone()
+            await cursor.close()
+            if not chain_exists:
+                raise ToolInputError(f"Provided thought chain {target_thought_chain_id} not found or does not belong to workflow {workflow_id}", param_name="thought_chain_id")
+
+        # --- Get Sequence Number ---
+        sequence_number = await MemoryUtils.get_next_sequence_number(db_conn, target_thought_chain_id, "thoughts", "thought_chain_id")
+
+        # --- Insert Thought Record ---
+        await db_conn.execute(
+            """
+            INSERT INTO thoughts (
+                thought_id, thought_chain_id, parent_thought_id, thought_type, content,
+                sequence_number, created_at, relevant_action_id, relevant_artifact_id, relevant_memory_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                thought_id, target_thought_chain_id, parent_thought_id, thought_type_enum.value, content,
+                sequence_number, now_unix, relevant_action_id, relevant_artifact_id, relevant_memory_id
+            )
+        )
+
+        # --- Update Workflow Timestamp ---
+        await db_conn.execute(
+            "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
+            (now_unix, now_unix, workflow_id)
+        )
+
+        # --- Create Linked Memory for Important Thoughts ---
+        important_thought_types = [
+            ThoughtType.GOAL.value, ThoughtType.DECISION.value, ThoughtType.SUMMARY.value,
+            ThoughtType.REFLECTION.value, ThoughtType.HYPOTHESIS.value, ThoughtType.INSIGHT.value # Added insight type to the list
+        ]
+        # Check if ThoughtType.INSIGHT is defined in the enum, if not remove it
+        if not hasattr(ThoughtType, 'INSIGHT'):
+            if ThoughtType.INSIGHT.value in important_thought_types:
+                important_thought_types.remove(ThoughtType.INSIGHT.value)
+
+
+        if thought_type_enum.value in important_thought_types:
+            linked_memory_id = MemoryUtils.generate_id()
+            mem_content = f"Thought [{sequence_number}] ({thought_type_enum.value.capitalize()}): {content}"
+            mem_tags = ["reasoning", thought_type_enum.value]
+            mem_importance = 7.5 if thought_type_enum.value in [ThoughtType.GOAL.value, ThoughtType.DECISION.value] else 6.5
+
+            await db_conn.execute(
+                 """
+                 INSERT INTO memories (
+                     memory_id, workflow_id, thought_id, content, memory_level, memory_type,
+                     importance, confidence, tags, created_at, updated_at, access_count
+                 )
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 """,
+                 (
+                     linked_memory_id, workflow_id, thought_id, mem_content,
+                     MemoryLevel.SEMANTIC.value, MemoryType.REASONING_STEP.value,
+                     mem_importance, 1.0, json.dumps(mem_tags), now_unix, now_unix, 0
+                 )
+            )
+            await MemoryUtils._log_memory_operation(
+                db_conn, workflow_id, "create_from_thought", linked_memory_id, None, {"thought_id": thought_id}
+            )
+        return target_thought_chain_id, sequence_number # Return values needed for result dict
 
     try:
-        async with DBConnection(db_path) as conn:
-            # --- Existence Checks for Foreign Keys ---
-            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
-            wf_exists = await cursor.fetchone()
-            await cursor.close()
-            if not wf_exists: 
-                raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
+        target_thought_chain_id_res = None
+        sequence_number_res = None
 
-            if parent_thought_id:
-                 cursor = await conn.execute("SELECT 1 FROM thoughts WHERE thought_id = ?", (parent_thought_id,))
-                 pthought_exists = await cursor.fetchone()
-                 await cursor.close()
-                 if not pthought_exists: 
-                     raise ToolInputError(f"Parent thought not found: {parent_thought_id}", param_name="parent_thought_id")
+        if conn:
+            # Use the provided connection within the existing transaction
+            target_thought_chain_id_res, sequence_number_res = await _perform_db_operations(conn)
+            # --- NO COMMIT HERE - Handled by the outer transaction manager ---
+        else:
+            # Manage connection and transaction locally
+            db_manager = DBConnection(db_path)
+            async with db_manager.transaction() as local_conn:
+                target_thought_chain_id_res, sequence_number_res = await _perform_db_operations(local_conn)
+            # --- COMMIT/ROLLBACK handled by the transaction manager ---
 
-            if relevant_action_id:
-                 cursor = await conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (relevant_action_id,))
-                 raction_exists = await cursor.fetchone()
-                 await cursor.close()
-                 if not raction_exists: 
-                     raise ToolInputError(f"Relevant action not found: {relevant_action_id}", param_name="relevant_action_id")
+        # --- Prepare Result ---
+        result = {
+            "thought_id": thought_id,
+            "thought_chain_id": target_thought_chain_id_res,
+            "thought_type": thought_type_enum.value,
+            "content": content,
+            "sequence_number": sequence_number_res,
+            "created_at": to_iso_z(now_unix),
+            "linked_memory_id": linked_memory_id,
+            "success": True,
+        }
 
-            if relevant_artifact_id:
-                 cursor = await conn.execute("SELECT 1 FROM artifacts WHERE artifact_id = ?", (relevant_artifact_id,))
-                 rartifact_exists = await cursor.fetchone()
-                 await cursor.close()
-                 if not rartifact_exists: 
-                     raise ToolInputError(f"Relevant artifact not found: {relevant_artifact_id}", param_name="relevant_artifact_id")
+        logger.info(
+            f"Recorded thought ({thought_type_enum.value}) in workflow {workflow_id}",
+            emoji_key="brain",
+        )
 
-            if relevant_memory_id:
-                 cursor = await conn.execute("SELECT 1 FROM memories WHERE memory_id = ?", (relevant_memory_id,))
-                 rmemory_exists = await cursor.fetchone()
-                 await cursor.close()
-                 if not rmemory_exists: 
-                     raise ToolInputError(f"Relevant memory not found: {relevant_memory_id}", param_name="relevant_memory_id")
-
-            # --- Determine Target Thought Chain ---
-            target_thought_chain_id = thought_chain_id
-            if not target_thought_chain_id:
-                cursor = await conn.execute("SELECT thought_chain_id FROM thought_chains WHERE workflow_id = ? ORDER BY created_at ASC LIMIT 1", (workflow_id,))
-                row = await cursor.fetchone()
-                await cursor.close()
-                if not row:
-                    target_thought_chain_id = MemoryUtils.generate_id()
-                    logger.info(f"No existing thought chain found for workflow {workflow_id}, creating default.")
-                    await conn.execute(
-                        "INSERT INTO thought_chains (thought_chain_id, workflow_id, title, created_at) VALUES (?, ?, ?, ?)",
-                        (target_thought_chain_id, workflow_id, "Main reasoning", now_unix) # *** Use now_unix ***
-                    )
-                else:
-                    target_thought_chain_id = row["thought_chain_id"]
-            else:
-                cursor = await conn.execute("SELECT 1 FROM thought_chains WHERE thought_chain_id = ? AND workflow_id = ?", (target_thought_chain_id, workflow_id))
-                chain_exists = await cursor.fetchone()
-                await cursor.close()
-                if not chain_exists:
-                    raise ToolInputError(f"Provided thought chain {target_thought_chain_id} not found or does not belong to workflow {workflow_id}", param_name="thought_chain_id")
-
-            # --- Get Sequence Number ---
-            sequence_number = await MemoryUtils.get_next_sequence_number(conn, target_thought_chain_id, "thoughts", "thought_chain_id")
-
-            # --- Insert Thought Record ---
-            await conn.execute(
-                """
-                INSERT INTO thoughts (
-                    thought_id, thought_chain_id, parent_thought_id, thought_type, content,
-                    sequence_number, created_at, relevant_action_id, relevant_artifact_id, relevant_memory_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    thought_id, target_thought_chain_id, parent_thought_id, thought_type_enum.value, content,
-                    sequence_number, now_unix, relevant_action_id, relevant_artifact_id, relevant_memory_id
-                )
-            )
-
-            # --- Update Workflow Timestamp ---
-            await conn.execute(
-                "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
-                (now_unix, now_unix, workflow_id) 
-            )
-
-            # --- Create Linked Memory for Important Thoughts ---
-            linked_memory_id = None
-            important_thought_types = [
-                ThoughtType.GOAL.value, ThoughtType.DECISION.value, ThoughtType.SUMMARY.value,
-                ThoughtType.REFLECTION.value, ThoughtType.HYPOTHESIS.value, # Note: Insight is not a ThoughtType enum value
-            ]
-            # Find insight type if defined elsewhere, for now assuming it's not part of the list
-            # important_thought_types.append(ThoughtType.INSIGHT.value)
-
-            if thought_type_enum.value in important_thought_types:
-                linked_memory_id = MemoryUtils.generate_id()
-                mem_content = f"Thought [{sequence_number}] ({thought_type_enum.value.capitalize()}): {content}"
-                mem_tags = ["reasoning", thought_type_enum.value]
-                mem_importance = 7.5 if thought_type_enum.value in [ThoughtType.GOAL.value, ThoughtType.DECISION.value] else 6.5
-
-                await conn.execute(
-                     """
-                     INSERT INTO memories (
-                         memory_id, workflow_id, thought_id, content, memory_level, memory_type,
-                         importance, confidence, tags, created_at, updated_at, access_count
-                     )
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     """,
-                     (
-                         linked_memory_id, workflow_id, thought_id, mem_content,
-                         MemoryLevel.SEMANTIC.value,
-                         MemoryType.REASONING_STEP.value,
-                         mem_importance, 1.0,
-                         json.dumps(mem_tags), now_unix, now_unix, 0
-                     )
-                )
-                await MemoryUtils._log_memory_operation(
-                    conn, workflow_id, "create_from_thought", linked_memory_id, None, {"thought_id": thought_id}
-                )
-
-            # --- Commit and Return ---
-            await conn.commit()
-
-            result = {
-                "thought_id": thought_id,
-                "thought_chain_id": target_thought_chain_id,
-                "thought_type": thought_type_enum.value,
-                "content": content,
-                "sequence_number": sequence_number,
-                "created_at": to_iso_z(now_unix),
-                "linked_memory_id": linked_memory_id,
-                "success": True,
-            }
-
-            logger.info(
-                f"Recorded thought ({thought_type_enum.value}) in workflow {workflow_id}",
-                emoji_key="brain",
-            )
-
-            return result
+        return result
 
     except ToolInputError:
         raise # Re-raise specific input errors
@@ -3355,8 +3503,13 @@ async def search_semantic_memories(
                 rows = await cursor.fetchall()
 
                 # --- Step 3: Process and format results, update access stats ---
-                # Order rows based on the similarity score we got earlier
-                ordered_rows = sorted(rows, key=lambda r: score_map.get(r['memory_id'], -1.0), reverse=True)
+                # Order rows based on the similarity score (desc) and then memory_id (asc) for stability
+                ordered_rows = sorted(
+                    rows,
+                    key=lambda r: (score_map.get(r['memory_id'], -1.0), r['memory_id']),
+                    reverse=True # Sort primarily by score descending
+                )
+                # Note: Secondary sort by memory_id will be ascending due to how tuple sorting works with reverse=True
 
                 for row in ordered_rows:
                     # Type filter already applied in _find_similar_memories, no need to check again here
@@ -3397,6 +3550,7 @@ async def search_semantic_memories(
         logger.error(f"Failed semantic search: {str(e)}", emoji_key="x", exc_info=True)
         raise ToolError(f"Failed semantic search: {str(e)}") from e
     
+
 @with_tool_metrics
 @with_error_handling
 async def hybrid_search_memories(
@@ -3418,7 +3572,7 @@ async def hybrid_search_memories(
     # Control flags
     include_content: bool = True,
     include_links: bool = False, # Keep False by default for performance in search
-    link_direction: str = "outgoing",
+    link_direction: str = "outgoing", # 'outgoing', 'incoming', 'both' - Determines which links to fetch if include_links=True
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
     """Performs a hybrid search combining semantic similarity and keyword/filtered relevance.
@@ -3456,7 +3610,10 @@ async def hybrid_search_memories(
                     "hybrid_score": 0.85,
                     "semantic_score": 0.92,
                     "keyword_relevance_score": 0.75, # Normalized 0-1
-                    "links": { ... } # Optional based on include_links
+                    "links": { # Populated if include_links=True
+                        "outgoing": [ ... ],
+                        "incoming": [ ... ]
+                    }
                 },
                 ...
             ],
@@ -3480,26 +3637,25 @@ async def hybrid_search_memories(
         raise ToolInputError("keyword_weight must be between 0.0 and 1.0", param_name="keyword_weight")
     if semantic_weight + keyword_weight <= 0:
         raise ToolInputError("Sum of semantic_weight and keyword_weight must be positive.", param_name="semantic_weight")
-    if limit < 1: 
+    if limit < 1:
         raise ToolInputError("Limit must be >= 1", param_name="limit")
-    if offset < 0: 
+    if offset < 0:
         raise ToolInputError("Offset must be >= 0", param_name="offset")
     # Reuse validation for filters from query_memories if needed, or perform here
     if memory_level:
-        try: 
+        try:
             MemoryLevel(memory_level.lower())
-        except ValueError as e: 
+        except ValueError as e:
             raise ToolInputError("Invalid memory_level.", param_name="memory_level") from e
     if memory_type:
-        try: 
+        try:
             MemoryType(memory_type.lower())
-        except ValueError as e: 
+        except ValueError as e:
             raise ToolInputError("Invalid memory_type.", param_name="memory_type") from e
     valid_link_directions = ["outgoing", "incoming", "both"]
-    if link_direction.lower() not in valid_link_directions:
+    link_direction_lower = link_direction.lower() # Use lower case consistently
+    if link_direction_lower not in valid_link_directions:
          raise ToolInputError(f"link_direction must be one of: {', '.join(valid_link_directions)}", param_name="link_direction")
-    link_direction = link_direction.lower()
-
 
     # Normalize weights
     total_weight = semantic_weight + keyword_weight
@@ -3555,20 +3711,20 @@ async def hybrid_search_memories(
                 if memory_type:
                     where_clauses.append("m.memory_type = ?")
                     params.append(memory_type.lower())
-                if min_importance is not None: 
-                    where_clauses.append("m.importance >= ?") 
+                if min_importance is not None:
+                    where_clauses.append("m.importance >= ?")
                     params.append(min_importance)
-                if max_importance is not None: 
-                    where_clauses.append("m.importance <= ?") 
+                if max_importance is not None:
+                    where_clauses.append("m.importance <= ?")
                     params.append(max_importance)
-                if min_confidence is not None: 
+                if min_confidence is not None:
                     where_clauses.append("m.confidence >= ?")
                     params.append(min_confidence)
-                if min_created_at_unix is not None: 
+                if min_created_at_unix is not None:
                     where_clauses.append("m.created_at >= ?")
                     params.append(min_created_at_unix)
-                if max_created_at_unix is not None: 
-                    where_clauses.append("m.created_at <= ?") 
+                if max_created_at_unix is not None:
+                    where_clauses.append("m.created_at <= ?")
                     params.append(max_created_at_unix)
                 now_unix = int(time.time())
                 where_clauses.append("(m.ttl = 0 OR m.created_at + m.ttl > ?)")
@@ -3585,30 +3741,50 @@ async def hybrid_search_memories(
                     fts_query_term = ' OR '.join(query.strip().split()) # Basic query formation
                     fts_params.append(fts_query_term)
 
-                # Combine WHERE clauses
+                # Combine WHERE clauses and add joins
                 where_sql = " WHERE " + " AND ".join(where_clauses)
                 final_query = data_query + joins + where_sql
 
                 # Fetch *all* matching results for keyword scoring, don't limit yet
                 # We limit *after* hybrid scoring
                 keyword_candidates = []
-                async with conn.execute(final_query, params + fts_params) as cursor:
-                     keyword_candidates = await cursor.fetchall()
+                cursor = await conn.execute(final_query, params + fts_params)
+                keyword_candidates = await cursor.fetchall()
+                await cursor.close() # Close cursor
 
-                # Calculate keyword relevance score for each candidate
+                # Calculate raw keyword relevance scores (0-10 range)
+                raw_keyword_scores = {}
                 for row in keyword_candidates:
                     mem_id = row["memory_id"]
                     kw_relevance = _compute_memory_relevance(
                         row["importance"], row["confidence"], row["created_at"],
                         row["access_count"], row["last_accessed"]
                     )
-                    # Normalize keyword relevance (0-10 range from func) to 0-1
-                    normalized_kw_score = min(max(kw_relevance / 10.0, 0.0), 1.0)
+                    # Store the raw score (0-10 range)
+                    raw_keyword_scores[mem_id] = kw_relevance
+                    # Initialize the keyword score in combined_scores (will be normalized later)
+                    if mem_id not in combined_scores:
+                        combined_scores[mem_id] # Ensure entry exists if only found by keyword search
+                    combined_scores[mem_id]["keyword"] = 0.0 # Placeholder
+
+                # Find the maximum observed raw keyword score
+                max_kw_score = 0.0
+                if raw_keyword_scores:
+                    max_kw_score = max(raw_keyword_scores.values())
+
+                # Normalize keyword scores based on the observed maximum (or 10 if max is 0)
+                # Avoid division by zero or near-zero scores causing massive inflation.
+                normalization_factor = max(max_kw_score, 1e-6) # Use a small epsilon if max_kw_score is 0
+
+                for mem_id, raw_score in raw_keyword_scores.items():
+                    normalized_kw_score = min(max(raw_score / normalization_factor, 0.0), 1.0)
                     combined_scores[mem_id]["keyword"] = normalized_kw_score
-                logger.debug(f"Hybrid search: Found and scored {len(keyword_candidates)} keyword/filtered candidates.")
+
+                logger.debug(f"Hybrid search: Found and scored {len(keyword_candidates)} keyword/filtered candidates (Max raw score: {max_kw_score:.2f}).")
 
             # --- Step 3: Calculate Hybrid Score ---
             final_ranked_ids = []
+            final_scores_map = {}
             if not combined_scores:
                  logger.info("Hybrid search yielded no candidates from either semantic or keyword search.")
             else:
@@ -3624,8 +3800,9 @@ async def hybrid_search_memories(
                 final_scores_map = {item[0]: item[1] for item in paginated_ids_scores} # Keep scores for final list
 
             # --- Step 4: Fetch Full Details for Ranked & Paginated IDs ---
-            memories_results = []
+            memories_results = [] # Final list of processed memories
             total_candidates_considered = len(combined_scores) # Total unique matches found
+            rows_map = {} # To store fetched memory data
 
             if final_ranked_ids:
                 placeholders = ','.join('?' * len(final_ranked_ids))
@@ -3634,53 +3811,83 @@ async def hybrid_search_memories(
                 if include_content:
                     select_cols_final += ", m.content"
 
-                # Fetch data, preserving the order from final_ranked_ids
+                # Fetch data
                 query_final = f"SELECT {select_cols_final} FROM memories m WHERE m.memory_id IN ({placeholders})"
-                # Fetch all matching rows
-                async with conn.execute(query_final, final_ranked_ids) as cursor:
-                     rows_map = {row['memory_id']: dict(row) for row in await cursor.fetchall()}
+                cursor = await conn.execute(query_final, final_ranked_ids)
+                # Store fetched data in a map for easy access
+                rows_map = {row['memory_id']: dict(row) for row in await cursor.fetchall()}
+                await cursor.close()
 
+            # --- Step 5: Batch Fetch Links if Requested ---
+            links_map = defaultdict(lambda: {"outgoing": [], "incoming": []})
+            if include_links and final_ranked_ids:
+                placeholders = ','.join('?' * len(final_ranked_ids))
+
+                # Fetch Outgoing Links
+                if link_direction_lower in ["outgoing", "both"]:
+                    outgoing_query = f"""
+                    SELECT ml.link_id, ml.source_memory_id, ml.target_memory_id, ml.link_type, ml.strength, ml.description AS link_description,
+                           target_mem.description AS target_description, target_mem.memory_type AS target_type
+                    FROM memory_links ml JOIN memories target_mem ON ml.target_memory_id = target_mem.memory_id
+                    WHERE ml.source_memory_id IN ({placeholders})
+                    """
+                    outgoing_cursor = await conn.execute(outgoing_query, final_ranked_ids)
+                    async for link_row in outgoing_cursor:
+                        links_map[link_row["source_memory_id"]]["outgoing"].append(dict(link_row))
+                    await outgoing_cursor.close()
+
+                # Fetch Incoming Links
+                if link_direction_lower in ["incoming", "both"]:
+                    incoming_query = f"""
+                    SELECT ml.link_id, ml.source_memory_id, ml.target_memory_id, ml.link_type, ml.strength, ml.description AS link_description,
+                           source_mem.description AS source_description, source_mem.memory_type AS source_type
+                    FROM memory_links ml JOIN memories source_mem ON ml.source_memory_id = source_mem.memory_id
+                    WHERE ml.target_memory_id IN ({placeholders})
+                    """
+                    incoming_cursor = await conn.execute(incoming_query, final_ranked_ids)
+                    async for link_row in incoming_cursor:
+                        links_map[link_row["target_memory_id"]]["incoming"].append(dict(link_row))
+                    await incoming_cursor.close()
+
+            # --- Step 6: Reconstruct Results, Attach Links, Update Access Stats ---
+            update_access_tasks = [] # Tasks for updating access stats
+            if final_ranked_ids:
                 # Reconstruct the list in the final ranked order and add scores/links
                 for mem_id in final_ranked_ids:
-                     if mem_id in rows_map:
-                          memory_dict = rows_map[mem_id]
-                          scores = final_scores_map.get(mem_id, {}) # Get scores for this ID
-                          memory_dict["hybrid_score"] = round(scores.get("hybrid", 0.0), 4)
-                          memory_dict["semantic_score"] = round(scores.get("semantic", 0.0), 4)
-                          memory_dict["keyword_relevance_score"] = round(scores.get("keyword", 0.0), 4) # Already normalized 0-1
+                    if mem_id in rows_map:
+                        memory_dict = rows_map[mem_id]
+                        scores = final_scores_map.get(mem_id, {}) # Get scores for this ID
+                        memory_dict["hybrid_score"] = round(scores.get("hybrid", 0.0), 4)
+                        memory_dict["semantic_score"] = round(scores.get("semantic", 0.0), 4)
+                        memory_dict["keyword_relevance_score"] = round(scores.get("keyword", 0.0), 4) # Already normalized 0-1
 
-                          # Add other standard fields
-                          memory_dict["tags"] = await MemoryUtils.deserialize(memory_dict.get("tags"))
-                          memory_dict["created_at_unix"] = memory_dict.get("created_at")
-                          memory_dict["updated_at_unix"] = memory_dict.get("updated_at")
-                          memory_dict["last_accessed_unix"] = memory_dict.get("last_accessed")
+                        # Add other standard fields
+                        memory_dict["tags"] = await MemoryUtils.deserialize(memory_dict.get("tags"))
+                        memory_dict["created_at_unix"] = memory_dict.get("created_at")
+                        memory_dict["updated_at_unix"] = memory_dict.get("updated_at")
+                        memory_dict["last_accessed_unix"] = memory_dict.get("last_accessed")
 
-                          # --- Fetch Links (If requested) ---
-                          if include_links:
-                               memory_dict["links"] = {"outgoing": [], "incoming": []}
-                               if link_direction in ["outgoing", "both"]:
-                                    outgoing_query = """SELECT ml.link_id, ml.target_memory_id, ml.link_type, ml.strength, ml.description AS link_description,
-                                                               target_mem.description AS target_description, target_mem.memory_type AS target_type
-                                                        FROM memory_links ml JOIN memories target_mem ON ml.target_memory_id = target_mem.memory_id
-                                                        WHERE ml.source_memory_id = ?"""
-                                    async with conn.execute(outgoing_query, (mem_id,)) as link_cursor:
-                                         memory_dict["links"]["outgoing"] = [dict(lr) for lr in await link_cursor.fetchall()]
-                               if link_direction in ["incoming", "both"]:
-                                    incoming_query = """SELECT ml.link_id, ml.source_memory_id, ml.link_type, ml.strength, ml.description AS link_description,
-                                                               source_mem.description AS source_description, source_mem.memory_type AS source_type
-                                                        FROM memory_links ml JOIN memories source_mem ON ml.source_memory_id = source_mem.memory_id
-                                                        WHERE ml.target_memory_id = ?"""
-                                    async with conn.execute(incoming_query, (mem_id,)) as link_cursor:
-                                         memory_dict["links"]["incoming"] = [dict(lr) for lr in await link_cursor.fetchall()]
+                        # Attach links from the pre-fetched map
+                        if include_links:
+                            memory_dict["links"] = links_map[mem_id]
 
-                          memories_results.append(memory_dict)
+                        memories_results.append(memory_dict)
 
-                          # Update access time and log hybrid access
-                          await MemoryUtils._update_memory_access(conn, mem_id)
-                          await MemoryUtils._log_memory_operation(conn, memory_dict["workflow_id"], "hybrid_access", mem_id, None, {"query": query[:100], "hybrid_score": memory_dict["hybrid_score"]})
+                        # Prepare access update tasks
+                        update_access_tasks.append(
+                            MemoryUtils._update_memory_access(conn, mem_id)
+                        )
+                        update_access_tasks.append(
+                            MemoryUtils._log_memory_operation(
+                                conn, memory_dict["workflow_id"], "hybrid_access", mem_id, None,
+                                {"query": query[:100], "hybrid_score": memory_dict["hybrid_score"]}
+                            )
+                        )
 
-            # --- Commit Access Updates ---
-            await conn.commit()
+            # --- Step 7: Update Access Stats Concurrently & Commit ---
+            if update_access_tasks:
+                await asyncio.gather(*update_access_tasks)
+                await conn.commit()
 
             processing_time = time.time() - start_time
             logger.info(f"Hybrid search returned {len(memories_results)} results for query '{query[:50]}...'", emoji_key="magic_wand", time=processing_time)
@@ -3697,7 +3904,7 @@ async def hybrid_search_memories(
     except Exception as e:
         logger.error(f"Hybrid search failed: {str(e)}", emoji_key="x", exc_info=True)
         raise ToolError(f"Hybrid search failed: {str(e)}") from e
-        
+
 @with_tool_metrics
 @with_error_handling
 async def create_memory_link(
@@ -4619,7 +4826,7 @@ async def get_artifact_by_id(
         logger.error(f"Error retrieving artifact {artifact_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to retrieve artifact: {str(e)}") from e
 
-# --- 11. Thought Details (Ported from agent_memory) ---
+# --- 11. Thought Details ---
 @with_tool_metrics
 @with_error_handling
 async def create_thought_chain(
@@ -4629,70 +4836,101 @@ async def create_thought_chain(
     initial_thought_type: str = "goal",
     db_path: str = DEFAULT_DB_PATH
 ) -> Dict[str, Any]:
-    """Creates a new reasoning chain for tracking related thoughts."""
-    # [Implementation ported from agent_memory.create_thought_chain, adapted for aiosqlite/schema]
+    """Creates a new reasoning chain for tracking related thoughts.
+
+    This operation is atomic: the chain and optional initial thought are
+    created within a single database transaction.
+
+    Args:
+        workflow_id: The ID of the workflow this chain belongs to.
+        title: A descriptive title for the thought chain.
+        initial_thought: (Optional) Content for the first thought in the chain.
+        initial_thought_type: (Optional) Type for the initial thought. Default 'goal'.
+        db_path: (Optional) Path to the SQLite database file.
+
+    Returns:
+        Dictionary containing information about the created thought chain.
+        Timestamps are returned as ISO 8601 strings.
+        {
+            "thought_chain_id": "uuid-string",
+            "workflow_id": "workflow-uuid",
+            "title": "Reasoning for X",
+            "created_at": "iso-timestampZ",
+            "initial_thought_id": "uuid-string" | None,
+            "success": true
+        }
+
+    Raises:
+        ToolInputError: If title is empty, type is invalid, or workflow not found.
+        ToolError: If the database operation fails.
+    """
     try:
-        if not title: 
+        if not title:
             raise ToolInputError("Thought chain title required", param_name="title")
         initial_thought_type_enum = None
         if initial_thought:
-            try: 
+            try:
                 initial_thought_type_enum = ThoughtType(initial_thought_type.lower())
-            except ValueError as e: 
-                raise ToolInputError("Invalid initial_thought_type", param_name="initial_thought_type") from e
+            except ValueError as e:
+                valid_types = [t.value for t in ThoughtType]
+                raise ToolInputError(f"Invalid initial_thought_type '{initial_thought_type}'. Must be one of: {', '.join(valid_types)}", param_name="initial_thought_type") from e
 
         thought_chain_id = MemoryUtils.generate_id()
-        now_iso = datetime.utcnow().isoformat()
         now_unix = int(time.time())
+        thought_id = None # Initialize thought_id
 
-        async with DBConnection(db_path) as conn:
-             # Check workflow
-            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
-                 if not await cursor.fetchone(): 
-                     raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
+        # Use the transaction manager for atomicity
+        db_manager = DBConnection(db_path)
+        async with db_manager.transaction() as conn:
+            # Check workflow exists (using the transaction connection)
+            cursor = await conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            wf_exists = await cursor.fetchone()
+            await cursor.close() # Close cursor after fetch
+            if not wf_exists:
+                raise ToolInputError(f"Workflow {workflow_id} not found", param_name="workflow_id")
 
-            # Insert chain
+            # Insert chain using Unix timestamp
             await conn.execute(
                 "INSERT INTO thought_chains (thought_chain_id, workflow_id, title, created_at) VALUES (?, ?, ?, ?)",
-                (thought_chain_id, workflow_id, title, now_iso)
+                (thought_chain_id, workflow_id, title, now_unix)
             )
-            # Update workflow
-            await conn.execute("UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?", (now_iso, now_unix, workflow_id))
+            # Update workflow using Unix timestamp
+            await conn.execute(
+                "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
+                (now_unix, now_unix, workflow_id)
+            )
 
-            # Add initial thought
-            thought_id = None
+            # Add initial thought if specified, passing the transaction connection
             if initial_thought and initial_thought_type_enum:
-                # Use record_thought to handle memory creation logic consistently
                 thought_result = await record_thought(
-                    conn=conn, # Pass connection to reuse transaction
                     workflow_id=workflow_id,
                     content=initial_thought,
                     thought_type=initial_thought_type_enum.value,
                     thought_chain_id=thought_chain_id,
-                    db_path=db_path # Pass db_path for potential nested calls
-                    # Note: record_thought now handles commit internally if conn is passed
+                    db_path=db_path, # Still pass db_path in case record_thought needs it for other reasons
+                    conn=conn # Pass the active transaction connection
                 )
                 thought_id = thought_result.get("thought_id")
-            else:
-                await conn.commit() # Commit if no initial thought was added
 
-            result = {
-                "thought_chain_id": thought_chain_id,
-                "workflow_id": workflow_id,
-                "title": title,
-                "created_at": now_iso,
-                "initial_thought_id": thought_id, # Include if created
-                "success": True
-            }
-            logger.info(f"Created thought chain '{title}' ({thought_chain_id}) in workflow {workflow_id}", emoji_key="thought_balloon")
-            return result
+        # Prepare result dictionary outside the transaction block
+        result = {
+            "thought_chain_id": thought_chain_id,
+            "workflow_id": workflow_id,
+            "title": title,
+            "created_at": to_iso_z(now_unix), # Format the timestamp used for creation for output
+            "initial_thought_id": thought_id, # Include if created
+            "success": True
+        }
+        logger.info(f"Created thought chain '{title}' ({thought_chain_id}) in workflow {workflow_id}", emoji_key="thought_balloon")
+        return result
 
     except ToolInputError:
         raise
     except Exception as e:
-        logger.error(f"Error creating thought chain: {e}", exc_info=True)
+        # Log the error context
+        logger.error(f"Error creating thought chain '{title}' for workflow {workflow_id}: {e}", exc_info=True)
+        # Re-raise as a ToolError for consistent error handling
         raise ToolError(f"Failed to create thought chain: {str(e)}") from e
-
 
 @with_tool_metrics
 @with_error_handling
@@ -6771,18 +7009,37 @@ async def consolidate_memories(
                 result_tags = ["consolidated", consolidation_type]
                 result_context = {"source_memories": source_memory_ids}
 
+                # --- Calculate derived importance and confidence ---
+                derived_importance = 5.0 # Default
+                derived_confidence = 0.75 # Default
+                if source_memories_list:
+                    source_importances = [m.get("importance", 5.0) for m in source_memories_list]
+                    source_confidences = [m.get("confidence", 0.5) for m in source_memories_list]
+
+                    # Importance: Max source importance + small boost, capped at 10
+                    derived_importance = min(max(source_importances) + 0.5, 10.0)
+
+                    # Confidence: Average source confidence, capped at 1
+                    derived_confidence = min(sum(source_confidences) / len(source_confidences), 1.0)
+                    # Add a slight penalty based on number of sources (more sources -> slightly less confidence in exact consolidation?)
+                    derived_confidence = max(0.1, derived_confidence * (1.0 - min(0.2, (len(source_memories_list) - 1) * 0.02)))
+
+                logger.debug(f"Derived Importance: {derived_importance:.2f}, Confidence: {derived_confidence:.2f}")
+                # --- End calculation ---
+
                 try:
-                    # Use store_memory tool function.
+                    # Use store_memory tool function with derived values
                     store_result_dict = await store_memory(
-                         workflow_id=effective_workflow_id,
-                         content=consolidated_content,
-                         memory_type=result_type.value,
-                         memory_level=result_level.value,
-                         importance=7.5, confidence=0.9,
-                         description=result_desc,
-                         source=f"consolidation_{consolidation_type}",
-                         tags=result_tags, context_data=result_context,
-                         generate_embedding=True, db_path=db_path
+                        workflow_id=effective_workflow_id,
+                        content=consolidated_content,
+                        memory_type=result_type.value,
+                        memory_level=result_level.value,
+                        importance=round(derived_importance, 2), # Use derived importance
+                        confidence=round(derived_confidence, 3), # Use derived confidence
+                        description=result_desc,
+                        source=f"consolidation_{consolidation_type}",
+                        tags=result_tags, context_data=result_context,
+                        generate_embedding=True, db_path=db_path
                     )
                     stored_memory_id = store_result_dict.get("memory_id")
                 except Exception as store_err:
@@ -7262,14 +7519,24 @@ def _mermaid_escape(text: str) -> str:
     return text
 
 async def _generate_mermaid_diagram(workflow: Dict[str, Any]) -> str:
-    """Generates a detailed Mermaid flowchart representation of the workflow. (Full Port)"""
+    """Generates a detailed Mermaid flowchart representation of the workflow."""
+
+    def sanitize_mermaid_id(uuid_str: Optional[str], prefix: str) -> str:
+        """Creates a valid Mermaid node ID from a UUID, handling None."""
+        if not uuid_str:
+             # Generate a unique fallback for missing IDs to avoid collisions
+             return f"{prefix}_MISSING_{MemoryUtils.generate_id().replace('-', '_')}"
+        # Replace hyphens which are problematic in unquoted Mermaid node IDs
+        sanitized = uuid_str.replace("-", "_")
+        return f"{prefix}_{sanitized}"
+
     diagram = ["```mermaid", "flowchart TD"] # Top-Down flowchart
 
     # --- Workflow Node ---
-    wf_id_short = workflow.get('workflow_id', 'W')[:8]
+    wf_node_id = sanitize_mermaid_id(workflow.get('workflow_id'), "W") # Use sanitized full ID
     wf_title = _mermaid_escape(workflow.get('title', 'Workflow'))
     wf_status_class = f":::{workflow.get('status', 'active')}" # Style based on status
-    diagram.append(f'    W_{wf_id_short}("{wf_title}"){wf_status_class}')
+    diagram.append(f'    {wf_node_id}("{wf_title}"){wf_status_class}')
     diagram.append("") # Spacer
 
     # --- Action Nodes & Links ---
@@ -7280,8 +7547,11 @@ async def _generate_mermaid_diagram(workflow: Dict[str, Any]) -> str:
     actions = sorted(workflow.get("actions", []), key=lambda a: a.get("sequence_number", 0))
 
     for i, action in enumerate(actions):
-        action_id = action["action_id"]
-        node_id = f"A_{action_id[:8]}"
+        action_id = action.get("action_id")
+        if not action_id: 
+            continue # Skip actions somehow missing an ID
+
+        node_id = sanitize_mermaid_id(action_id, "A") # Use sanitized full ID
         action_nodes[action_id] = node_id
         sequence_number = action.get("sequence_number", i) # Use sequence number if available
 
@@ -7319,22 +7589,24 @@ async def _generate_mermaid_diagram(workflow: Dict[str, Any]) -> str:
             linked_actions.add(child_id) # Mark child as linked
 
     # Sequential links for actions without explicit parents
-    last_sequential_node = f"W_{wf_id_short}" # Start sequence from workflow node
+    last_sequential_node = wf_node_id # Start sequence from workflow node
     sorted_sequences = sorted(sequential_links.keys())
     for seq_num in sorted_sequences:
         action_id = sequential_links[seq_num]
-        node_id = action_nodes[action_id]
-        diagram.append(f"    {last_sequential_node} --> {node_id}")
-        last_sequential_node = node_id # Chain sequential actions
-        linked_actions.add(action_id) # Mark root as linked
+        if action_id in action_nodes: # Ensure action node exists
+             node_id = action_nodes[action_id]
+             diagram.append(f"    {last_sequential_node} --> {node_id}")
+             last_sequential_node = node_id # Chain sequential actions
+             linked_actions.add(action_id) # Mark root as linked
 
-    # Link any remaining unlinked actions (e.g., if parents were missing) sequentially
+    # Link any remaining unlinked actions (e.g., if parents were missing/invalid) sequentially
     for action in actions:
-         if action["action_id"] not in linked_actions and action["action_id"] in action_nodes:
-              node_id = action_nodes[action["action_id"]]
+         action_id = action.get("action_id")
+         if action_id and action_id not in linked_actions and action_id in action_nodes:
+              node_id = action_nodes[action_id]
               # Link from workflow if no other link established
-              diagram.append(f"    W_{wf_id_short} -.-> {node_id} :::orphanLink")
-              logger.debug(f"Linking orphan action {action['action_id']} to workflow.")
+              diagram.append(f"    {wf_node_id} -.-> {node_id} :::orphanLink")
+              logger.debug(f"Linking orphan action {action_id} to workflow.")
 
     diagram.append("") # Spacer
 
@@ -7342,8 +7614,11 @@ async def _generate_mermaid_diagram(workflow: Dict[str, Any]) -> str:
     artifacts = workflow.get("artifacts", [])
     if artifacts:
         for artifact in artifacts:
-            artifact_id = artifact["artifact_id"]
-            node_id = f"F_{artifact_id[:8]}"
+            artifact_id = artifact.get("artifact_id")
+            if not artifact_id: 
+                continue # Skip artifacts missing ID
+
+            node_id = sanitize_mermaid_id(artifact_id, "F") # Use sanitized full ID
             artifact_name = _mermaid_escape(artifact.get('name', 'Artifact'))
             artifact_type = _mermaid_escape(artifact.get('artifact_type', 'file'))
             label = f"📄<br/><b>{artifact_name}</b><br/>({artifact_type})"
@@ -7363,7 +7638,7 @@ async def _generate_mermaid_diagram(workflow: Dict[str, Any]) -> str:
                 diagram.append(f"    {creator_node} -- Creates --> {node_id}")
             else:
                 # Link artifact to workflow if no specific action created it
-                diagram.append(f"    W_{wf_id_short} -.-> {node_id}")
+                diagram.append(f"    {wf_node_id} -.-> {node_id}")
 
     # --- Class Definitions (Full Set) ---
     diagram.append("\n    %% Stylesheets")
@@ -7383,13 +7658,21 @@ async def _generate_mermaid_diagram(workflow: Dict[str, Any]) -> str:
     return "\n".join(diagram)
 
 async def _generate_thought_chain_mermaid(thought_chain: Dict[str, Any]) -> str:
-    """Generates a detailed Mermaid flowchart of a thought chain. (Full Port)"""
+    """Generates a detailed Mermaid flowchart of a thought chain."""
+
+    def sanitize_mermaid_id(uuid_str: Optional[str], prefix: str) -> str:
+        """Creates a valid Mermaid node ID from a UUID, handling None."""
+        if not uuid_str:
+             return f"{prefix}_MISSING_{MemoryUtils.generate_id().replace('-', '_')}"
+        sanitized = uuid_str.replace("-", "_")
+        return f"{prefix}_{sanitized}"
+
     diagram = ["```mermaid", "graph TD"] # Top-Down graph
 
     # --- Header Node ---
-    chain_id_short = thought_chain.get('thought_chain_id', 'TC')[:8]
+    chain_node_id = sanitize_mermaid_id(thought_chain.get('thought_chain_id'), "TC") # Use sanitized full ID
     chain_title = _mermaid_escape(thought_chain.get('title', 'Thought Chain'))
-    diagram.append(f'    TC_{chain_id_short}("{chain_title}"):::header')
+    diagram.append(f'    {chain_node_id}("{chain_title}"):::header')
     diagram.append("")
 
     # --- Thought Nodes ---
@@ -7399,8 +7682,11 @@ async def _generate_thought_chain_mermaid(thought_chain: Dict[str, Any]) -> str:
 
     if thoughts:
         for thought in thoughts:
-            thought_id = thought["thought_id"]
-            node_id = f"T_{thought_id[:8]}"
+            thought_id = thought.get("thought_id")
+            if not thought_id: 
+                continue
+
+            node_id = sanitize_mermaid_id(thought_id, "T") # Use sanitized full ID
             thought_nodes[thought_id] = node_id
             thought_type = thought.get('thought_type', 'thought').lower()
 
@@ -7436,44 +7722,45 @@ async def _generate_thought_chain_mermaid(thought_chain: Dict[str, Any]) -> str:
             linked_thoughts.add(child_id)
 
     # Link root thoughts (no parent or parent not found) sequentially from the header
-    last_root_node = f"TC_{chain_id_short}"
+    last_root_node = chain_node_id # Use sanitized chain node ID
     for thought in thoughts:
-        if thought["thought_id"] not in linked_thoughts and thought["thought_id"] in thought_nodes:
+        thought_id = thought.get("thought_id")
+        if thought_id and thought_id not in linked_thoughts and thought_id in thought_nodes:
             # Check if its parent exists in the fetched thoughts; if not, treat as root for linking
-            parent_id = parent_links.get(thought["thought_id"])
+            parent_id = parent_links.get(thought_id)
             if not parent_id or parent_id not in thought_nodes:
-                node_id = thought_nodes[thought["thought_id"]]
+                node_id = thought_nodes[thought_id]
                 diagram.append(f"    {last_root_node} --> {node_id}")
                 last_root_node = node_id # Chain subsequent roots
-                linked_thoughts.add(thought["thought_id"])
+                linked_thoughts.add(thought_id)
 
     # --- External Links (Actions/Artifacts/Memories) ---
     if thoughts:
         diagram.append("")
         for thought in thoughts:
-            thought_id = thought["thought_id"]
-            if thought_id not in thought_nodes: 
-                continue # Skip if node wasn't created
+            thought_id = thought.get("thought_id")
+            if not thought_id or thought_id not in thought_nodes:
+                continue # Skip if thought or its node wasn't created
             node_id = thought_nodes[thought_id]
 
             # Link to relevant action
             rel_action_id = thought.get("relevant_action_id")
             if rel_action_id:
-                ext_node_id = f"ExtA_{rel_action_id[:8]}"
+                ext_node_id = sanitize_mermaid_id(rel_action_id, "ExtA") # Sanitize external ID
                 diagram.append(f'    {ext_node_id}["Action: {rel_action_id[:8]}..."]:::action')
                 diagram.append(f"    {node_id} -.-> {ext_node_id}")
 
             # Link to relevant artifact
             rel_artifact_id = thought.get("relevant_artifact_id")
             if rel_artifact_id:
-                ext_node_id = f"ExtF_{rel_artifact_id[:8]}"
+                ext_node_id = sanitize_mermaid_id(rel_artifact_id, "ExtF") # Sanitize external ID
                 diagram.append(f'    {ext_node_id}[("Artifact: {rel_artifact_id[:8]}...")]:::artifact')
                 diagram.append(f"    {node_id} -.-> {ext_node_id}")
 
             # Link to relevant memory
             rel_memory_id = thought.get("relevant_memory_id")
             if rel_memory_id:
-                ext_node_id = f"ExtM_{rel_memory_id[:8]}"
+                ext_node_id = sanitize_mermaid_id(rel_memory_id, "ExtM") # Sanitize external ID
                 diagram.append(f'    {ext_node_id}("Memory: {rel_memory_id[:8]}..."):::memory')
                 diagram.append(f"    {node_id} -.-> {ext_node_id}")
 
@@ -7499,6 +7786,7 @@ async def _generate_thought_chain_mermaid(thought_chain: Dict[str, Any]) -> str:
 
     diagram.append("```")
     return "\n".join(diagram)
+
 # --- 19. Reporting (Corrected Port from agent_memory) ---
 @with_tool_metrics
 @with_error_handling
@@ -7514,7 +7802,8 @@ async def generate_workflow_report(
     """Generates a comprehensive report for a specific workflow in various formats and styles.
 
     Creates a human-readable summary or detailed log of a workflow's progress, actions,
-    artifacts, and reasoning.
+    artifacts, and reasoning. For HTML reports, includes CSS for code syntax highlighting
+    if the `pygments` library is installed.
 
     Args:
         workflow_id: The ID of the workflow to report on.
@@ -7571,7 +7860,7 @@ async def generate_workflow_report(
             db_path=db_path
         )
         # get_workflow_details should raise ToolInputError if workflow not found
-        if not workflow_data.get("success"): # Should not happen if error handling works
+        if not workflow_data.get("success"): # Check just in case error handling fails
              raise ToolError(f"Failed to retrieve workflow details for report generation (ID: {workflow_id}).")
 
         # --- Generate Report Content ---
@@ -7593,14 +7882,51 @@ async def generate_workflow_report(
                 report_content = markdown_report_content
             else: # HTML format
                 try:
-                    report_content = markdown.markdown(markdown_report_content, extensions=['tables', 'fenced_code', 'codehilite'])
+                    # Convert markdown to HTML body content
+                    html_body = markdown.markdown(
+                        markdown_report_content,
+                        extensions=['tables', 'fenced_code', 'codehilite']
+                    )
+
+                    # --- FIX: Generate and prepend CSS for code highlighting ---
+                    pygments_css = ""
+                    try:
+                        # Use the default pygments CSS style
+                        formatter = HtmlFormatter(style='default')
+                        pygments_css = f"<style>{formatter.get_style_defs('.codehilite')}</style>"
+                    except Exception as css_err:
+                        logger.warning(f"Failed to generate Pygments CSS: {css_err}")
+                        pygments_css = "<!-- Pygments CSS generation failed -->"
+
+                    # Construct the full HTML document
+                    report_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Workflow Report: {workflow_data.get('title', 'Untitled')}</title>
+    {pygments_css}
+    <style>
+        body {{ font-family: sans-serif; line-height: 1.6; padding: 20px; }}
+        table {{ border-collapse: collapse; width: 100%; margin-bottom: 1em; }}
+        th, td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        th {{ background-color: #f2f2f2; }}
+        code {{ background-color: #f5f5f5; padding: 2px 4px; border-radius: 3px; }}
+        pre code {{ display: block; padding: 10px; background-color: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; }}
+        /* Basic codehilite styles if pygments fails */
+        .codehilite pre {{ white-space: pre-wrap; }}
+    </style>
+</head>
+<body>
+{html_body}
+</body>
+</html>"""
                 except Exception as md_err:
                     logger.error(f"Markdown to HTML conversion failed: {md_err}", exc_info=True)
                     raise ToolError(f"Failed to convert report to HTML: {md_err}") from md_err
 
         elif report_format_lower == "json":
             # Return the structured data directly, cleaned up
-            clean_data = {k: v for k, v in workflow_data.items() if k != 'success'}
+            clean_data = {k: v for k, v in workflow_data.items() if k not in ['success', 'processing_time']} # Remove tool metadata
             try:
                 report_content = json.dumps(clean_data, indent=2, ensure_ascii=False)
             except Exception as json_err:
@@ -7622,7 +7948,7 @@ async def generate_workflow_report(
             "report": report_content,
             "format": report_format_lower,
             "style_used": style_lower if report_format_lower in ["markdown", "html"] else None, # Indicate style used
-            "generated_at": datetime.utcnow().isoformat() + "Z",
+            "generated_at": to_iso_z(datetime.utcnow().timestamp()), # Use helper for consistency
             "success": True,
             "processing_time": time.time() - start_time
         }
@@ -8060,18 +8386,31 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
 
 async def _generate_memory_network_mermaid(memories: List[Dict], links: List[Dict], center_memory_id: Optional[str] = None) -> str:
     """Helper function to generate Mermaid graph syntax for a memory network."""
+
+    def sanitize_mermaid_id(uuid_str: Optional[str], prefix: str) -> str:
+        """Creates a valid Mermaid node ID from a UUID, handling None."""
+        if not uuid_str:
+             return f"{prefix}_MISSING_{MemoryUtils.generate_id().replace('-', '_')}"
+        sanitized = uuid_str.replace("-", "_")
+        return f"{prefix}_{sanitized}"
+
     diagram = ["```mermaid", "graph TD"] # Top-Down graph direction
 
     # Node Definitions
     diagram.append("\n    %% Memory Nodes")
+    memory_id_to_node_id = {} # Map full memory ID to sanitized Mermaid node ID
     for memory in memories:
-        mem_id = memory["memory_id"]
-        node_id = f"M_{mem_id[:8]}" # Short ID for Mermaid node
+        mem_id = memory.get("memory_id")
+        if not mem_id: 
+            continue
+
+        node_id = sanitize_mermaid_id(mem_id, "M") # Use sanitized full ID
+        memory_id_to_node_id[mem_id] = node_id # Store mapping
 
         # Label content: Type, Description (truncated), Importance
         mem_type = memory.get("memory_type", "memory").capitalize()
-        desc = _mermaid_escape(memory.get("description", mem_id[:8])) # Use ID if no desc
-        if len(desc) > 40: 
+        desc = _mermaid_escape(memory.get("description", mem_id)) # Use full ID if no desc
+        if len(desc) > 40:
             desc = desc[:37] + "..."
         importance = memory.get('importance', 5.0)
         label = f"<b>{mem_type}</b><br/>{desc}<br/><i>(I: {importance:.1f})</i>"
@@ -8095,7 +8434,6 @@ async def _generate_memory_network_mermaid(memories: List[Dict], links: List[Dic
 
     # Edge Definitions
     diagram.append("\n    %% Memory Links")
-    memory_id_to_node_id = {mem["memory_id"]: f"M_{mem['memory_id'][:8]}" for mem in memories}
     for link in links:
         source_mem_id = link.get("source_memory_id")
         target_mem_id = link.get("target_memory_id")
