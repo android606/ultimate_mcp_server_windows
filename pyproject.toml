@@ -91,6 +91,9 @@ dependencies = [
     "markdownify",
     "trafilatura",
     "markdown",
+    "jsonschema",
+    "jsonpatch",
+    "jsonpointer",    
 ]
 
 [project.optional-dependencies]

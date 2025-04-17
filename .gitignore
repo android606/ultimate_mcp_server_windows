@@ -208,3 +208,7 @@ test_input.wav
 browser_demo_outputs/
 examples/redline_outputs
 quantum_computing_papers/
+examples/data/
+examples/output/
+all_demo_script_console_output_log.txt
+examples/data/Steve_Jobs_Introducing_The_iPhone_compressed.md

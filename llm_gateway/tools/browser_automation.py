@@ -457,33 +457,33 @@ async def _get_simplified_page_state_for_llm(max_elements: int = 75) -> Dict[str
                 let description = el.textContent?.trim() ||
                                     el.getAttribute('aria-label') ||
                                     el.title ||
-            let description = el.textContent?.trim() ||
-                                el.getAttribute('aria-label') ||
-                                el.title ||
-                                el.value ||
-                                el.alt ||
-                                el.id ||
-                                el.className.split(' ').filter(c=>c.length > 2)[0] || // First meaningful class name
-                                el.tagName;
+                let description = el.textContent?.trim() ||
+                                  el.getAttribute('aria-label') ||
+                                  el.title ||
+                                  el.value ||
+                                  el.alt ||
+                                  el.id ||
+                                  el.className.split(' ').filter(c=>c.length > 2)[0] || // First meaningful class name
+                                  el.tagName;
 
             if (description.length > MAX_TEXT_LEN) {{
-                description = description.substring(0, MAX_TEXT_LEN - 3) + '...';
+                    description = description.substring(0, MAX_TEXT_LEN - 3) + '...';
             }}
 
             const elementId = `el_${{element_counter++}}`; // Simple ID for LLM reference
             const elementInfo = {{
-                id: elementId, // ID for LLM to refer to
-                tag: el.tagName.toLowerCase(),
-                text: description || '<no text>', // Ensure text is never empty
+                    id: elementId, // ID for LLM to refer to
+                    tag: el.tagName.toLowerCase(),
+                    text: description || '<no text>', // Ensure text is never empty
             }};
 
-            // Add href for links, classify them
+                // Add href for links, classify them
             if (el.href) {{
-                const href = el.href;
-                // Use a simpler regex check for PDF extension, case-insensitive
+                    const href = el.href;
+                    // Use a simpler regex check for PDF extension, case-insensitive
                 if (/\\.pdf$/i.test(href)) {{
-                    elementInfo.type = 'pdf_link';
-                    elementInfo.href = href;
+                        elementInfo.type = 'pdf_link';
+                        elementInfo.href = href;
                 }} else if (href.startsWith('http') || href.startsWith('/')) {{
                         elementInfo.type = 'nav_link';
                         // Avoid sending excessively long URLs to the LLM
@@ -496,21 +496,21 @@ async def _get_simplified_page_state_for_llm(max_elements: int = 75) -> Dict[str
                     elementInfo.type = el.tagName.toLowerCase(); // button, input
             }}
 
-            elements.push(elementInfo);
-            seenElements.add(el); // Mark as seen
+                elements.push(elementInfo);
+                seenElements.add(el); // Mark as seen
         }});
     }});
 
-    // Limit total text summary to avoid huge prompts
-    let bodyText = document.body.innerText || "";
-    let textSummary = bodyText.substring(0, 2000); // Increased summary length slightly
-    if (bodyText.length > 2000) textSummary += "... [text truncated]";
+        // Limit total text summary to avoid huge prompts
+        let bodyText = document.body.innerText || "";
+        let textSummary = bodyText.substring(0, 2000); // Increased summary length slightly
+        if (bodyText.length > 2000) textSummary += "... [text truncated]";
 
     return {{
-        url: window.location.href,
-        title: document.title || "No Title", // Ensure title is always a string
-        elements: elements,
-        text_summary: textSummary // Provide a text summary
+            url: window.location.href,
+            title: document.title || "No Title", // Ensure title is always a string
+            elements: elements,
+            text_summary: textSummary // Provide a text summary
     }};
     }}
     """
@@ -6149,3 +6149,4 @@ async def _detect_search_results_element():
         return result["result"]["selector"]
     return None
 
+        

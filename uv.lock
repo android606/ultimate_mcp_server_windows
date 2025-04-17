@@ -345,7 +345,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/73/09/10d57569e399ce9cb
 
 [[package]]
 name = "chromadb"
-version = "1.0.4"
+version = "1.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "bcrypt" },
@@ -378,13 +378,13 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/30/76/34998d22f5fc05f4affce956676074aa5bf864006699878334cc95a64d84/chromadb-1.0.4.tar.gz", hash = "sha256:ee927adfe618e170320b6da25b39a01282142350de70b9b76ab98aa7af7d2f34", size = 1145874 }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/d5/a019b4b60f425f85919bed9b80d794835d6bad42e28c06a123c4d3edf0e8/chromadb-1.0.5.tar.gz", hash = "sha256:68a3cedde063df31e183414254dea03b1b524c0cec596ea218b32e167fee172a", size = 1151172 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/95/76b5a4ed9ee3e0fefb8d0676f9f4f4b622a311c3f367e3cc8491956314f6/chromadb-1.0.4-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:f6789b573f510815218b25027f8471b6c132acc2f2d2a53ff42e3e76d9d248ac", size = 17600592 },
-    { url = "https://files.pythonhosted.org/packages/8b/68/59d9cefdbcee97755b6ba95d554366767053cfad7ff94081779f88111289/chromadb-1.0.4-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:32daa01014acf98570eeb31e966b641a4d79a2fdc1f750caa5dfc1ba24d9991c", size = 16870748 },
-    { url = "https://files.pythonhosted.org/packages/12/da/339d6d7dbcc227786018c54a36d7ed4b716896e3c32bedb8e4ae94098315/chromadb-1.0.4-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:844a2a3bd624149093be84b9c3e2b070fa21da129c8563c790be64c4bf0d9f5f", size = 17384197 },
-    { url = "https://files.pythonhosted.org/packages/b9/78/c5dcddcd0ce4ad9365a186fee36bb313656854406e37965241491b975f0a/chromadb-1.0.4-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9c4e72dba33b6fd2da55f044498b298169724cae5113538fa18b3458427ecea8", size = 18279788 },
-    { url = "https://files.pythonhosted.org/packages/22/c8/06214f13c0e83b9ffc597496491097b176d3039609497a3654b30b2ba114/chromadb-1.0.4-cp39-abi3-win_amd64.whl", hash = "sha256:37e8071e3bc40f0a67730f9483ca1d3e8a67d32a3409cd1beaacfb76336eb98c", size = 18222168 },
+    { url = "https://files.pythonhosted.org/packages/9e/4e/88b7c5b9b499ec484f789b461b48affe2da578904be01a2a2d24d269a8fc/chromadb-1.0.5-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:48c9c9a4251282763db3af2089820326719437445032063f55d0bbce4d608c50", size = 17592458 },
+    { url = "https://files.pythonhosted.org/packages/54/83/19dc6bf39aad9123231361669a6047893ae6ccdf831ea7362ebd23db9f56/chromadb-1.0.5-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:2dae68261def6ef73f5a21f66627b48fc60c2f557cf84e4cb9ef004cf066662a", size = 16880482 },
+    { url = "https://files.pythonhosted.org/packages/97/23/f9da88e7f4d1aba0abab179ea8664f9b9eeba95ebc738fb54d1cd0909117/chromadb-1.0.5-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:79c44a31c8f9534587d983f42f76f89c7a8bc77b0ce1f9baaf4ae9b5aebb4cd0", size = 17378871 },
+    { url = "https://files.pythonhosted.org/packages/9b/b9/a539dd02124dce86362873d33952d21b36d8c84f44958d90cec82b715022/chromadb-1.0.5-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:652dfb6934e1e38a1b97cc629c1b8ab7c07c291149239f257cf228776efab158", size = 18259410 },
+    { url = "https://files.pythonhosted.org/packages/81/52/1b6e68ab1e6becbb2bbda8f16979d29ceed9aa34bfdfefd70ad6f579e26c/chromadb-1.0.5-cp39-abi3-win_amd64.whl", hash = "sha256:0972c0adcf250834b0d0c025f0f5f8c8d26e89bd8c3354a1f05476e52765fd01", size = 18203199 },
 ]
 
 [[package]]
@@ -826,7 +826,7 @@ wheels = [
 
 [[package]]
 name = "google-genai"
-version = "1.10.0"
+version = "1.11.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -837,9 +837,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0e/7a/224e2f70c835202042969685ee3da00a6475508d1b64f0f1e90144f96beb/google_genai-1.10.0.tar.gz", hash = "sha256:f59423e0f155dc66b7792c8a0e6724c75c72dc699d1eb7907d4d0006d4f6186f", size = 156355 }
+sdist = { url = "https://files.pythonhosted.org/packages/73/44/64c6c23724580add879cbcca81ffed500955c1c21850468cd4dcf9c62a03/google_genai-1.11.0.tar.gz", hash = "sha256:0643b2f5373fbeae945d0cd5a37d157eab0c172bb5e14e905f2f8d45aa51cabb", size = 160955 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ba/a0/56839a2e202d79c773edd1c1db124da8eb2a7b657267a888080b678d0369/google_genai-1.10.0-py3-none-any.whl", hash = "sha256:41b105a2fcf8a027fc45cc16694cd559b8cd1272eab7345ad58cfa2c353bf34f", size = 154705 },
+    { url = "https://files.pythonhosted.org/packages/dc/9b/55f97203720cbda5a1c8e0460793914980e41c6ca4859fea735dd66d2c3a/google_genai-1.11.0-py3-none-any.whl", hash = "sha256:34fbe3c85419adbcddcb8222f99514596b3a69c80ff1a4ae30a01a763da27acc", size = 159687 },
 ]
 
 [[package]]
@@ -1196,12 +1196,33 @@ wheels = [
 ]
 
 [[package]]
+name = "jsonpatch"
+version = "1.33"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jsonpointer" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/42/78/18813351fe5d63acad16aec57f94ec2b70a09e53ca98145589e185423873/jsonpatch-1.33.tar.gz", hash = "sha256:9fcd4009c41e6d12348b4a0ff2563ba56a2923a7dfee731d004e212e1ee5030c", size = 21699 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/73/07/02e16ed01e04a374e644b575638ec7987ae846d25ad97bcc9945a3ee4b0e/jsonpatch-1.33-py2.py3-none-any.whl", hash = "sha256:0ae28c0cd062bbd8b8ecc26d7d164fbbea9652a1a3693f3b956c1eae5145dade", size = 12898 },
+]
+
+[[package]]
 name = "jsonpickle"
 version = "4.0.5"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d6/33/4bda317ab294722fcdfff8f63aab74af9fda3675a4652d984a101aa7587e/jsonpickle-4.0.5.tar.gz", hash = "sha256:f299818b39367c361b3f26bdba827d4249ab5d383cd93144d0f94b5417aacb35", size = 315661 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/1b/0e79cf115e0f54f1e8f56effb6ffd2ef8f92e9c324d692ede660067f1bfe/jsonpickle-4.0.5-py3-none-any.whl", hash = "sha256:b4ac7d0a75ddcdfd93445737f1d36ff28768690d43e54bf5d0ddb1d915e580df", size = 46382 },
+]
+
+[[package]]
+name = "jsonpointer"
+version = "3.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/6a/0a/eebeb1fa92507ea94016a2a790b93c2ae41a7e18778f85471dc54475ed25/jsonpointer-3.0.0.tar.gz", hash = "sha256:2b2d729f2091522d61c3b31f82e11870f60b68f43fbc705cb76bf4b832af59ef", size = 9114 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/92/5e77f98553e9e75130c78900d000368476aed74276eb8ae8796f65f00918/jsonpointer-3.0.0-py2.py3-none-any.whl", hash = "sha256:13e088adc14fca8b6aa8177c044e12701e6ad4b28ff10e65f2267a90109c9942", size = 7595 },
 ]
 
 [[package]]
@@ -1320,6 +1341,8 @@ dependencies = [
     { name = "html2text" },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "jsonpatch" },
+    { name = "jsonpointer" },
     { name = "jsonschema" },
     { name = "lxml" },
     { name = "markdown" },
@@ -1421,6 +1444,8 @@ requires-dist = [
     { name = "httpx" },
     { name = "isort", marker = "extra == 'dev'" },
     { name = "jinja2" },
+    { name = "jsonpatch" },
+    { name = "jsonpointer" },
     { name = "jsonschema" },
     { name = "llm-gateway-mcp-server", extras = ["advanced", "dev", "docs"], marker = "extra == 'all'" },
     { name = "lxml" },
@@ -2132,7 +2157,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "1.74.0"
+version = "1.75.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2144,9 +2169,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/75/86/c605a6e84da0248f2cebfcd864b5a6076ecf78849245af5e11d2a5ec7977/openai-1.74.0.tar.gz", hash = "sha256:592c25b8747a7cad33a841958f5eb859a785caea9ee22b9e4f4a2ec062236526", size = 427571 }
+sdist = { url = "https://files.pythonhosted.org/packages/99/b1/318f5d4c482f19c5fcbcde190801bfaaaec23413cda0b88a29f6897448ff/openai-1.75.0.tar.gz", hash = "sha256:fb3ea907efbdb1bcfd0c44507ad9c961afd7dce3147292b54505ecfd17be8fd1", size = 429492 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a9/91/8c150f16a96367e14bd7d20e86e0bbbec3080e3eb593e63f21a7f013f8e4/openai-1.74.0-py3-none-any.whl", hash = "sha256:aff3e0f9fb209836382ec112778667027f4fd6ae38bdb2334bc9e173598b092a", size = 644790 },
+    { url = "https://files.pythonhosted.org/packages/80/9a/f34f163294345f123673ed03e77c33dee2534f3ac1f9d18120384457304d/openai-1.75.0-py3-none-any.whl", hash = "sha256:fe6f932d2ded3b429ff67cc9ad118c71327db32eb9d32dd723de3acfca337125", size = 646972 },
 ]
 
 [[package]]
@@ -3191,14 +3216,14 @@ wheels = [
 
 [[package]]
 name = "rsa"
-version = "4.9"
+version = "4.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyasn1" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/aa/65/7d973b89c4d2351d7fb232c2e452547ddfa243e93131e7cfa766da627b52/rsa-4.9.tar.gz", hash = "sha256:e38464a49c6c85d7f1351b0126661487a7e0a14a50f1675ec50eb34d4f20ef21", size = 29711 }
+sdist = { url = "https://files.pythonhosted.org/packages/da/8a/22b7beea3ee0d44b1916c0c1cb0ee3af23b700b6da9f04991899d0c555d4/rsa-4.9.1.tar.gz", hash = "sha256:e7bdbfdb5497da4c07dfd35530e1a902659db6ff241e39d9953cad06ebd0ae75", size = 29034 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/49/97/fa78e3d2f65c02c8e1268b9aba606569fe97f6c8f7c2d74394553347c145/rsa-4.9-py3-none-any.whl", hash = "sha256:90260d9058e514786967344d0ef75fa8727eed8a7d2e43ce9f4bcf1b536174f7", size = 34315 },
+    { url = "https://files.pythonhosted.org/packages/64/8d/0133e4eb4beed9e425d9a98ed6e081a55d195481b7632472be1af08d2f6b/rsa-4.9.1-py3-none-any.whl", hash = "sha256:68635866661c6836b8d39430f97a996acbd61bfa49406748ea243539fe239762", size = 34696 },
 ]
 
 [[package]]

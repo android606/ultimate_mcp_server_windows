@@ -824,7 +824,7 @@ def _run_html_tidy(html_content: str) -> str:
 async def _generate_redline_with_xmldiff(
     original_doc_tree: etree._ElementTree,
     modified_doc_tree: etree._ElementTree,
-    detect_moves: bool = True,
+    detect_moves: bool = True, # Keep flag for formatter/XSLT control
     formatting_tags: Optional[List[str]] = None,
     normalize_whitespace: bool = True
 ) -> Tuple[str, Dict[str, int]]:
@@ -837,92 +837,89 @@ async def _generate_redline_with_xmldiff(
     except (ImportError, importlib.metadata.PackageNotFoundError):
         logger.debug("Could not determine xmldiff version")
 
-    # --- Configure xmldiff ---
-    # Note: xmldiff options have changed over versions. Adjust as needed.
-    # Key options: diff_algo, unique_attributes, F (fast-match function)
-    diff_options = {
-        # 'fast_match': True, # Might speed up but reduce accuracy? Check xmldiff docs.
-        'ratio_mode': 'accurate', # Or 'fast'
-        'M': 0.6 # Similarity threshold for moves/updates
-    }
+    diff_options = {}
+    logger.debug(f"Using default xmldiff options (diff_options={diff_options})")
 
     # --- Configure Formatter ---
+    # Pass detect_moves flag to the formatter so IT can decide how to mark moves
     formatter = RedlineXMLFormatter(
+        detect_moves=detect_moves, # Pass the flag here
         normalize=(formatting.WS_BOTH if normalize_whitespace else formatting.WS_NONE),
-        pretty_print=False, # Pretty printing can interfere with whitespace diffs
-        # Define tags where text content changes should be diffed inline
+        pretty_print=False,
         text_tags=('p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'td', 'th', 'div', 'span', 'a', 'title', 'caption', 'label'),
-        # Define tags considered purely formatting
         formatting_tags=formatting_tags or []
     )
 
     annotated_source_tree = None
+    stats = {} # Initialize stats dict
     try:
         # --- Compute the Diff Actions ---
         logger.info("Computing diff actions using xmldiff.diff_trees...")
         actions = main.diff_trees(
             original_doc_tree,
             modified_doc_tree,
-            diff_options=diff_options,
-            # Pass detect_moves equivalent if option exists, else it's default behavior
         )
         logger.info(f"Found {len(actions)} raw diff actions.")
 
         # --- Apply Actions using Formatter ---
-        # The formatter modifies the original_doc_tree in place
         logger.info("Applying diff actions using RedlineXMLFormatter...")
-        annotated_source_tree = formatter.format(actions, original_doc_tree)
+        annotated_source_tree = formatter.format(actions, original_doc_tree) # Modifies original_doc_tree
         logger.info("Diff actions applied, source tree annotated.")
 
-        # Get statistics from the formatter
+        # Get statistics from the formatter AFTER format() is called
         stats = formatter.processed_actions
-        stats["total_changes"] = sum(stats.values()) # Calculate total
+        # Calculate total, excluding potential error flags/messages
+        stats["total_changes"] = sum(v for k, v in stats.items() if isinstance(v, int))
 
     except Exception as e:
         logger.error(f"xmldiff processing failed: {str(e)}", exc_info=True)
+        # Ensure stats dict is populated even on error
+        stats = { k: 0 for k in formatter.processed_actions } if hasattr(formatter, 'processed_actions') else {}
+        stats['error'] = True
+        stats['error_message'] = f"XML diff processing failed: {str(e)}"
+        # Ensure total_changes is present even in error case
+        if 'total_changes' not in stats: stats['total_changes'] = 0
         raise ToolError(f"XML diff processing failed: {str(e)}", error_code="XMLDIFF_ERROR") from e
 
     # --- Apply XSLT Transformation ---
     redline_html = ""
+    if annotated_source_tree is None:
+         logger.error("Annotated source tree is None after formatting, cannot apply XSLT.")
+         if 'error' not in stats: # Populate stats if error wasn't caught earlier
+             stats = { k: 0 for k in formatter.processed_actions } if hasattr(formatter, 'processed_actions') else {}
+             stats['error'] = True
+             stats['error_message'] = "Formatter failed to produce annotated tree."
+             if 'total_changes' not in stats: stats['total_changes'] = 0
+         raise ToolError("Formatter failed to produce annotated tree.", error_code="FORMATTER_ERROR")
+
     try:
         logger.info("Applying XSLT transformation...")
         xslt_tree = etree.fromstring(XMLDIFF_XSLT)
         transform = etree.XSLT(xslt_tree)
-
-        # Apply transformation to the annotated source tree
         result_doc = transform(annotated_source_tree)
-
-        # Serialize the result to HTML string
         redline_html = etree.tostring(
-            result_doc,
-            encoding='unicode',
-            method='html',
-            pretty_print=True # Pretty print the final HTML output
+            result_doc, encoding='unicode', method='html', pretty_print=True
         )
         logger.info("XSLT transformation successful.")
 
-        # Basic validation: Check if output is non-empty HTML
         if not redline_html or not redline_html.strip().lower().startswith('<'):
              logger.warning(f"XSLT output seems invalid or empty. Length: {len(redline_html)}")
-             # Fallback or raise error? For now, log and continue.
-             # Maybe serialize the annotated tree without XSLT as fallback?
-             if annotated_source_tree is not None:
-                 logger.info("Falling back to annotated XML without XSLT transformation.")
-                 redline_html = etree.tostring(annotated_source_tree, encoding='unicode', method='html', pretty_print=True)
-             else:
-                 raise ToolError("XSLT transformation failed and no annotated tree available.", error_code="XSLT_ERROR")
+             logger.info("Falling back to annotated XML without XSLT transformation.")
+             redline_html = etree.tostring(annotated_source_tree, encoding='unicode', method='html', pretty_print=True)
+             if 'warning' not in stats: stats['warning'] = "XSLT output invalid, using raw annotated XML."
 
     except Exception as e:
         logger.error(f"XSLT transformation failed: {str(e)}", exc_info=True)
-        # Fallback: Serialize the annotated tree directly if XSLT fails
-        if annotated_source_tree is not None:
-            logger.warning("Falling back to raw annotated diff output due to XSLT error.")
-            try:
-                redline_html = etree.tostring(annotated_source_tree, encoding='unicode', method='html', pretty_print=True)
-            except Exception as fallback_err:
-                 raise ToolError(f"XSLT failed and fallback serialization also failed: {fallback_err}", error_code="XSLT_FALLBACK_ERROR") from fallback_err
-        else:
-            raise ToolError(f"XSLT transformation failed: {str(e)}", error_code="XSLT_ERROR") from e
+        logger.warning("Falling back to raw annotated diff output due to XSLT error.")
+        try:
+            redline_html = etree.tostring(annotated_source_tree, encoding='unicode', method='html', pretty_print=True)
+            if 'warning' not in stats: stats['warning'] = f"XSLT failed ({e}), using raw annotated XML."
+        except Exception as fallback_err:
+             if 'error' not in stats:
+                 stats['error'] = True
+                 stats['error_message'] = f"XSLT failed and fallback serialization also failed: {fallback_err}"
+                 if 'total_changes' not in stats: stats['total_changes'] = 0
+             raise ToolError(f"XSLT failed and fallback serialization also failed: {fallback_err}", error_code="XSLT_FALLBACK_ERROR") from fallback_err
 
     return redline_html, stats
 

@@ -10,9 +10,9 @@ of the generic `find_and_download_pdfs` tool for specific tasks.
 # --- Instruction Pack 1: Academic Papers (arXiv) ---
 ACADEMIC_PAPER_INSTRUCTIONS = {
     "search_phase": {
-        "search_query_template": "site:arxiv.org {topic} pdf",
+        "search_query_template": "site:arxiv.org {topic} filetype:pdf",
         "target_site_identification_prompt": """Analyze the search results summary for "{search_term}".
-Identify the URL that is most likely the main arXiv search results page or a specific relevant paper's abstract page on arXiv.org for the topic. If you see a direct PDF link (ending in .pdf or containing /pdf/), prefer that URL. Prioritize URLs starting with 'https://arxiv.org/'.
+Identify the URL that is most likely a direct PDF link (ending in .pdf) or a specific relevant paper's abstract page on arXiv.org. PRIORITIZE direct PDF links over abstract pages. Always choose direct PDF links when available.
 
 Search Results Summary:
 ---
@@ -20,8 +20,8 @@ Search Results Summary:
 ---
 
 Respond ONLY with a valid JSON object: {{"target_url": "URL_or_null"}}.""",
-        "search_engine": "duckduckgo",
-        "num_search_results_per_query": 5 # Limit initial results
+        "search_engine": "google",  # Changed from duckduckgo to google which is more stable
+        "num_search_results_per_query": 8  # Increased number of results to find more PDFs
     },
     "exploration_phase": {
         "exploration_goal_prompt": """You are an AI assistant tasked with finding and downloading PDF research papers from arXiv related to '{topic}'.
