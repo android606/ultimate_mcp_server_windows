@@ -331,9 +331,9 @@ async def setup_gateway_and_tools(create_flawed_tools=False):
     logger.debug("Initializing Gateway for docstring refiner demo...")
     logger.info("Initializing Gateway for docstring refiner demo...", emoji_key="start")
     
-    # Create Gateway instance with minimal tools
-    logger.debug("Creating Gateway instance with minimal tools")
-    gateway = Gateway("docstring-refiner-demo", register_tools=False)
+    # Create Gateway instance with all tools
+    logger.debug("Creating Gateway instance with all tools")
+    gateway = Gateway("docstring-refiner-demo", register_tools=True)  # Register all tools, not just minimal tools
     
     # Initialize providers (needed for the tool to function)
     try:
@@ -2866,35 +2866,147 @@ async def main():
             print("Tool is available, proceeding with demo")
             logger.info("Tool successfully registered, proceeding with demo", emoji_key="success")
             
-            # Run a simple demo with one of the flawed tools
-            if args.create_flawed or args.demo == "practical":
-                print(f"Running demo: {args.demo}")
-                # Select a demo based on specified arguments
-                if args.demo == "single" or args.demo == "all":
-                    print("Running single tool refinement demo")
-                    result = await demo_single_tool_refinement(
-                        gateway, 
-                        tracker,
-                        target_tool=args.tool or "flawed_process_text",
-                        refinement_provider=args.provider,
-                        refinement_model=args.model,
-                        max_iterations=args.iterations or 1
-                    )
-                    if result:
-                        logger.success("Single tool refinement demo completed", emoji_key="success")
-                
-                elif args.demo == "practical":
-                    # Run the practical demo with flawed tools
-                    print("Running practical testing demo")
-                    result = await demo_practical_testing(gateway, tracker)
-                    if result:
-                        logger.success("Practical testing demo completed", emoji_key="success")
-            else:
-                print("No demo was specified to run")
+            # Run the selected demo based on CLI arguments
+            print(f"Running demo: {args.demo}")
+            
+            # Select a demo based on specified arguments
+            if args.demo == "single" or args.demo == "all":
+                print("Running single tool refinement demo")
+                result = await demo_single_tool_refinement(
+                    gateway, 
+                    tracker,
+                    target_tool=args.tool,
+                    refinement_provider=args.provider,
+                    refinement_model=args.model,
+                    max_iterations=args.iterations
+                )
+                if result:
+                    logger.success("Single tool refinement demo completed", emoji_key="success")
+            
+            elif args.demo == "multi":
+                print("Running multi-tool refinement demo")
+                result = await demo_multi_tool_refinement(
+                    gateway, 
+                    tracker,
+                    target_tools=[args.tool] if args.tool else None,
+                    refinement_provider=args.provider,
+                    refinement_model=args.model,
+                    max_iterations=args.iterations
+                )
+                if result:
+                    logger.success("Multi-tool refinement demo completed", emoji_key="success")
+                    
+            elif args.demo == "custom-testing":
+                print("Running custom test generation demo")
+                result = await demo_custom_test_generation(
+                    gateway, 
+                    tracker,
+                    target_tool=args.tool,
+                    refinement_provider=args.provider,
+                    refinement_model=args.model,
+                    max_iterations=args.iterations
+                )
+                if result:
+                    logger.success("Custom test generation demo completed", emoji_key="success")
+                    
+            elif args.demo == "optimize":
+                print("Running cost optimization demo")
+                result = await demo_cost_optimization(
+                    gateway, 
+                    tracker,
+                    target_tool=args.tool
+                )
+                if result:
+                    logger.success("Cost optimization demo completed", emoji_key="success")
+                    
+            elif args.demo == "all-tools":
+                print("Running all-tools refinement demo")
+                result = await demo_all_tools_refinement(
+                    gateway, 
+                    tracker,
+                    refinement_provider=args.provider,
+                    refinement_model=args.model,
+                    max_iterations=args.iterations
+                )
+                if result:
+                    logger.success("All-tools refinement demo completed", emoji_key="success")
+                    
+            elif args.demo == "schema-focus":
+                print("Running schema-focused refinement demo")
+                result = await demo_schema_focused_refinement(
+                    gateway, 
+                    tracker,
+                    target_tool=args.tool,
+                    refinement_provider=args.provider,
+                    refinement_model=args.model
+                )
+                if result:
+                    logger.success("Schema-focused refinement demo completed", emoji_key="success")
+                    
+            elif args.demo == "practical":
+                print("Running practical testing demo")
+                result = await demo_practical_testing(gateway, tracker)
+                if result:
+                    logger.success("Practical testing demo completed", emoji_key="success")
+                    
+            elif args.demo == "model-comparison":
+                print("Running model comparison demo")
+                result = await demo_model_comparison(
+                    gateway, 
+                    tracker,
+                    target_tool=args.tool
+                )
+                if result:
+                    logger.success("Model comparison demo completed", emoji_key="success")
+            
+            elif args.demo == "all":
+                print("Running all demos")
                 console.print(Panel(
-                    "No demo was run. To see a demonstration with flawed tools, use --create-flawed or --demo practical.",
-                    title="ℹ️ Demo Information",
+                    "Running all demos in sequence. This may take some time.",
+                    title="ℹ️ Running All Demos",
                     border_style="cyan",
+                    expand=False
+                ))
+                
+                # Run each demo in sequence
+                demos = [
+                    demo_single_tool_refinement(gateway, tracker, target_tool=args.tool, 
+                                               refinement_provider=args.provider, 
+                                               refinement_model=args.model,
+                                               max_iterations=args.iterations),
+                    demo_multi_tool_refinement(gateway, tracker, 
+                                              refinement_provider=args.provider, 
+                                              refinement_model=args.model,
+                                              max_iterations=args.iterations),
+                    demo_custom_test_generation(gateway, tracker, target_tool=args.tool, 
+                                               refinement_provider=args.provider, 
+                                               refinement_model=args.model),
+                    demo_cost_optimization(gateway, tracker, target_tool=args.tool),
+                    demo_schema_focused_refinement(gateway, tracker, target_tool=args.tool, 
+                                                 refinement_provider=args.provider, 
+                                                 refinement_model=args.model),
+                    demo_model_comparison(gateway, tracker, target_tool=args.tool)
+                ]
+                
+                if args.create_flawed:
+                    demos.append(demo_practical_testing(gateway, tracker))
+                
+                for demo_coro in demos:
+                    try:
+                        await demo_coro
+                    except Exception as e:
+                        logger.error(f"Error running demo: {e}", emoji_key="error", exc_info=True)
+                        console.print(f"[bold red]Error running demo:[/bold red] {escape(str(e))}")
+                
+                logger.success("All demos completed", emoji_key="success")
+            
+            else:
+                print("No valid demo specified")
+                console.print(Panel(
+                    f"The specified demo '{args.demo}' is not recognized.\n"
+                    "Available demos: all, single, multi, custom-testing, optimize, all-tools, schema-focus, practical, model-comparison",
+                    title="⚠️ Invalid Demo Selection",
+                    border_style="yellow",
                     expand=False
                 ))
         else:
