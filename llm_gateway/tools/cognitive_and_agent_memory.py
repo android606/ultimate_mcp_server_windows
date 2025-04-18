@@ -69,7 +69,7 @@ IMPORTANCE_BOOST_FACTOR = float(os.environ.get("IMPORTANCE_BOOST_FACTOR", "1.5")
 
 # Embedding model configuration (from cognitive_memory)
 DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSION = 384  # For the default model
+EMBEDDING_DIMENSION = 1536  # For the default model
 SIMILARITY_THRESHOLD = 0.75
 
 # SQLite optimization pragmas (from cognitive_memory)

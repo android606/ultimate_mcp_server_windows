@@ -104,9 +104,6 @@ TestStrategy: TypeAlias = Literal[
 ]
 ErrorPatternKey: TypeAlias = str
 SchemaPath: TypeAlias = str
-ProgressCallback: TypeAlias = Optional[Callable[['RefinementProgressEvent'], None]]
-
-# MCP Context Type Hint
 
 logger = get_logger("llm_gateway.tools.docstring_refiner")
 
@@ -221,6 +218,9 @@ class RefinementProgressEvent(BaseModel):
     message: str
     timestamp: datetime = Field(default_factory=lambda: datetime.utcnow())
     details: Optional[JsonDict] = None
+
+# Type alias for progress callback function - using Any for JSON Schema compatibility
+ProgressCallback: TypeAlias = Optional[Any]  # Actually a Callable[[RefinementProgressEvent], None]
 
 class RefinementIterationResult(BaseModel):
     iteration: int
