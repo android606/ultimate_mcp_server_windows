@@ -8,7 +8,7 @@
 
 ### A Model Context Protocol (MCP) server enabling intelligent delegation from high-capability AI agents to cost-effective LLMs
 
-<img src="https://github.com/Dicklesworthstone/ultimate_mcp_server/blob/ultimate_mcp_banner" alt="Illustration" width="600"/>
+<img src="https://raw.githubusercontent.com/Dicklesworthstone/ultimate_mcp_server/refs/heads/main/ultimate_mcp_banner.webp" alt="Illustration" width="600"/>
 
 **[Getting Started](#getting-started) • [Key Features](#key-features) • [Usage Examples](#usage-examples) • [Architecture](#architecture)**
 
@@ -16,7 +16,7 @@
 
 ---
 
-<img src="https://github.com/Dicklesworthstone/ultimate_mcp_server/blob/ultimate_mcp_logo" alt="Illustration" width="600"/>
+<img src="https://raw.githubusercontent.com/Dicklesworthstone/ultimate_mcp_server/refs/heads/main/ultimate_mcp_logo.webp" alt="Illustration" width="600"/>
 
 ## 🤖 What is Ultimate MCP Server?
 
