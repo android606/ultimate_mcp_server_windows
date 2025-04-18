@@ -16,13 +16,18 @@
 
 ---
 
-<img src="https://raw.githubusercontent.com/Dicklesworthstone/ultimate_mcp_server/refs/heads/main/ultimate_mcp_logo.webp" alt="Illustration" width="600"/>
 
 ## 🤖 What is Ultimate MCP Server?
 
 **Ultimate MCP Server** is an MCP-native server that enables intelligent task delegation from advanced AI agents (e.g., Claude 3.7 Sonnet) to more cost-effective models (e.g., Gemini Flash 2.0 Lite). It provides a unified interface to multiple Large Language Model (LLM) providers while optimizing for **cost**, **performance**, and **quality**.
 
 Beyond LLM delegation, it offers a comprehensive suite of tools spanning cognitive memory systems, browser automation, Excel manipulation, database interactions, document processing, command-line utilities, dynamic API integration, and much more - essentially a complete AI agent operating system exposing dozens of powerful capabilities through the MCP protocol.
+
+<div align="center">
+
+<img src="https://raw.githubusercontent.com/Dicklesworthstone/ultimate_mcp_server/refs/heads/main/ultimate_mcp_logo.webp" alt="Illustration" width="800"/>
+
+</div>
 
 ---
 
