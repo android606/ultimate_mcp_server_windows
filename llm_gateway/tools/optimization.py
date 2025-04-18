@@ -4,33 +4,32 @@ Provides utilities to help manage LLM usage costs and select appropriate models.
 """
 import asyncio
 import json
-import math
 import os
 import time
 import traceback
+from typing import Any, Dict, List, Optional, Set
+
 import networkx as nx
-from typing import Any, Dict, List, Optional, Set, Tuple
 
 from llm_gateway.constants import COST_PER_MILLION_TOKENS
-from llm_gateway.exceptions import ToolInputError, ToolError
+from llm_gateway.exceptions import ToolError, ToolInputError
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
-
 from llm_gateway.tools.completion import chat_completion
 from llm_gateway.tools.document import chunk_document, summarize_document
 from llm_gateway.tools.entity_relation_graph import extract_entity_graph
 from llm_gateway.tools.extraction import extract_json
+from llm_gateway.tools.ocr_tools import (
+    analyze_pdf_structure,
+    batch_process_documents,
+    enhance_ocr_text,
+    extract_text_from_pdf,
+    process_image_ocr,
+)
 from llm_gateway.tools.rag import (
     add_documents,
     create_knowledge_base,
     generate_with_rag,
     retrieve_context,
-)
-from llm_gateway.tools.ocr_tools import (
-    extract_text_from_pdf,
-    process_image_ocr,
-    enhance_ocr_text,
-    analyze_pdf_structure,
-    batch_process_documents,
 )
 from llm_gateway.tools.text_classification import text_classification
 from llm_gateway.utils import get_logger
@@ -761,7 +760,6 @@ async def execute_optimized_workflow(
     # Ensure all tools listed in workflows are mapped here correctly.
     
     try:
-        from llm_gateway.tools.meta_api_tool import APIMetaTool # Import the class
         api_meta_tool = None # Placeholder - this needs to be the actual instance
         
         if api_meta_tool: # Only add if instance is available
@@ -870,7 +868,7 @@ async def execute_optimized_workflow(
     # Set to keep track of completed stages
     completed_stages: Set[str] = set()
     # Dictionary to hold active tasks
-    active_tasks: Dict[str, asyncio.Task] = {}
+    active_tasks: Dict[str, asyncio.Task] = {}  # noqa: F841
     # Semaphore to control concurrency
     concurrency_semaphore = asyncio.Semaphore(max_concurrency)
     
@@ -946,9 +944,9 @@ async def execute_optimized_workflow(
             try:
                 execution_order = list(nx.topological_sort(dag))
                 logger.debug(f"Workflow execution order (respecting dependencies): {execution_order}")
-            except nx.NetworkXUnfeasible:
+            except nx.NetworkXUnfeasible as e:
                 # Should never happen as we already checked for cycles
-                raise ToolInputError("Workflow contains circular dependencies that were not detected earlier.")
+                raise ToolInputError("Workflow contains circular dependencies that were not detected earlier.") from e
             
             # Process stages in waves of parallelizable tasks
             while len(completed_stages) < len(dag):

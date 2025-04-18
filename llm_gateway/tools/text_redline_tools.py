@@ -44,6 +44,7 @@ import re
 import subprocess
 import tempfile
 import time
+from datetime import timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1040,4 +1041,4 @@ __all__ = [
     "compare_documents_redline",
 ]
 __version__ = "1.0.0‑phase2"
-__updated__ = _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+__updated__ = _dt.datetime.now(timezone.utc).isoformat(timespec="seconds") + "Z"

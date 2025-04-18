@@ -69,7 +69,7 @@ import re
 import time
 import traceback
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeAlias, cast
 
@@ -216,7 +216,7 @@ class RefinementProgressEvent(BaseModel):
     ]
     progress_pct: Optional[float] = None
     message: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.utcnow())
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     details: Optional[JsonDict] = None
 
 # Type alias for progress callback function - using Any for JSON Schema compatibility
@@ -251,7 +251,7 @@ class RefinedToolResult(BaseModel):
     final_proposed_schema_patches: List[JsonDict] = Field(default_factory=list)
 
 class DocstringRefinementResult(BaseModel):
-    report_timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    report_timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     refined_tools: List[RefinedToolResult]
     refinement_model_configs: List[JsonDict]
     total_iterations_run: int

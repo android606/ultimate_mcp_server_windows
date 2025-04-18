@@ -1,18 +1,23 @@
 """Meta tools for LLM Gateway including LLM instructions on tool usage."""
+import asyncio  # Add asyncio
 import json
-import asyncio # Add asyncio
-import time # Add time
-import re # Add re
-from typing import Any, Dict, Optional, List, Union, Tuple # Add List, Union, Tuple
+import re  # Add re
+import time  # Add time
+from typing import Any, Dict, List, Optional, Tuple, Union  # Add List, Union, Tuple
+
+from llm_gateway.constants import COST_PER_MILLION_TOKENS, Provider  # Add COST_PER_MILLION_TOKENS
+from llm_gateway.core.providers.base import get_provider  # Add get_provider
+from llm_gateway.exceptions import (  # Add ToolInputError
+    ProviderError,
+    ToolExecutionError,
+    ToolInputError,
+)
 
 # Remove BaseTool import if no longer needed
 # from llm_gateway.tools.base import BaseTool 
 from llm_gateway.tools.base import with_error_handling, with_tool_metrics
+from llm_gateway.tools.completion import generate_completion  # Add generate_completion import
 from llm_gateway.utils import get_logger
-from llm_gateway.constants import Provider, COST_PER_MILLION_TOKENS # Add COST_PER_MILLION_TOKENS
-from llm_gateway.core.providers.base import get_provider # Add get_provider
-from llm_gateway.exceptions import ProviderError, ToolInputError, ToolExecutionError # Add ToolInputError
-from llm_gateway.tools.completion import generate_completion # Add generate_completion import
 
 logger = get_logger("llm_gateway.tools.meta")
 
@@ -621,11 +626,11 @@ async def multi_completion(
         else:
              completions = await asyncio.gather(*tasks) # Run without overall timeout
 
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
          logger.error(f"Multi-completion gather operation timed out after {timeout}s", emoji_key="error")
          # Need to handle partial results if some tasks completed before timeout
          # For now, return an error message, potentially losing partial results
-         raise ToolExecutionError(f"Multi-completion operation timed out after {timeout}s")
+         raise ToolExecutionError(f"Multi-completion operation timed out after {timeout}s") from e
 
     total_cost = sum(c.get("cost", 0.0) for c in completions if c and c.get("error") is None)
     # Safely sum total tokens
@@ -738,7 +743,8 @@ async def _get_provider_options(
             suitable_models = []
             for model_info in models:
                 model_id = model_info.get("id") # Includes provider prefix from list_models
-                if not model_id: continue
+                if not model_id: 
+                    continue
                 
                 caps = model_capabilities.get(model_id, [])
                 if all(feat in caps for feat in required_features):
@@ -820,7 +826,8 @@ def _generate_recommendations(
                 "capabilities": model["capabilities"]
             })
             
-    if not all_models: return recommendations
+    if not all_models: 
+        return recommendations
 
     all_models.sort(key=lambda x: x["cost"]) # Sort by cost primarily
     recommendations["lowest_cost"] = all_models[0]
@@ -1293,7 +1300,7 @@ async def _execute_comparison_synthesis(
             
             # Check for errors in fallback completion
             if not fallback_result.success:
-                raise fallback_result.error or ValueError("Fallback synthesis completion failed without specific error")
+                raise fallback_result.error or ValueError("Fallback synthesis completion failed without specific error") from e
                 
             result = fallback_result
             synth_provider = fallback_provider # Update provider if fallback used

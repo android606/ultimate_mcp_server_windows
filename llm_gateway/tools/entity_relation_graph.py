@@ -7,7 +7,7 @@ import re
 import tempfile
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -647,7 +647,7 @@ async def extract_entity_graph(
             "entity_types": sorted(list(set(e.get("type", "Unknown") for e in formatted_result.get("entities", [])))),
             "relation_types": sorted(list(set(r.get("type", "Unknown") for r in formatted_result.get("relationships", [])))),
             "processing_strategy": strategy.value,
-            "extraction_date": datetime.utcnow().isoformat() + "Z",
+            "extraction_date": datetime.now(timezone.utc).isoformat() + "Z",
             "schema_used": "domain: " + domain if domain else ("custom" if schema else "none"),
             "metrics": formatted_result.get("metrics", extraction_result.get("metrics")), # Include metrics if calculated
             "incremental_stats": extraction_result.get("incremental_stats"), # Include if incremental
