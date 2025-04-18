@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Demo of advanced extraction capabilities using LLM Gateway MCP server."""
+"""Demo of advanced extraction capabilities using Ultimate MCP Server."""
 import asyncio
 import json
 import os
@@ -16,12 +16,12 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.traceback import Traceback
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker, parse_and_display_result
-from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.parsing import extract_json_from_markdown
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.providers.base import get_provider
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker, parse_and_display_result
+from ultimate_mcp_server.utils.logging.console import console
+from ultimate_mcp_server.utils.parsing import extract_json_from_markdown
 
 # --- Debug Flag ---
 USE_DEBUG_LOGS = True # Set to True to enable detailed logging

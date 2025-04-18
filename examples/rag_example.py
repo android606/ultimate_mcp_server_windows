@@ -1,24 +1,24 @@
 #!/usr/bin/env python3
-"""Example of using the RAG functionality with LLM Gateway MCP Server."""
+"""Example of using the RAG functionality with Ultimate MCP Server."""
 import asyncio
 import sys
 from pathlib import Path
 
-# Add parent directory to path to import llm_gateway
+# Add parent directory to path to import ultimate
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.services.knowledge_base import (
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.services.knowledge_base import (
     get_knowledge_base_manager,
     get_knowledge_base_retriever,
 )
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("rag_example")
@@ -74,7 +74,7 @@ KB_NAME = "ai_technologies"
 
 async def run_rag_demo(tracker: CostTracker):
     """Run the complete RAG demonstration."""
-    console.print("[bold blue]RAG Example with LLM Gateway MCP Server[/bold blue]")
+    console.print("[bold blue]RAG Example with Ultimate MCP Server[/bold blue]")
     console.print("This example demonstrates the RAG functionality using direct knowledge base services.")
     console.print()
     
@@ -92,7 +92,7 @@ async def run_rag_demo(tracker: CostTracker):
     # Force a clean start
     try:
         # Get direct reference to the vector service
-        from llm_gateway.services.vector import get_vector_db_service
+        from ultimate_mcp_server.services.vector import get_vector_db_service
         vector_service = get_vector_db_service()
         
         # Try a more aggressive approach by resetting chromadb client directly

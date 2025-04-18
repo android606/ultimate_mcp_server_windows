@@ -13,8 +13,8 @@ import sys
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from llm_gateway.constants import Provider
-from llm_gateway.tools.extraction import extract_code_from_response, extract_semantic_schema
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.tools.extraction import extract_code_from_response, extract_semantic_schema
 
 
 async def test_extract_semantic_schema():

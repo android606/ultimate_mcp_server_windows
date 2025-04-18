@@ -166,7 +166,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             # Standard setup messages - not errors
             r"Initializing Gateway: Loading configuration\.\.\.", 
             r"Configuration loaded and environment variables applied via decouple\.",
-            r"LLM Gateway .* initialized", 
+            r"Ultimate MCP Server .* initialized", 
             r"Initializing LLM providers",
             r"Configuration not yet loaded\. Loading now\.\.\.",
             # UI formatting patterns - not errors
@@ -225,7 +225,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             r"Failed to initialize providers", # Expected if API keys not present
             # Common setup/config messages (not errors)
             r"Initializing Gateway", r"Configuration loaded", 
-            r"LLM Gateway .* initialized", r"Initializing LLM providers",
+            r"Ultimate MCP Server .* initialized", r"Initializing LLM providers",
             r"Configuration not yet loaded\. Loading now\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
             # Formatting patterns (not errors)
@@ -280,7 +280,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             r"Configuration not yet loaded\. Loading now\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
             r"INFO \d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}.*", # Timestamped INFO logs
-            r"LLM Gateway 'basic-completion-demo' initialized", # Specific initialization message
+            r"Ultimate MCP Server 'basic-completion-demo' initialized", # Specific initialization message
         ] 
     },
     "browser_automation_demo.py": {
@@ -313,7 +313,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             # Standard setup messages - not errors
             r"Initializing Gateway: Loading configuration\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
-            r"LLM Gateway 'claude-demo' initialized", 
+            r"Ultimate MCP Server 'claude-demo' initialized", 
             r"Initializing LLM providers",
             r"Configuration not yet loaded\. Loading now\.\.\.",
             # Logging patterns - not errors
@@ -334,7 +334,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             r"Configuration not yet loaded\. Loading now\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
             r"INFO \d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}.*", # Timestamped INFO logs
-            r"LLM Gateway 'compare-synthesize-demo-v2' initialized", # Specific initialization message
+            r"Ultimate MCP Server 'compare-synthesize-demo-v2' initialized", # Specific initialization message
         ] 
     },
     "cost_optimization.py": {
@@ -376,7 +376,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             # Standard setup messages - not errors
             r"Initializing Gateway: Loading configuration\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
-            r"LLM Gateway 'multi-provider-demo' initialized", 
+            r"Ultimate MCP Server 'multi-provider-demo' initialized", 
             r"Initializing LLM providers",
             r"Configuration not yet loaded\. Loading now\.\.\.",
             # UI formatting patterns - not errors
@@ -393,7 +393,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             # Standard setup messages - not errors
             r"Initializing Gateway: Loading configuration\.\.\.",
             r"Configuration loaded and environment variables applied via decouple\.",
-            r"LLM Gateway 'simple-demo' initialized", 
+            r"Ultimate MCP Server 'simple-demo' initialized", 
             r"Initializing LLM providers",
             r"Configuration not yet loaded\. Loading now\.\.\.",
             # UI formatting patterns - not errors

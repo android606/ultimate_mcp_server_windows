@@ -11,7 +11,7 @@ import os
 import sys
 from collections import namedtuple  # Import namedtuple
 
-# Add the project root to path so we can import llm_gateway
+# Add the project root to path so we can import ultimate
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rich.console import Console
@@ -23,10 +23,10 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.tree import Tree
 
-from llm_gateway.constants import Provider
-from llm_gateway.tools.optimization import execute_optimized_workflow
-from llm_gateway.utils import get_logger  # Import get_logger
-from llm_gateway.utils.display import CostTracker  # Import CostTracker
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.tools.optimization import execute_optimized_workflow
+from ultimate_mcp_server.utils import get_logger  # Import get_logger
+from ultimate_mcp_server.utils.display import CostTracker  # Import CostTracker
 
 # Initialize rich console
 console = Console()
@@ -738,7 +738,7 @@ async def main():
         console.print(Panel.fit(
             "[bold cyan]Advanced Research Assistant Workflow Demo[/bold cyan]\n"
             "Powered by NetworkX DAG-based Workflow Engine",
-            title="LLM Gateway",
+            title="Ultimate MCP Server",
             border_style="green"
         ))
         

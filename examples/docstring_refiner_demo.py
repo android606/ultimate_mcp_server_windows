@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Advanced Docstring Refiner Demo for LLM Gateway.
+Advanced Docstring Refiner Demo for Ultimate MCP Server.
 
 This script demonstrates the autonomous documentation refinement tool that analyzes, tests, and improves
 documentation (descriptions, schemas, examples) for MCP tools, enhancing their usability with LLM agents.
@@ -86,7 +86,7 @@ Demo Modes:
         with detailed metrics on success rates, cost, and processing time.
 
 Dependencies:
-    - llm_gateway: Core framework for interfacing with LLMs and tools
+    - ultimate: Core framework for interfacing with LLMs and tools
     - rich: For beautiful console output and visualizations
     - asyncio: For asynchronous processing of refinement operations
     - Required API keys for providers (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
@@ -136,7 +136,7 @@ Implementation Notes:
     - Results can be saved to files for later analysis or integration
 
 Author:
-    LLM Gateway Team
+    Ultimate MCP Server Team
 
 Version:
     1.0.0
@@ -177,15 +177,15 @@ from rich.table import Table
 from rich.tree import Tree
 
 # Project imports
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.tools.base import with_error_handling
-from llm_gateway.tools.docstring_refiner import (
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.tools.base import with_error_handling
+from ultimate_mcp_server.tools.docstring_refiner import (
     RefinementProgressEvent,
 )
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.docstring_refiner")
@@ -211,7 +211,7 @@ SETTINGS = {
 def parse_arguments():
     """Parse command line arguments for the demo."""
     parser = argparse.ArgumentParser(
-        description="Advanced Docstring Refiner Demo for LLM Gateway",
+        description="Advanced Docstring Refiner Demo for Ultimate MCP Server",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Available demos:
   all                   - Run all demos (default)
@@ -471,10 +471,10 @@ async def setup_gateway_and_tools(create_flawed_tools=False):
         
         # Manually register the refine_tool_documentation tool as a fallback
         # Note: This should no longer be necessary since the tool is now included in STANDALONE_TOOL_FUNCTIONS
-        # in llm_gateway/tools/__init__.py, but we keep it as a fallback in case of issues
+        # in ultimate/tools/__init__.py, but we keep it as a fallback in case of issues
         try:
             print("Attempting to manually register refine_tool_documentation tool as fallback...")
-            from llm_gateway.tools.docstring_refiner import refine_tool_documentation
+            from ultimate_mcp_server.tools.docstring_refiner import refine_tool_documentation
             print("Imported refine_tool_documentation successfully")
 
             # Create a simplified wrapper to avoid Pydantic validation issues
@@ -525,7 +525,7 @@ async def setup_gateway_and_tools(create_flawed_tools=False):
             ))
             console.print(Panel(
                 "This demo requires the docstring_refiner tool to be properly registered.\n"
-                "Check that you have the correct version of the LLM Gateway and dependencies installed.",
+                "Check that you have the correct version of the Ultimate MCP Server and dependencies installed.",
                 title="⚠️ Demo Requirements Not Met",
                 border_style="red",
                 expand=False
@@ -3015,7 +3015,7 @@ async def main():
             console.print(Panel(
                 "This demo requires the docstring_refiner tool to be properly registered.\n"
                 "Due to known issues with Pydantic definitions, the tool can't be registered in this demo.\n\n"
-                "Check that you have the correct version of the LLM Gateway and dependencies installed.",
+                "Check that you have the correct version of the Ultimate MCP Server and dependencies installed.",
                 title="⚠️ Demo Requirements Not Met",
                 border_style="red",
                 expand=False

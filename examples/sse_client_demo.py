@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Demo: Connect to LLM Gateway MCP server in SSE mode using the official MCP Python SDK.
+Demo: Connect to Ultimate MCP Server in SSE mode using the official MCP Python SDK.
 
 Requirements:
     pip install "mcp[cli]"
 
-This script connects to a running LLM Gateway server in SSE mode (default: http://127.0.0.1:8013/sse),
+This script connects to a running Ultimate MCP Server server in SSE mode (default: http://127.0.0.1:8013/sse),
 lists available tools, and calls the 'echo' tool if available.
 """
 import asyncio

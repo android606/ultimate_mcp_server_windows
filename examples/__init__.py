@@ -1,1 +1,1 @@
-"""Example scripts demonstrating LLM Gateway functionality."""
+"""Example scripts demonstrating Ultimate MCP Server functionality."""

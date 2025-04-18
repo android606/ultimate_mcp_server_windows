@@ -4,16 +4,16 @@ from pathlib import Path
 
 import pytest
 
-from llm_gateway.services.cache import (
+from ultimate_mcp_server.services.cache import (
     CacheService,
     with_cache,
 )
-from llm_gateway.services.cache.strategies import (
+from ultimate_mcp_server.services.cache.strategies import (
     ExactMatchStrategy,
     SemanticMatchStrategy,
     TaskBasedStrategy,
 )
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("test.cache")
 

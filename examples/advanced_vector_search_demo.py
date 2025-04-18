@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Demo of advanced vector search capabilities using real LLM Gateway tools."""
+"""Demo of advanced vector search capabilities using real Ultimate MCP Server tools."""
 import asyncio
 import sys
 import time
@@ -11,14 +11,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from rich.markup import escape
 from rich.rule import Rule
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.services.vector import get_vector_db_service
-from llm_gateway.services.vector.embeddings import cosine_similarity, get_embedding_service
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.services.vector import get_vector_db_service
+from ultimate_mcp_server.services.vector.embeddings import cosine_similarity, get_embedding_service
 
 # --- Add Marqo Tool Import ---
-from llm_gateway.tools.marqo_fused_search import marqo_fused_search
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import (
+from ultimate_mcp_server.tools.marqo_fused_search import marqo_fused_search
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import (
     display_embedding_generation_results,
     display_text_content_result,
     display_vector_similarity_results,
@@ -27,7 +27,7 @@ from llm_gateway.utils.display import (
 
 # ---------------------------
 # --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 # ----------------------
 

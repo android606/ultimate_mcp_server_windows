@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Text classification demonstration for LLM Gateway.
+Text classification demonstration for Ultimate MCP Server.
 This example showcases the comprehensive capabilities of the text_classification tool,
 demonstrating various classification strategies, multi-label vs. single-label,
 hierarchical categories, and more.
@@ -27,12 +27,15 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-from llm_gateway.config import get_config
-from llm_gateway.constants import Provider
-from llm_gateway.tools.text_classification import ClassificationStrategy, text_classification
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker  # Import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.config import get_config
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.tools.text_classification import (
+    ClassificationStrategy,
+    text_classification,
+)
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker  # Import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.text_classification")

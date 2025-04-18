@@ -1,4 +1,4 @@
-"""Pytest fixtures for LLM Gateway tests."""
+"""Pytest fixtures for Ultimate MCP Server tests."""
 import asyncio
 import json
 import os
@@ -8,11 +8,11 @@ from typing import Any, Dict, Generator, List, Optional
 import pytest
 from pytest import MonkeyPatch
 
-from llm_gateway.config import get_config, Config
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import BaseProvider, ModelResponse
-from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.config import get_config, Config
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("tests")
 

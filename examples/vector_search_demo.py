@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Vector database and semantic search demonstration for LLM Gateway."""
+"""Vector database and semantic search demonstration for Ultimate MCP Server."""
 import asyncio
 import sys
 import time
@@ -14,14 +14,14 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.vector import get_embedding_service, get_vector_db_service
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.providers.base import get_provider
+from ultimate_mcp_server.services.vector import get_embedding_service, get_vector_db_service
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker
 
 # --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 # ----------------------
 
@@ -171,7 +171,7 @@ async def demonstrate_vector_operations():
         logger.success(f"Generated embedding in {emb_time:.3f}s", emoji_key="success")
         
         # Use embedding display utility
-        from llm_gateway.utils.display import _display_embeddings_info
+        from ultimate_mcp_server.utils.display import _display_embeddings_info
         _display_embeddings_info([embedding], "text-embedding-3-small", console)
         
         # Also show sample values in a simple format for demo clarity
@@ -248,7 +248,7 @@ async def demonstrate_llm_with_vector_retrieval(tracker: CostTracker):
         logger.success(f"Retrieved {len(search_results)} context snippets in {search_time:.3f}s.", emoji_key="success")
         
         # Use vector results display utility
-        from llm_gateway.utils.display import _display_vector_results
+        from ultimate_mcp_server.utils.display import _display_vector_results
         _display_vector_results(search_results, console)
         
         # Join context for LLM

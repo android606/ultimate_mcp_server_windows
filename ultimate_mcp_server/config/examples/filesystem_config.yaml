@@ -1,0 +1,35 @@
+# Example Filesystem Configuration
+# Add this section to your main configuration file to enable the filesystem tools
+
+# Main filesystem configuration
+filesystem:
+  # List of allowed directories (absolute or with ~ for home directory)
+  # All filesystem operations will be limited to these directories for security
+  allowed_directories:
+    - ~/data                     # User's data directory
+    - /tmp/ultimate           # Temporary directory
+    - /opt/ultimate/shared    # Shared application directory
+  
+  # Additional filesystem-specific options can be added here
+  # For example, you could add settings like:
+  # max_file_size: 10485760      # Maximum allowed file size (10MB)
+  # enable_binary_files: false   # Whether to allow binary file operations
+  # default_encoding: "utf-8"    # Default file encoding
+
+# For development/debugging
+logging:
+  level: INFO
+  log_colors: true
+  log_file: logs/filesystem.log
+  
+# Integration with other parts of the system
+mcp:
+  tools:
+    # Whether filesystem tools are enabled at all
+    enable_filesystem: true
+    # More granular permissions could be added here
+    # For example, you could control which operations are allowed:
+    filesystem_permissions:
+      allow_read: true
+      allow_write: true
+      allow_directory_operations: true 

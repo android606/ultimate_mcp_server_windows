@@ -1155,11 +1155,11 @@ Below I'll cover several more important tool functions in detail that implement 
 
 ## LLM Integration
 
-The system integrates with external LLM providers through the `llm_gateway` module:
+The system integrates with external LLM providers through the `ultimate` module:
 
 ```python
-from llm_gateway.constants import Provider as LLMGatewayProvider
-from llm_gateway.core.providers.base import get_provider
+from ultimate_mcp_server.constants import Provider as LLMGatewayProvider
+from ultimate_mcp_server.core.providers.base import get_provider
 ```
 
 This enables:

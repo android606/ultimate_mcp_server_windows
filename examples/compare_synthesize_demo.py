@@ -16,12 +16,12 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway  # Use Gateway to get MCP
-from llm_gateway.tools.meta import compare_and_synthesize  # Add correct import
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker  # Import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.server import Gateway  # Use Gateway to get MCP
+from ultimate_mcp_server.tools.meta import compare_and_synthesize  # Add correct import
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker  # Import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.compare_synthesize_v2")

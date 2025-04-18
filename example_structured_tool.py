@@ -17,7 +17,7 @@ import uuid
 # --- Import RAG tools/services --- 
 # Assuming direct function import for simplicity in example
 # In a real structured app, might use dependency injection or service locators
-from llm_gateway.tools.rag import (
+from ultimate_mcp_server.tools.rag import (
     create_knowledge_base, 
     add_documents, 
     retrieve_context, 

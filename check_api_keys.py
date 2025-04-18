@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Script to check API key configurations for LLM Gateway using rich formatting."""
+"""Script to check API key configurations for Ultimate MCP Server using rich formatting."""
 import asyncio
 import sys
 from pathlib import Path
@@ -12,10 +12,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from llm_gateway.config import get_config
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.config import get_config
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.utils import get_logger
 
 # Initialize rich console
 console = Console()
@@ -42,7 +42,7 @@ async def check_api_keys():
     
     console.print(Panel(
         "Checking API Key Configuration based on loaded settings",
-        title="[bold cyan]LLM Gateway API Key Check[/bold cyan]",
+        title="[bold cyan]Ultimate MCP Server API Key Check[/bold cyan]",
         expand=False,
         border_style="blue"
     ))

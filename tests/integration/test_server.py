@@ -1,12 +1,12 @@
-"""Integration tests for the LLM Gateway server."""
+"""Integration tests for the Ultimate MCP Server server."""
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 import pytest
 from pytest import MonkeyPatch
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("test.integration.server")
 

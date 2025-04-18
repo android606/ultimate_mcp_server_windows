@@ -20,8 +20,8 @@ from rich.syntax import Syntax
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, project_root)
 
-from llm_gateway.tools.marqo_fused_search import DateRange, marqo_fused_search  # noqa: E402
-from llm_gateway.utils.logging import logger  # noqa: E402
+from ultimate_mcp_server.tools.marqo_fused_search import DateRange, marqo_fused_search  # noqa: E402
+from ultimate_mcp_server.utils.logging import logger  # noqa: E402
 
 # Initialize Rich Console
 console = Console()

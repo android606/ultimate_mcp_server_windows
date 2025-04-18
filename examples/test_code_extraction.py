@@ -19,13 +19,13 @@ from rich import box
 from rich.panel import Panel
 from rich.table import Table
 
-from llm_gateway.core.server import Gateway
+from ultimate_mcp_server.core.server import Gateway
 
 # Import the extraction function from the library
-from llm_gateway.tools import extract_code_from_response
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker  # Import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.tools import extract_code_from_response
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker  # Import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.test_extraction")
@@ -37,7 +37,7 @@ logger = get_logger("example.test_extraction")
 gateway = None
 
 # Path to the tournament state file from the last run
-TOURNAMENT_STATE_PATH = "/home/ubuntu/llm_gateway_mcp_server/storage/tournaments/2025-04-01_03-24-37_tournament_76009a9a/tournament_state.json"
+TOURNAMENT_STATE_PATH = "/home/ubuntu/ultimate_mcp_server/storage/tournaments/2025-04-01_03-24-37_tournament_76009a9a/tournament_state.json"
 
 async def setup_gateway():
     """Set up the gateway for testing."""

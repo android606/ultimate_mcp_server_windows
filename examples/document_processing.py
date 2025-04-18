@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Document processing examples for LLM Gateway."""
+"""Document processing examples for Ultimate MCP Server."""
 import asyncio
 import sys
 from collections import namedtuple  # Import namedtuple
@@ -13,23 +13,23 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 
-from llm_gateway.constants import Provider
-from llm_gateway.services.cache import get_cache_service
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.services.cache import get_cache_service
 
 # Remove the old import
-# from llm_gateway.tools.document import DocumentTools
+# from ultimate_mcp_server.tools.document import DocumentTools
 # Add imports for the actual tool functions used
-from llm_gateway.tools.document import (
+from ultimate_mcp_server.tools.document import (
     chunk_document,
     extract_entities,
     generate_qa_pairs,
     summarize_document,
 )
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.utils import get_logger
 
 # --- Import display utilities ---
-from llm_gateway.utils.display import CostTracker, display_text_content_result  # Import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.display import CostTracker, display_text_content_result  # Import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # ----------------------
 

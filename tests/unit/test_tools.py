@@ -4,8 +4,8 @@ from typing import Any, Dict
 import pytest
 from pytest import MonkeyPatch
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.tools.base import (
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.tools.base import (
     BaseTool,
     register_tool,
     with_retry,
@@ -13,10 +13,10 @@ from llm_gateway.tools.base import (
 )
 
 # Remove the CompletionTools import as the class was deleted
-# from llm_gateway.tools.completion import CompletionTools 
-from llm_gateway.tools.document import DocumentTools
-from llm_gateway.tools.extraction import ExtractionTools
-from llm_gateway.utils import get_logger
+# from ultimate_mcp_server.tools.completion import CompletionTools 
+from ultimate_mcp_server.tools.document import DocumentTools
+from ultimate_mcp_server.tools.extraction import ExtractionTools
+from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("test.tools")
 

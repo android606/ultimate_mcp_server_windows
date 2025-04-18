@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Grok integration demonstration using LLM Gateway."""
+"""Grok integration demonstration using Ultimate MCP Server."""
 import asyncio
 import json
 import sys
@@ -30,11 +30,11 @@ from rich.text import Text
 from rich.tree import Tree
 
 # Project imports
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.grok_integration")

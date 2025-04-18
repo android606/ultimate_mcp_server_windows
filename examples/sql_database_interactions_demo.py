@@ -24,8 +24,8 @@ from rich.text import Text
 from rich.traceback import Traceback
 from rich.tree import Tree
 
-from llm_gateway.exceptions import ToolError, ToolInputError  # Import specific exceptions
-from llm_gateway.tools.sql_database_interactions import (
+from ultimate_mcp_server.exceptions import ToolError, ToolInputError  # Import specific exceptions
+from ultimate_mcp_server.tools.sql_database_interactions import (
     analyze_column_statistics,
     connect_to_database,
     disconnect_from_database,
@@ -40,8 +40,8 @@ from llm_gateway.tools.sql_database_interactions import (
     get_table_details,
     test_connection,
 )
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker  # Import CostTracker
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker  # Import CostTracker
 
 # Initialize Rich console and logger
 console = Console()

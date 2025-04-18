@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Filesystem operations demo for LLM Gateway Tools.
+"""Filesystem operations demo for Ultimate MCP Server Tools.
 
 This example demonstrates the secure asynchronous filesystem operations tools,
 covering file/directory manipulation, searching, metadata retrieval, and
@@ -21,16 +21,16 @@ from pathlib import Path
 # Adjust this path if your script location relative to the project root differs
 try:
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    if not (PROJECT_ROOT / "llm_gateway").is_dir():
+    if not (PROJECT_ROOT / "ultimate").is_dir():
         # Fallback if running from a different structure
         PROJECT_ROOT = Path(__file__).resolve().parent
-        if not (PROJECT_ROOT / "llm_gateway").is_dir():
-             print("Error: Could not reliably determine project root. Make sure llm_gateway is importable.", file=sys.stderr)
+        if not (PROJECT_ROOT / "ultimate").is_dir():
+             print("Error: Could not reliably determine project root. Make sure ultimate is importable.", file=sys.stderr)
              sys.exit(1)
     sys.path.insert(0, str(PROJECT_ROOT))
 
     # --- Important: Set Environment Variables FIRST --- 
-    DEMO_TEMP_DIR = tempfile.mkdtemp(prefix="llm_gateway_fs_demo_")
+    DEMO_TEMP_DIR = tempfile.mkdtemp(prefix="ultimate_fs_demo_")
     os.environ["GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
     os.environ["GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
     os.environ["GATEWAY_FORCE_CONFIG_RELOAD"] = "true"
@@ -43,17 +43,17 @@ except Exception as e:
     print(f"Error during initial setup: {e}", file=sys.stderr)
     sys.exit(1)
 
-# --- Defer ALL llm_gateway imports until AFTER env vars are set ---
+# --- Defer ALL ultimate imports until AFTER env vars are set ---
 # Import Rich components (can happen earlier, but keep grouped for clarity)
 from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 
-from llm_gateway.config import get_config
+from ultimate_mcp_server.config import get_config
 
 # Import necessary exceptions
 # Filesystem Tools
-from llm_gateway.tools.filesystem import (
+from ultimate_mcp_server.tools.filesystem import (
     create_directory,
     delete_path,
     directory_tree,
@@ -67,11 +67,11 @@ from llm_gateway.tools.filesystem import (
     search_files,
     write_file,
 )
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import generate_rich_directory_tree, safe_tool_call
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import generate_rich_directory_tree, safe_tool_call
 
 # Shared console and display utils
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger AFTER all relevant imports
 logger = get_logger("example.filesystem")
@@ -79,7 +79,7 @@ logger = get_logger("example.filesystem")
 def parse_arguments():
     """Parse command line arguments for the demo."""
     parser = argparse.ArgumentParser(
-        description="Filesystem Operations Demo for LLM Gateway Tools",
+        description="Filesystem Operations Demo for Ultimate MCP Server Tools",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Available demos:
   all           - Run all demos (default)

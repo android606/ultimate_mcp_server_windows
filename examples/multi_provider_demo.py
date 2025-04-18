@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Multi-provider completion demo using LLM Gateway."""
+"""Multi-provider completion demo using Ultimate MCP Server."""
 import asyncio
 import sys
 from pathlib import Path
@@ -16,11 +16,11 @@ from rich.rule import Rule  # noqa: E402
 from rich.table import Table  # noqa: E402
 
 # Project imports
-from llm_gateway.constants import Provider  # noqa: E402
-from llm_gateway.core.server import Gateway  # noqa: E402
-from llm_gateway.utils import get_logger  # noqa: E402
-from llm_gateway.utils.display import CostTracker  # Import CostTracker
-from llm_gateway.utils.logging.console import console  # noqa: E402
+from ultimate_mcp_server.constants import Provider  # noqa: E402
+from ultimate_mcp_server.core.server import Gateway  # noqa: E402
+from ultimate_mcp_server.utils import get_logger  # noqa: E402
+from ultimate_mcp_server.utils.display import CostTracker  # Import CostTracker
+from ultimate_mcp_server.utils.logging.console import console  # noqa: E402
 
 # Initialize logger
 logger = get_logger("example.multi_provider")

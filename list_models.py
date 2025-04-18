@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 
-from llm_gateway.core.server import Gateway
+from ultimate_mcp_server.core.server import Gateway
 
 
 async def list_models():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Demo of HTML to Markdown conversion capabilities using LLM Gateway MCP server."""
+"""Demo of HTML to Markdown conversion capabilities using Ultimate MCP Server."""
 import asyncio
 import sys
 import time
@@ -25,15 +25,15 @@ from rich.table import Table
 from rich.text import Text
 
 # Project imports
-from llm_gateway.tools.html_to_markdown import (
+from ultimate_mcp_server.tools.html_to_markdown import (
     batch_format_texts,
     clean_and_format_text_as_markdown,
     detect_content_type,
     optimize_markdown_formatting,
 )
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.html_to_markdown_demo")

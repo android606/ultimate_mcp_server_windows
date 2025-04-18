@@ -3,9 +3,9 @@ requires = ["hatchling", "torch"]
 build-backend = "hatchling.build"
 
 [project]
-name = "llm_gateway_mcp_server"
+name = "ultimate_mcp_server"
 version = "0.1.0"
-description = "A Model Context Protocol (MCP) server providing unified access to multiple LLM providers with cost optimization"
+description = "The Ultimate Model Context Protocol (MCP) Server, providing unified access to a wide variety of useful and powerful tools."
 readme = "README.md"
 requires-python = ">=3.13"
 license = {file = "LICENSE"}
@@ -15,7 +15,7 @@ authors = [
 maintainers = [
     {name = "Jeffrey Emanuel", email = "jeffrey.emanuel@gmail.com"},
 ]
-keywords = ["llm", "mcp", "gateway", "ai", "claude", "gpt", "gemini", "deepseek"]
+keywords = ["ultimte", "mcp", "server", "agent", "ai", "claude", "gpt", "gemini", "deepseek"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -136,23 +136,23 @@ docs = [
 ]
 
 # All extras
-all = ["llm_gateway_mcp_server[advanced,dev,docs]"]
+all = ["ultimate_mcp_server[advanced,dev,docs]"]
 
 [project.urls]
-Homepage = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server"
-Documentation = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server/docs"
-Repository = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server.git"
-"Bug Reports" = "https://github.com/Dicklesworthstone/llm_gateway_mcp_server/issues"
+Homepage = "https://github.com/Dicklesworthstone/ultimate_mcp_server"
+Documentation = "https://github.com/Dicklesworthstone/ultimate_mcp_server/docs"
+Repository = "https://github.com/Dicklesworthstone/ultimate_mcp_server.git"
+"Bug Reports" = "https://github.com/Dicklesworthstone/ultimate_mcp_server/issues"
 
 [project.scripts]
-llm-gateway = "llm_gateway.cli.main:main"
+ultimate-mcp-server = "ultimate.cli.main:main"
 
 [tool.hatch.version]
-path = "llm_gateway/__init__.py"
+path = "ultimate/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/llm_gateway",
+    "/ultimate",
     "/examples",
     "/tests",
     "LICENSE",
@@ -161,7 +161,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["llm_gateway"]
+packages = ["ultimate"]
 
 [tool.black]
 line-length = 100
@@ -186,7 +186,7 @@ strict_optional = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "--cov=llm_gateway --cov-report=term-missing -v"
+addopts = "--cov=ultimate --cov-report=term-missing -v"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

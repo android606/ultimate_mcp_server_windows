@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Cost optimization examples for LLM Gateway."""
+"""Cost optimization examples for Ultimate MCP Server."""
 import asyncio
 import sys
 from pathlib import Path
@@ -14,17 +14,17 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from llm_gateway.constants import COST_PER_MILLION_TOKENS, DEFAULT_MODELS, Provider
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.tools.optimization import estimate_cost, recommend_model
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.constants import COST_PER_MILLION_TOKENS, DEFAULT_MODELS, Provider
+from ultimate_mcp_server.core.providers.base import get_provider
+from ultimate_mcp_server.tools.optimization import estimate_cost, recommend_model
+from ultimate_mcp_server.utils import get_logger
 
 # --- Import display utilities ---
-from llm_gateway.utils.display import CostTracker, parse_and_display_result
+from ultimate_mcp_server.utils.display import CostTracker, parse_and_display_result
 
 # --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
-from llm_gateway.utils.text import count_tokens  # Import proper token counting function
+from ultimate_mcp_server.utils.logging.console import console
+from ultimate_mcp_server.utils.text import count_tokens  # Import proper token counting function
 
 # ----------------------
 

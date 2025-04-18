@@ -1,11 +1,11 @@
 version: '3.8'
 
 services:
-  llm-gateway:
+  ultimate-mcp-server:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: llm-gateway
+    container_name: ultimate-mcp-server
     restart: unless-stopped
     ports:
       - "${SERVER_PORT:-8013}:8013"

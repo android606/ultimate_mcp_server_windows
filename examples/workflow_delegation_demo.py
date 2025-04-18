@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Workflow delegation example using LLM Gateway MCP server."""
+"""Workflow delegation example using Ultimate MCP Server."""
 import asyncio
 import json
 import sys
@@ -19,22 +19,22 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.exceptions import ToolExecutionError
-from llm_gateway.utils import get_logger, process_mcp_result
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.providers.base import get_provider
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.exceptions import ToolExecutionError
+from ultimate_mcp_server.utils import get_logger, process_mcp_result
 
 # --- Add Display Utils Import ---
-from llm_gateway.utils.display import CostTracker, _display_stats  # Import CostTracker
+from ultimate_mcp_server.utils.display import CostTracker, _display_stats  # Import CostTracker
 
 # --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 # --- Import Tools Needed ---
 # Import tool functions directly if not registering them all
-# from llm_gateway.tools.optimization import recommend_model, execute_optimized_workflow # No, call via MCP
-# from llm_gateway.tools.completion import generate_completion # Call via MCP
+# from ultimate_mcp_server.tools.optimization import recommend_model, execute_optimized_workflow # No, call via MCP
+# from ultimate_mcp_server.tools.completion import generate_completion # Call via MCP
 # -------------------------
 
 # Initialize logger
@@ -551,13 +551,13 @@ async def main():
         
         # --- Register Necessary Tools --- 
         # Ensure tools called by demos are registered on the MCP instance
-        from llm_gateway.tools.completion import generate_completion
-        from llm_gateway.tools.document import (
+        from ultimate_mcp_server.tools.completion import generate_completion
+        from ultimate_mcp_server.tools.document import (
             extract_entities,
             generate_qa_pairs,
             summarize_document,
         )
-        from llm_gateway.tools.optimization import recommend_model
+        from ultimate_mcp_server.tools.optimization import recommend_model
         
         mcp.tool()(recommend_model)
         mcp.tool()(generate_completion)

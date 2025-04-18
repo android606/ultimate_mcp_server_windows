@@ -1,4 +1,4 @@
-# LLM Gateway MCP Server
+# Ultimate MCP Server
 
 <div align="center">
 
@@ -8,7 +8,7 @@
 
 **A Model Context Protocol (MCP) server enabling intelligent delegation from high-capability AI agents to cost-effective LLMs**
 
-![Illustration](https://github.com/Dicklesworthstone/llm_gateway_mcp_server/blob/main/illustration.webp)
+![Illustration](https://github.com/Dicklesworthstone/ultimate_mcp_server/blob/main/illustration.webp)
 
 [Getting Started](#getting-started) •
 [Key Features](#key-features) •
@@ -17,13 +17,13 @@
 
 </div>
 
-## What is LLM Gateway?
+## What is Ultimate MCP Server?
 
-LLM Gateway is an MCP-native server that enables intelligent task delegation from advanced AI agents like Claude 3.7 Sonnet to more cost-effective models like Gemini Flash 2.0 Lite. It provides a unified interface to multiple Large Language Model (LLM) providers while optimizing for cost, performance, and quality.
+Ultimate MCP Server is an MCP-native server that enables intelligent task delegation from advanced AI agents like Claude 3.7 Sonnet to more cost-effective models like Gemini Flash 2.0 Lite. It provides a unified interface to multiple Large Language Model (LLM) providers while optimizing for cost, performance, and quality.
 
 ### The Vision: AI-Driven Resource Optimization
 
-At its core, LLM Gateway represents a fundamental shift in how we interact with AI systems. Rather than using a single expensive model for all tasks, it enables an intelligent hierarchy where:
+At its core, Ultimate MCP Server represents a fundamental shift in how we interact with AI systems. Rather than using a single expensive model for all tasks, it enables an intelligent hierarchy where:
 
 - Advanced models like Claude 3.7 focus on high-level reasoning, orchestration, and complex tasks
 - Cost-effective models handle routine processing, extraction, and mechanical tasks
@@ -37,12 +37,12 @@ The server is built on the [Model Context Protocol (MCP)](https://github.com/mpc
 
 ### Primary Use Case: AI Agent Task Delegation
 
-The primary design goal of LLM Gateway is to allow sophisticated AI agents like Claude 3.7 Sonnet to intelligently delegate tasks to less expensive models:
+The primary design goal of Ultimate MCP Server is to allow sophisticated AI agents like Claude 3.7 Sonnet to intelligently delegate tasks to less expensive models:
 
 ```plaintext
                           delegates to
 ┌─────────────┐ ────────────────────────► ┌───────────────────┐         ┌──────────────┐
-│ Claude 3.7  │                           │   LLM Gateway     │ ───────►│ Gemini Flash │
+│ Claude 3.7  │                           │   Ultimate MCP Server     │ ───────►│ Gemini Flash │
 │   (Agent)   │ ◄──────────────────────── │    MCP Server     │ ◄───────│ DeepSeek     │
 └─────────────┘      returns results      └───────────────────┘         │ gpt-4.1-mini  │
                                                                         └──────────────┘
@@ -51,14 +51,14 @@ The primary design goal of LLM Gateway is to allow sophisticated AI agents like 
 **Example workflow:**
 
 1. Claude identifies that a document needs to be summarized (an expensive operation with Claude)
-2. Claude delegates this task to LLM Gateway via MCP tools
-3. LLM Gateway routes the summarization task to Gemini Flash (10-20x cheaper than Claude)
+2. Claude delegates this task to Ultimate MCP Server via MCP tools
+3. Ultimate MCP Server routes the summarization task to Gemini Flash (10-20x cheaper than Claude)
 4. The summary is returned to Claude for higher-level reasoning and decision-making
 5. Claude can then focus its capabilities on tasks that truly require its intelligence
 
 This delegation pattern can save 70-90% on API costs while maintaining output quality.
 
-## Why Use LLM Gateway?
+## Why Use Ultimate MCP Server?
 
 ### 🔄 AI-to-AI Task Delegation
 
@@ -71,7 +71,7 @@ The most powerful use case is enabling advanced AI agents to delegate routine ta
 
 ### 💰 Cost Optimization
 
-API costs for advanced models can be substantial. LLM Gateway helps reduce costs by:
+API costs for advanced models can be substantial. Ultimate MCP Server helps reduce costs by:
 
 - Routing appropriate tasks to cheaper models (e.g., $0.01/1K tokens vs $0.15/1K tokens)
 - Implementing advanced caching to avoid redundant API calls
@@ -233,7 +233,7 @@ This feature significantly reduces manual documentation maintenance, improves to
 
 ## OCR Tools
 
-The LLM Gateway includes powerful OCR (Optical Character Recognition) tools that leverage LLMs to improve text extraction from PDFs and images:
+The Ultimate MCP Server includes powerful OCR (Optical Character Recognition) tools that leverage LLMs to improve text extraction from PDFs and images:
 
 - **Extract Text from PDF**: Extract and enhance text from PDF documents using direct extraction or OCR.
 - **Process Image OCR**: Extract and enhance text from images with preprocessing options.
@@ -246,7 +246,7 @@ The LLM Gateway includes powerful OCR (Optical Character Recognition) tools that
 OCR tools require additional dependencies. Install them with:
 
 ```bash
-pip install 'llm-gateway[ocr]'
+pip install 'ultimate-mcp-server[ocr]'
 ```
 
 ### OCR Usage Examples
@@ -300,16 +300,16 @@ workflow_result = await client.tools.execute_optimized_workflow(
 
 ## Usage Examples
 
-### Claude Using LLM Gateway for Document Analysis
+### Claude Using Ultimate MCP Server for Document Analysis
 
-This example shows how Claude can use the LLM Gateway to process a document by delegating tasks to cheaper models:
+This example shows how Claude can use the Ultimate MCP Server to process a document by delegating tasks to cheaper models:
 
 ```python
 import asyncio
 from mcp.client import Client
 
 async def main():
-    # Claude would use this client to connect to the LLM Gateway
+    # Claude would use this client to connect to the Ultimate MCP Server
     client = Client("http://localhost:8013")
     
     # Claude can identify a document that needs processing
@@ -627,7 +627,7 @@ else:
 
 ## Autonomous Documentation Refiner
 
-The LLM Gateway MCP Server includes a powerful feature for autonomously analyzing, testing, and refining the documentation of registered MCP tools. This feature, implemented in `llm_gateway/tools/docstring_refiner.py`, helps improve the usability and reliability of tools when invoked by Large Language Models (LLMs) like Claude.
+The Ultimate MCP Server includes a powerful feature for autonomously analyzing, testing, and refining the documentation of registered MCP tools. This feature, implemented in `ultimate/tools/docstring_refiner.py`, helps improve the usability and reliability of tools when invoked by Large Language Models (LLMs) like Claude.
 
 ### How It Works
 
@@ -672,7 +672,7 @@ This feature is particularly valuable when:
 ### Usage Example
 
 ```python
-from llm_gateway.tools.docstring_refiner import refine_tool_documentation
+from ultimate_mcp_server.tools.docstring_refiner import refine_tool_documentation
 
 # Refine specific tools
 result = await refine_tool_documentation(
@@ -701,8 +701,8 @@ result = await refine_tool_documentation(
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Clone the repository
-git clone https://github.com/yourusername/llm_gateway_mcp_server.git
-cd llm_gateway_mcp_server
+git clone https://github.com/yourusername/ultimate_mcp_server.git
+cd ultimate_mcp_server
 
 # Install in venv using uv:
 uv venv --python 3.13
@@ -739,13 +739,13 @@ CACHE_TTL=86400
 
 ```bash
 # Start the MCP server with all tools
-python -m llm_gateway.cli.main run
+python -m ultimate.cli.main run
 
 # Start the server with specific tools only
-python -m llm_gateway.cli.main run --include-tools generate_completion read_file write_file
+python -m ultimate.cli.main run --include-tools generate_completion read_file write_file
 
 # Start the server excluding specific tools
-python -m llm_gateway.cli.main run --exclude-tools browser_automation
+python -m ultimate.cli.main run --exclude-tools browser_automation
 
 # Or with Docker
 docker compose up
@@ -755,36 +755,36 @@ Once running, the server will be available at `http://localhost:8013`.
 
 ## CLI Commands
 
-LLM Gateway comes with a command-line interface for server management and tool interaction:
+Ultimate MCP Server comes with a command-line interface for server management and tool interaction:
 
 ```bash
 # Show available commands
-llm-gateway --help
+ultimate-mcp-server --help
 
 # Start the server
-llm-gateway run [options]
+ultimate-mcp-server run [options]
 
 # List available providers
-llm-gateway providers
+ultimate-mcp-server providers
 
 # List available tools
-llm-gateway tools [--category CATEGORY]
+ultimate-mcp-server tools [--category CATEGORY]
 
 # Test a provider
-llm-gateway test openai --model gpt-4.1-mini
+ultimate-mcp-server test openai --model gpt-4.1-mini
 
 # Generate a completion
-llm-gateway complete --provider anthropic --prompt "Hello, world!"
+ultimate-mcp-server complete --provider anthropic --prompt "Hello, world!"
 
 # Check cache status
-llm-gateway cache --status
+ultimate-mcp-server cache --status
 ```
 
-Each command has additional options that can be viewed with `llm-gateway COMMAND --help`.
+Each command has additional options that can be viewed with `ultimate-mcp-server COMMAND --help`.
 
 ## Advanced Configuration
 
-While the `.env` file is convenient for basic setup, the LLM Gateway offers more detailed configuration options primarily managed through environment variables.
+While the `.env` file is convenient for basic setup, the Ultimate MCP Server offers more detailed configuration options primarily managed through environment variables.
 
 ### Server Configuration
 
@@ -794,20 +794,20 @@ While the `.env` file is convenient for basic setup, the LLM Gateway offers more
 
 ### Tool Filtering
 
-The LLM Gateway allows selectively choosing which MCP tools to register, helping manage complexity or reduce resource usage:
+The Ultimate MCP Server allows selectively choosing which MCP tools to register, helping manage complexity or reduce resource usage:
 
 ```bash
 # List all available tools
-llm-gateway tools
+ultimate-mcp-server tools
 
 # List tools in a specific category
-llm-gateway tools --category filesystem
+ultimate-mcp-server tools --category filesystem
 
 # Start the server with only specific tools
-llm-gateway run --include-tools read_file write_file generate_completion
+ultimate-mcp-server run --include-tools read_file write_file generate_completion
 
 # Start the server excluding specific tools
-llm-gateway run --exclude-tools browser_automation marqo_fused_search
+ultimate-mcp-server run --exclude-tools browser_automation marqo_fused_search
 ```
 
 This feature is particularly useful when:
@@ -850,23 +850,23 @@ While running the server directly with `python` or `docker compose up` is suitab
 
 To ensure the gateway runs continuously and restarts automatically on failure or server reboot, use a process manager:
 
-- **`systemd` (Linux):** Create a service unit file (e.g., `/etc/systemd/system/llm-gateway.service`) to manage the process. This allows commands like `sudo systemctl start|stop|restart|status llm-gateway`.
+- **`systemd` (Linux):** Create a service unit file (e.g., `/etc/systemd/system/ultimate-mcp-server.service`) to manage the process. This allows commands like `sudo systemctl start|stop|restart|status ultimate-mcp-server`.
 - **`supervisor`:** A popular process control system written in Python. Configure `supervisord` to monitor and control the gateway process.
 - **Docker Restart Policies:** If using Docker (standalone or Compose), configure appropriate restart policies (e.g., `unless-stopped` or `always`) in your `docker run` command or `docker-compose.yml` file.
 
 ### 2. Using a Reverse Proxy (Nginx/Caddy/Apache)
 
-Placing a reverse proxy in front of the LLM Gateway is highly recommended:
+Placing a reverse proxy in front of the Ultimate MCP Server is highly recommended:
 
 - **HTTPS/SSL Termination:** The proxy can handle SSL certificates (e.g., using Let's Encrypt with Caddy or Certbot with Nginx/Apache), encrypting traffic between clients and the proxy.
 - **Load Balancing:** If you need to run multiple instances of the gateway for high availability or performance, the proxy can distribute traffic among them.
-- **Path Routing:** Map external paths (e.g., `https://api.yourdomain.com/llm-gateway/`) to the internal gateway server (`http://localhost:8013`).
+- **Path Routing:** Map external paths (e.g., `https://api.yourdomain.com/ultimate-mcp-server/`) to the internal gateway server (`http://localhost:8013`).
 - **Security Headers:** Add important security headers (like CSP, HSTS).
 - **Buffering/Caching:** Some proxies offer additional request/response buffering or caching capabilities.
 
 *Example Nginx `location` block (simplified):*
 ```nginx
-location /llm-gateway/ {
+location /ultimate-mcp-server/ {
     proxy_pass http://127.0.0.1:8013/;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -892,7 +892,7 @@ If deploying in a containerized environment:
 
 ## Cost Savings With Delegation
 
-Using LLM Gateway for delegation can yield significant cost savings:
+Using Ultimate MCP Server for delegation can yield significant cost savings:
 
 | Task | Claude 3.7 Direct | Delegated to Cheaper LLM | Savings |
 |------|-------------------|--------------------------|---------|
@@ -932,7 +932,7 @@ This approach promotes more sustainable AI usage:
 
 ### Technical Evolution Path
 
-LLM Gateway represents an important evolution in AI application architecture:
+Ultimate MCP Server represents an important evolution in AI application architecture:
 - Moving from monolithic AI calls to distributed, multi-model workflows
 - Enabling AI-driven orchestration of complex processing pipelines
 - Creating a foundation for AI systems that can reason about their own resource usage
@@ -940,7 +940,7 @@ LLM Gateway represents an important evolution in AI application architecture:
 
 ### The Future of AI Efficiency
 
-LLM Gateway points toward a future where:
+Ultimate MCP Server points toward a future where:
 - AI systems actively manage and optimize their own resource usage
 - Higher-capability models serve as intelligent orchestrators for entire AI ecosystems
 - AI workflows become increasingly sophisticated and self-organizing
@@ -952,7 +952,7 @@ This vision of efficient, self-organizing AI systems represents the next frontie
 
 ### How MCP Integration Works
 
-The LLM Gateway is built natively on the Model Context Protocol:
+The Ultimate MCP Server is built natively on the Model Context Protocol:
 
 1. **MCP Server Core**: The gateway implements a full MCP server
 2. **Tool Registration**: All capabilities are exposed as MCP tools
@@ -965,7 +965,7 @@ This ensures seamless integration with Claude and other MCP-compatible agents.
 
 ```plaintext
 ┌─────────────┐         ┌───────────────────┐         ┌──────────────┐
-│  Claude 3.7 │ ────────► LLM Gateway MCP   │ ────────► LLM Providers│
+│  Claude 3.7 │ ────────► Ultimate MCP Server MCP   │ ────────► LLM Providers│
 │   (Agent)   │ ◄──────── Server & Tools    │ ◄──────── (Multiple)   │
 └─────────────┘         └───────┬───────────┘         └──────────────┘
                                 │
@@ -1007,7 +1007,7 @@ This ensures seamless integration with Claude and other MCP-compatible agents.
 
 ### Request Flow for Delegation
 
-When Claude delegates a task to LLM Gateway:
+When Claude delegates a task to Ultimate MCP Server:
 
 1. Claude sends an MCP tool invocation request
 2. The Gateway receives the request via MCP protocol
@@ -1188,7 +1188,7 @@ When Claude delegates a task to LLM Gateway:
 
 ## Tool Usage Examples
 
-This section provides examples of how an MCP client (like Claude 3.7) would invoke specific tools provided by the LLM Gateway. These examples assume you have an initialized `mcp.client.Client` instance named `client` connected to the gateway.
+This section provides examples of how an MCP client (like Claude 3.7) would invoke specific tools provided by the Ultimate MCP Server. These examples assume you have an initialized `mcp.client.Client` instance named `client` connected to the gateway.
 
 ### Basic Completion
 
@@ -1315,7 +1315,7 @@ else:
 
 ### AI Agent Orchestration
 
-Claude or other advanced AI agents can use LLM Gateway to:
+Claude or other advanced AI agents can use Ultimate MCP Server to:
 
 - Delegate routine tasks to cheaper models
 - Process large documents in parallel
@@ -1333,7 +1333,7 @@ Process large document collections efficiently:
 
 ### Research and Analysis
 
-Research teams can use LLM Gateway to:
+Research teams can use Ultimate MCP Server to:
 
 - Compare outputs from different models
 - Process research papers efficiently
@@ -1351,7 +1351,7 @@ Organizations can use the tournament features to:
 
 ## Security Considerations
 
-When deploying and operating the LLM Gateway, consider the following security aspects:
+When deploying and operating the Ultimate MCP Server, consider the following security aspects:
 
 1.  **API Key Management:**
     *   **Never hardcode API keys** in your source code.

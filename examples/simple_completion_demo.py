@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Simple completion demo using LLM Gateway's direct provider functionality."""
+"""Simple completion demo using Ultimate MCP Server's direct provider functionality."""
 import asyncio
 import sys
 from pathlib import Path
@@ -11,11 +11,11 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker
+from ultimate_mcp_server.utils.logging.console import console
 
 # Initialize logger
 logger = get_logger("example.simple_completion")

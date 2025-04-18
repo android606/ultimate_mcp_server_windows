@@ -27,7 +27,7 @@ from rich.rule import Rule
 from rich.table import Table
 
 # Add the project root to the Python path
-# This allows finding the llm_gateway package when running the script directly
+# This allows finding the ultimate package when running the script directly
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
@@ -35,7 +35,7 @@ EXAMPLE_DIR = Path(__file__).parent
 DATA_DIR = EXAMPLE_DIR / "data"
 SAMPLE_AUDIO_PATH = str(DATA_DIR / "Steve_Jobs_Introducing_The_iPhone_compressed.mp3")
 
-from llm_gateway.utils import get_logger  # noqa: E402
+from ultimate_mcp_server.utils import get_logger  # noqa: E402
 
 # --- Configuration ---
 logger = get_logger("audio_demo")
@@ -144,9 +144,9 @@ def save_markdown_transcript(transcript: Dict[str, Any], file_path: str) -> Tupl
 async def enhance_transcript_with_llm(raw_transcript: str, console: Console) -> str:
     """Enhance the transcript using an LLM to improve readability."""
     try:
-        from llm_gateway.tools.completion import chat_completion
+        from ultimate_mcp_server.tools.completion import chat_completion
     except ImportError:
-        console.print("[yellow]LLM Gateway tools not available for enhancement. Using raw transcript.[/yellow]")
+        console.print("[yellow]Ultimate MCP Server tools not available for enhancement. Using raw transcript.[/yellow]")
         return raw_transcript
     
     # Setup progress display

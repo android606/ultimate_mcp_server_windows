@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""Entity relationship graph extraction and visualization demo using LLM Gateway (New Version)."""
+"""Entity relationship graph extraction and visualization demo using Ultimate MCP Server (New Version)."""
 
 import asyncio
 import json
@@ -24,8 +24,8 @@ from rich.tree import Tree
 try:
     project_root = Path(__file__).resolve().parent.parent
     sys.path.insert(0, str(project_root))
-    from llm_gateway.constants import Provider
-    from llm_gateway.tools.entity_relation_graph import (
+    from ultimate_mcp_server.constants import Provider
+    from ultimate_mcp_server.tools.entity_relation_graph import (
         COMMON_SCHEMAS,
         HAS_NETWORKX,
         HAS_VISUALIZATION_LIBS,
@@ -34,10 +34,10 @@ try:
         VisualizationFormat,
         extract_entity_graph,
     )
-    from llm_gateway.utils import get_logger
-    from llm_gateway.utils.logging.console import console
+    from ultimate_mcp_server.utils import get_logger
+    from ultimate_mcp_server.utils.logging.console import console
 except ImportError as e:
-    print(f"Error importing LLM Gateway modules: {e}")
+    print(f"Error importing Ultimate MCP Server modules: {e}")
     print("Please ensure the script is run from the correct directory or the project path is set correctly.")
     sys.exit(1)
 
@@ -959,7 +959,7 @@ async def main():
         # Initialize the Gateway (optional, depends if Gateway context is needed for config/logging)
         # If the tool functions standalone, this might not be strictly necessary for the demo.
         # gateway = Gateway("entity-graph-demo", register_tools=True)
-        # logger.info("LLM Gateway initialized (optional for demo).")
+        # logger.info("Ultimate MCP Server initialized (optional for demo).")
 
 
         # Check if sample directory exists

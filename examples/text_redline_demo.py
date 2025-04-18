@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Text redline comparison tool demonstration for LLM Gateway."""
+"""Text redline comparison tool demonstration for Ultimate MCP Server."""
 import asyncio
 import sys
 from pathlib import Path
@@ -30,17 +30,20 @@ sys.path.insert(0, str(project_root))
 
 # Project imports (Ensure these paths are correct)
 try:
-    from llm_gateway.core.server import Gateway
-    from llm_gateway.exceptions import ToolError
-    from llm_gateway.tools.filesystem import write_file
+    from ultimate_mcp_server.core.server import Gateway
+    from ultimate_mcp_server.exceptions import ToolError
+    from ultimate_mcp_server.tools.filesystem import write_file
 
     # Import our text redline tool
-    from llm_gateway.tools.text_redline_tools import compare_documents_redline, create_html_redline
-    from llm_gateway.utils import get_logger
-    from llm_gateway.utils.display import CostTracker
-    from llm_gateway.utils.logging.console import console
+    from ultimate_mcp_server.tools.text_redline_tools import (
+        compare_documents_redline,
+        create_html_redline,
+    )
+    from ultimate_mcp_server.utils import get_logger
+    from ultimate_mcp_server.utils.display import CostTracker
+    from ultimate_mcp_server.utils.logging.console import console
 except ImportError as e:
-     print(f"Error importing LLM Gateway components: {e}")
+     print(f"Error importing Ultimate MCP Server components: {e}")
      print("Ensure the script is run from the correct directory or the project path is set correctly.")
      print(f"Project root added to sys.path: {project_root}")
      sys.exit(1)

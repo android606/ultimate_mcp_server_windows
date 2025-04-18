@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Browser automation demonstration using LLM Gateway's Playwright tools."""
+"""Browser automation demonstration using Ultimate MCP Server's Playwright tools."""
 import argparse
 import asyncio
 import json
@@ -39,8 +39,8 @@ from examples.web_automation_instruction_packs import (
     TECHNICAL_SEARCH_SUMMARY_INSTRUCTIONS,
     WEBSITE_SECTION_MONITORING_INSTRUCTIONS,
 )
-from llm_gateway.constants import TaskType
-from llm_gateway.tools.browser_automation import (
+from ultimate_mcp_server.constants import TaskType
+from ultimate_mcp_server.tools.browser_automation import (
     browser_checkbox,
     browser_click,
     browser_close,
@@ -66,8 +66,8 @@ from llm_gateway.tools.browser_automation import (
     multi_engine_search_summary,
     research_and_synthesize_report,
 )
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.logging.console import console
 
 logger = get_logger("example.browser_automation")
 
@@ -466,7 +466,7 @@ async def demo_form_interaction():
     # Fill in a text field
     text_input_result = await browser_type(
         selector="input[name='my-text']",
-        text="Hello from LLM Gateway Browser Automation!",
+        text="Hello from Ultimate MCP Server Browser Automation!",
         delay=10  # Small delay for visibility
     )
     
@@ -609,7 +609,7 @@ async def demo_javascript_execution():
     modify_js_result = await browser_execute_javascript(
         script="""() => {
             // Change the page title
-            document.title = "Modified by LLM Gateway Browser Automation";
+            document.title = "Modified by Ultimate MCP Server Browser Automation";
             
             // Create a new styled element
             const banner = document.createElement('div');
@@ -623,7 +623,7 @@ async def demo_javascript_execution():
             banner.style.textAlign = 'center';
             banner.style.fontWeight = 'bold';
             banner.style.zIndex = '1000';
-            banner.textContent = 'This page was modified by LLM Gateway Browser Automation!';
+            banner.textContent = 'This page was modified by Ultimate MCP Server Browser Automation!';
             
             // Add it to the page
             document.body.insertBefore(banner, document.body.firstChild);
@@ -697,7 +697,7 @@ async def demo_search_interaction():
     display_result("Navigated to Search Engine", result)
     
     # Enter a search query
-    search_query = "LLM Gateway Browser Automation"
+    search_query = "Ultimate MCP Server Browser Automation"
     
     print("[cyan]Searching...[/cyan]")
     try:
@@ -1374,7 +1374,7 @@ async def demo_network_monitoring():
     # Interact with the form to trigger a request
     await browser_type(
         selector="input[name='custname']",
-        text="LLM Gateway Test User"
+        text="Ultimate MCP Server Test User"
     )
     
     # FIX: Use browser_click for radio button instead of browser_select
@@ -1581,7 +1581,7 @@ async def demo_file_upload():
 
     # Create a dummy file for uploading
     with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt") as temp_file:
-        temp_file.write("This is a test file created by LLM Gateway Browser Automation.\n")
+        temp_file.write("This is a test file created by Ultimate MCP Server Browser Automation.\n")
         temp_file.write("This file demonstrates uploading a simple text file.\n")
         temp_file_path = temp_file.name
     
@@ -1596,7 +1596,7 @@ async def demo_file_upload():
     # Create a simple HTML file
     with tempfile.NamedTemporaryFile(suffix='.html', delete=False) as temp_html:
         temp_html.write(b"<!DOCTYPE html>\n<html>\n<head>\n<title>Test HTML File</title>\n</head>\n")
-        temp_html.write(b"<body>\n<h1>Test HTML File</h1>\n<p>This file was created by the LLM Gateway Browser Automation demo.</p>\n</body>\n</html>\n")
+        temp_html.write(b"<body>\n<h1>Test HTML File</h1>\n<p>This file was created by the Ultimate MCP Server Browser Automation demo.</p>\n</body>\n</html>\n")
         temp_html_path = temp_html.name
     
     # Show the temporary files we've created for upload
@@ -1770,7 +1770,7 @@ async def demo_workflow_contact_form(args):
     # Provide input data for the contact form
     contact_input = {
         # Keys here MUST match the keys expected by input_data_mapping in the instructions pack
-        "user_name": "Test User via LLM Gateway",
+        "user_name": "Test User via Ultimate MCP Server",
         "user_email": "test@example.com",
         "user_message": "This is a test message sent by the execute_web_workflow tool. Time: " + datetime.now().isoformat()
     }
@@ -2609,7 +2609,7 @@ async def demo_research_synthesis(
 async def parse_arguments() -> argparse.Namespace:
     """Parse command-line arguments for the demo script."""
     parser = argparse.ArgumentParser(
-        description="LLM Gateway Browser Automation Demo",
+        description="Ultimate MCP Server Browser Automation Demo",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     

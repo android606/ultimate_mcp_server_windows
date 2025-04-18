@@ -13,8 +13,8 @@ import sys
 # Add the project root to the Python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-from llm_gateway.constants import Provider
-from llm_gateway.tools.extraction import extract_json, extract_key_value_pairs, extract_table
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.tools.extraction import extract_json, extract_key_value_pairs, extract_table
 
 
 async def test_extract_json():

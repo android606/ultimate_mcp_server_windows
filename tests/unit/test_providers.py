@@ -4,17 +4,17 @@ from typing import Any, Dict
 import pytest
 from pytest import MonkeyPatch
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.anthropic import AnthropicProvider
-from llm_gateway.core.providers.base import (
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.providers.anthropic import AnthropicProvider
+from ultimate_mcp_server.core.providers.base import (
     BaseProvider,
     ModelResponse,
     get_provider,
 )
-from llm_gateway.core.providers.deepseek import DeepSeekProvider
-from llm_gateway.core.providers.gemini import GeminiProvider
-from llm_gateway.core.providers.openai import OpenAIProvider
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.core.providers.deepseek import DeepSeekProvider
+from ultimate_mcp_server.core.providers.gemini import GeminiProvider
+from ultimate_mcp_server.core.providers.openai import OpenAIProvider
+from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("test.providers")
 

@@ -35,23 +35,23 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
-from llm_gateway.core.server import Gateway
-from llm_gateway.services.prompts import PromptTemplate
-from llm_gateway.tools import extract_code_from_response
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.services.prompts import PromptTemplate
+from ultimate_mcp_server.tools import extract_code_from_response
 
 # Import tournament tools
-from llm_gateway.tools.tournament import (
+from ultimate_mcp_server.tools.tournament import (
     create_tournament,
     get_tournament_results,
     get_tournament_status,
 )
-from llm_gateway.utils import get_logger, process_mcp_result
-from llm_gateway.utils.display import (
+from ultimate_mcp_server.utils import get_logger, process_mcp_result
+from ultimate_mcp_server.utils.display import (
     CostTracker,
     display_tournament_results,
     display_tournament_status,
 )
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 
 def parse_arguments():

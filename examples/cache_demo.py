@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Cache demonstration for LLM Gateway."""
+"""Cache demonstration for Ultimate MCP Server."""
 import asyncio
 import sys
 import time
@@ -11,12 +11,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from rich.markup import escape
 from rich.rule import Rule
 
-from llm_gateway.services.cache import get_cache_service, run_completion_with_cache
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker, display_cache_stats
+from ultimate_mcp_server.services.cache import get_cache_service, run_completion_with_cache
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker, display_cache_stats
 
 # --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 # ----------------------
 

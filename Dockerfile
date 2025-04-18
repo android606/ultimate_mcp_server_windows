@@ -73,19 +73,19 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 COPY marqo_index_config.json .
 
 # Create non-root user and group
-RUN groupadd -r llmgateway && \
-    useradd --no-log-init -r -g llmgateway llmgateway && \
+RUN groupadd -r ultimatemcpserver && \
+    useradd --no-log-init -r -g ultimatemcpserver ultimatemcpserver && \
     # Change ownership of app directories
-    chown -R llmgateway:llmgateway /app
+    chown -R ultimatemcpserver:ultimatemcpserver /app
 
 # Switch to non-root user
-USER llmgateway
+USER ultimatemcpserver
 
 # Expose application port
 EXPOSE 8013
 
 # Use the installed script from pyproject.toml as entrypoint
-ENTRYPOINT ["llm-gateway"]
+ENTRYPOINT ["ultimate-mcp-server"]
 CMD ["serve", "--host", "0.0.0.0", "--port", "8013"]
 
 # Add health check

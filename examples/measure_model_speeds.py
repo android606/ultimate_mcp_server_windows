@@ -16,17 +16,17 @@ project_root = os.path.dirname(script_dir)
 sys.path.insert(0, project_root)
 # -------------------------------------
 
-from llm_gateway.constants import (  # noqa: E402
+from ultimate_mcp_server.constants import (  # noqa: E402
     COST_PER_MILLION_TOKENS,
     Provider,
 )
-from llm_gateway.exceptions import (  # noqa: E402
+from ultimate_mcp_server.exceptions import (  # noqa: E402
     ProviderError,
     ToolError,
 )
-from llm_gateway.tools.completion import generate_completion  # noqa: E402
-from llm_gateway.utils import get_logger  # noqa: E402
-from llm_gateway.utils.display import CostTracker  # noqa: E402
+from ultimate_mcp_server.tools.completion import generate_completion  # noqa: E402
+from ultimate_mcp_server.utils import get_logger  # noqa: E402
+from ultimate_mcp_server.utils.display import CostTracker  # noqa: E402
 
 # Use Rich Console for better output
 console = Console()

@@ -1,4 +1,4 @@
-"""Test package for LLM Gateway."""
+"""Test package for Ultimate MCP Server."""
 # This file is intentionally left mostly empty
 # It marks the tests directory as a Python package
 

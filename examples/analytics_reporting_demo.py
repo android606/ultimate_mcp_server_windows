@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Analytics and reporting demonstration for LLM Gateway."""
+"""Analytics and reporting demonstration for Ultimate MCP Server."""
 import asyncio
 import sys
 import time
@@ -14,14 +14,14 @@ from rich.markup import escape
 from rich.rule import Rule
 from rich.table import Table
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.providers.base import get_provider
-from llm_gateway.services.analytics.metrics import get_metrics_tracker
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker, display_analytics_metrics
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.providers.base import get_provider
+from ultimate_mcp_server.services.analytics.metrics import get_metrics_tracker
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker, display_analytics_metrics
 
 # --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 # ----------------------
 

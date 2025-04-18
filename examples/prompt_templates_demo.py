@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Prompt templates and repository demonstration for LLM Gateway."""
+"""Prompt templates and repository demonstration for Ultimate MCP Server."""
 import asyncio
 import sys
 import time
@@ -15,14 +15,14 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
-from llm_gateway.constants import Provider
-from llm_gateway.core.server import Gateway
-from llm_gateway.services.prompts import PromptTemplate, get_prompt_repository
-from llm_gateway.utils import get_logger
-from llm_gateway.utils.display import CostTracker, display_text_content_result
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.services.prompts import PromptTemplate, get_prompt_repository
+from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.display import CostTracker, display_text_content_result
 
 # --- Add Rich Imports ---
-from llm_gateway.utils.logging.console import console
+from ultimate_mcp_server.utils.logging.console import console
 
 # ----------------------
 
@@ -251,7 +251,7 @@ TRANSLATION:
         template_id="translation_prompt",
         description="A template for translation tasks",
         metadata={
-            "author": "LLM Gateway",
+            "author": "Ultimate MCP Server",
             "version": "1.0",
             "supported_languages": ["English", "Spanish", "French", "German", "Japanese"]
         }

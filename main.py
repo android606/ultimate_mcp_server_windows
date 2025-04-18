@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Standalone script for running LLM Gateway tasks."""
+"""Standalone script for running Ultimate MCP Server tasks."""
 import argparse
 import asyncio
 import os
 import sys
 from typing import List, Optional
 
-from llm_gateway import __version__
-from llm_gateway.cli.commands import (
+from ultimate import __version__
+from ultimate_mcp_server.cli.commands import (
     benchmark_providers,
     check_cache,
     generate_completion,
@@ -15,14 +15,14 @@ from llm_gateway.cli.commands import (
     run_server,
     test_provider,
 )
-from llm_gateway.utils import get_logger
+from ultimate_mcp_server.utils import get_logger
 
 # Import tool registration functions/modules
 # Import Marqo health check
 
 
 # Use consistent namespace
-logger = get_logger("llm_gateway.main")
+logger = get_logger("ultimate.main")
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -32,15 +32,15 @@ def create_parser() -> argparse.ArgumentParser:
         ArgumentParser instance
     """
     parser = argparse.ArgumentParser(
-        prog="llm-gateway",
-        description="LLM Gateway - Multi-provider LLM management server",
-        epilog="For more information, visit: https://github.com/llm-gateway/llm-gateway"
+        prog="ultimate-mcp-server",
+        description="Ultimate MCP Server - Multi-provider LLM management server",
+        epilog="For more information, visit: https://github.com/ultimate-mcp-server/ultimate-mcp-server"
     )
     
     parser.add_argument(
         "--version", "-v",
         action="version",
-        version=f"LLM Gateway {__version__}"
+        version=f"Ultimate MCP Server {__version__}"
     )
     
     parser.add_argument(
@@ -53,7 +53,7 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
     
     # Run server command
-    server_parser = subparsers.add_parser("run", help="Run the LLM Gateway server")
+    server_parser = subparsers.add_parser("run", help="Run the Ultimate MCP Server server")
     server_parser.add_argument(
         "--host",
         type=str,
