@@ -126,11 +126,16 @@ except ImportError:
 # Import tools and helpers from ultimate
 from ultimate_mcp_server.constants import Provider, TaskType
 from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
-from ultimate_mcp_server.tools.base import with_cache, with_error_handling, with_retry, with_tool_metrics
+from ultimate_mcp_server.tools.base import (
+    with_cache,
+    with_error_handling,
+    with_retry,
+    with_tool_metrics,
+)
 from ultimate_mcp_server.tools.completion import generate_completion
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.ocr")
+logger = get_logger("ultimate_mcp_server.tools.ocr")
 
 # Cache for storing preprocessed images and extracted text
 OCR_CACHE = {}

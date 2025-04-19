@@ -40,6 +40,7 @@ from .browser_automation import (
 
 # Import base decorators/classes that might be used by other tool modules
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
+from .docstring_refiner import refine_tool_documentation
 from .document import (
     chunk_document,
     extract_entities,
@@ -47,7 +48,6 @@ from .document import (
     process_document_batch,
     summarize_document,
 )
-from .docstring_refiner import refine_tool_documentation
 from .entity_relation_graph import extract_entity_graph
 
 # Import new standalone functions from extraction.py
@@ -266,7 +266,7 @@ __all__ = [
     "multi_engine_search_summary",
 ]
 
-logger = get_logger("ultimate.tools")
+logger = get_logger("ultimate_mcp_server.tools")
 
 
 # --- Tool Registration --- 
@@ -450,7 +450,7 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
             logger.info("Registered API Meta-Tool functions", emoji_key="⚙️")
             standalone_count += 1
         except ImportError:
-            logger.warning("Meta API tools not found (ultimate.tools.meta_api_tool)")
+            logger.warning("Meta API tools not found (ultimate_mcp_server.tools.meta_api_tool)")
         except Exception as e:
             logger.error(f"Failed to register Meta API tools: {e}", exc_info=True)
     
@@ -479,7 +479,7 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
                         cfg.tool_registration.excluded_tools = []
                     cfg.tool_registration.excluded_tools.append("register_excel_spreadsheet_tools")
         except ImportError:
-            logger.warning("Excel spreadsheet tools not found (ultimate.tools.excel_spreadsheet_automation)")
+            logger.warning("Excel spreadsheet tools not found (ultimate_mcp_server.tools.excel_spreadsheet_automation)")
         except Exception as e:
             logger.error(f"Failed to register Excel spreadsheet tools: {e}", exc_info=True)
     

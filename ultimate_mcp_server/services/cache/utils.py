@@ -12,7 +12,7 @@ from ultimate_mcp_server.services.cache import get_cache_service
 from ultimate_mcp_server.utils import get_logger
 
 # Initialize logger
-logger = get_logger("ultimate.services.cache.utils")
+logger = get_logger("ultimate_mcp_server.services.cache.utils")
 
 async def run_completion_with_cache(
     prompt: str,

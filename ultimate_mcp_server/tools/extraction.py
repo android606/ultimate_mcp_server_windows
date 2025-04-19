@@ -22,7 +22,7 @@ from ultimate_mcp_server.tools.base import BaseTool, with_error_handling, with_t
 from ultimate_mcp_server.tools.completion import generate_completion
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.extraction")
+logger = get_logger("ultimate_mcp_server.tools.extraction")
 
 def _extract_and_parse_json(text: str) -> Tuple[Any, bool, Optional[str]]:
     """

@@ -28,8 +28,8 @@ DEFAULT_CONFIG_PATHS = [
     "./gateway_config.yaml",
     "./gateway_config.yml",
     "./gateway_config.json",
-    "~/.config/ultimate/config.yaml",
-    "~/.ultimate.yaml",
+    "~/.config/ultimate_mcp_server/config.yaml",
+    "~/.ultimate_mcp_server.yaml",
 ]
 
 # Environment variable prefix (still potentially useful for non-secret env vars)
@@ -39,7 +39,7 @@ ENV_PREFIX = "GATEWAY_"
 _config = None
 
 # Basic logger for config loading issues before full logging is set up
-config_logger = logging.getLogger("ultimate.config")
+config_logger = logging.getLogger("ultimate_mcp_server.config")
 handler = logging.StreamHandler(sys.stderr)
 if not config_logger.hasHandlers():
     config_logger.addHandler(handler)
@@ -47,7 +47,28 @@ if not config_logger.hasHandlers():
 
 
 class ServerConfig(BaseModel):
-    """Server configuration settings."""
+    """
+    HTTP server configuration settings for the Ultimate MCP Server.
+    
+    This configuration class defines the core server parameters including network binding,
+    performance settings, debugging options, and server identity information. It controls
+    how the Ultimate MCP Server presents itself on the network and manages HTTP connections,
+    especially when running in SSE (Server-Sent Events) mode.
+    
+    Settings defined here affect:
+    - Where and how the server listens for connections (host, port)
+    - How many concurrent workers are spawned to handle requests
+    - Cross-origin resource sharing (CORS) for web clients
+    - Logging verbosity level
+    - Debug capabilities for development
+    
+    Most of these settings can be overridden at startup using environment variables
+    or command-line arguments when launching the server.
+    
+    All values have sensible defaults suitable for local development. For production
+    deployments, it's recommended to adjust host, port, workers, and CORS settings
+    based on your specific requirements.
+    """
     name: str = Field("Ultimate MCP Server", description="Name of the server")
     host: str = Field("127.0.0.1", description="Host to bind the server to")
     port: int = Field(8013, description="Port to bind the server to") # Default port changed
@@ -60,7 +81,38 @@ class ServerConfig(BaseModel):
     @field_validator('log_level')
     @classmethod
     def validate_log_level(cls, v):
-        """Validate log level."""
+        """
+        Validate and normalize the log level configuration value.
+        
+        This validator ensures that the log_level field contains a valid logging level string.
+        It performs two key functions:
+        
+        1. Validation: Checks that the provided value is one of the allowed logging levels
+           (debug, info, warning, error, critical). If the value is invalid, it raises a
+           ValidationError with a clear message listing the allowed values.
+        
+        2. Normalization: Converts the input to lowercase to ensure consistent handling
+           regardless of how the value was specified in configuration sources. This allows
+           users to specify the level in any case (e.g., "INFO", "info", "Info") and have
+           it properly normalized.
+        
+        Args:
+            v: The raw log_level value from the configuration source (file, env var, etc.)
+               
+        Returns:
+            str: The validated and normalized (lowercase) log level string
+            
+        Raises:
+            ValueError: If the provided value is not one of the allowed logging levels
+            
+        Example:
+            >>> ServerConfig.validate_log_level("INFO")
+            'info'
+            >>> ServerConfig.validate_log_level("warning")
+            'warning'
+            >>> ServerConfig.validate_log_level("invalid")
+            ValueError: Log level must be one of ['debug', 'info', 'warning', 'error', 'critical']
+        """
         allowed = ['debug', 'info', 'warning', 'error', 'critical']
         level_lower = v.lower()
         if level_lower not in allowed:
@@ -68,7 +120,30 @@ class ServerConfig(BaseModel):
         return level_lower
 
 class CacheConfig(BaseModel):
-    """Cache configuration settings."""
+    """
+    Caching system configuration for the Ultimate MCP Server.
+    
+    This configuration class defines parameters for the server's caching infrastructure,
+    which is used to store and retrieve frequently accessed data like LLM completions.
+    Effective caching significantly reduces API costs, improves response times, and
+    decreases load on provider APIs.
+    
+    The caching system supports:
+    - In-memory caching with configurable entry limits
+    - Time-based expiration of cached entries
+    - Optional persistence to disk
+    - Fuzzy matching for similar but non-identical requests
+    
+    When enabled, the caching layer sits between tool calls and provider APIs,
+    intercepting duplicate requests and returning cached results when appropriate.
+    This is especially valuable for expensive operations like complex LLM completions
+    that may be called multiple times with identical parameters.
+    
+    Proper cache configuration can dramatically reduce operating costs in production
+    environments while improving response times for end users. The default settings
+    provide a reasonable balance for most use cases, but may need adjustment based
+    on traffic patterns and memory constraints.
+    """
     enabled: bool = Field(True, description="Whether caching is enabled")
     ttl: int = Field(3600, description="Time-to-live for cache entries in seconds")
     max_entries: int = Field(10000, description="Maximum number of entries to store in cache")
@@ -76,7 +151,34 @@ class CacheConfig(BaseModel):
     fuzzy_match: bool = Field(True, description="Whether to use fuzzy matching for cache keys")
 
 class ProviderConfig(BaseModel):
-    """Configuration for a specific provider."""
+    """
+    Configuration for an individual LLM provider connection.
+    
+    This class encapsulates all settings needed to establish and maintain a connection
+    to a specific LLM provider service, such as OpenAI, Anthropic, or Gemini. Each provider
+    instance in the system has its own configuration derived from this class, allowing for
+    precise control over connection parameters, model selection, and authentication.
+    
+    The configuration supports:
+    - Authentication via API keys (typically loaded from environment variables)
+    - Custom API endpoints via base_url overrides
+    - Organization-specific routing (for multi-tenant API services)
+    - Default model selection for when no model is explicitly specified
+    - Request timeout and token limit management
+    - Provider-specific parameters via the additional_params dictionary
+    
+    Most provider settings can be loaded from either configuration files or environment
+    variables, with environment variables taking precedence. This allows for secure
+    management of sensitive credentials outside of versioned configuration files.
+    
+    For security best practices:
+    - API keys should be specified via environment variables, not in configuration files
+    - Custom API endpoints with private deployments should use HTTPS
+    - Timeout values should be set appropriately to prevent hung connections
+    
+    Each provider has its own instance of this configuration class, allowing for
+    independent configuration of multiple providers within the same server.
+    """
     enabled: bool = Field(True, description="Whether the provider is enabled")
     api_key: Optional[str] = Field(None, description="API key for the provider (loaded via decouple)") # Updated description
     base_url: Optional[str] = Field(None, description="Base URL for API requests (loaded via decouple/file)") # Updated description
@@ -87,7 +189,30 @@ class ProviderConfig(BaseModel):
     additional_params: Dict[str, Any] = Field(default_factory=dict, description="Additional provider-specific parameters (loaded via decouple/file)") # Updated description
 
 class ProvidersConfig(BaseModel):
-    """Configuration for all LLM providers."""
+    """
+    Centralized configuration for all supported LLM providers in the Ultimate MCP Server.
+    
+    This class serves as a container for individual provider configurations, organizing
+    all supported provider settings in a structured hierarchy. It acts as the central 
+    registry of provider configurations, making it easy to:
+    
+    1. Access configuration for specific providers by name as attributes
+    2. Iterate over all provider configurations for initialization and status checks
+    3. Update provider settings through a consistent interface
+    4. Add new providers to the system in a structured way
+    
+    Each provider has its own ProviderConfig instance as an attribute, named after the
+    provider (e.g., openai, anthropic, gemini). This allows for dot-notation access
+    to specific provider settings, providing a clean and intuitive API for configuration.
+    
+    The available providers are pre-defined based on the supported integrations in the
+    system. Each provider's configuration follows the same structure but may have
+    different default values or additional parameters based on provider-specific needs.
+    
+    When the configuration system loads settings from files or environment variables,
+    it updates these provider configurations directly, making them the definitive source
+    of provider settings throughout the application.
+    """
     openai: ProviderConfig = Field(default_factory=ProviderConfig, description="OpenAI provider configuration")
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig, description="Anthropic provider configuration")
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig, description="DeepSeek provider configuration")
@@ -126,7 +251,50 @@ class ToolRegistrationConfig(BaseModel):
     excluded_tools: List[str] = Field(default_factory=list, description="List of tool names to exclude (takes precedence over included_tools)")
 
 class GatewayConfig(BaseModel): # Inherit from BaseModel now
-    """Main Ultimate MCP Server configuration model."""
+    """
+    Root configuration model for the entire Ultimate MCP Server system.
+    
+    This class serves as the top-level configuration container, bringing together
+    all component-specific configurations into a unified structure. It represents the
+    complete configuration state of the Ultimate MCP Server and is the primary interface
+    for accessing configuration settings throughout the application.
+    
+    The configuration is hierarchically organized into logical sections:
+    - server: Network, HTTP, and core server settings
+    - providers: LLM provider connections and credentials
+    - cache: Response caching behavior and persistence
+    - filesystem: Safe filesystem access rules and protection
+    - agent_memory: Settings for the agent memory and cognitive systems
+    - tool_registration: Controls for which tools are enabled
+    
+    Additionally, it includes several top-level settings for paths and directories
+    that are used across multiple components of the system.
+    
+    This configuration model is loaded through the config module's functions, which
+    handle merging settings from:
+    1. Default values defined in the model
+    2. Configuration files (YAML/JSON)
+    3. Environment variables
+    4. Command-line arguments (where applicable)
+    
+    Throughout the application, this configuration is accessed through the get_config()
+    function, which returns a singleton instance of this class with all settings
+    properly loaded and validated.
+    
+    Usage example:
+        ```python
+        from ultimate_mcp_server.config import get_config
+        
+        config = get_config()
+        
+        # Access configuration sections
+        server_port = config.server.port
+        openai_api_key = config.providers.openai.api_key
+        
+        # Access top-level settings
+        logs_dir = config.log_directory
+        ```
+    """
     server: ServerConfig = Field(default_factory=ServerConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
@@ -139,13 +307,56 @@ class GatewayConfig(BaseModel): # Inherit from BaseModel now
     prompt_templates_directory: str = Field("./prompt_templates", description="Directory containing prompt templates") # Added prompt dir
 
 def expand_path(path: str) -> str:
-    """Expand user and variables in path."""
+    """
+    Expand a path string to resolve user home directories and environment variables.
+    
+    This utility function takes a potentially relative path string that may contain
+    user home directory references (e.g., "~/logs") or environment variables
+    (e.g., "$HOME/data") and expands it to an absolute path.
+    
+    The expansion process:
+    1. Expands user home directory (e.g., "~" → "/home/username")
+    2. Expands environment variables (e.g., "$VAR" → "value")
+    3. Converts to an absolute path (resolving relative paths)
+    
+    Args:
+        path: A path string that may contain "~" or environment variables
+        
+    Returns:
+        The expanded absolute path as a string
+        
+    Example:
+        >>> expand_path("~/logs")
+        '/home/username/logs'
+        >>> expand_path("$DATA_DIR/cache")
+        '/var/data/cache'  # Assuming $DATA_DIR is set to "/var/data"
+    """
     expanded = os.path.expanduser(path)
     expanded = os.path.expandvars(expanded)
     return os.path.abspath(expanded)
 
 def find_config_file() -> Optional[str]:
-    """Find the first available configuration file from default paths."""
+    """
+    Find the first available configuration file from the list of default paths.
+    
+    This function searches for configuration files in standard locations, following
+    a predefined priority order. It checks each potential location sequentially and
+    returns the path of the first valid configuration file found.
+    
+    The search locations (defined in DEFAULT_CONFIG_PATHS) typically include:
+    - Current directory (e.g., "./gateway_config.yaml")
+    - User config directory (e.g., "~/.config/ultimate_mcp_server/config.yaml")
+    - User home directory (e.g., "~/.ultimate_mcp_server.yaml")
+    
+    Each path is expanded using expand_path() before checking if it exists.
+    
+    Returns:
+        The path to the first found configuration file, or None if no files exist
+        
+    Note:
+        This function only verifies that the files exist, not that they have
+        valid content or format. Content validation happens during actual loading.
+    """
     for path in DEFAULT_CONFIG_PATHS:
         try:
             expanded_path = expand_path(path)
@@ -158,7 +369,36 @@ def find_config_file() -> Optional[str]:
     return None
 
 def load_config_from_file(path: str) -> Dict[str, Any]:
-    """Load configuration from a file (YAML or JSON)."""
+    """
+    Load configuration data from a YAML or JSON file.
+    
+    This function reads and parses a configuration file into a Python dictionary.
+    It automatically detects the file format based on the file extension:
+    - .yaml/.yml: Parsed as YAML using PyYAML
+    - .json: Parsed as JSON using Python's built-in json module
+    
+    The function performs several steps:
+    1. Expands the path to resolve any home directory (~/...) or environment variables
+    2. Verifies that the file exists
+    3. Determines the appropriate parser based on file extension
+    4. Reads and parses the file content
+    5. Returns the parsed configuration as a dictionary
+    
+    Args:
+        path: Path to the configuration file (can be relative or use ~/... or $VAR/...)
+        
+    Returns:
+        Dictionary containing the parsed configuration data
+        
+    Raises:
+        FileNotFoundError: If the configuration file doesn't exist
+        ValueError: If the file has an unsupported format or contains invalid syntax
+        RuntimeError: If there are other errors reading the file
+        
+    Note:
+        If the file is empty or contains "null" in YAML, an empty dictionary is
+        returned rather than None, ensuring consistent return type.
+    """
     path = expand_path(path)
     if not os.path.isfile(path):
         raise FileNotFoundError(f"Configuration file not found: {path}")
@@ -181,16 +421,50 @@ def load_config(
     config_file_path: Optional[str] = None,
     load_default_files: bool = True,
 ) -> GatewayConfig:
-    """Load configuration from defaults, file, and inject keys/settings via decouple.
-
-    Priority: .env/Env Vars (via decouple) > Config File > Pydantic Defaults
-
+    """
+    Load, merge, and validate configuration from multiple sources with priority handling.
+    
+    This function implements the complete configuration loading process, combining settings
+    from multiple sources according to their priority. It also handles path expansion,
+    directory creation, and validation of the resulting configuration.
+    
+    Configuration Sources (in order of decreasing priority):
+    1. Environment variables (via decouple) - Use GATEWAY_* prefix or provider-specific vars
+    2. .env file variables (via decouple) - Same naming as environment variables
+    3. YAML/JSON configuration file - If explicitly specified or found in default locations
+    4. Default values defined in Pydantic models - Fallback when no other source specifies a value
+    
+    Special handling:
+    - Provider API keys: Loaded from provider-specific environment variables
+      (e.g., OPENAI_API_KEY, ANTHROPIC_API_KEY)
+    - Directory paths: Automatically expanded and created if they don't exist
+    - Validation: All configuration values are validated against their Pydantic models
+    
     Args:
-        config_file_path: Explicit path to a config file.
-        load_default_files: Whether to search for default config files.
-
+        config_file_path: Optional explicit path to a configuration file to load.
+                         If provided, this file must exist and be valid YAML/JSON.
+        load_default_files: Whether to search for configuration files in default locations
+                           if config_file_path is not provided. Default: True
+    
     Returns:
-        Validated GatewayConfig object with settings applied.
+        GatewayConfig: A fully loaded and validated configuration object
+        
+    Raises:
+        FileNotFoundError: If an explicitly specified config file doesn't exist
+        ValueError: If the config file has invalid format or content
+        RuntimeError: If other errors occur during loading
+        
+    Example:
+        ```python
+        # Load with defaults and environment variables
+        config = load_config()
+        
+        # Load from a specific config file
+        config = load_config(config_file_path="path/to/custom_config.yaml")
+        
+        # Load only from environment variables, ignoring config files
+        config = load_config(load_default_files=False)
+        ```
     """
     global _config
     file_config_data = {}
@@ -401,16 +675,49 @@ def load_config(
     return _config
 
 def get_config() -> GatewayConfig:
-    """Get the globally loaded configuration using decouple.
-
-    Loads the configuration if it hasn't been loaded yet. Reloads if
-    GATEWAY_FORCE_CONFIG_RELOAD=true is set in the environment/.env.
-
+    """
+    Retrieve the globally cached configuration instance or load a new one if needed.
+    
+    This function serves as the primary entry point for accessing the server's configuration
+    throughout the application. It implements a singleton pattern with on-demand loading and
+    optional forced reloading to ensure consistent configuration access with minimal overhead.
+    
+    Key behaviors:
+    - CACHING: Returns a previously loaded configuration instance when available
+    - LAZY LOADING: Loads configuration on first access rather than at import time
+    - FORCE RELOAD: Supports reloading via the GATEWAY_FORCE_CONFIG_RELOAD environment variable
+    - COMPLETE: Includes settings from environment variables, config files, and defaults
+    - VALIDATED: Uses Pydantic models to ensure all configuration values are valid
+    
+    The configuration loading follows this priority order:
+    1. Environment variables (highest priority)
+    2. .env file values
+    3. Configuration file settings
+    4. Pydantic default values (lowest priority)
+    
     Returns:
-        The GatewayConfig instance.
-
+        GatewayConfig: The validated configuration instance with all settings applied.
+        
     Raises:
-        RuntimeError: If configuration cannot be loaded.
+        RuntimeError: If configuration loading fails for any reason (invalid settings,
+                     missing required values, inaccessible files, etc.)
+                     
+    Example usage:
+        ```python
+        from ultimate_mcp_server.config import get_config
+        
+        # Access server configuration
+        config = get_config()
+        server_port = config.server.port
+        
+        # Access provider API keys
+        openai_api_key = config.providers.openai.api_key
+        
+        # Check if a feature is enabled
+        if config.cache.enabled:
+            # Use caching functionality
+            pass
+        ```
     """
     global _config
     # Use decouple directly here for the reload flag check
@@ -430,6 +737,38 @@ def get_config() -> GatewayConfig:
 
 
 def get_config_as_dict() -> Dict[str, Any]:
-    """Get the current configuration as a dictionary."""
+    """
+    Convert the current configuration to a plain Python dictionary.
+    
+    This function retrieves the current configuration using get_config() and 
+    converts the Pydantic model instance to a standard Python dictionary. This is
+    useful for situations where you need a serializable representation of the
+    configuration, such as:
+    
+    - Sending configuration over an API
+    - Logging configuration values
+    - Debugging configuration state
+    - Comparing configurations
+    
+    The conversion preserves the full nested structure of the configuration,
+    with all Pydantic models converted to their dictionary representations.
+    
+    Returns:
+        A nested dictionary containing all configuration values
+        
+    Raises:
+        Any exceptions that might be raised by get_config()
+        
+    Example:
+        ```python
+        # Get dictionary representation of config for logging
+        config_dict = get_config_as_dict()
+        logger.debug(f"Current server configuration: {config_dict['server']}")
+        
+        # Use with JSON serialization
+        import json
+        config_json = json.dumps(get_config_as_dict())
+        ```
+    """
     config_obj = get_config()
     return config_obj.model_dump()

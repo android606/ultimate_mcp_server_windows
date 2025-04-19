@@ -11,7 +11,88 @@ logger = get_logger(__name__)
 
 
 class KnowledgeBaseRetriever:
-    """Retriever for knowledge base collections."""
+    """
+    Advanced retrieval engine for knowledge base collections in RAG applications.
+    
+    The KnowledgeBaseRetriever provides sophisticated search capabilities for finding
+    the most relevant documents within knowledge bases. It offers multiple retrieval
+    strategies optimized for different search scenarios, from pure semantic vector
+    search to hybrid approaches combining vector and keyword matching.
+    
+    Key Features:
+    - Multiple retrieval methods (vector, hybrid, keyword)
+    - Metadata filtering for targeted searches
+    - Content-based filtering for keyword matching
+    - Configurable similarity thresholds and relevance scoring
+    - Feedback mechanisms for continuous retrieval improvement
+    - Performance monitoring and diagnostics
+    - Advanced parameter tuning for specialized search needs
+    
+    Retrieval Methods:
+    1. Vector Search: Uses embeddings for semantic similarity matching
+       - Best for finding conceptually related content
+       - Handles paraphrasing and semantic equivalence
+       - Computationally efficient for large collections
+    
+    2. Hybrid Search: Combines vector and keyword matching with weighted scoring
+       - Balances semantic understanding with exact term matching
+       - Addresses vocabulary mismatch problems
+       - Provides more robust retrieval across diverse query types
+    
+    3. Keyword Filtering: Limits results to those containing specific text
+       - Used for explicit term presence requirements
+       - Can be combined with other search methods
+    
+    Architecture:
+    The retriever operates as a higher-level service above the vector database,
+    working in concert with:
+    - Embedding services for query vectorization
+    - Vector database services for efficient similarity search
+    - Feedback services for result quality improvement
+    - Metadata filters for context-aware retrieval
+    
+    Usage in RAG Applications:
+    This retriever is a critical component in RAG pipelines, responsible for
+    the quality and relevance of context provided to LLMs. Tuning retrieval
+    parameters significantly impacts the quality of generated responses.
+    
+    Example Usage:
+    ```python
+    # Get retriever instance
+    retriever = get_knowledge_base_retriever()
+    
+    # Simple vector search
+    results = await retriever.retrieve(
+        knowledge_base_name="company_policies",
+        query="What is our remote work policy?",
+        top_k=3,
+        min_score=0.7
+    )
+    
+    # Hybrid search with metadata filtering
+    dept_results = await retriever.retrieve_hybrid(
+        knowledge_base_name="company_policies",
+        query="security requirements for customer data",
+        top_k=5,
+        vector_weight=0.6,
+        keyword_weight=0.4,
+        metadata_filter={"department": "security", "status": "active"}
+    )
+    
+    # Process and use the retrieved documents
+    for item in results["results"]:
+        print(f"Document (score: {item['score']:.2f}): {item['document'][:100]}...")
+        print(f"Source: {item['metadata'].get('source', 'unknown')}")
+    
+    # Record which documents were actually useful
+    await retriever.record_feedback(
+        knowledge_base_name="company_policies",
+        query="What is our remote work policy?",
+        retrieved_documents=results["results"],
+        used_document_ids=["doc123", "doc456"]
+    )
+    ```
+    """
     
     def __init__(self, vector_service: VectorDatabaseService):
         """Initialize the knowledge base retriever.

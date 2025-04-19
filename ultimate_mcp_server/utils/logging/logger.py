@@ -37,7 +37,36 @@ from .progress import GatewayProgress
 # Logging configuration is handled externally via dictConfig
 
 class Logger:
-    """Advanced logger for Gateway with rich formatting and progress tracking."""
+    """
+    Advanced logging system with rich formatting, progress tracking, and structured output.
+    
+    The Logger class extends Python's standard logging system with enhanced features:
+    
+    Key Features:
+    - Rich console output with color, emoji, and formatted panels
+    - Component-based logging for better organization of log messages
+    - Operation tracking with timing and progress visualization
+    - Multi-level logging (debug, info, success, warning, error, critical)
+    - Context data capture for more detailed debugging
+    - Integrated progress bars and spinners for long-running operations
+    - Special formatters for code blocks, results, errors, and warnings
+    
+    Integration with Python's logging:
+    - Builds on top of the standard logging module
+    - Compatible with external logging configuration (e.g., dictConfig)
+    - Properly propagates logs to ensure they reach root handlers
+    - Adds custom "extra" fields to standard LogRecord objects
+    
+    Usage Patterns:
+    - Create loggers with get_logger() for consistent naming
+    - Use component and operation parameters to organize related logs
+    - Add context data as structured information with message
+    - Use special display methods (code, warning_panel, etc.) for rich output
+    - Track long operations with time_operation and progress tracking
+    
+    This logger is designed to make complex server operations more transparent,
+    providing clear information for both developers and users of the Ultimate MCP Server.
+    """
     
     def __init__(
         self,
@@ -581,18 +610,69 @@ class Logger:
         end_message: Optional[str] = "Finished {operation} in {duration:.2f}s",
         **kwargs
     ):
-        """Context manager to time an operation and log start/end messages.
+        """
+        Context manager that times an operation and logs its start and completion.
+        
+        This method provides a clean, standardized way to track and log the duration
+        of operations, ensuring consistent timing measurement and log formatting.
+        It automatically logs the start of an operation, executes the operation 
+        within the context, measures the exact duration, and logs the completion 
+        with timing information.
+        
+        The timing uses Python's monotonic clock for accurate duration measurement
+        even if system time changes during execution. Both start and end messages
+        support templating with format string syntax, allowing customization while
+        maintaining consistency.
+        
+        Key features:
+        - Precise operation timing with monotonic clock
+        - Automatic logging at start and end of operations
+        - Customizable message templates
+        - Consistent log format and metadata
+        - Exception-safe timing (duration is logged even if operation fails)
+        - Hierarchical operation tracking when combined with component parameter
+        
+        Usage Examples:
+        ```python
+        # Basic usage
+        with logger.time_operation("data_processing"):
+            process_large_dataset()
+            
+        # Custom messages and different log level
+        with logger.time_operation(
+            operation="database_backup",
+            component="storage",
+            level="debug",
+            start_message="Starting backup of {operation}...",
+            end_message="Backup of {operation} completed in {duration:.3f}s"
+        ):
+            backup_database()
+            
+        # Timing nested operations with different components
+        with logger.time_operation("parent_task", component="scheduler"):
+            do_first_part()
+            with logger.time_operation("child_task", component="worker"):
+                do_second_part()
+            finish_task()
+        ```
         
         Args:
-            operation: Name of the operation
-            component: Gateway component
-            level: Log level for messages (default: info)
-            start_message: Message format string for start log (can be None)
-            end_message: Message format string for end log (can be None)
-            **kwargs: Extra fields for logging
+            operation: Name of the operation being timed
+            component: Component performing the operation (uses logger default if None)
+            level: Log level for start/end messages (default: "info")
+            start_message: Template string for operation start message 
+                          (None to skip start logging)
+            end_message: Template string for operation end message
+                        (None to skip end logging)
+            **kwargs: Additional fields to include in log entries
         
         Yields:
             None
+        
+        Note:
+            This context manager is exception-safe: the end message with duration
+            is logged even if an exception occurs within the context. Exceptions
+            are re-raised normally after logging.
         """
         start_time = time.monotonic()
         if start_message:
@@ -638,17 +718,75 @@ class Logger:
         # Removed component - handled by logger instance
         autostart: bool = True,
     ):
-        """Context manager for a single task with progress tracking.
+        """
+        Context manager for tracking and displaying progress of a task.
+        
+        This method creates a rich progress display for long-running tasks, providing
+        visual feedback and real-time status updates. It integrates with rich's
+        progress tracking to show animated spinners, completion percentage, and
+        elapsed/remaining time.
+        
+        The task progress tracker is particularly useful for operations like:
+        - File processing (uploads, downloads, parsing)
+        - Batch database operations
+        - Multi-step data processing pipelines
+        - API calls with multiple sequential requests
+        - Any operation where progress feedback improves user experience
+        
+        The progress display automatically adapts to terminal width and supports
+        nested tasks with parent-child relationships, allowing for complex operation
+        visualization. Progress can be updated manually within the context.
+        
+        Key Features:
+        - Real-time progress visualization with percentage completion
+        - Automatic elapsed and remaining time estimation
+        - Support for nested tasks and task hierarchies
+        - Customizable description and task identification
+        - Thread-safe progress updates
+        - Automatic completion on context exit
+        
+        Usage Examples:
+        ```python
+        # Basic usage - process 50 items
+        with logger.task("Processing files", total=50) as task:
+            for i, file in enumerate(files):
+                process_file(file)
+                task.update(advance=1)  # Increment progress by 1
+        
+        # Nested tasks with parent-child relationship
+        with logger.task("Main import", total=100) as main_task:
+            # Process users (contributes 30% to main task)
+            with logger.task("Importing users", total=len(users), parent=main_task.id) as subtask:
+                for user in users:
+                    import_user(user)
+                    subtask.update(advance=1)
+                main_task.update(advance=30)  # Users complete = 30% of main task
+                
+            # Process products (contributes 70% to main task)
+            with logger.task("Importing products", total=len(products), parent=main_task.id) as subtask:
+                for product in products:
+                    import_product(product)
+                    subtask.update(advance=1)
+                main_task.update(advance=70)  # Products complete = 70% of main task
+        ```
         
         Args:
-            description: Description of the task
-            name: Optional task name (defaults to description)
-            total: Total steps/work units for the task
-            parent: Optional parent task name
-            autostart: Start the progress display immediately (default: True)
+            description: Human-readable description of the task
+            name: Unique identifier for the task (defaults to description if None)
+            total: Total number of steps/work units for completion (100%)
+            parent: ID of parent task (for nested task hierarchies)
+            autostart: Automatically start displaying progress (default: True)
         
         Yields:
-            GatewayProgress instance for updating the task
+            GatewayProgress instance that can be used to update progress
+            
+        Notes:
+            - The yielded progress object has methods like `update(advance=N)` to 
+              increment progress and `update(total=N)` to adjust the total units.
+            - Tasks are automatically completed when the context exits, even if
+              an exception occurs.
+            - For tasks without a clear number of steps, you can use update with
+              a percentage value: `task.update(completed=50)` for 50% complete.
         """
         with self.progress.task(description, name, total, parent, autostart) as task_context:
              yield task_context
@@ -662,17 +800,71 @@ class Logger:
         level: str = "error",
         message: str = "An error occurred during {operation}",
     ):
-        """Context manager to catch exceptions and log them.
+        """
+        Context manager that catches, logs, and optionally re-raises exceptions.
+        
+        This utility provides structured exception handling with automatic logging,
+        allowing code to maintain a consistent error handling pattern while ensuring
+        all exceptions are properly logged with relevant context information. It's
+        particularly useful for operations where you want to ensure errors are always
+        recorded, even if they'll be handled or suppressed at a higher level.
+        
+        The context manager wraps a block of code and:
+        1. Executes the code normally
+        2. Catches any exceptions that occur
+        3. Logs the exception with configurable component, operation, and message
+        4. Optionally re-raises the exception (controlled by the reraise parameter)
+        
+        This prevents "silent failures" and ensures consistent logging of all errors
+        while preserving the original exception's traceback for debugging purposes.
+        
+        Key features:
+        - Standardized error logging across the application
+        - Configurable log level for different error severities
+        - Component and operation tagging for error categorization
+        - Template-based error messages with operation name substitution
+        - Control over exception propagation behavior
+        
+        Usage Examples:
+        ```python
+        # Basic usage - catch, log, and re-raise
+        with logger.catch_and_log(component="auth", operation="login"):
+            user = authenticate_user(username, password)
+        
+        # Suppress exception after logging
+        with logger.catch_and_log(
+            component="email", 
+            operation="send_notification",
+            reraise=False,
+            level="warning",
+            message="Failed to send notification email for {operation}"
+        ):
+            send_email(user.email, "Welcome!", template="welcome")
+            
+        # Use as a safety net around cleanup code
+        try:
+            # Main operation
+            process_file(file_path)
+        finally:
+            # Always log errors in cleanup but don't let them mask the main exception
+            with logger.catch_and_log(reraise=False, level="warning"):
+                os.remove(temp_file)
+        ```
         
         Args:
-            component: Component name
-            operation: Operation name
-            reraise: Whether to re-raise the exception after logging (default: True)
-            level: Log level for the error (default: error)
-            message: Message format string for the error log
+            component: Component name for error categorization (uses logger default if None)
+            operation: Operation name for context (substituted in message template)
+            reraise: Whether to re-raise the caught exception (default: True)
+            level: Log level to use for the error message (default: "error")
+            message: Template string for the error message, with {operation} placeholder
         
         Yields:
             None
+            
+        Note:
+            When reraise=False, exceptions are completely suppressed after logging.
+            This can be useful for non-critical operations like cleanup tasks,
+            but should be used carefully to avoid hiding important errors.
         """
         component = component or self.component
         operation = operation or "operation"
@@ -693,15 +885,94 @@ class Logger:
         log_result: bool = False,
         log_exceptions: bool = True,
     ):
-        """Decorator to log function calls.
+        """
+        Decorator that logs function entries, exits, timing, and exceptions.
+        
+        This decorator provides automatic instrumentation for function calls,
+        generating standardized log entries when functions are called and when they 
+        complete. It tracks execution time, captures function arguments and results,
+        and properly handles and logs exceptions.
+        
+        When applied to a function, it will:
+        1. Log when the function is entered, optionally including arguments
+        2. Execute the function normally
+        3. Track the exact execution time using a monotonic clock
+        4. Log function completion with duration, optionally including the return value
+        5. Catch, log, and re-raise any exceptions that occur
+        
+        This is particularly valuable for:
+        - Debugging complex call flows and function interaction
+        - Performance analysis and identifying slow function calls
+        - Audit trails of function execution and parameters
+        - Troubleshooting intermittent issues with full context
+        - Standardizing logging across large codebases
+        
+        Configuration Options:
+        - Logging level can be adjusted based on function importance
+        - Function arguments can be optionally included or excluded (for privacy/size)
+        - Return values can be optionally captured (for debugging/audit)
+        - Exception handling can be customized
+        - Component and operation names provide hierarchical organization
+        
+        Usage Examples:
+        ```python
+        # Basic usage - log entry and exit at debug level
+        @logger.log_call()
+        def process_data(item_id, options=None):
+            # Function implementation...
+            return result
+            
+        # Customized - log as info level, include specific operation name
+        @logger.log_call(
+            component="billing",
+            operation="payment_processing",
+            level="info"
+        )
+        def process_payment(payment_id, amount):
+            # Process payment...
+            return receipt_id
+            
+        # Capture return values but not arguments (e.g., for sensitive data)
+        @logger.log_call(
+            level="debug",
+            log_args=False,
+            log_result=True
+        )
+        def validate_credentials(username, password):
+            # Validate credentials without logging the password
+            return is_valid
+            
+        # Detailed debugging for critical components
+        @logger.log_call(
+            component="auth",
+            operation="token_verification",
+            level="debug",
+            log_args=True,
+            log_result=True,
+            log_exceptions=True
+        )
+        def verify_auth_token(token):
+            # Verify token with full logging
+            return token_data
+        ```
         
         Args:
-            component: Component name
-            operation: Operation name (defaults to function name)
-            level: Log level for entry/exit messages (default: debug)
+            component: Component name for logs (defaults to logger's component)
+            operation: Operation name for logs (defaults to function name)
+            level: Log level for entry/exit messages (default: "debug")
             log_args: Whether to log function arguments (default: True)
-            log_result: Whether to log function result (default: False)
+            log_result: Whether to log function return value (default: False)
             log_exceptions: Whether to log exceptions (default: True)
+            
+        Returns:
+            Decorated function that logs entry, exit, and timing information
+            
+        Notes:
+            - For functions with large or sensitive arguments, set log_args=False
+            - When log_result=True, be cautious with functions returning large data
+              structures as they will be truncated but may still impact performance
+            - This decorator preserves the original function's name, docstring,
+              and signature for compatibility with introspection tools
         """
         
         def decorator(func):
@@ -808,13 +1079,58 @@ class Logger:
 logger = None  
 
 def get_logger(name: str) -> Logger:
-    """Get a logger for a specific component.
+    """
+    Get or create a logger instance for a specific component or module.
+    
+    This function creates a properly named Logger instance following the application's
+    logging hierarchy and naming conventions. It serves as the primary entry point
+    for obtaining loggers throughout the application, ensuring consistent logger
+    configuration and behavior.
+    
+    The function implements a pseudo-singleton pattern for the default logger:
+    - The first call initializes a global default logger
+    - Each subsequent call creates a new named logger instance
+    - The name parameter establishes the logger's identity in the logging hierarchy
+    
+    Logger Naming Conventions:
+    Logger names should follow Python's module path pattern, where dots separate
+    hierarchy levels. The recommended practice is to use:
+    - The module's __name__ variable in most cases
+    - Explicit names for specific subsystems or components
+    
+    Examples:
+    - "ultimate_mcp_server.core.state_store"
+    - "ultimate_mcp_server.services.rag"
+    - "ultimate_mcp_server.tools.local_text"
     
     Args:
-        name: Logger name
-        
+        name: Logger name that identifies the component, module, or subsystem
+              Usually set to the module's __name__ or a specific component identifier
+    
     Returns:
-        Logger instance
+        A configured Logger instance with the specified name
+        
+    Usage Examples:
+    ```python
+    # Standard usage in a module
+    logger = get_logger(__name__)
+    
+    # Component-specific logger
+    auth_logger = get_logger("ultimate_mcp_server.auth")
+    
+    # Usage with structured logging
+    logger = get_logger("my_module")
+    logger.info("User action", 
+                component="auth", 
+                operation="login", 
+                context={"user_id": user.id})
+    ```
+    
+    Note:
+        While each call returns a new Logger instance, they all share the underlying
+        Python logging configuration and output destinations. This allows for
+        centralized control of log levels, formatting, and output handlers through
+        standard logging configuration.
     """
     # Initialize the global logger if needed
     global logger

@@ -82,7 +82,7 @@ from ultimate_mcp_server.tools.filesystem import (
 )
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.excel_automation")
+logger = get_logger("ultimate_mcp_server.tools.excel_automation")
 
 class ExcelSession:
     """Manages a single Excel Application session with enhanced reliability and safety."""

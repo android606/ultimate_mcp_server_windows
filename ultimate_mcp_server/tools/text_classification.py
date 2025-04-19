@@ -8,12 +8,17 @@ from typing import Any, Dict, List, Optional, Union
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import get_provider
 from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
-from ultimate_mcp_server.tools.base import with_cache, with_error_handling, with_retry, with_tool_metrics
+from ultimate_mcp_server.tools.base import (
+    with_cache,
+    with_error_handling,
+    with_retry,
+    with_tool_metrics,
+)
 from ultimate_mcp_server.tools.completion import generate_completion
 from ultimate_mcp_server.utils import get_logger
 from ultimate_mcp_server.utils.text import preprocess_text
 
-logger = get_logger("ultimate.tools.classification")
+logger = get_logger("ultimate_mcp_server.tools.classification")
 
 class ClassificationStrategy(Enum):
     """Strategies for text classification."""
@@ -204,7 +209,7 @@ async def text_classification(
     
     # --- Text Preprocessing ---
     if preprocessing:
-        # Assume preprocess_text exists in ultimate.utils.text
+        # Assume preprocess_text exists in ultimate_mcp_server.utils.text
         original_length = len(text)
         text = preprocess_text(text)
         logger.debug(f"Preprocessed text from {original_length} to {len(text)} characters.")

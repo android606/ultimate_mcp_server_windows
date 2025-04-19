@@ -9,7 +9,7 @@ from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.utils import get_logger
 
 # Use the same naming scheme everywhere: logger at module level
-logger = get_logger("ultimate.providers.openai")
+logger = get_logger("ultimate_mcp_server.providers.openai")
 
 
 class OpenAIProvider(BaseProvider):
@@ -286,10 +286,55 @@ class OpenAIProvider(BaseProvider):
             raise
             
     async def list_models(self) -> List[Dict[str, Any]]:
-        """List available OpenAI models.
+        """
+        List available OpenAI models with their capabilities and metadata.
+        
+        This method queries the OpenAI API to retrieve a comprehensive list of available
+        models accessible to the current API key. It filters the results to focus on
+        GPT models that are relevant to text generation tasks, excluding embeddings,
+        moderation, and other specialized models.
+        
+        For efficiency, the method uses a caching mechanism that stores the model list
+        after the first successful API call. Subsequent calls return the cached results
+        without making additional API requests. This reduces latency and API usage while
+        ensuring the available models information is readily accessible.
+        
+        If the API call fails (due to network issues, invalid credentials, etc.), the
+        method falls back to returning a hardcoded list of common OpenAI models to ensure
+        the application can continue functioning with reasonable defaults.
         
         Returns:
-            List of model information dictionaries
+            A list of dictionaries containing model information with these fields:
+            - id: The model identifier used when making API calls (e.g., "gpt-4o")
+            - provider: Always "openai" for this provider
+            - created: Timestamp of when the model was created (if available from API)
+            - owned_by: Organization that owns the model (e.g., "openai", "system")
+            
+            The fallback model list (used on API errors) includes basic information
+            for gpt-4o, gpt-4.1-mini, and other commonly used models.
+            
+        Example response:
+            ```python
+            [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "created": 1693399330,
+                    "owned_by": "openai"
+                },
+                {
+                    "id": "gpt-4.1-mini",
+                    "provider": "openai", 
+                    "created": 1705006269,
+                    "owned_by": "openai"
+                }
+            ]
+            ```
+            
+        Note:
+            The specific models returned depend on the API key's permissions and
+            the models currently offered by OpenAI. As new models are released
+            or existing ones deprecated, the list will change accordingly.
         """
         if self.models_cache:
             return self.models_cache
@@ -344,10 +389,29 @@ class OpenAIProvider(BaseProvider):
             ]
             
     def get_default_model(self) -> str:
-        """Get the default OpenAI model.
+        """
+        Get the default OpenAI model identifier to use when none is specified.
+        
+        This method determines the appropriate default model for OpenAI completions
+        through a prioritized selection process:
+        
+        1. First, it attempts to load the default_model setting from the Ultimate MCP Server
+           configuration system (from providers.openai.default_model in the config)
+        2. If that's not available or valid, it falls back to a hardcoded default model
+           that represents a reasonable balance of capability, cost, and availability
+        
+        Using the configuration system allows for flexible deployment-specific defaults
+        without code changes, while the hardcoded fallback ensures the system remains
+        functional even with minimal configuration.
         
         Returns:
-            Default model name
+            String identifier of the default OpenAI model to use (e.g., "gpt-4.1-mini").
+            This identifier can be directly used in API calls to the OpenAI API.
+            
+        Note:
+            The current hardcoded default is "gpt-4.1-mini", chosen for its balance of
+            capability and cost. This may change in future versions as new models are
+            released or existing ones are deprecated.
         """
         from ultimate_mcp_server.config import get_config
         
@@ -367,8 +431,26 @@ class OpenAIProvider(BaseProvider):
     async def check_api_key(self) -> bool:
         """Check if the OpenAI API key is valid.
         
+        This method performs a lightweight validation of the configured OpenAI API key
+        by attempting to list available models. A successful API call confirms that:
+        
+        1. The API key is properly formatted and not empty
+        2. The key has at least read permissions on the OpenAI API
+        3. The API endpoint is accessible and responding
+        4. The account associated with the key is active and not suspended
+        
+        This validation is useful when initializing the provider to ensure the API key
+        works before attempting to make model completion requests that might fail later.
+        
         Returns:
-            bool: True if API key is valid
+            bool: True if the API key is valid and the API is accessible, False otherwise.
+            A False result may indicate an invalid key, network issues, or API service disruption.
+            
+        Notes:
+            - This method simply calls list_models() which caches results for efficiency
+            - No detailed error information is returned, only a boolean success indicator
+            - The method silently catches all exceptions and returns False rather than raising
+            - For debugging key issues, check server logs for the full exception details
         """
         try:
             # Just list models as a simple validation

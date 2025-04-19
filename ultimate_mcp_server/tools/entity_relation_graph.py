@@ -46,7 +46,7 @@ from ultimate_mcp_server.tools.completion import generate_completion  # noqa: E4
 from ultimate_mcp_server.tools.document import chunk_document  # noqa: E402
 from ultimate_mcp_server.utils import get_logger  # noqa: E402
 
-logger = get_logger("ultimate.tools.entity_graph")
+logger = get_logger("ultimate_mcp_server.tools.entity_graph")
 
 # --- Enums ---
 class GraphStrategy(Enum):

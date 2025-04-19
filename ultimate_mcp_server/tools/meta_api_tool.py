@@ -70,7 +70,7 @@ from ultimate_mcp_server.tools.base import (
 )
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.meta_api")
+logger = get_logger("ultimate_mcp_server.tools.meta_api")
 
 
 async def fetch_openapi_spec(
@@ -1158,7 +1158,7 @@ if __name__ == "__main__":
     import argparse
     import asyncio
 
-    from ultimate import create_app
+    from ultimate_mcp_server import create_app
 
     async def main():
         # Parse command line arguments

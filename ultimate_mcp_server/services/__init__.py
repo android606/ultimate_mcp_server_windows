@@ -22,7 +22,9 @@ def get_rag_engine():
     
     if _rag_engine is None:
         # Import dependencies *inside* the function to avoid top-level cycles
-        from ultimate_mcp_server.core import get_provider_manager  # Assuming this doesn't import services
+        from ultimate_mcp_server.core import (
+            get_provider_manager,  # Assuming this doesn't import services
+        )
         from ultimate_mcp_server.services.knowledge_base import (
             get_knowledge_base_retriever,  # Import KB retriever here
         )

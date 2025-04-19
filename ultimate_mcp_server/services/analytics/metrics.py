@@ -25,7 +25,50 @@ except ImportError:
 
 
 class MetricsTracker:
-    """Metrics tracking for Ultimate MCP Server."""
+    """Comprehensive metrics tracking and monitoring system for Ultimate MCP Server.
+    
+    The MetricsTracker is a singleton class that collects, processes, and persists
+    operational metrics related to LLM usage, costs, performance, and errors. It provides
+    the data foundation for analytics reporting and monitoring tools.
+    
+    Key features:
+    - Singleton design pattern ensures consistent metrics across application
+    - Persistent storage with automatic serialization to JSON
+    - Tracks usage by provider, model, and time periods (hourly, daily)
+    - Records request counts, token usage, costs, errors, and performance metrics
+    - Cache efficiency monitoring (hits, misses, cost savings)
+    - Optional Prometheus integration for external monitoring systems
+    - Asynchronous persistence to minimize performance impact
+    - Automatic data retention policies to prevent memory bloat
+    
+    The metrics are automatically persisted to disk and can be loaded on startup,
+    providing continuity across server restarts. Time-series data is maintained
+    for historical analysis and trend visualization.
+    
+    Usage:
+        # Get the singleton instance
+        metrics = get_metrics_tracker()
+        
+        # Record a request
+        metrics.record_request(
+            provider="anthropic",
+            model="claude-3-opus",
+            input_tokens=150,
+            output_tokens=500,
+            cost=0.0325,
+            duration=2.5
+        )
+        
+        # Record cache operations
+        metrics.record_cache_hit(cost_saved=0.015)
+        metrics.record_cache_miss()
+        
+        # Get current statistics
+        stats = metrics.get_stats()
+        
+        # Manually trigger persistence (usually automatic)
+        metrics.save_metrics()
+    """
     
     _instance = None
     

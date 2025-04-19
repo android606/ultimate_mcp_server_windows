@@ -71,7 +71,7 @@ import traceback
 from collections import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, TypeAlias, cast
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypeAlias, cast
 
 # JSON Schema and Patch Libraries
 import jsonschema  # noqa: E402
@@ -105,7 +105,7 @@ TestStrategy: TypeAlias = Literal[
 ErrorPatternKey: TypeAlias = str
 SchemaPath: TypeAlias = str
 
-logger = get_logger("ultimate.tools.docstring_refiner")
+logger = get_logger("ultimate_mcp_server.tools.docstring_refiner")
 
 # --- Constants ---
 DEFAULT_REFINEMENT_PROVIDER = Provider.OPENAI.value

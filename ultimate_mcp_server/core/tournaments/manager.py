@@ -19,7 +19,7 @@ from ultimate_mcp_server.core.models.tournament import (
 )
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tournaments.manager")
+logger = get_logger("ultimate_mcp_server.tournaments.manager")
 
 # Define storage path relative to project structure or use config
 STORAGE_DIR = Path(__file__).parent.parent.parent.parent / "storage" 

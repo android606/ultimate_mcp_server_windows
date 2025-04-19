@@ -24,7 +24,7 @@ from ultimate_mcp_server.exceptions import ToolError, ToolInputError
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.filesystem")
+logger = get_logger("ultimate_mcp_server.tools.filesystem")
 
 class ProtectionTriggeredError(ToolError):
     """Exception raised when a security protection measure is triggered."""

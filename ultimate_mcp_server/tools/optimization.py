@@ -35,7 +35,7 @@ from ultimate_mcp_server.tools.text_classification import text_classification
 from ultimate_mcp_server.utils import get_logger
 from ultimate_mcp_server.utils.text import count_tokens
 
-logger = get_logger("ultimate.tools.optimization")
+logger = get_logger("ultimate_mcp_server.tools.optimization")
 
 # --- Constants for Speed Score Mapping ---
 # Define bins for mapping tokens/second to a 1-5 score (lower is faster)

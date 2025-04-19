@@ -36,8 +36,8 @@ from rich.rule import Rule
 from rich.syntax import Syntax
 from rich.table import Table
 
-import ultimate.core  # To access the global gateway instance
-from ultimate import create_app
+import ultimate_mcp_server.core  # To access the global gateway instance
+from ultimate_mcp_server import create_app
 from ultimate_mcp_server.tools.meta_api_tool import APIMetaTool  # Import class for type hinting
 
 # Initialize Rich console
@@ -938,7 +938,7 @@ async def main():
         app = create_app()  # noqa: F841
         
         # Access the globally initialized Gateway instance and its api_meta_tool
-        gateway_instance = ultimate.core._gateway_instance
+        gateway_instance = ultimate_mcp_server.core._gateway_instance
         if not gateway_instance:
             raise RuntimeError("Gateway instance not initialized by create_app.")
             

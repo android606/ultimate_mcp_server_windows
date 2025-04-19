@@ -8,7 +8,7 @@ from typing import Any, Dict, Generator, List, Optional
 import pytest
 from pytest import MonkeyPatch
 
-from ultimate_mcp_server.config import get_config, Config
+from ultimate_mcp_server.config import Config, get_config
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.core.server import Gateway

@@ -14,6 +14,7 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
 )
+from rich.rule import Rule
 from rich.table import Table
 
 from ultimate_mcp_server.config import get_config
@@ -36,16 +37,24 @@ def run_server(
     include_tools: Optional[List[str]] = None,
     exclude_tools: Optional[List[str]] = None,
 ) -> None:
-    """Run the Ultimate MCP Server server.
+    """Start the Ultimate MCP Server with specified configuration.
+    
+    This function initializes and launches the MCP-compliant server that provides
+    an API for AI agents to use various tools and capabilities. The server uses 
+    FastAPI under the hood and can be customized through configuration overrides.
+    Server settings from command-line arguments take precedence over .env and config file values.
     
     Args:
-        host: Host to bind to (default: from config)
-        port: Port to listen on (default: from config)
-        workers: Number of worker processes (default: from config)
-        log_level: Log level (default: from config)
-        transport_mode: Transport mode to use ('sse' or 'stdio') (default: sse)
-        include_tools: List of tool names to include (default: include all)
-        exclude_tools: List of tool names to exclude (takes precedence over include_tools)
+        host: Network interface to bind to (e.g., '127.0.0.1' for local, '0.0.0.0' for all)
+        port: TCP port to listen on (default: 8013 from config)
+        workers: Number of parallel worker processes (more workers = higher concurrency)
+        log_level: Logging verbosity (debug, info, warning, error, critical)
+        transport_mode: Communication protocol mode ('sse' for Server-Sent Events streaming
+                        or 'stdio' for standard input/output in certain environments)
+        include_tools: Allowlist of specific tool names to register (if not specified, all
+                       available tools are registered)
+        exclude_tools: Blocklist of specific tool names to exclude (takes precedence over
+                       include_tools if both are specified)
     """
     # Get the current config
     cfg = get_config()
@@ -101,11 +110,22 @@ def run_server(
 
 
 async def list_providers(check_keys: bool = False, list_models: bool = False) -> None:
-    """List available providers.
+    """Display information about configured LLM providers and their status.
+    
+    This function queries all supported LLM providers (OpenAI, Anthropic, Gemini, etc.),
+    displays their configuration status, and can optionally verify API key validity 
+    and list available models. This is useful for diagnosing configuration issues 
+    or exploring what models are accessible through each provider.
+    
+    The basic output shows provider names, enabled status, API key presence,
+    and default model configuration. Additional information is available through
+    the optional parameters.
     
     Args:
-        check_keys: Whether to check API keys
-        list_models: Whether to list available models
+        check_keys: When True, tests each configured API key against the respective
+                   provider's authentication endpoint to verify it's valid and active
+        list_models: When True, queries each provider's model list endpoint and displays
+                    all models available for use with your current credentials
     """
     # Get the current config
     cfg = get_config()
@@ -162,6 +182,7 @@ async def list_providers(check_keys: bool = False, list_models: bool = False) ->
             progress.add_task("check", total=None)
             
             for provider_name in [p.value for p in Provider]:
+                console.print(Rule(f"[bold cyan]{provider_name}[/bold cyan]", align="center"))
                 status = provider_status.get(provider_name, None)
                 
                 if status and status.api_key_configured:
@@ -172,16 +193,17 @@ async def list_providers(check_keys: bool = False, list_models: bool = False) ->
                         # Check API key
                         valid = await provider.check_api_key()
                         
-                        if valid:
-                            console.print(f"Provider [cyan]{provider_name}[/cyan]: API key [green]valid[/green]")
-                        else:
-                            console.print(f"Provider [cyan]{provider_name}[/cyan]: API key [red]invalid[/red]")
-                            
+                        status_text = "[green]valid[/green]" if valid else "[red]invalid[/red]"
+                        console.print(f"API Key Status: {status_text}")
+                        
                     except Exception as e:
-                        console.print(f"Provider [cyan]{provider_name}[/cyan]: [red]Error: {str(e)}[/red]")
+                        console.print(f"[red]Error checking API key: {str(e)}[/red]")
                 else:
                     if status:
-                        console.print(f"Provider [cyan]{provider_name}[/cyan]: API key [yellow]not configured[/yellow]")
+                        console.print("API Key Status: [yellow]not configured[/yellow]")
+                    else:
+                        console.print("API Key Status: [dim]Provider not configured/enabled[/dim]")
+                console.print() # Add spacing after each provider's check
     
     # List models if requested
     if list_models:
@@ -201,38 +223,56 @@ async def list_providers(check_keys: bool = False, list_models: bool = False) ->
                     provider_instance = gateway.providers.get(provider_name)
                     
                     if provider_instance:
+                        console.print(Rule(f"[bold cyan]{provider_name} Models[/bold cyan]", align="center"))
                         try:
                             # Get models
                             models = await provider_instance.list_models()
                             
                             # Create model table
-                            model_table = Table(title=f"Models for {provider_name}")
+                            model_table = Table(box=None, show_header=True, header_style="bold blue")
                             model_table.add_column("Model ID", style="cyan")
                             model_table.add_column("Description", style="green")
                             
-                            for model in models:
-                                model_table.add_row(
-                                    model["id"],
-                                    model.get("description", "")
-                                )
-                            
-                            console.print(model_table)
-                            console.print()
+                            if models:
+                                for model in models:
+                                    model_table.add_row(
+                                        model["id"],
+                                        model.get("description", "[dim]N/A[/dim]")
+                                    )
+                                console.print(model_table)
+                            else:
+                                console.print("[yellow]No models found or returned by provider.[/yellow]")
                             
                         except Exception as e:
                             console.print(f"[red]Error listing models for {provider_name}: {str(e)}[/red]")
                 else:
                     if status:
-                        console.print(f"Provider [cyan]{provider_name}[/cyan]: [yellow]Not available[/yellow]")
+                        console.print(Rule(f"[bold dim]{provider_name}[/bold dim]", align="center"))
+                        console.print("[yellow]Provider not available or configured.[/yellow]")
+                console.print() # Add spacing after each provider's models
 
 
 async def test_provider(provider: str, model: Optional[str] = None, prompt: str = "Hello, world!") -> None:
-    """Test a specific provider with a simple completion.
+    """Test an LLM provider's functionality with a complete request-response cycle.
+    
+    This function conducts an end-to-end test of a specified LLM provider by 
+    sending a sample prompt and displaying the resulting completion. It measures
+    performance metrics such as response time, token usage, and estimated cost.
+    
+    The test verifies:
+    - API key validity and configuration
+    - Connection to the provider's endpoint
+    - Model availability and functionality
+    - Response generation capabilities
+    - Cost estimation correctness
+    
+    Results include the generated text, model used, token counts (input/output),
+    estimated cost, and response time, providing a comprehensive health check.
     
     Args:
-        provider: Provider to test
-        model: Specific model to test (default: provider's default model)
-        prompt: Test prompt to send
+        provider: Provider identifier (e.g., 'openai', 'anthropic', 'gemini')
+        model: Specific model to use for the test (if None, uses the provider's default model)
+        prompt: Text prompt to send to the model (defaults to a simple greeting)
     """
     console.print(f"[bold]Testing provider:[/bold] [cyan]{provider}[/cyan]")
     console.print(f"[bold]Model:[/bold] [cyan]{model or 'default'}[/cyan]")
@@ -287,16 +327,35 @@ async def generate_completion(
     system: Optional[str] = None,
     stream: bool = False
 ) -> None:
-    """Generate a completion from a provider.
+    """Generate text from an LLM provider directly through the CLI.
+    
+    This function provides direct access to LLM text generation capabilities 
+    without requiring an MCP server or client. It supports both synchronous 
+    (wait for full response) and streaming (token-by-token) output modes.
+    
+    For providers that natively support system prompts (like Anthropic), 
+    the system parameter is passed directly to the API. For other providers,
+    the system message is prepended to the prompt with appropriate formatting.
+    
+    The function displays:
+    - Generated text (with real-time streaming if requested)
+    - Model information
+    - Token usage statistics (input/output)
+    - Cost estimate
+    - Response time
     
     Args:
-        provider: Provider to use
-        model: Model to use (default: provider's default model)
-        prompt: Prompt text
-        temperature: Temperature parameter
-        max_tokens: Maximum tokens to generate
-        system: System prompt (for providers that support it)
-        stream: Whether to stream the response
+        provider: LLM provider identifier (e.g., 'openai', 'anthropic', 'gemini')
+        model: Specific model ID to use (if None, uses provider's default model)
+        prompt: The text prompt to send to the model
+        temperature: Sampling temperature (0.0-2.0) controlling output randomness
+                     (lower = more deterministic, higher = more creative)
+        max_tokens: Maximum number of tokens to generate in the response
+                    (if None, uses provider's default maximum)
+        system: Optional system message for setting context/behavior
+                (handled differently depending on provider capabilities)
+        stream: When True, displays generated tokens as they arrive rather than
+                waiting for the complete response (may affect metric reporting)
     """
     try:
         # Get provider instance
@@ -377,11 +436,24 @@ async def generate_completion(
 
 
 async def check_cache(show_status: bool = True, clear: bool = False) -> None:
-    """Check cache status and manage cache.
+    """View cache statistics and optionally clear the LLM response cache.
+    
+    The server employs a caching system that stores LLM responses to avoid
+    redundant API calls when the same or similar requests are made repeatedly.
+    This significantly reduces API costs and improves response times.
+    
+    This function displays comprehensive cache information including:
+    - Basic configuration (enabled status, TTL, max size)
+    - Storage details (persistence, directory location)
+    - Performance metrics (hit/miss counts, hit ratio percentage)
+    - Efficiency data (estimated cost savings, total tokens saved)
+    
+    Clearing the cache removes all stored responses, which might be useful
+    when testing changes, addressing potential staleness, or reclaiming disk space.
     
     Args:
-        show_status: Whether to show cache status
-        clear: Whether to clear the cache
+        show_status: When True, displays detailed cache statistics and configuration
+        clear: When True, purges all entries from the cache (requires confirmation)
     """
     # Get cache service
     cache_service = get_cache_service()
@@ -437,13 +509,32 @@ async def benchmark_providers(
     prompt: Optional[str] = None,
     runs: int = 3
 ) -> None:
-    """Benchmark providers for performance comparison.
+    """Compare performance metrics across different LLM providers and models.
+    
+    This benchmark utility sends identical prompts to multiple provider/model
+    combinations and measures various performance characteristics. It runs
+    each test multiple times to establish average metrics for more reliable
+    comparison.
+    
+    Benchmarks measure:
+    - Response time: How long it takes to receive a complete response
+    - Processing speed: Tokens per second throughput
+    - Token efficiency: Input/output token ratio
+    - Cost: Estimated price per request
+    
+    Results are presented in a table format for easy comparison. This helps
+    identify the optimal provider/model for specific needs based on speed,
+    cost, or quality considerations.
     
     Args:
-        providers: List of providers to benchmark
-        models: List of specific models to benchmark
-        prompt: Prompt to use for benchmarking
-        runs: Number of runs for each benchmark
+        providers: List of provider identifiers to benchmark (e.g., ['openai', 'anthropic'])
+                  If None, benchmarks all available and configured providers
+        models: List of specific model IDs to test (e.g., ['gpt-4o', 'claude-3-5-haiku'])
+               If None, uses each provider's default model
+        prompt: Text prompt to use for testing (should be identical across all providers)
+                If None, uses a default explanation prompt
+        runs: Number of test iterations to run for each provider/model combination
+              (higher values produce more reliable averages but take longer)
     """
     # Use default providers if not specified
     if not providers:
@@ -587,10 +678,30 @@ async def benchmark_providers(
 
 
 async def list_tools(category: Optional[str] = None) -> None:
-    """List available tools in the Ultimate MCP Server.
+    """Display all available MCP tools registered in the server.
+    
+    This function provides a comprehensive listing of tools that can be called
+    through the Model Context Protocol (MCP) interface. Each tool represents
+    a specific capability that AI agents can access, from text generation to
+    filesystem operations, browser automation, database access, and more.
+    
+    Tools are organized into functional categories such as:
+    - completion: Text generation capabilities
+    - document: Document processing and analysis
+    - extraction: Structured data extraction from text
+    - filesystem: File and directory operations
+    - browser: Web browsing and automation
+    - rag: Retrieval-augmented generation
+    - database: SQL database interactions
+    - meta: Self-reflection and tool discovery
+    
+    The listing includes tool names, categories, and brief descriptions.
+    The output also provides usage hints for filtering which tools are
+    enabled when starting the server.
     
     Args:
-        category: Filter tools by category
+        category: When specified, only shows tools belonging to the given
+                 category (e.g., 'filesystem', 'document', 'browser')
     """
     # Import tools module to get the list of available tools
     from ultimate_mcp_server.tools import STANDALONE_TOOL_FUNCTIONS
@@ -653,9 +764,9 @@ async def list_tools(category: Optional[str] = None) -> None:
     # Print usage hint
     console.print("\n[bold]Usage with tool filtering:[/bold]")
     console.print("To include only specific tools:")
-    console.print("  ultimate-mcp-server run --include-tools tool1 tool2 tool3")
+    console.print("  umcp run --include-tools tool1 tool2 tool3")
     console.print("\nTo exclude specific tools:")
-    console.print("  ultimate-mcp-server run --exclude-tools tool1 tool2 tool3")
+    console.print("  umcp run --exclude-tools tool1 tool2 tool3")
     console.print("\nTo include tools by category:")
-    console.print("  ultimate-mcp-server tools --category filesystem  # List filesystem tools")
-    console.print("  ultimate-mcp-server run --include-tools read_file write_file edit_file  # Include only these filesystem tools")
+    console.print("  umcp tools --category filesystem  # List filesystem tools")
+    console.print("  umcp run --include-tools read_file write_file edit_file  # Include only these filesystem tools")

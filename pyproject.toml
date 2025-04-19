@@ -95,6 +95,7 @@ dependencies = [
     "jsonpatch",
     "jsonpointer",    
     "pygments",
+    "typer",  # For CLI interface
 ]
 
 [project.optional-dependencies]
@@ -145,14 +146,14 @@ Repository = "https://github.com/Dicklesworthstone/ultimate_mcp_server.git"
 "Bug Reports" = "https://github.com/Dicklesworthstone/ultimate_mcp_server/issues"
 
 [project.scripts]
-ultimate-mcp-server = "ultimate.cli.main:main"
+umcp = "ultimate_mcp_server.cli.typer_cli:cli"
 
 [tool.hatch.version]
-path = "ultimate/__init__.py"
+path = "ultimate_mcp_server/__init__.py"
 
 [tool.hatch.build.targets.sdist]
 include = [
-    "/ultimate",
+    "/ultimate_mcp_server",
     "/examples",
     "/tests",
     "LICENSE",
@@ -161,7 +162,7 @@ include = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["ultimate"]
+packages = ["ultimate_mcp_server"]
 
 [tool.black]
 line-length = 100
@@ -186,7 +187,7 @@ strict_optional = true
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "--cov=ultimate --cov-report=term-missing -v"
+addopts = "--cov=ultimate_mcp_server --cov-report=term-missing -v"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
@@ -194,5 +195,7 @@ asyncio_default_fixture_loop_scope = "function"
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+
+[tool.ruff.lint]
 select = ["E", "F", "B", "I", "Q"]
 ignore = ["E203", "E501", "Q000"]

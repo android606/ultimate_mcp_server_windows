@@ -16,7 +16,28 @@ _cache_service = None
 
 
 def get_cache_service():
-    """Get the global cache service instance."""
+    """
+    Get or create the global singleton cache service instance.
+    
+    This function implements the singleton pattern for the CacheService, ensuring that only
+    one instance is created across the entire application. On the first call, it creates a
+    new CacheService instance and stores it in a module-level variable. Subsequent calls
+    return the same instance.
+    
+    Using this function instead of directly instantiating CacheService ensures consistent
+    caching behavior throughout the application, with a shared cache that persists across
+    different components and requests.
+    
+    Returns:
+        CacheService: The global singleton cache service instance.
+        
+    Example:
+        ```python
+        # Get the same cache service instance from anywhere in the code
+        cache = get_cache_service()
+        await cache.set("my_key", my_value, ttl=3600)
+        ```
+    """
     global _cache_service
     if _cache_service is None:
         _cache_service = CacheService()

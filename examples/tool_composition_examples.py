@@ -5,22 +5,19 @@ This module demonstrates how to design tools that work together effectively
 in sequences and patterns, making it easier for LLMs to understand how to
 compose tools for multi-step operations.
 """
-from typing import Any, Dict, List, Optional
-import asyncio
-import aiofiles
 import csv
 import io
 import json
-import os
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from error_handling import non_empty_string, validate_inputs, with_error_handling
 from tool_annotations import QUERY_TOOL, READONLY_TOOL
-from ultimate_mcp_server.tools.filesystem import write_file, read_file, delete_file
+from ultimate_mcp_server.exceptions import ToolExecutionError, ToolInputError
 from ultimate_mcp_server.tools.document import summarize_document
+from ultimate_mcp_server.tools.filesystem import delete_file, read_file, write_file
 from ultimate_mcp_server.tools.use_local_text_tools import run_sed
 from ultimate_mcp_server.utils import get_logger
-from ultimate_mcp_server.exceptions import ToolInputError, ToolExecutionError
 
 logger = get_logger("tool_composition_examples")
 
@@ -427,7 +424,7 @@ class DataPipelineExample:
                     headers = next(csv_reader)
                     for row in csv_reader:
                         if row: # Skip empty rows
-                            data.append(dict(zip(headers, row)))
+                            data.append(dict(zip(headers, row, strict=False)))
                 elif source_type.lower() == "json":
                     # Parse JSON data
                     data = json.loads(file_content)
@@ -435,7 +432,7 @@ class DataPipelineExample:
                     # Default dummy data if somehow type is wrong despite check
                     data = [{"id": i, "value": f"Sample {i}"} for i in range(1, 6)]
             except Exception as parse_error:
-                 raise ToolExecutionError(f"Failed to parse content from {source_path}: {parse_error}")
+                 raise ToolExecutionError(f"Failed to parse content from {source_path}: {parse_error}") from parse_error
 
             # Apply limit if specified AFTER reading/parsing
             if limit and limit > 0 and len(data) > limit:
@@ -531,13 +528,13 @@ class DataPipelineExample:
                     # This is complex with JSON structure, better done after parsing.
                     # For demo, we apply a simple global substitution (less robust)
                     sed_scripts.append("s|/|-|g")
-                    transformation_log.append(f"Applied date conversion (sed: s|/|-|g)")
+                    transformation_log.append("Applied date conversion (sed: s|/|-|g)")
                 
                 elif transform == "normalize_numbers":
                     # Use sed to remove commas from numbers (heuristic)
                     # Example: "amount": "1,200" -> "amount": "1200"
-                    sed_scripts.append("s/\"([a-zA-Z_]+)\":\"([0-9,]+)\"/\"\1\":\"\2\"/g; s/,//g") # More complex sed needed
-                    transformation_log.append(f"Applied number normalization (sed: remove commas)")
+                    sed_scripts.append('s/"([a-zA-Z_]+)":"([0-9,]+)"/"\1":"\2"/g; s/,//g') # More complex sed needed
+                    transformation_log.append("Applied number normalization (sed: remove commas)")
             
             # --- Execute accumulated sed scripts --- 
             if sed_scripts:

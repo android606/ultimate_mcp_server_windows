@@ -1,8 +1,44 @@
 """
-Error handling patterns for MCP tools.
+Comprehensive error handling framework for Model Control Protocol (MCP) systems.
 
-This module provides standardized error handling patterns for MCP tools,
-making it easier for LLMs to understand and recover from errors.
+This module implements a consistent, standardized approach to error handling for MCP tools
+and services. It provides decorators, formatters, and utilities that transform Python
+exceptions into structured, protocol-compliant error responses that LLMs and client
+applications can reliably interpret and respond to.
+
+The framework is designed around several key principles:
+
+1. CONSISTENCY: All errors follow the same structured format regardless of their source
+2. RECOVERABILITY: Errors include explicit information on whether operations can be retried
+3. ACTIONABILITY: Error responses provide specific suggestions for resolving issues
+4. DEBUGGABILITY: Rich error details are preserved for troubleshooting
+5. CATEGORIZATION: Errors are mapped to standardized types for consistent handling
+
+Key components:
+- ErrorType enum: Categorization system for different error conditions
+- format_error_response(): Creates standardized error response dictionaries
+- with_error_handling: Decorator that catches exceptions and formats responses
+- validate_inputs: Decorator for declarative parameter validation
+- Validator functions: Reusable validation logic for common parameter types
+
+Usage example:
+    ```python
+    @with_error_handling
+    @validate_inputs(
+        prompt=non_empty_string,
+        temperature=in_range(0.0, 1.0)
+    )
+    async def generate_text(prompt, temperature=0.7):
+        # Implementation...
+        # Any exceptions thrown here will be caught and formatted
+        # Input validation happens before execution
+        if external_service_down:
+            raise Exception("External service unavailable")
+        return result
+    ```
+
+The error handling pattern is designed to work seamlessly with async functions and
+integrates with the MCP protocol's expected error response structure.
 """
 import functools
 import inspect
@@ -61,16 +97,46 @@ def format_error_response(
 
 def with_error_handling(func: Callable) -> Callable:
     """
-    Decorator for consistent error handling in MCP tools.
+    Decorator that provides standardized exception handling for MCP tool functions.
     
-    This decorator wraps tool functions to provide consistent error handling.
-    It catches exceptions and formats them according to the standardized error format.
+    This decorator intercepts any exceptions raised by the wrapped function and transforms
+    them into a structured error response format that follows the MCP protocol. The response
+    includes consistent error categorization, helpful suggestions for recovery, and details
+    to aid debugging.
+    
+    Key features:
+    - Automatically categorizes exceptions into appropriate ErrorType values
+    - Preserves the original exception message and stack trace
+    - Adds relevant suggestions based on the error type
+    - Indicates whether the operation can be retried
+    - Adds a timestamp for error logging/tracking
+    
+    The error response structure always includes:
+    - success: False
+    - isError: True (MCP protocol flag)
+    - error: A dictionary with type, message, details, retriable flag, and suggestions
+    
+    Exception mapping:
+    - ValueError, TypeError, KeyError, AttributeError → VALIDATION_ERROR (retriable)
+    - FileNotFoundError, KeyError, IndexError → NOT_FOUND_ERROR (not retriable)
+    - PermissionError, AccessError → PERMISSION_ERROR (not retriable)
+    - TimeoutError → TIMEOUT_ERROR (retriable)
+    - Exceptions with "rate limit" in message → RATE_LIMIT_ERROR (retriable)
+    - All other exceptions → UNKNOWN_ERROR (not retriable)
     
     Args:
-        func: Function to decorate
+        func: The async function to wrap with error handling
         
     Returns:
-        Decorated function with error handling
+        Decorated async function that catches exceptions and returns structured error responses
+    
+    Example:
+        ```python
+        @with_error_handling
+        async def my_tool_function(param1, param2):
+            # Function implementation that might raise exceptions
+            # If an exception occurs, it will be transformed into a structured response
+        ```
     """
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -142,13 +208,69 @@ def with_error_handling(func: Callable) -> Callable:
 
 def validate_inputs(**validators):
     """
-    Decorator for validating tool inputs.
+    Decorator for validating tool input parameters against custom validation rules.
+    
+    This decorator enables declarative input validation for async tool functions by applying
+    validator functions to specified parameters before the decorated function is called.
+    If any validation fails, the function returns a standardized error response instead
+    of executing, preventing errors from propagating and providing clear feedback on the issue.
+    
+    The validation approach supports:
+    - Applying different validation rules to different parameters
+    - Detailed error messages explaining which parameter failed and why
+    - Custom validation logic via any callable that raises ValueError on failure
+    - Zero validation overhead for parameters not explicitly validated
+    
+    Validator functions should:
+    1. Take a single parameter (the value to validate)
+    2. Raise a ValueError with a descriptive message if validation fails
+    3. Return None or any value (which is ignored) if validation passes
+    4. Include a docstring that describes the constraint (used in error messages)
     
     Args:
-        **validators: Functions to validate inputs, keyed by parameter name
-        
+        **validators: A mapping of parameter names to validator functions.
+            Each key should match a parameter name in the decorated function.
+            Each value should be a callable that validates the corresponding parameter.
+            
     Returns:
-        Decorator function
+        Decorator function that wraps an async function with input validation
+        
+    Example:
+        ```
+        # Define validators (or use the provided ones like non_empty_string)
+        def validate_temperature(value):
+            '''Temperature must be between 0.0 and 1.0.'''
+            if not isinstance(value, float) or value < 0.0 or value > 1.0:
+                raise ValueError("Temperature must be between 0.0 and 1.0")
+        
+        # Apply validation to specific parameters
+        @validate_inputs(
+            prompt=non_empty_string,
+            temperature=validate_temperature,
+            max_tokens=positive_number
+        )
+        async def generate_text(prompt, temperature=0.7, max_tokens=None):
+            # This function will only be called if all validations pass
+            # Otherwise a standardized error response is returned
+            ...
+            
+        # The response structure when validation fails:
+        # {
+        #   "success": False,
+        #   "isError": True,
+        #   "error": {
+        #     "type": "validation_error",
+        #     "message": "Invalid value for parameter 'prompt': Value must be a non-empty string",
+        #     "details": { ... },
+        #     "retriable": true,
+        #     "suggestions": [ ... ]
+        #   }
+        # }
+        ```
+    
+    Note:
+        This decorator should typically be applied before other decorators like
+        with_error_handling so that validation errors are correctly formatted.
     """
     def decorator(func):
         @functools.wraps(func)
@@ -194,17 +316,70 @@ def validate_inputs(**validators):
 
 # Example validators
 def non_empty_string(value):
-    """Value must be a non-empty string."""
+    """
+    Validates that a value is a non-empty string.
+    
+    This validator checks that the input is a string type and contains at least
+    one non-whitespace character. Empty strings or strings containing only
+    whitespace characters are rejected. This is useful for validating required
+    text inputs where blank values should not be allowed.
+    
+    Args:
+        value: The value to validate
+        
+    Raises:
+        ValueError: If the value is not a string or is empty/whitespace-only
+    """
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Value must be a non-empty string")
 
 def positive_number(value):
-    """Value must be a positive number."""
+    """
+    Validates that a value is a positive number (greater than zero).
+    
+    This validator ensures that the input is either an integer or float
+    and has a value greater than zero. Zero or negative values are rejected.
+    This is useful for validating inputs like quantities, counts, or rates
+    that must be positive.
+    
+    Args:
+        value: The value to validate
+        
+    Raises:
+        ValueError: If the value is not a number or is not positive
+    """
     if not isinstance(value, (int, float)) or value <= 0:
         raise ValueError("Value must be a positive number")
 
 def in_range(min_val, max_val):
-    """Create validator for range checking."""
+    """
+    Creates a validator function for checking if a number falls within a specified range.
+    
+    This is a validator factory that returns a custom validator function
+    configured with the given minimum and maximum bounds. The returned function
+    checks that a value is a number and falls within the inclusive range
+    [min_val, max_val]. This is useful for validating inputs that must fall
+    within specific limits, such as probabilities, temperatures, or indexes.
+    
+    Args:
+        min_val: The minimum allowed value (inclusive)
+        max_val: The maximum allowed value (inclusive)
+        
+    Returns:
+        A validator function that checks if values are within the specified range
+        
+    Example:
+        ```python
+        # Create a validator for temperature (0.0 to 1.0)
+        validate_temperature = in_range(0.0, 1.0)
+        
+        # Use in validation decorator
+        @validate_inputs(temperature=validate_temperature)
+        async def generate_text(prompt, temperature=0.7):
+            # Function body
+            ...
+        ```
+    """
     def validator(value):
         """Value must be between {min_val} and {max_val}."""
         if not isinstance(value, (int, float)) or value < min_val or value > max_val:

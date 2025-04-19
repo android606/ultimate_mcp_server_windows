@@ -37,7 +37,7 @@ from ultimate_mcp_server.tools.completion import generate_completion
 from ultimate_mcp_server.tools.filesystem import create_directory
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.playwright")
+logger = get_logger("ultimate_mcp_server.tools.playwright")
 
 # --- Global browser session handling ---
 

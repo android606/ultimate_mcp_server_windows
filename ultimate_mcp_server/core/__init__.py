@@ -11,7 +11,26 @@ logger = get_logger(__name__)
 _gateway_instance = None
 
 async def async_init_gateway():
-    """Asynchronously initialize gateway."""
+    """
+    Asynchronously initialize the global gateway instance.
+    
+    This function creates and initializes the Gateway singleton instance that manages 
+    provider connections and serves as the central access point for LLM capabilities.
+    It ensures the gateway is properly initialized only once, maintaining a global
+    instance that can be used across the application.
+    
+    The initialization process includes:
+    1. Creating a Gateway instance if none exists
+    2. Initializing all configured providers asynchronously
+    3. Setting up the provider connections and validating configurations
+    
+    Returns:
+        The initialized Gateway instance
+        
+    Note:
+        This function is designed to be called from async code. For synchronous
+        contexts, use get_gateway_instance() which handles event loop management.
+    """
     global _gateway_instance
     if _gateway_instance is None:
         _gateway_instance = Gateway("provider-manager")

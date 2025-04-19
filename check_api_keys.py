@@ -33,7 +33,26 @@ PROVIDER_ENV_VAR_MAP = {
 }
 
 async def check_api_keys():
-    """Check API key configurations based on the loaded config and display with rich."""
+    """
+    Check API key configurations and display a comprehensive report.
+    
+    This async function:
+    1. Loads the current configuration settings from all sources (environment variables,
+       .env file, configuration files)
+    2. Initializes a minimal Gateway instance to access provider configurations
+    3. Checks if API keys are properly configured for all supported providers
+    4. Displays formatted results using rich tables and panels, including:
+       - Provider-by-provider API key status
+       - Configuration loading priority information
+       - How to set API keys properly
+       - Example .env file content
+    
+    The function checks keys for all providers defined in the Provider enum,
+    including OpenAI, Anthropic, DeepSeek, Gemini, and OpenRouter.
+    
+    Returns:
+        int: Exit code (0 for success)
+    """
     # Force load config to ensure we get the latest resolved settings
     cfg = get_config()
     

@@ -10,7 +10,7 @@ import time
 
 # --- Filesystem Tool Display Helper ---
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Set
+from typing import Any, Dict, List, Optional, Union
 
 from rich import box
 from rich.console import (
@@ -199,7 +199,18 @@ def display_text_content_result(
 
 
 def _display_input_data(input_data: Dict, output: Console):
-    """Display input data with consistent formatting."""
+    """
+    Display input data with consistent formatting.
+    
+    This function formats and displays various types of input data using the Rich
+    console library. It handles text content, JSON schemas, search queries, and
+    embedding vectors, adjusting the display format appropriately for each type.
+    
+    Args:
+        input_data: Dictionary containing input data to display. May include keys
+                   like 'text', 'json_schema', 'query', and 'embeddings'.
+        output: Rich Console instance to use for printing formatted output.
+    """
     # Display input text if available
     if "text" in input_data:
         text_snippet = input_data["text"][:500] + ("..." if len(input_data["text"]) > 500 else "")
@@ -243,7 +254,27 @@ def _display_input_data(input_data: Dict, output: Console):
 
 
 def _parse_and_display_output(result: Any, output: Console):
-    """Parse result object and display appropriate visualizations."""
+    """
+    Parse result object and display appropriate visualizations.
+    
+    This function examines the structure of a result object and determines the best
+    way to display it based on its content type. It automatically extracts and formats
+    different data types like JSON data, vector search results, tables, key-value pairs,
+    entity data, and embeddings.
+    
+    The function serves as an intelligent formatter that routes different content types
+    to specialized display handlers that can present each type with appropriate
+    rich formatting and visualization.
+    
+    Args:
+        result: The result object to parse and display. Can be a list, dict, object
+               with a 'text' attribute, or other structures.
+        output: Rich Console instance to use for displaying the formatted content.
+               
+    Note:
+        This is an internal utility function used by higher-level display functions
+        to handle the details of content extraction and formatting.
+    """
     # Extract result content
     parsed_result = {}
     raw_text = None
@@ -273,7 +304,19 @@ def _parse_and_display_output(result: Any, output: Console):
 
 
 def _display_result_content(parsed_result: Dict, output: Console):
-    """Display the content of results with appropriate formatting."""
+    """
+    Display the content of results with appropriate formatting.
+    
+    This function intelligently selects appropriate display handlers for different
+    types of result content. It checks for various data types (JSON data, vector search
+    results, tables, key-value pairs, entities, embeddings, etc.) and routes the content
+    to specialized display functions.
+    
+    Args:
+        parsed_result: Dictionary containing parsed result data with various possible
+                      content types to display.
+        output: Rich Console instance to use for printing formatted output.
+    """
     # Check for errors first
     if parsed_result.get("error"):
         _display_error(parsed_result, output)
@@ -317,7 +360,18 @@ def _display_result_content(parsed_result: Dict, output: Console):
 
 
 def _display_error(result: Dict, output: Console):
-    """Display error information."""
+    """
+    Display error information.
+    
+    This function formats and displays error information in a visually distinct way.
+    It creates a red-bordered panel containing the error message and optional raw text
+    output for debugging purposes.
+    
+    Args:
+        result: Dictionary containing error information. Should include an 'error' key
+               and optionally a 'raw_text' key with the original output.
+        output: Rich Console instance to use for printing formatted output.
+    """
     error_content = f"[red]Error:[/red] {escape(result['error'])}"
     if result.get("raw_text"):
         error_content += f"\n\n[yellow]Raw Text Output:[/yellow]\n{escape(result['raw_text'])}"
@@ -329,7 +383,18 @@ def _display_error(result: Dict, output: Console):
 
 
 def _display_json_data(data: Any, title: str, output: Console):
-    """Display JSON data with proper formatting."""
+    """
+    Display JSON data with proper formatting.
+    
+    This function formats and displays JSON data with syntax highlighting and proper
+    indentation. It handles JSON serialization errors gracefully and displays the data
+    in a visually appealing panel with a descriptive title.
+    
+    Args:
+        data: Any data structure that can be serialized to JSON.
+        title: Title string to display above the JSON content.
+        output: Rich Console instance to use for printing formatted output.
+    """
     try:
         data_json = json.dumps(data, indent=2)
         output.print(Panel(
@@ -342,7 +407,20 @@ def _display_json_data(data: Any, title: str, output: Console):
 
 
 def _display_vector_results(results: List[Dict], output: Console):
-    """Display vector search results."""
+    """
+    Display vector search results.
+    
+    This function creates and displays a formatted table showing vector search results,
+    including IDs, similarity scores, metadata, and text snippets. It automatically 
+    adapts the table columns based on the structure of the first result item, handling
+    various metadata fields dynamically.
+    
+    Args:
+        results: List of dictionaries containing vector search results. Each dictionary
+                typically includes 'id', 'similarity' or 'score', optional 'metadata',
+                and 'text' fields.
+        output: Rich Console instance to use for printing formatted output.
+    """
     results_table = Table(title="[bold green]Vector Search Results[/bold green]", box=box.ROUNDED)
     
     # Determine columns based on first result
@@ -390,7 +468,18 @@ def _display_vector_results(results: List[Dict], output: Console):
 
 
 def _display_tables(tables: List[Dict], output: Console):
-    """Display extracted tables."""
+    """
+    Display extracted tables.
+    
+    This function formats and displays extracted table data in multiple formats
+    (JSON, Markdown) with appropriate syntax highlighting. It includes table titles
+    and associated metadata when available.
+    
+    Args:
+        tables: List of dictionaries containing table information. Each dictionary may
+               include 'title', 'json', 'markdown', and 'metadata' fields.
+        output: Rich Console instance to use for printing formatted output.
+    """
     for i, table_info in enumerate(tables):
         table_title = table_info.get('title', f'Table {i+1}')
         output.print(Rule(f"[green]Extracted: {escape(table_title)}[/green]"))
@@ -429,7 +518,18 @@ def _display_tables(tables: List[Dict], output: Console):
 
 
 def _display_key_value_pairs(pairs: Union[Dict, List], output: Console):
-    """Display key-value pairs in a table."""
+    """
+    Display key-value pairs in a table.
+    
+    This function creates and displays a formatted table showing key-value pairs.
+    It handles both dictionary and list inputs, adapting the display format
+    appropriately for each case.
+    
+    Args:
+        pairs: Dictionary of key-value pairs or list of dictionaries containing
+              key-value pairs to display.
+        output: Rich Console instance to use for printing formatted output.
+    """
     kv_table = Table(title="[bold green]Extracted Key-Value Pairs[/bold green]", box=box.ROUNDED)
     kv_table.add_column("Key", style="magenta")
     kv_table.add_column("Value", style="white")
@@ -448,7 +548,18 @@ def _display_key_value_pairs(pairs: Union[Dict, List], output: Console):
 
 
 def _display_entities(entities: List[Dict], output: Console):
-    """Display extracted entities."""
+    """
+    Display extracted entities.
+    
+    This function creates and displays a formatted table showing extracted entities,
+    including their type, text, context snippet, and confidence score. It's optimized
+    for displaying named entity recognition (NER) results.
+    
+    Args:
+        entities: List of dictionaries containing entity information. Each dictionary
+                 typically includes 'type', 'text', 'context', and 'score' fields.
+        output: Rich Console instance to use for printing formatted output.
+    """
     entity_table = Table(title="[bold green]Extracted Entities[/bold green]", box=box.ROUNDED)
     entity_table.add_column("Type", style="cyan")
     entity_table.add_column("Text", style="white")
@@ -470,7 +581,19 @@ def _display_entities(entities: List[Dict], output: Console):
 
 
 def _display_embeddings_info(embeddings: List, model: str, output: Console):
-    """Display information about embeddings."""
+    """
+    Display information about embeddings.
+    
+    This function creates and displays a summary table of embedding information,
+    including model name, embedding count, dimensions, and sample values. It handles
+    edge cases like empty embedding lists and non-numeric embedding values.
+    
+    Args:
+        embeddings: List of embedding vectors. Each vector is typically a list of
+                  floating-point numbers.
+        model: Name of the embedding model used to generate the embeddings.
+        output: Rich Console instance to use for printing formatted output.
+    """
     if not isinstance(embeddings, list) or len(embeddings) == 0:
         return
     
@@ -501,7 +624,18 @@ def _display_embeddings_info(embeddings: List, model: str, output: Console):
 
 
 def _display_stats(result: Dict, output: Console):
-    """Display execution statistics."""
+    """
+    Display execution statistics.
+    
+    This function creates and displays a summary table of execution statistics,
+    including provider, model, cost, token usage, and processing time. It only
+    displays statistics that are actually present in the input data.
+    
+    Args:
+        result: Dictionary containing execution statistics. May include keys like
+               'provider', 'model', 'cost', 'tokens', and 'processing_time'.
+        output: Rich Console instance to use for printing formatted output.
+    """
     # Check if we have stats data
     has_stats = any(k in result for k in ["model", "provider", "cost", "tokens", "processing_time"])
     if not has_stats:
@@ -541,7 +675,30 @@ def _display_stats(result: Dict, output: Console):
 # Specialized display functions for different demo types
 
 def display_embedding_generation_results(results_data: Dict, output: Optional[Console] = None):
-    """Display embedding generation results in a table."""
+    """
+    Display embedding generation results in a formatted table.
+    
+    This function creates a rich, formatted table visualization of embedding generation 
+    results from multiple models. It organizes and presents key information including 
+    model names, embedding dimensions, generation times, costs, sample values, and 
+    success status for each embedding model.
+    
+    The visualization is designed to help users compare embedding results across different
+    models and providers at a glance, making it easier to evaluate performance, cost,
+    and quality differences between embedding options.
+    
+    Args:
+        results_data: Dictionary containing embedding generation results. Expected to
+                     contain a 'models' key with a list of model result dictionaries.
+                     Each model result should include fields like 'name', 'dimensions',
+                     'time', 'cost', 'embedding_sample', and 'success'.
+        output: Optional Rich Console instance to use for display. If not provided,
+                uses the default shared console.
+    
+    Note:
+        If the results_data dictionary doesn't contain a 'models' key or the list is empty,
+        the function will display a warning message instead of a table.
+    """
     display = output or console
     
     if not results_data.get("models"):
@@ -576,9 +733,33 @@ def display_embedding_generation_results(results_data: Dict, output: Optional[Co
     display.print(results_table)
     display.print()
 
-
 def display_vector_similarity_results(similarity_data: Dict, output: Optional[Console] = None):
-    """Display semantic similarity scores between text pairs."""
+    """
+    Display semantic similarity scores between text pairs in a formatted table.
+    
+    This function creates a rich, visually appealing table visualization of semantic
+    similarity results between text pairs. It extracts and presents information about
+    each compared text pair and their corresponding similarity score, making it easy
+    to see which text segments are semantically related.
+    
+    The table includes columns for text snippets from each pair (truncated if too long)
+    and their corresponding similarity score. This visualization is particularly useful
+    for comparing multiple text pairs at once and identifying patterns of semantic
+    relatedness across a dataset.
+    
+    Args:
+        similarity_data: Dictionary containing semantic similarity results. Expected
+                        to contain a 'pairs' key with a list of comparison result
+                        dictionaries. Each pair should include 'text1', 'text2', and
+                        'score' fields.
+        output: Optional Rich Console instance to use for display. If not provided,
+                uses the default shared console.
+    
+    Note:
+        If the similarity_data dictionary doesn't contain valid pairs data or the list
+        is empty, the function will display a warning message instead of a table.
+        Similarity scores are displayed with 4 decimal places of precision.
+    """
     display = output or console
     
     pairs = similarity_data.get("pairs", [])
@@ -614,7 +795,18 @@ def display_vector_similarity_results(similarity_data: Dict, output: Optional[Co
 
 
 def display_analytics_metrics(metrics_data: Dict, output: Optional[Console] = None):
-    """Display analytics metrics in an attractive format."""
+    """
+    Display analytics metrics in an attractive format.
+    
+    This function takes a dictionary of analytics metrics data and displays it in a
+    formatted table using the Rich library. The metrics are grouped by category,
+    and each category is displayed as a separate table.
+    
+    Args:
+        metrics_data: Dictionary containing analytics metrics data
+        output: Optional Rich Console instance to use for display. If not provided,
+                the default console will be used.
+    """
     # Use provided console or default
     output = output or console
 
@@ -669,7 +861,13 @@ def display_analytics_metrics(metrics_data: Dict, output: Optional[Console] = No
 # --- Tournament Display Functions ---
 
 def display_tournament_status(status_data: Dict[str, Any], output: Optional[Console] = None):
-    """Display tournament status with better formatting using Rich.
+    """
+    Display tournament status with better formatting using Rich.
+    
+    This function takes a dictionary containing tournament status information
+    and displays it in a formatted table using the Rich library. The table
+    includes the tournament status, current round, total rounds, progress
+    percentage, and timestamps if available.
     
     Args:
         status_data: Dictionary with tournament status information
@@ -726,7 +924,13 @@ def display_tournament_status(status_data: Dict[str, Any], output: Optional[Cons
             # Just show the bar visualization, don't actually wait/update
 
 def display_tournament_results(results_data: Dict[str, Any], output: Optional[Console] = None):
-    """Display tournament results with better formatting using Rich.
+    """
+    Display tournament results with better formatting using Rich.
+    
+    This function takes a dictionary containing tournament results and displays
+    it in a formatted table using the Rich library. The table includes the
+    tournament name, type, final status, total rounds, storage path, models
+    used, and execution stats if available.
     
     Args:
         results_data: Dictionary with tournament results
@@ -787,7 +991,13 @@ def display_completion_result(
     result: Any, 
     title: str = "Completion Result"
 ):
-    """Display a completion result with stats.
+    """
+    Display a completion result with stats.
+    
+    This function takes a completion result and displays it in a formatted panel
+    using the Rich library. The panel includes the completion text and various
+    stats such as input tokens, output tokens, total tokens, cost, and processing
+    time if available.
     
     Args:
         console: Rich console to print to
@@ -826,7 +1036,13 @@ def display_cache_stats(
     stats_log: Optional[Dict[int, Dict[str, int]]] = None,
     console: Optional[Console] = None
 ):
-    """Display cache statistics in a formatted table.
+    """
+    Display cache statistics in a formatted table.
+    
+    This function takes a dictionary of cache statistics and displays it in a
+    formatted table using the Rich library. The table includes information such
+    as cache enabled status, persistence, hit rate, total gets, cache hits,
+    cache misses, total sets, and estimated savings if available.
     
     Args:
         stats: Cache statistics dictionary
@@ -902,7 +1118,12 @@ def parse_and_display_result(
     result: Any,
     console: Optional[Console] = None
 ):
-    """Parse and display extraction results.
+    """
+    Parse and display extraction results.
+    
+    This function takes a title, input data, and extraction result, and displays
+    the extracted data in a formatted panel using the Rich library. The function
+    supports various extraction formats such as JSON, tables, and entity data.
     
     Args:
         title: Title for the display
@@ -1025,7 +1246,12 @@ def parse_and_display_result(
         console.print(metrics_table)
 
 def display_table_data(table_data: List[Dict], console: Console):
-    """Display tabular data extracted from text.
+    """
+    Display tabular data extracted from text.
+    
+    This function takes a list of dictionaries representing table rows and
+    displays it in a formatted table using the Rich library. The table is also
+    displayed as JSON for reference.
     
     Args:
         table_data: List of dictionaries representing table rows
@@ -1055,7 +1281,11 @@ def display_table_data(table_data: List[Dict], console: Console):
     console.print(Panel(syntax, title="Table Data (JSON)", border_style="blue"))
 
 def display_key_value_pairs(pairs: List[Dict], console: Console):
-    """Display key-value pairs extracted from text.
+    """
+    Display key-value pairs extracted from text.
+    
+    This function takes a list of dictionaries with 'key' and 'value' fields
+    and displays it in a formatted table using the Rich library.
     
     Args:
         pairs: List of dictionaries with 'key' and 'value' fields
@@ -1080,16 +1310,18 @@ def display_key_value_pairs(pairs: List[Dict], console: Console):
 logger = get_logger(__name__) # Initialize logger for this module
 
 async def safe_tool_call(tool_func, args_dict, description=""):
-    """Helper function to safely call an async tool function and display results/errors.
-
-    Handles common error patterns (ToolError, ProtectionTriggeredError, generic exceptions)
-    and formats successful outputs for various common tool result structures using Rich.
-
+    """
+    Helper function to safely call an async tool function and display results/errors.
+    
+    This function wraps an async tool function call and handles common error patterns
+    (ToolError, ProtectionTriggeredError, generic exceptions) and formats successful
+    outputs for various common tool result structures using Rich.
+    
     Args:
         tool_func: The asynchronous tool function to call.
         args_dict: A dictionary of arguments to pass to the tool function.
         description: A description of the tool call for display purposes.
-
+    
     Returns:
         A dictionary containing:
         - 'success': Boolean indicating if the call was successful (no errors/protection).
@@ -1394,7 +1626,24 @@ async def _build_rich_directory_tree_recursive(
     depth: int, 
     max_depth: int
 ):
-    """Recursive helper to build a Rich Tree using async list_directory."""
+    """
+    Recursive helper to build a Rich Tree using async list_directory.
+    
+    This function is a recursive helper for generating a Rich Tree representation
+    of a directory structure using the async list_directory tool. It traverses the
+    directory tree and adds nodes for each file, directory, and symlink encountered,
+    with appropriate icons and styling based on file types.
+    
+    Args:
+        path: The current directory path (Path object) to display.
+        tree_node: The parent Tree node to add child nodes to.
+        depth: The current recursion depth in the directory tree.
+        max_depth: The maximum depth to traverse, preventing excessive recursion.
+    
+    Note:
+        This function uses different icons for different file types and includes 
+        size information for files and target information for symlinks when available.
+    """
     if depth >= max_depth:
         tree_node.add("📁 [dim]...(max depth reached)[/dim]")
         return
@@ -1486,12 +1735,17 @@ async def _build_rich_directory_tree_recursive(
         tree_node.add(f"❌ [bold red]Failed to process: {escape(str(path))} ({type(e).__name__})[/bold red]")
 
 async def generate_rich_directory_tree(path: Union[str, Path], max_depth: int = 3) -> Tree:
-    """Generates a `rich.Tree` visualization of a directory using async filesystem tools.
-
+    """
+    Generates a `rich.Tree` visualization of a directory using async filesystem tools.
+    
+    This function generates a Rich Tree representation of a directory structure
+    using the async filesystem tools provided by the Ultimate MCP Server. It
+    supports traversing the directory tree up to a specified maximum depth.
+    
     Args:
         path: The starting directory path (string or Path object).
         max_depth: The maximum depth to traverse.
-
+    
     Returns:
         A `rich.Tree` object representing the directory structure.
     """
@@ -1523,14 +1777,65 @@ async def generate_rich_directory_tree(path: Union[str, Path], max_depth: int = 
 # --- Cost Tracking Utility ---
 
 class CostTracker:
-    """Tracks API call costs and token usage across multiple calls."""
+    """
+    Tracks and aggregates API call costs and token usage across multiple LLM operations.
+    
+    The CostTracker provides a centralized mechanism for monitoring API usage costs
+    and token consumption across multiple calls to language model providers. It maintains
+    a structured record of costs organized by provider and model, supporting various
+    result formats from different API calls.
+    
+    The tracker can extract cost and token information from both object attributes
+    (like CompletionResult objects) and dictionary structures (like tool results),
+    making it versatile for different API response formats.
+    
+    Features:
+    - Detailed tracking by provider and model
+    - Support for input and output token counts
+    - Optional cost limit monitoring
+    - Rich console visualization of cost summaries
+    - Aggregation of calls, tokens, and costs
+    
+    Usage example:
+    ```python
+    # Initialize tracker
+    tracker = CostTracker(limit=5.0)  # Set $5.00 cost limit
+    
+    # Track costs from various API calls
+    tracker.add_call(completion_result)
+    tracker.add_call(summarization_result)
+    
+    # Check if limit exceeded
+    if tracker.exceeds_limit():
+        print("Cost limit exceeded!")
+    
+    # Display summary in console
+    tracker.display_summary(console)
+    ```
+    
+    Attributes:
+        data: Nested dictionary storing cost and token data organized by provider and model
+        limit: Optional cost limit in USD to monitor usage against
+    """
     def __init__(self, limit: Optional[float] = None):
+        """
+        Initialize a new cost tracker with an optional spending limit.
+        
+        Args:
+            limit: Optional maximum cost limit in USD. If provided, the tracker
+                  can report when costs exceed this threshold using exceeds_limit().
+        """
         self.data: Dict[str, Dict[str, Dict[str, Any]]] = {} # {provider: {model: {cost, tokens..., calls}}}
         self.limit: Optional[float] = limit  # Cost limit in USD
 
     @property
     def total_cost(self) -> float:
-        """Get the total cost across all providers and models."""
+        """
+        Get the total accumulated cost across all providers and models.
+        
+        Returns:
+            float: The sum of all tracked costs in USD
+        """
         total = 0.0
         for provider_data in self.data.values():
             for model_data in provider_data.values():
@@ -1538,13 +1843,47 @@ class CostTracker:
         return total
 
     def exceeds_limit(self) -> bool:
-        """Check if the current total cost exceeds the specified limit."""
+        """
+        Check if the current total cost exceeds the specified limit.
+        
+        Returns:
+            bool: True if a limit is set and the total cost exceeds it, False otherwise
+        """
         if self.limit is None:
             return False
         return self.total_cost >= self.limit
 
     def add_call(self, result: Any, provider: Optional[str] = None, model: Optional[str] = None):
-        """Adds cost and token data from an API call result."""
+        """
+        Add cost and token data from an API call result to the tracker.
+        
+        This method extracts cost and token information from various result formats,
+        including structured objects with attributes (like CompletionResult) or
+        dictionaries (like tool results). It intelligently identifies the relevant
+        data fields and updates the tracking statistics.
+        
+        Args:
+            result: The API call result containing cost and token information.
+                   Can be an object with attributes or a dictionary.
+            provider: Optional provider name override. If not specified, will be
+                     extracted from the result if available.
+            model: Optional model name override. If not specified, will be
+                  extracted from the result if available.
+                  
+        Example:
+            ```python
+            # Track a direct API call result
+            summarization_result = await summarize_document(...)
+            tracker.add_call(summarization_result)
+            
+            # Track with explicit provider/model specification
+            tracker.add_call(
+                custom_result,
+                provider="openai",
+                model="gpt-4o"
+            )
+            ```
+        """
         cost = 0.0
         input_tokens = 0
         output_tokens = 0
@@ -1605,7 +1944,39 @@ class CostTracker:
         self.data[provider][model]["calls"] += 1
 
     def display_summary(self, console_instance: Optional[Console] = None, title: str = "Total Demo Cost Summary"):
-        """Displays the aggregated cost and token summary using Rich."""
+        """
+        Display a formatted summary of all tracked costs and token usage in a Rich console table.
+        
+        This method generates a detailed tabular report showing:
+        - Costs broken down by provider and model
+        - Number of calls made to each model
+        - Input, output, and total token counts
+        - Subtotals by provider (when multiple models are used)
+        - Grand totals across all providers and models
+        - Progress against cost limit (if set)
+        
+        The report is formatted using Rich tables with color coding for readability.
+        
+        Args:
+            console_instance: Optional Rich Console instance to use for display.
+                             If not provided, uses the default console.
+            title: Custom title for the summary report.
+                  Defaults to "Total Demo Cost Summary".
+                  
+        Example:
+            ```python
+            # Display with default settings
+            tracker.display_summary()
+            
+            # Display with custom title and console
+            from rich.console import Console
+            custom_console = Console(width=100)
+            tracker.display_summary(
+                console_instance=custom_console,
+                title="AI Generation Cost Report"
+            )
+            ```
+        """
         output = console_instance or console # Use provided or default console
 
         output.print(Rule(f"[bold blue]{escape(title)}[/bold blue]"))
@@ -1707,5 +2078,17 @@ class CostTracker:
         output.print() # Add a blank line after the table
 
     def display_costs(self, console: Optional[Console] = None, title: str = "Total Demo Cost Summary"):
-        """Alias for display_summary for backward compatibility."""
+        """
+        Alias for display_summary for backward compatibility.
+        
+        This method provides a backward-compatible interface for legacy code
+        that might be calling display_costs() instead of display_summary().
+        
+        Args:
+            console: Console instance to use for display
+            title: Custom title for the summary report
+            
+        Returns:
+            Same as display_summary()
+        """
         return self.display_summary(console_instance=console, title=title)

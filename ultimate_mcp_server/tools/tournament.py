@@ -19,7 +19,7 @@ from ultimate_mcp_server.core.tournaments.manager import tournament_manager
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.tournament")
+logger = get_logger("ultimate_mcp_server.tools.tournament")
 
 # --- Standalone Tool Functions ---
 

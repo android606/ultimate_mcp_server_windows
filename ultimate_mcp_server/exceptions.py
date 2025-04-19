@@ -1,10 +1,93 @@
-"""Exceptions for Ultimate MCP Server."""
+"""
+Comprehensive exception system for the Ultimate MCP Server.
+
+This module implements a hierarchical, structured exception system designed to provide
+consistent error handling, reporting, and formatting across the MCP ecosystem. The exceptions
+are designed to support both internal error handling and MCP protocol-compliant error responses
+for client applications and LLMs.
+
+Key design principles:
+1. HIERARCHICAL: Exception types form a logical inheritance tree with ToolError at the root
+2. CONTEXTUAL: Exceptions carry rich metadata including error codes, details, and context
+3. FORMATTABLE: All exceptions can be converted to standard response dictionaries
+4. TRACEABLE: Original causes and stack traces are preserved for debugging
+5. ACTIONABLE: Error responses include specific information to aid recovery
+
+Exception hierarchy:
+- ToolError (base class)
+  ├── ToolInputError (parameter validation issues)
+  ├── ToolExecutionError (runtime execution failures)
+  ├── ProviderError (LLM provider issues)
+  │   ├── RateLimitError (provider throttling)
+  │   └── AuthenticationError (auth failures)
+  ├── ResourceError (resource access/manipulation)
+  ├── ValidationError (general validation issues)
+  ├── ConfigurationError (config problems)
+  └── StorageError (storage operation failures)
+
+The module also provides a format_error_response() function that standardizes any
+exception (including non-ToolError exceptions) into a consistent error response
+format compatible with the MCP protocol.
+
+Example usage:
+    ```python
+    # Raising a specific exception with context
+    if not os.path.exists(file_path):
+        raise ResourceError(
+            message="Cannot access required resource",
+            resource_type="file",
+            resource_id=file_path
+        )
+        
+    # Catching and formatting an error
+    try:
+        result = process_data(data)
+    except Exception as e:
+        # Convert to standard response format for API
+        error_response = format_error_response(e)
+        return error_response
+    ```
+"""
 import traceback
 from typing import Any, Dict
 
 
 class ToolError(Exception):
-    """Base exception for all tool-related errors."""
+    """
+    Base exception class for all tool-related errors in the Ultimate MCP Server.
+    
+    ToolError serves as the foundation of the MCP error handling system, providing a
+    consistent interface for reporting, formatting, and categorizing errors that occur
+    during tool execution. All specialized error types in the system inherit from this
+    class, ensuring consistent error handling across the codebase.
+    
+    This exception class enhances Python's standard Exception with:
+    
+    - Error codes: Standardized identifiers for error categorization and programmatic handling
+    - HTTP status mapping: Optional association with HTTP status codes for API responses
+    - Detailed context: Support for rich error details and contextual information
+    - Structured formatting: Conversion to standardized error response dictionaries
+    
+    The error hierarchy is designed to provide increasingly specific error types while
+    maintaining a consistent structure that can be easily interpreted by error handlers,
+    logging systems, and API responses.
+    
+    Error responses created from ToolError instances follow the MCP protocol format and
+    include consistent fields for error type, message, details, and context.
+    
+    Usage example:
+        ```python
+        try:
+            # Some operation that might fail
+            result = process_data(data)
+        except ToolInputError as e:
+            # Handle input validation errors specifically
+            log_validation_error(e)
+        except ToolError as e:
+            # Handle all other tool errors generically
+            report_tool_error(e)
+        ```
+    """
 
     def __init__(self, message, error_code=None, details=None, context=None, http_status_code: int | None = None):
         """Initialize the tool error.
@@ -250,13 +333,42 @@ class StorageError(ToolError):
 
 
 def format_error_response(error: Exception) -> Dict[str, Any]:
-    """Format an exception into a standardized error response.
+    """
+    Format any exception into a standardized MCP-compliant error response dictionary.
+    
+    This utility function creates a structured error response that follows the MCP protocol
+    format, ensuring consistency in error reporting across different components. It handles
+    both ToolError instances (with their rich error metadata) and standard Python exceptions,
+    automatically extracting relevant information to create detailed, actionable error responses.
+    
+    The function performs special processing for different error types:
+    
+    - For ToolError and subclasses: Extracts error code, details, and context from the exception
+    - For ToolInputError with path validation: Enhances messages with more user-friendly text
+    - For standard Python exceptions: Captures traceback and generates appropriate error codes
+    
+    The resulting dictionary always contains these standardized fields:
+    - error: Human-readable error message (string)
+    - error_code: Categorized error code (string)
+    - error_type: Name of the exception class (string)
+    - details: Dictionary with additional error information (object)
+    - success: Always false for errors (boolean)
+    - isError: Always true, used by MCP protocol handlers (boolean)
     
     Args:
-        error: Exception to format
+        error: Any exception instance to format into a response
         
     Returns:
-        Dictionary containing error information
+        Dictionary containing standardized error information following the MCP protocol
+        
+    Example:
+        ```python
+        try:
+            result = perform_operation()
+        except Exception as e:
+            error_response = format_error_response(e)
+            return error_response  # Ready for API response
+        ```
     """
     if isinstance(error, ToolError):
         # For ToolError instances, extract structured information

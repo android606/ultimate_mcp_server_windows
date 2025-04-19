@@ -1,12 +1,45 @@
 #!/usr/bin/env python3
-"""Standalone script for running Ultimate MCP Server tasks."""
+"""
+Standalone CLI for running and interacting with the Ultimate MCP Server.
+
+This module provides a comprehensive command-line interface for the Ultimate MCP
+(Model Control Protocol) Server, enabling users to perform various operations including:
+
+- Starting and configuring the server with custom settings
+- Testing and benchmarking different LLM providers (OpenAI, Anthropic, etc.)
+- Generating text completions directly from the command line
+- Managing the completion cache for performance optimization
+- Listing available providers and models with their current status
+
+The CLI is designed to be user-friendly with comprehensive help text and follows
+a hierarchical command structure similar to tools like git. It can be used both 
+for server administration and as a quick interface for testing LLM capabilities
+without writing any code.
+
+Usage examples:
+    # Start the server on default host/port
+    $ python main.py run
+    
+    # Generate a completion with a specific provider
+    $ python main.py complete --provider openai --prompt "Write a haiku about coding"
+    
+    # List all available providers and check their API key status
+    $ python main.py providers --check
+    
+    # Benchmark multiple providers and models
+    $ python main.py benchmark --providers openai anthropic --runs 5
+
+For full documentation on available commands and options, use:
+    $ python main.py --help
+    $ python main.py <command> --help
+"""
 import argparse
 import asyncio
 import os
 import sys
 from typing import List, Optional
 
-from ultimate import __version__
+from ultimate_mcp_server import __version__
 from ultimate_mcp_server.cli.commands import (
     benchmark_providers,
     check_cache,
@@ -22,14 +55,40 @@ from ultimate_mcp_server.utils import get_logger
 
 
 # Use consistent namespace
-logger = get_logger("ultimate.main")
+logger = get_logger("ultimate_mcp_server.main")
 
 
 def create_parser() -> argparse.ArgumentParser:
-    """Create command-line argument parser.
+    """
+    Create and configure the command-line argument parser for the MCP Server CLI.
+    
+    This function defines the complete command-line interface structure, including
+    all available commands, their arguments, and help text. The parser provides
+    a hierarchical command structure with the following top-level commands:
+    
+    - run: Launch the MCP server with configurable host/port/workers
+    - providers: List and check status of available LLM providers
+    - test: Test a specific provider with a sample prompt
+    - complete: Generate text completions using a chosen provider/model
+    - cache: Manage the completion cache (status, clearing)
+    - benchmark: Run performance benchmarks across multiple providers
+    
+    Each command has its own set of arguments tailored to its functionality.
+    The parser also supports global flags like --version and --debug that
+    apply across all commands.
+    
+    The parser uses argparse's subparser functionality to organize commands
+    hierarchically, enabling a git-like command structure (e.g., 
+    'ultimate-mcp-server run --host 0.0.0.0').
     
     Returns:
-        ArgumentParser instance
+        ArgumentParser: Fully configured argument parser ready for parsing
+    
+    Example Usage:
+        parser = create_parser()
+        args = parser.parse_args(['run', '--port', '9000'])
+        # args.command would contain 'run'
+        # args.port would contain 9000
     """
     parser = argparse.ArgumentParser(
         prog="ultimate-mcp-server",
@@ -194,13 +253,34 @@ def create_parser() -> argparse.ArgumentParser:
 
 
 def main(args: Optional[List[str]] = None) -> int:
-    """Main entry point for the CLI.
+    """
+    Main entry point for the Ultimate MCP Server CLI.
+    
+    This function parses command-line arguments and executes the appropriate command
+    based on user input. The CLI supports multiple commands including:
+    
+    - run: Start the MCP server
+    - providers: List available LLM providers and their status
+    - test: Test a specific provider with a sample prompt
+    - complete: Generate a completion using a specific provider
+    - cache: Manage the completion cache
+    - benchmark: Run performance benchmarks across providers
+    
+    The function handles command execution, including proper error handling for
+    user interruptions and unexpected exceptions.
     
     Args:
-        args: Command-line arguments (if None, sys.argv[1:] is used)
+        args: Command-line arguments to parse. If None, sys.argv[1:] is used.
         
     Returns:
-        Exit code (0 for success, non-zero for error)
+        Exit code (0 for success, 1 for general error, 130 for keyboard interrupt)
+        
+    Example:
+        # Run the server on a custom host and port
+        main(["run", "--host", "0.0.0.0", "--port", "8000"])
+        
+        # Test the OpenAI provider
+        main(["test", "openai", "--prompt", "Hello, world!"])
     """
     # Parse arguments
     parser = create_parser()

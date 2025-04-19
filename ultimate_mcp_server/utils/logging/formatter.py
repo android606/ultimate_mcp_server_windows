@@ -4,25 +4,27 @@ Log formatters for Gateway logging system.
 This module provides formatters that convert log records into Rich renderables
 with consistent styling and visual elements.
 """
-import time
 import logging
-from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+import time
 import traceback
+from datetime import datetime
+from typing import Any, Dict, Optional, Tuple
 
-from rich.console import Console, ConsoleRenderable, Group
-from rich.text import Text
-from rich.panel import Panel
-from rich.table import Table
-from rich.logging import RichHandler
-from rich.traceback import Traceback
-from rich.style import Style
 from rich.columns import Columns
+from rich.console import Console, ConsoleRenderable, Group
+from rich.logging import RichHandler
+from rich.panel import Panel
+from rich.style import Style
+from rich.table import Table
+from rich.text import Text
+from rich.traceback import Traceback
+
+from .console import get_rich_console  # Import the console factory
 
 # Use relative imports for utils within the same package
-from .emojis import LEVEL_EMOJIS, get_emoji 
-from .themes import get_level_style, get_component_style
-from .console import get_rich_console # Import the console factory
+from .emojis import LEVEL_EMOJIS, get_emoji
+from .themes import get_component_style, get_level_style
+
 
 class GatewayLogRecord:
     """Enhanced log record simulation using standard LogRecord attributes.

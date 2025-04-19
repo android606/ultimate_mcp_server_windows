@@ -28,7 +28,7 @@ from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metric
 from ultimate_mcp_server.tools.completion import generate_completion
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.document")
+logger = get_logger("ultimate_mcp_server.tools.document")
 
 # --- Standalone Helper Functions (Moved out of class) --- 
 
@@ -193,6 +193,34 @@ def _chunk_by_token_estimation(document: str, chunk_size: int, chunk_overlap: in
          return [document]
 
 def _chunk_by_tokens(document: str, chunk_size: int, chunk_overlap: int) -> List[str]:
+    """
+    Chunk document by token count using tiktoken, prioritizing natural sentence boundaries.
+    
+    This function divides a document into chunks based on token count rather than character count,
+    which provides more accurate sizing for LLM context limits. The algorithm attempts to break
+    chunks at sentence boundaries for more natural reading and better semantic coherence.
+    
+    The function implements the following algorithm:
+    1. Tokenizes the document using tiktoken's cl100k_base encoding
+    2. Iterates through tokens to create chunks of approximately chunk_size tokens
+    3. For each chunk, searches backward from the target end position to find a sentence boundary
+    4. If a suitable boundary is found, ends the chunk there instead of at an arbitrary token
+    5. Creates overlap between chunks by starting the next chunk chunk_overlap tokens before the end of the previous chunk
+    
+    Args:
+        document: Document text to chunk
+        chunk_size: Target chunk size in tokens (not characters)
+        chunk_overlap: Number of tokens to overlap between chunks (must be < chunk_size)
+        
+    Returns:
+        List of document chunks with approximately chunk_size tokens each
+        
+    Notes:
+        - Requires the 'tiktoken' library to be installed
+        - Falls back to character-based chunking if tiktoken is unavailable
+        - Uses cl100k_base encoding which is compatible with many modern LLMs
+        - Handles edge cases like empty documents or invalid overlap sizes
+    """
     """Chunk document by token count using tiktoken, prioritizing sentence boundaries.
 
     Requires the 'tiktoken' library to be installed. Falls back to character chunking

@@ -9,24 +9,24 @@ that implements all the best practices for LLM usability:
 - Detailed documentation with examples
 - Structured outputs with consistent formats
 """
-import time
-from typing import Any, Dict, Optional
 import asyncio
+import time
 import uuid
+from typing import Any, Dict, Optional
+
+# ---------------------------------
+from error_handling import non_empty_string, validate_inputs, with_error_handling
+from tool_annotations import ToolAnnotations
 
 # --- Import RAG tools/services --- 
 # Assuming direct function import for simplicity in example
 # In a real structured app, might use dependency injection or service locators
 from ultimate_mcp_server.tools.rag import (
-    create_knowledge_base, 
-    add_documents, 
-    retrieve_context, 
-    delete_knowledge_base
+    add_documents,
+    create_knowledge_base,
+    delete_knowledge_base,
+    retrieve_context,
 )
-# ---------------------------------
-
-from error_handling import non_empty_string, validate_inputs, with_error_handling
-from tool_annotations import ToolAnnotations
 
 # --- Define KB Name for Demo --- 
 DEMO_KB_NAME = f"example_tool_kb_{uuid.uuid4().hex[:8]}" 
@@ -84,15 +84,111 @@ SAMPLE_DOCUMENTS = [
 # -------------------------------------
 
 class ExampleTool:
-    """Example implementation of a well-structured MCP tool."""
+    """
+    Example implementation of a well-structured MCP tool with best practices.
+    
+    The ExampleTool class serves as a reference implementation that demonstrates how to properly
+    design and implement tools for the Model Control Protocol (MCP) ecosystem. It showcases
+    a real-world RAG (Retrieval-Augmented Generation) tool that interacts with a knowledge base.
+    
+    Key design features:
+    - Proper tool registration with the MCP server
+    - Comprehensive schema definitions for inputs and outputs
+    - Clear tool descriptions with usage guidance for LLMs
+    - Tool annotations that provide semantic hints about tool behavior
+    - Consistent error handling and input validation
+    - Well-structured implementation with clean separation of concerns
+    
+    The class implements a search_knowledge_base tool that allows querying a vector store
+    containing sample documents. The implementation demonstrates how to:
+    - Process input parameters and apply validation
+    - Interact with external services (the knowledge base)
+    - Format response data in a consistent structure
+    - Handle errors gracefully with meaningful error messages
+    - Add appropriate metadata to help LLMs use the tool effectively
+    
+    This implementation is intended as an educational reference for developers creating
+    their own MCP tools, showing patterns and practices that lead to tools that are
+    easily discoverable, usable, and maintainable.
+    
+    Usage:
+        ```python
+        # Initialize the MCP server
+        server = MCPServer()
+        
+        # Create an instance (automatically registers all tools)
+        tool = ExampleTool(server)
+        
+        # The tool is now available for use through the server
+        # After ensuring the knowledge base is set up
+        await setup_demo_kb()
+        ```
+    """
     
     def __init__(self, mcp_server):
-        """Initialize with an MCP server instance."""
+        """
+        Initialize an ExampleTool instance and register its tools with the MCP server.
+        
+        This constructor creates a new instance of the ExampleTool class and automatically
+        registers all tools implemented by this class with the provided MCP server. It
+        serves as the entry point for integrating the example tools into an MCP server.
+        
+        The initialization process:
+        1. Stores a reference to the provided MCP server instance
+        2. Calls the _register_tools method to define and register all tools
+        3. Establishes all necessary connections to the underlying knowledge base
+        
+        After initialization, the tools become available for use through the MCP server's
+        tool invocation interface. No further setup is required for the tools themselves,
+        although the underlying knowledge base (see setup_demo_kb) must be initialized
+        before the tools can be used effectively.
+        
+        Args:
+            mcp_server: An instance of the MCP server to register tools with. This must be
+                       a fully initialized server object with a functional tool registration
+                       system available through its 'tool' decorator.
+                       
+        Returns:
+            None
+            
+        Notes:
+            - Tool registration happens immediately during initialization
+            - Tool usage requires the demo knowledge base to be set up separately
+            - The server instance is stored but not modified beyond tool registration
+        """
         self.mcp = mcp_server
         self._register_tools()
         
     def _register_tools(self):
-        """Register tools with the MCP server."""
+        """
+        Register all tools provided by this class with the MCP server.
+        
+        This private method is called during initialization and handles the registration
+        of all tools implemented by the ExampleTool class. It defines and registers 
+        individual tools with appropriate metadata, schemas, and implementations.
+        
+        For each tool, the method:
+        1. Creates tool annotations with appropriate behavioral hints
+        2. Defines the tool's description, input schema, and output schema
+        3. Implements the tool function with error handling and input validation
+        4. Registers the complete tool with the MCP server
+        
+        The primary tool defined here is:
+        - search_knowledge_base: Searches the demo knowledge base for relevant documents
+          based on user queries and optional filters
+        
+        Each tool is decorated with:
+        - @self.mcp.tool: Registers the function as an MCP tool
+        - @with_error_handling: Provides standardized exception handling
+        - @validate_inputs: Validates required parameters before execution
+        
+        The detailed tool definitions include human-readable descriptions, parameter
+        schemas with comprehensive type information, and examples demonstrating proper
+        tool usage for LLMs.
+        
+        Returns:
+            None - Tools are registered as a side effect
+        """
         
         # Create tool annotations with appropriate hints
         search_annotations = ToolAnnotations(
@@ -302,7 +398,41 @@ class ExampleTool:
 
 # --- Added Setup/Teardown for Demo KB ---
 async def setup_demo_kb():
-    """Creates and populates the demo knowledge base."""
+    """
+    Creates and populates the demo knowledge base with sample documents.
+    
+    This function handles the initialization of the demo knowledge base used by
+    the example tools. It performs the following operations in sequence:
+    1. Creates a new knowledge base with the name defined in DEMO_KB_NAME
+    2. Extracts documents, metadata, and IDs from the SAMPLE_DOCUMENTS constant
+    3. Adds the extracted information to the newly created knowledge base
+    
+    The knowledge base is created with overwrite=True, which means any existing
+    knowledge base with the same name will be deleted and recreated. This ensures
+    a clean starting state for the demo.
+    
+    Each document in the sample data is structured with:
+    - id: Unique identifier for the document
+    - title: Document title
+    - text: The actual document content to be vectorized
+    - type: Document category (article, tutorial, reference, faq)
+    - level: Difficulty level (beginner, intermediate, advanced)
+    - date: Publication date in YYYY-MM-DD format
+    - score_for_ranking: A number between 0-1 used for demonstration purposes
+    
+    The function logs its progress to stdout and raises any exceptions it encounters,
+    allowing the caller to handle failures appropriately.
+    
+    Returns:
+        None
+        
+    Raises:
+        Exception: If any step in the setup process fails. The original exception is
+                 preserved and propagated with context information.
+    
+    Usage:
+        await setup_demo_kb()  # Must be called in an async context
+    """
     print(f"Setting up demo knowledge base: {DEMO_KB_NAME}...")
     try:
         await create_knowledge_base(name=DEMO_KB_NAME, overwrite=True)
@@ -321,7 +451,40 @@ async def setup_demo_kb():
         raise
 
 async def teardown_demo_kb():
-    """Deletes the demo knowledge base."""
+    """
+    Deletes the demo knowledge base and cleans up associated resources.
+    
+    This function is responsible for properly disposing of the demo knowledge base
+    after the examples have been run. It ensures that temporary resources created
+    for demonstration purposes don't persist unnecessarily. Specifically, it:
+    
+    1. Attempts to delete the knowledge base identified by DEMO_KB_NAME
+    2. Logs the success or failure of the operation to stdout
+    3. Suppresses any exceptions to prevent cleanup errors from propagating
+    
+    Unlike setup_demo_kb(), this function does not raise exceptions for failures,
+    as cleanup errors should not prevent the application from continuing or shutting
+    down normally. Instead, errors are logged but suppressed.
+    
+    The function can be safely called multiple times or even if the knowledge base
+    doesn't exist (the underlying delete_knowledge_base function should handle such cases).
+    
+    This function should be called during application shutdown or after example
+    tools are no longer needed, typically in one of these contexts:
+    - Server shutdown hooks/lifecycle events
+    - After example demonstration is complete
+    - During application cleanup phases
+    
+    Returns:
+        None
+    
+    Usage:
+        await teardown_demo_kb()  # Must be called in an async context
+        
+    Note:
+        In production systems, more robust cleanup might involve tracking created
+        resources and ensuring proper disposal even after unexpected termination.
+    """
     print(f"Cleaning up demo knowledge base: {DEMO_KB_NAME}...")
     try:
         await delete_knowledge_base(name=DEMO_KB_NAME)
@@ -332,11 +495,49 @@ async def teardown_demo_kb():
 
 def register_example_tools(mcp_server):
     """
-    Register all example tools with the MCP server.
-    Also performs setup/teardown for the demo KB needed by this tool.
+    Register all example tools with the MCP server and set up required resources.
+    
+    This function serves as the main entry point for integrating the example tools
+    into an MCP server instance. It instantiates the ExampleTool class, which registers 
+    all individual tools with the provided server. Additionally, it handles concerns
+    related to the setup and teardown of resources required by the example tools.
+    
+    Key responsibilities:
+    1. Creates an instance of ExampleTool, which registers all example tools with the server
+    2. Manages the initialization of required resources (demo knowledge base)
+    3. Documents integration concerns and known limitations
+    
+    Integration notes:
+    - The demo knowledge base (DEMO_KB_NAME) must be set up before tools are used
+    - In a production environment, the async setup should be handled as part of the
+      server lifecycle (e.g., using lifespan or startup events) rather than directly here
+    - Current implementation leaves knowledge base setup as a separate step due to
+      challenges with mixing sync/async code in the registration process
     
     Args:
-        mcp_server: MCP server instance
+        mcp_server: An instance of the MCP server to register tools with. This should be
+                   a fully initialized server object with a working tool registration system.
+                   
+    Returns:
+        None
+        
+    Usage:
+        ```python
+        # During server initialization:
+        server = MCPServer()
+        register_example_tools(server)
+        
+        # Remember to set up the knowledge base separately (due to async requirements):
+        await setup_demo_kb()  # Before using the tools
+        
+        # And clean up when done:
+        await teardown_demo_kb()  # After tools are no longer needed
+        ```
+    
+    Known limitations:
+    - Cannot perform async setup directly in this function due to sync/async boundary issues
+    - Knowledge base setup must be handled separately as an async operation
+    - Resource cleanup must also be manually triggered as an async operation
     """
     # Perform setup when tools are registered
     # Note: In a real server, setup/teardown might be handled differently (e.g., lifespan)

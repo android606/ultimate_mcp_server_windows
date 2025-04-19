@@ -6,7 +6,10 @@ from ultimate_mcp_server.core.models.requests import CompletionRequest
 from ultimate_mcp_server.services.cache import get_cache_service
 from ultimate_mcp_server.services.knowledge_base.feedback import get_rag_feedback_service
 from ultimate_mcp_server.services.knowledge_base.retriever import KnowledgeBaseRetriever
-from ultimate_mcp_server.services.knowledge_base.utils import extract_keywords, generate_token_estimate
+from ultimate_mcp_server.services.knowledge_base.utils import (
+    extract_keywords,
+    generate_token_estimate,
+)
 from ultimate_mcp_server.services.prompts import get_prompt_service
 from ultimate_mcp_server.utils import get_logger
 

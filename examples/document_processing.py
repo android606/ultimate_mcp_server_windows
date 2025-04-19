@@ -28,7 +28,10 @@ from ultimate_mcp_server.tools.document import (
 from ultimate_mcp_server.utils import get_logger
 
 # --- Import display utilities ---
-from ultimate_mcp_server.utils.display import CostTracker, display_text_content_result  # Import CostTracker
+from ultimate_mcp_server.utils.display import (  # Import CostTracker
+    CostTracker,
+    display_text_content_result,
+)
 from ultimate_mcp_server.utils.logging.console import console
 
 # ----------------------
@@ -52,6 +55,37 @@ mcp.tool()(generate_qa_pairs)
 # document_tools = DocumentTools(mcp)
 
 async def safe_tool_call(tool_name: str, args: dict) -> dict:
+    """
+    Safely call an MCP tool and handle potential errors in a standardized way.
+    
+    This function provides a wrapper around MCP tool calls with consistent error handling 
+    and response formatting. It captures exceptions that might occur during tool execution
+    and transforms them into a standardized response format with success/error indicators.
+    
+    Args:
+        tool_name: The name of the MCP tool to call (e.g., "chunk_document", "summarize_document")
+        args: A dictionary containing the arguments to pass to the tool
+              
+    Returns:
+        dict: A standardized response dictionary with the following structure:
+            - success (bool): Whether the tool call completed without errors
+            - result (Any): The tool's result data if successful
+            - error (str, optional): Error message if unsuccessful
+            
+    Example usage:
+        ```python
+        response = await safe_tool_call("summarize_document", {
+            "document": text,
+            "summary_length": "short",
+            "format": "paragraph"
+        })
+        
+        if response["success"]:
+            summary = response["result"]
+        else:
+            print(f"Error: {response['error']}")
+        ```
+    """
     try:
         result = await mcp.call_tool(tool_name, args)
         
@@ -68,7 +102,34 @@ async def safe_tool_call(tool_name: str, args: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 async def demonstrate_document_processing(tracker: CostTracker): # Add tracker
-    """Demonstrate document processing capabilities using Rich."""
+    """
+    Demonstrate various document processing capabilities with rich visual output.
+    
+    This function showcases the core document processing tools available in the 
+    Ultimate MCP Server with a sample AI-focused document. It demonstrates:
+    
+    1. Document chunking - Breaking text into manageable, semantically coherent pieces
+    2. Document summarization - Creating concise summaries of the content
+    3. Entity extraction - Identifying key entities (fields, industries, concepts)
+    4. Q&A pair generation - Creating relevant question-answer pairs from content
+    
+    Each demonstration includes rich visual output in the console using the Rich library,
+    along with cost tracking for API calls.
+    
+    Args:
+        tracker: A CostTracker instance that records API usage costs and token counts
+                for each operation performed during the demonstration
+                
+    Returns:
+        None - Results are displayed to the console and tracked in the provided tracker
+        
+    Example usage:
+        ```python
+        cost_tracker = CostTracker()
+        await demonstrate_document_processing(cost_tracker)
+        cost_tracker.display_summary(console)
+        ```
+    """
     console.print(Rule("[bold blue]Document Processing Demonstration[/bold blue]"))
     logger.info("Starting document processing demonstration", emoji_key="start")
     
@@ -317,7 +378,31 @@ async def demonstrate_document_processing(tracker: CostTracker): # Add tracker
     tracker.display_summary(console)
 
 async def main():
-    """Run document processing demonstration."""
+    """
+    Run the document processing demonstration with comprehensive error handling.
+    
+    This function serves as the entry point for the document processing example script.
+    It initializes a cost tracker, runs the document processing demonstration, and
+    handles any exceptions that might occur during execution. The function also
+    displays a success or error message upon completion.
+    
+    The function performs the following steps:
+    1. Initialize a CostTracker to monitor API usage costs
+    2. Run the document processing demonstration with error handling
+    3. Display appropriate success or error messages
+    4. Return an exit code that reflects the execution status
+    
+    Returns:
+        int: Exit code indicating success (0) or failure (1)
+            - 0: Demonstration completed successfully
+            - 1: An error occurred during demonstration
+            
+    Example usage:
+        ```python
+        exit_code = asyncio.run(main())
+        sys.exit(exit_code)
+        ```
+    """
     tracker = CostTracker() # Instantiate tracker
     try:
         await demonstrate_document_processing(tracker) # Pass tracker

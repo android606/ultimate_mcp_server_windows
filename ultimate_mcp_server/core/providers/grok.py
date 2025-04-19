@@ -10,7 +10,7 @@ from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.utils import get_logger
 
 # Use the same naming scheme everywhere: logger at module level
-logger = get_logger("ultimate.providers.grok")
+logger = get_logger("ultimate_mcp_server.providers.grok")
 
 
 class GrokProvider(BaseProvider):

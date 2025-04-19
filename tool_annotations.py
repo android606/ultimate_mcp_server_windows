@@ -9,13 +9,51 @@ from typing import List, Optional
 
 class ToolAnnotations:
     """
-    Tool annotations providing hints to LLMs about tool behavior and usage.
+    Tool annotations providing hints to LLMs about tool behavior and usage patterns.
     
-    These annotations help LLMs make better decisions about which tools to use
-    in different situations, and understand the potential consequences of tool calls.
+    ToolAnnotations supply metadata that helps LLMs make informed decisions about:
+    - WHEN to use a particular tool (appropriate contexts and priority)
+    - HOW to use the tool correctly (through examples and behavior hints)
+    - WHAT the potential consequences of using the tool might be (read-only vs. destructive)
+    - WHO should use the tool (assistant, user, or both via audience hints)
     
-    All hints are advisory only, and don't restrict the tool's behavior - they
-    simply provide guidance to the LLM.
+    These annotations serve as a bridge between tool developers and LLMs, providing
+    crucial context beyond just function signatures and descriptions. For example, the
+    annotations can indicate that a file deletion tool is destructive and should be used
+    with caution, or that a search tool is safe to retry multiple times.
+    
+    The system supports four key behavioral hints:
+    - read_only_hint: Tool doesn't modify state (safe for exploratory use)
+    - destructive_hint: Tool may perform irreversible changes (use with caution)
+    - idempotent_hint: Repeated calls with same arguments produce same results
+    - open_world_hint: Tool interacts with external systems beyond the LLM's knowledge
+    
+    Additional metadata includes:
+    - audience: Who can/should use this tool
+    - priority: How important/commonly used this tool is
+    - title: Human-readable name for the tool
+    - examples: Sample inputs and expected outputs
+    
+    Usage example:
+        ```python
+        # For a document deletion tool
+        delete_doc_annotations = ToolAnnotations(
+            read_only_hint=False,       # Modifies state
+            destructive_hint=True,      # Deletion is destructive
+            idempotent_hint=True,       # Deleting twice has same effect as once
+            open_world_hint=True,       # Changes external file system
+            audience=["assistant"],     # Only assistant should use it
+            priority=0.3,               # Lower priority (use cautiously)
+            title="Delete Document",
+            examples=[{
+                "input": {"document_id": "doc-123"},
+                "output": {"success": True, "message": "Document deleted"}
+            }]
+        )
+        ```
+    
+    Note: All hints are advisory only - they don't enforce behavior but help LLMs
+    make better decisions about tool usage.
     """
     
     def __init__(
@@ -34,22 +72,40 @@ class ToolAnnotations:
         
         Args:
             read_only_hint: If True, indicates this tool does not modify its environment.
+                Tools with read_only_hint=True are safe to call for exploration without
+                side effects. Examples: search tools, data retrieval, information queries.
                 Default: False
-            destructive_hint: If True, the tool may perform destructive updates.
-                Only meaningful when read_only_hint is False.
+                
+            destructive_hint: If True, the tool may perform destructive updates that
+                can't easily be reversed or undone. Only meaningful when read_only_hint 
+                is False. Examples: deletion operations, irreversible state changes, payments.
                 Default: True
+                
             idempotent_hint: If True, calling the tool repeatedly with the same arguments
-                will have no additional effect. Only meaningful when read_only_hint is False.
+                will have no additional effect beyond the first call. Useful for retry logic.
+                Only meaningful when read_only_hint is False. Examples: setting a value,
+                deleting an item (calling it twice doesn't delete it twice).
                 Default: False
-            open_world_hint: If True, this tool may interact with external systems or entities.
-                If False, the tool's domain is closed (e.g., memory tools).
+                
+            open_world_hint: If True, this tool may interact with systems or information 
+                outside the LLM's knowledge context (external APIs, file systems, etc.).
+                If False, the tool operates in a closed domain the LLM can fully model.
                 Default: True
-            audience: Who is the intended user of this tool (e.g., ["assistant", "user"]).
+                
+            audience: Who is the intended user of this tool, as a list of roles:
+                - "assistant": The AI assistant can use this tool
+                - "user": The human user can use this tool
                 Default: ["assistant"]
-            priority: How important this tool is (0.0-1.0, higher is more important).
-                Default: 0.5
-            title: Human-readable title for the tool.
-            examples: List of usage examples, each containing 'input' and 'output'.
+                
+            priority: How important this tool is, from 0.0 (lowest) to 1.0 (highest).
+                Higher priority tools should be considered first when multiple tools
+                might accomplish a similar task. Default: 0.5 (medium priority)
+                
+            title: Human-readable title for the tool. If not provided, the tool's
+                function name is typically used instead.
+                
+            examples: List of usage examples, each containing 'input' and 'output' keys.
+                These help the LLM understand expected patterns of use and responses.
         """
         self.read_only_hint = read_only_hint
         self.destructive_hint = destructive_hint
@@ -75,6 +131,7 @@ class ToolAnnotations:
 
 # Pre-defined annotation templates for common tool types
 
+# A tool that only reads/queries data without modifying any state
 READONLY_TOOL = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,
@@ -84,6 +141,7 @@ READONLY_TOOL = ToolAnnotations(
     title="Read-Only Tool"
 )
 
+# A tool that queries external systems or APIs for information
 QUERY_TOOL = ToolAnnotations(
     read_only_hint=True,
     destructive_hint=False,
@@ -93,6 +151,8 @@ QUERY_TOOL = ToolAnnotations(
     title="Query Tool"
 )
 
+# A tool that performs potentially irreversible changes to state
+# The LLM should use these with caution, especially without confirmation
 DESTRUCTIVE_TOOL = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=True,
@@ -102,6 +162,8 @@ DESTRUCTIVE_TOOL = ToolAnnotations(
     title="Destructive Tool"
 )
 
+# A tool that modifies state but can be safely called multiple times
+# with the same arguments (e.g., setting a value, creating if not exists)
 IDEMPOTENT_UPDATE_TOOL = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,

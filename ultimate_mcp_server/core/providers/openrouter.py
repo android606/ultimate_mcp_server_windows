@@ -12,7 +12,7 @@ from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.utils import get_logger
 
 # Use the same naming scheme everywhere: logger at module level
-logger = get_logger("ultimate.providers.openrouter")
+logger = get_logger("ultimate_mcp_server.providers.openrouter")
 
 # Default OpenRouter Base URL (can be overridden by config)
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

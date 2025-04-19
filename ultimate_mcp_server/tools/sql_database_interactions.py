@@ -36,7 +36,7 @@ from ultimate_mcp_server.services.cache import with_cache
 from ultimate_mcp_server.tools.base import with_error_handling, with_retry, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.sql_database_interactions")
+logger = get_logger("ultimate_mcp_server.tools.sql_database_interactions")
 
 # --- Constants ---
 PROHIBITED_STATEMENTS = [

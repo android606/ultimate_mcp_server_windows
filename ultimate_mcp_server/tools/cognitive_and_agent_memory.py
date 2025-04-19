@@ -49,7 +49,7 @@ from ultimate_mcp_server.services.vector.embeddings import get_embedding_service
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.unified_memory")
+logger = get_logger("ultimate_mcp_server.tools.unified_memory")
 
 # ======================================================
 # Configuration Settings

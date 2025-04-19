@@ -24,18 +24,53 @@ from ultimate_mcp_server.exceptions import (
 from ultimate_mcp_server.services.cache import with_cache
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.base")
+logger = get_logger("ultimate_mcp_server.tools.base")
 
 
 def tool(name=None, description=None):
-    """Decorator to mark a method as an MCP tool.
+    """
+    Decorator that marks a BaseTool class method as an MCP tool.
+    
+    This decorator adds metadata to a method, identifying it as a tool that should be
+    registered with the MCP server when the containing BaseTool class is initialized.
+    It allows customizing the tool's name and description, which are used in tool
+    discoverability and documentation.
+    
+    Unlike the register_tool function which directly registers standalone functions,
+    this decorator only marks methods for later registration, allowing BaseTool subclasses
+    to organize multiple related tools together in a single class.
+    
+    The decorator adds three attributes to the method:
+    - _tool: A boolean flag indicating this is a tool method
+    - _tool_name: The name to use when registering the tool (or original method name)
+    - _tool_description: The description to use for the tool (or method docstring)
+    
+    These attributes are used during the tool registration process, typically in the
+    _register_tools method of BaseTool subclasses.
     
     Args:
-        name: Tool name (defaults to method name)
-        description: Tool description (defaults to method docstring)
+        name: Custom name for the tool (defaults to the method name if not provided)
+        description: Custom description for the tool (defaults to the method's docstring)
         
     Returns:
-        Decorated method
+        A decorator function that adds tool metadata attributes to the decorated method
+        
+    Example:
+        ```python
+        class MyToolSet(BaseTool):
+            tool_name = "my_toolset"
+            
+            @tool(name="custom_operation", description="Performs a customized operation")
+            async def perform_operation(self, param1: str, param2: int) -> Dict[str, Any]:
+                # Implementation
+                return {"result": "success"}
+        ```
+        
+    Notes:
+        - This decorator should be used on methods of classes that inherit from BaseTool
+        - Decorated methods should be async
+        - The decorated method must take self as its first parameter
+        - This decorator does not apply error handling or other middleware automatically
     """
     def decorator(func):
         @functools.wraps(func)
@@ -52,15 +87,73 @@ def tool(name=None, description=None):
 
 
 def with_resource(resource_type, allow_creation=False, require_existence=True):
-    """Decorator to standardize resource handling for tools.
+    """
+    Decorator for standardizing resource access and validation in tool methods.
+    
+    This decorator provides consistent resource handling for tool methods that
+    access or create persistent resources in the MCP ecosystem. It enforces resource
+    validation rules, handles resource registration, and provides unified error handling
+    for resource-related operations.
+    
+    Core functionalities:
+    1. Resource existence validation - Ensures resources exist before allowing access
+    2. Resource creation tracking - Registers newly created resources with the system
+    3. Resource type validation - Confirms resources match expected types
+    4. Standardized error handling - Produces consistent error responses for resource issues
+    
+    The decorator identifies resource IDs by looking for common parameter names like
+    '{resource_type}_id', 'id', or 'resource_id' in the function's keyword arguments.
+    When a resource ID is found, it performs the configured validation checks before
+    allowing the function to execute. After execution, it can optionally register
+    newly created resources.
     
     Args:
-        resource_type: Type of resource being accessed (e.g., "document", "embedding", "database")
-        allow_creation: Whether the tool is allowed to create new resources
-        require_existence: Whether the resource must exist before the tool is called
+        resource_type: Type category for the resource (e.g., "document", "embedding", 
+                      "database"). Used for validation and registration.
+        allow_creation: Whether the tool is allowed to create new resources of this type.
+                       When True, the decorator will register any created resources.
+        require_existence: Whether the resource must exist before the tool is called.
+                          When True, the decorator will verify resource existence.
         
     Returns:
-        Decorator function
+        A decorator function that applies resource handling to tool methods.
+        
+    Raises:
+        ResourceError: When resource validation fails (e.g., resource not found,
+                      resource type mismatch, or unauthorized resource access).
+        
+    Example:
+        ```python
+        class DocumentTools(BaseTool):
+            @tool()
+            @with_resource("document", require_existence=True, allow_creation=False)
+            async def get_document_summary(self, document_id: str):
+                # This method will fail with ResourceError if document_id doesn't exist
+                # Resource existence is checked before this code runs
+                ...
+                
+            @tool()
+            @with_resource("document", require_existence=False, allow_creation=True)
+            async def create_document(self, content: str, metadata: Dict[str, Any] = None):
+                # Process content and create document
+                doc_id = str(uuid.uuid4())
+                # ... processing logic ...
+                
+                # Return created resource with resource_id key to trigger registration
+                return {
+                    "resource_id": doc_id,  # This triggers resource registration
+                    "status": "created",
+                    "metadata": {"content_length": len(content), "created_at": time.time()}
+                }
+                # The resource is automatically registered with the returned metadata
+        ```
+    
+    Notes:
+        - This decorator should be applied after @tool but before other decorators
+          like @with_error_handling to ensure proper execution order
+        - Resources created with allow_creation=True must include a "resource_id" 
+          key in their result dictionary to trigger registration
+        - The resource registry must be accessible via the tool's mcp server instance
     """
     def decorator(func):
         @functools.wraps(func)
@@ -137,7 +230,35 @@ def with_resource(resource_type, allow_creation=False, require_existence=True):
 
 
 class ResourceRegistry:
-    """Registry for tracking resources used by tools."""
+    """
+    Registry that tracks and manages resources used by MCP tools.
+    
+    The ResourceRegistry provides a centralized system for tracking resources created or
+    accessed by tools within the MCP ecosystem. It maintains resource metadata, handles
+    persistence of resource information, and provides methods for registering, looking up,
+    and deleting resources.
+    
+    Resources in the MCP ecosystem represent persistent or semi-persistent objects that
+    may be accessed across multiple tool calls or sessions. Examples include documents,
+    knowledge bases, embeddings, file paths, and database connections. The registry helps
+    manage the lifecycle of these resources and prevents issues like resource leaks or
+    unauthorized access.
+    
+    Key features:
+    - In-memory caching of resource metadata for fast lookups
+    - Optional persistent storage via pluggable storage backends
+    - Resource type categorization (documents, embeddings, etc.)
+    - Resource existence checking for access control
+    - Simple CRUD operations for resource metadata
+    
+    Resources are organized by type and identified by unique IDs within those types.
+    Each resource has associated metadata that can include creation time, owner information,
+    and resource-specific attributes.
+    
+    The registry is typically initialized by the MCP server and made available to all tools.
+    Tools that create resources should register them, and tools that access resources should
+    verify their existence before proceeding.
+    """
     
     def __init__(self, storage_backend=None):
         """Initialize the resource registry.
@@ -147,7 +268,7 @@ class ResourceRegistry:
         """
         self.resources = {}
         self.storage = storage_backend
-        self.logger = get_logger("ultimate.resources")
+        self.logger = get_logger("ultimate_mcp_server.resources")
     
     async def register(self, resource_type, resource_id, metadata=None):
         """Register a resource in the registry.
@@ -336,7 +457,40 @@ class ResourceRegistry:
 
 
 class BaseToolMetrics:
-    """Metrics tracking for tool execution."""
+    """
+    Metrics collection and aggregation system for tool execution statistics.
+    
+    The BaseToolMetrics class provides a standardized way to track and aggregate performance
+    metrics for tool executions. It maintains cumulative statistics about calls to a tool,
+    including execution counts, success rates, timing information, and optional token usage
+    and cost data when available.
+    
+    This class is used both internally by BaseTool instances and by the with_tool_metrics
+    decorator to provide consistent metrics tracking across the entire MCP ecosystem. The
+    collected metrics enable monitoring, debugging, and optimization of tool performance
+    and usage patterns.
+    
+    Metrics tracked:
+    - Total number of calls
+    - Number of successful and failed calls
+    - Success rate
+    - Total, minimum, and maximum execution duration
+    - Total token usage (for LLM-based tools)
+    - Total cost (for tools with cost accounting)
+    
+    The metrics are aggregated in memory and can be retrieved at any time via the get_stats()
+    method. They represent the lifetime statistics of the tool since the metrics object
+    was created.
+    
+    Example:
+    ```python
+    # Accessing metrics from a tool
+    my_tool = MyToolClass(mcp_server)
+    metrics = my_tool.metrics.get_stats()
+    print(f"Success rate: {metrics['success_rate']:.2%}")
+    print(f"Average duration: {metrics['average_duration']:.2f}s")
+    ```
+    """
     
     def __init__(self):
         """Initialize metrics tracking."""
@@ -412,7 +566,45 @@ class BaseToolMetrics:
 
 
 class BaseTool:
-    """Base class for all Ultimate MCP Server tools."""
+    """
+    Foundation class for all tool implementations in the Ultimate MCP Server.
+    
+    The BaseTool class serves as the fundamental building block for creating tools that 
+    can be registered with and executed by the MCP server. It provides core functionality
+    for metrics tracking, logging, resource management, and tool execution.
+    
+    Tools in the Ultimate MCP Server ecosystem are designed to provide specific capabilities
+    that can be invoked by clients (typically LLMs) to perform various operations like
+    document processing, vector search, file operations, etc. The BaseTool architecture
+    ensures all tools have consistent behavior for error handling, metrics collection,
+    and server integration.
+    
+    Key features:
+    - Standardized tool registration via decorators
+    - Consistent metrics tracking for all tool executions
+    - Unified error handling and response formatting
+    - Integration with the server's resource registry
+    - Logger setup with tool-specific naming
+    
+    Tool classes should inherit from BaseTool and define their tools using the @tool
+    decorator. Each tool method should be async and follow the standard pattern of
+    accepting parameters, performing operations, and returning results in a structured
+    format.
+    
+    Example:
+    ```python
+    class MyCustomTools(BaseTool):
+        tool_name = "my_custom_tools"
+        description = "Provides custom tools for specific operations"
+        
+        @tool(name="custom_operation")
+        @with_tool_metrics
+        @with_error_handling
+        async def perform_operation(self, param1: str, param2: int) -> Dict[str, Any]:
+            # Implementation
+            return {"result": "success", "data": some_data}
+    ```
+    """
     
     tool_name: str = "base_tool"
     description: str = "Base tool class for Ultimate MCP Server."
@@ -442,53 +634,103 @@ class BaseTool:
         pass
         
     async def execute(self, tool_name: str, params: Dict[str, Any]) -> Any:
-        """Execute a tool with consistent interface.
+        """
+        Execute a tool method by name with the given parameters.
         
-        This method abstracts differences between FastMCP and Gateway interfaces.
+        This method provides the core execution mechanism for BaseTool subclasses,
+        dynamically dispatching calls to the appropriate tool method based on the
+        tool_name parameter. It handles parameter validation, metrics collection,
+        and error standardization to ensure consistent behavior across all tools.
+        
+        Execution flow:
+        1. Looks up the requested tool method in the class
+        2. Validates that the method is properly marked as a tool
+        3. Applies metrics tracking via _wrap_with_metrics
+        4. Executes the tool with the provided parameters
+        5. Returns the tool's response or a standardized error
         
         Args:
-            tool_name: Name of the tool to execute
-            params: Parameters to pass to the tool
-            
-        Returns:
-            Tool execution result
-        """
-        # Handle different interfaces between FastMCP and Gateway
-        if hasattr(self.mcp, "call_tool"):
-            # FastMCP
-            return await self.mcp.call_tool(tool_name, params)
-        elif hasattr(self.mcp, "execute"):
-            # Gateway
-            return await self.mcp.execute(tool_name, params)
-        else:
-            # Fallback - try the direct call first
-            try:
-                return await self.mcp.call_tool(tool_name, params)
-            except AttributeError as e:
-                self.logger.error(
-                    f"MCP server does not support call_tool or execute methods. Type: {type(self.mcp)}",
-                    emoji_key="error"
-                )
-                raise ValueError(f"Unsupported MCP server type: {type(self.mcp)}") from e
+            tool_name: Name of the specific tool method to execute
+            params: Dictionary of parameters to pass to the tool method
+                    (These parameters will be unpacked as kwargs)
         
+        Returns:
+            The result returned by the tool method, or a standardized error response
+            if execution fails
+            
+        Raises:
+            ToolError: If the specified tool_name is not found or not properly
+                       marked as a tool method
+                       
+        Example:
+            ```python
+            # Direct execution of a tool method
+            result = await my_tool_instance.execute(
+                "analyze_document", 
+                {"document_id": "doc123", "analysis_type": "sentiment"}
+            )
+            
+            # Error handling
+            if "isError" in result and result["isError"]:
+                print(f"Tool execution failed: {result['error']['message']}")
+            else:
+                print(f"Analysis result: {result['analysis_score']}")
+            ```
+        """
+        # Find method with tool name
+        method_name = tool_name.split(".")[-1]  # Handle namespaced tools
+        method = getattr(self, method_name, None)
+        
+        if not method or not hasattr(method, "_tool"):
+            raise ToolError(
+                f"Tool not found: {tool_name}",
+                error_code="tool_not_found"
+            )
+        
+        # Execute tool with metrics wrapper
+        return await self._wrap_with_metrics(method, **params)
+
     async def _wrap_with_metrics(
         self,
         func: Callable,
         *args,
         **kwargs
     ) -> Any:
-        """Wrap a function call with metrics tracking.
+        """
+        Internal method that wraps a function call with metrics tracking.
+        
+        This method provides a standardized way to execute tool functions while capturing
+        performance metrics such as execution duration, success/failure status, token usage,
+        and cost. These metrics are stored in the BaseTool instance's metrics object for
+        later analysis and reporting.
+        
+        The method performs the following steps:
+        1. Records the start time of the operation
+        2. Executes the provided function with the supplied arguments
+        3. If successful, extracts metrics data from the result (if available)
+        4. Records the execution metrics in the BaseTool's metrics object
+        5. Returns the original result or propagates any exceptions that occurred
+        
+        Metrics extraction:
+        - If the result is a dictionary, it will attempt to extract:
+          - Token usage from either result["tokens"]["total"] or result["total_tokens"]
+          - Cost information from result["cost"]
         
         Args:
-            func: Function to call
-            *args: Function arguments
-            **kwargs: Function keyword arguments
+            func: Async function to execute with metrics tracking
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
             
         Returns:
-            Function result
+            The result of the wrapped function call
             
         Raises:
-            Exception: If function call fails
+            Any exception raised by the wrapped function (after logging it)
+            
+        Notes:
+            - This method is typically called internally by BaseTool subclasses
+            - Related to but different from the standalone with_tool_metrics decorator
+            - Exceptions are logged but not caught (to allow proper error handling)
         """
         start_time = time.time()
         success = False
@@ -513,9 +755,9 @@ class BaseTool:
             
         except Exception as e:
             self.logger.error(
-                f"Tool execution failed: {str(e)}",
+                f"Tool execution failed: {func.__name__}: {str(e)}",
                 emoji_key="error",
-                tool=self.tool_name,
+                tool=func.__name__,
                 exc_info=True
             )
             raise
@@ -532,10 +774,45 @@ class BaseTool:
 
 
 def with_tool_metrics(func):
-    """Decorator to add metrics tracking to a tool function/method.
-    Adapts to both standalone functions and class methods.
-    Args: func: Tool function/method to decorate
-    Returns: Decorated function/method
+    """
+    Decorator that automatically tracks performance metrics for tool functions.
+    
+    This decorator captures and records execution metrics for both class methods and
+    standalone functions. It adapts its behavior based on whether the decorated function
+    is a method on a BaseTool instance or a standalone function.
+    
+    Metrics captured include:
+    - Execution time (duration in seconds)
+    - Success/failure state
+    - Token usage (extracted from result if available)
+    - Cost information (extracted from result if available)
+    
+    The decorator performs several functions:
+    1. Captures start time before execution
+    2. Executes the wrapped function, preserving all args/kwargs
+    3. Extracts metrics from the result dictionary if available
+    4. Logs execution statistics
+    5. Updates metrics in the BaseTool.metrics object if available
+    
+    When used with other decorators:
+    - Should be applied before with_error_handling to ensure metrics are 
+      captured even when errors occur
+    - Works well with with_cache, tracking metrics for both cache hits and misses
+    - Compatible with with_retry, recording each attempt separately
+    
+    Args:
+        func: The async function to decorate (can be a method or standalone function)
+        
+    Returns:
+        Wrapped async function that captures and records metrics
+        
+    Example:
+        ```python
+        @with_tool_metrics
+        @with_error_handling
+        async def my_tool_function(param1, param2):
+            # Function implementation
+        ```
     """
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -609,16 +886,48 @@ def with_retry(
     backoff_factor: float = 2.0,
     retry_exceptions: List[Type[Exception]] = None
 ):
-    """Decorator to add retry logic to a tool function.
+    """
+    Decorator that adds exponential backoff retry logic to async tool functions.
+    
+    This decorator wraps an async function with retry logic that will automatically
+    re-execute the function if it fails with certain exceptions. It implements an
+    exponential backoff strategy to progressively increase the wait time between
+    retry attempts, reducing load during transient failures.
+    
+    Retry behavior:
+    1. When the decorated function raises an exception, the decorator checks if it's a
+       retriable exception type (based on the retry_exceptions parameter)
+    2. If retriable, it waits for a delay period (which increases with each attempt)
+    3. After waiting, it retries the function with the same arguments
+    4. This process repeats until either the function succeeds or max_retries is reached
     
     Args:
-        max_retries: Maximum number of retry attempts
-        retry_delay: Initial delay between retries in seconds
-        backoff_factor: Factor to increase delay by on each retry
-        retry_exceptions: List of exception types to retry on (defaults to all)
-        
+        max_retries: Maximum number of retry attempts before giving up (default: 3)
+        retry_delay: Initial delay in seconds before first retry (default: 1.0)
+        backoff_factor: Multiplier for delay between retries (default: 2.0)
+                       Each retry's delay is calculated as: retry_delay * (backoff_factor ^ attempt)
+        retry_exceptions: List of exception types that should trigger retries.
+                         If None, all exceptions will trigger retries.
+    
     Returns:
-        Decorated function
+        A decorator function that wraps the given async function with retry logic.
+        
+    Example:
+        ```python
+        @with_retry(max_retries=3, retry_delay=2.0, backoff_factor=3.0,
+                   retry_exceptions=[ConnectionError, TimeoutError])
+        async def fetch_data(url):
+            # This function will retry up to 3 times if it raises ConnectionError or TimeoutError
+            # Delays between retries: 2s, 6s, 18s
+            # For other exceptions, it will fail immediately
+            return await some_api_call(url)
+        ```
+        
+    Notes:
+        - This decorator only works with async functions
+        - The decorated function must be idempotent (safe to call multiple times)
+        - Retries are logged at WARNING level, final failures at ERROR level
+        - The final exception is re-raised after all retries are exhausted
     """
     def decorator(func):
         @functools.wraps(func)
@@ -673,10 +982,56 @@ def with_retry(
     
 
 def with_error_handling(func):
-    """Decorator to add standardized error handling to a tool function/method.
-    Adapts to both standalone functions and class methods.
-    Args: func: Tool function/method to decorate
-    Returns: Decorated function/method with error handling
+    """
+    Decorator that transforms tool function exceptions into standardized error responses.
+    
+    This decorator intercepts any exceptions raised during tool execution and converts them
+    into a structured error response format following the MCP protocol standards. It ensures
+    that clients receive consistent, actionable error information regardless of how or where
+    the error occurred.
+    
+    The decorator performs several key functions:
+    1. Detects if it's decorating a BaseTool method or standalone function and adapts accordingly
+    2. Reconstructs function call arguments appropriately based on function signature
+    3. Catches exceptions raised during execution and transforms them into structured responses
+    4. Maps different exception types to corresponding MCP error types with appropriate metadata
+    5. Logs detailed error information while providing a clean, standardized response to clients
+    
+    Exception handling:
+    - ToolError: Passed through with logging (assumes already formatted correctly)
+    - ValueError: Converted to ToolInputError with detailed context
+    - Other exceptions: Converted to ToolExecutionError with execution context
+    
+    All error responses have the same structure:
+    ```
+    {
+        "success": False,
+        "isError": True,
+        "error": {
+            "type": "<error_type>",
+            "message": "<human-readable message>",
+            "details": {<context-specific details>},
+            "retriable": <boolean>,
+            "suggestions": [<optional recovery suggestions>],
+            "timestamp": <current_time>
+        }
+    }
+    ```
+    
+    Args:
+        func: The async function to decorate (can be a method or standalone function)
+        
+    Returns:
+        Decorated async function that catches exceptions and returns structured error responses
+        
+    Example:
+        ```python
+        @with_error_handling
+        async def my_tool_function(param1, param2):
+            # If this raises an exception, it will be transformed into a structured response
+            # rather than propagating up to the caller
+            # ...
+        ```
     """
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -775,16 +1130,52 @@ def with_error_handling(func):
 
 
 def register_tool(mcp_server, name=None, description=None, cache_ttl=None):
-    """Register a function as an MCP tool.
+    """
+    Register a standalone function as an MCP tool with optional caching and error handling.
+    
+    This function creates a decorator that registers the decorated function with the MCP server,
+    automatically applying error handling and optional result caching. It provides a simpler
+    alternative to class-based tool registration via the BaseTool class, allowing standalone
+    functions to be exposed as MCP tools without creating a full tool class.
+    
+    The decorator handles:
+    1. Tool registration with the MCP server using the provided name (or function name)
+    2. Documentation via the provided description (or function docstring)
+    3. Optional result caching with the specified TTL
+    4. Standardized error handling via the with_error_handling decorator
     
     Args:
-        mcp_server: MCP server instance
-        name: Tool name (defaults to function name)
-        description: Tool description (defaults to function docstring)
-        cache_ttl: Optional TTL for caching tool results
+        mcp_server: MCP server instance to register the tool with
+        name: Tool name used for registration (defaults to the function name if not provided)
+        description: Tool description for documentation (defaults to function docstring if not provided)
+        cache_ttl: Optional time-to-live in seconds for caching tool results. If provided, the tool results
+                  will be cached for this duration to improve performance for identical calls.
         
     Returns:
-        Decorator function
+        Decorator function that transforms the decorated function into a registered MCP tool
+        
+    Example:
+        ```python
+        # Initialize MCP server
+        mcp_server = FastMCP()
+        
+        # Register a function as a tool
+        @register_tool(mcp_server, name="get_weather", cache_ttl=300)
+        async def get_weather_data(location: str, units: str = "metric"):
+            '''Get current weather data for a location.'''
+            # Implementation
+            return {"temperature": 22, "conditions": "sunny"}
+            
+        # The function is now registered as an MCP tool named "get_weather"
+        # with 5-minute result caching and standardized error handling
+        ```
+        
+    Notes:
+        - The decorated function must be async
+        - If cache_ttl is provided, identical calls will return cached results 
+          rather than re-executing the function
+        - Function signature is preserved, making it transparent to callers
+        - For more complex tools with multiple methods, use the BaseTool class instead
     """
     def decorator(func):
         # Get function name and docstring
@@ -806,13 +1197,59 @@ def register_tool(mcp_server, name=None, description=None, cache_ttl=None):
     return decorator
 
 def _get_json_schema_type(type_annotation):
-    """Convert Python type annotation to JSON schema type information.
+    """
+    Convert Python type annotations to JSON Schema type definitions.
+    
+    This utility function translates Python's typing annotations into equivalent JSON Schema
+    type definitions, enabling automatic generation of API documentation and client interfaces
+    from Python function signatures. It handles basic types, Optional types, Lists, and 
+    provides reasonable defaults for complex types.
+    
+    The function is primarily used internally by the MCP framework to generate JSON Schema
+    definitions for tool parameters, allowing clients to understand the expected input types
+    and structures for each tool.
+    
+    Type mappings:
+    - str -> {"type": "string"}
+    - int -> {"type": "integer"}
+    - float -> {"type": "number"}
+    - bool -> {"type": "boolean"}
+    - Optional[T] -> Same as T, but adds "null" to "type" array
+    - List[T] -> {"type": "array", "items": <schema for T>}
+    - Dict -> {"type": "object"}
+    - Other complex types -> {"type": "object"}
     
     Args:
-        type_annotation: Type annotation from function signature
+        type_annotation: A Python type annotation (from typing module or built-in types)
         
     Returns:
-        Dictionary with JSON schema type information
+        A dictionary containing the equivalent JSON Schema type definition
+        
+    Notes:
+        - This function provides only type information, not complete JSON Schema validation
+          rules like minimum/maximum values, string patterns, etc.
+        - Complex nested types (e.g., List[Dict[str, List[int]]]) are handled, but deeply 
+          nested structures may be simplified in the output schema
+        - This function is meant for internal use by the tool registration system
+        
+    Examples:
+        ```python
+        # Basic types
+        _get_json_schema_type(str)  # -> {"type": "string"}
+        _get_json_schema_type(int)  # -> {"type": "integer"}
+        
+        # Optional types
+        from typing import Optional
+        _get_json_schema_type(Optional[str])  # -> {"type": ["string", "null"]}
+        
+        # List types
+        from typing import List
+        _get_json_schema_type(List[int])  # -> {"type": "array", "items": {"type": "integer"}}
+        
+        # Complex types
+        from typing import Dict, List
+        _get_json_schema_type(Dict[str, List[int]])  # -> {"type": "object"}
+        ```
     """
     import typing
     
@@ -855,13 +1292,164 @@ def _get_json_schema_type(type_annotation):
     return {"type": "object"}
 
 def with_state_management(namespace: str):
-    """Decorator to provide state management to tool functions.
+    """
+    Decorator that provides persistent state management capabilities to tool functions.
+    
+    This decorator enables stateful behavior in otherwise stateless tool functions by
+    injecting state access methods that allow reading, writing, and deleting values
+    from a persistent, namespace-based state store. This is essential for tools that
+    need to maintain context across multiple invocations, manage session data, or 
+    build features with memory capabilities.
+    
+    The state management system provides:
+    - Namespace isolation: Each tool can use its own namespace to prevent key collisions
+    - Thread-safe concurrency: Built-in locks ensure safe parallel access to the same state
+    - Optional persistence: State can be backed by disk storage for durability across restarts
+    - Lazy loading: State is loaded from disk only when accessed, improving performance
+    
+    State accessibility functions injected into the decorated function:
+    - get_state(key, default=None) → Any: Retrieve a value by key, with optional default
+    - set_state(key, value) → None: Store a value under the specified key
+    - delete_state(key) → None: Remove a value from the state store
+    
+    All state operations are async, allowing the tool to continue processing while
+    state operations are pending.
     
     Args:
-        namespace: The namespace to use for state storage
-        
+        namespace: A unique string identifying this tool's state namespace. This 
+                  should be chosen carefully to avoid collisions with other tools.
+                  Recommended format: "<tool_category>.<specific_feature>"
+                  Examples: "conversation.history", "user.preferences", "document.cache"
+    
     Returns:
-        A decorator that injects state management functions into the tool
+        A decorator function that wraps the original tool function, adding state
+        management capabilities via injected parameters.
+        
+    Examples:
+        Basic usage with conversation history:
+        ```python
+        @with_state_management("conversation.history")
+        async def chat_with_memory(message: str, ctx=None, get_state=None, set_state=None, delete_state=None):
+            # Get previous messages from persistent store
+            history = await get_state("messages", [])
+            
+            # Add new message
+            history.append({"role": "user", "content": message})
+            
+            # Generate response based on all previous conversation context
+            response = generate_response(message, history)
+            
+            # Add AI response to history
+            history.append({"role": "assistant", "content": response})
+            
+            # Store updated history for future calls
+            await set_state("messages", history)
+            return {"response": response}
+        ```
+        
+        Advanced pattern with conversational memory and user customization:
+        ```python
+        @with_state_management("assistant.settings")
+        async def personalized_assistant(
+            query: str, 
+            update_preferences: bool = False,
+            preferences: Dict[str, Any] = None,
+            ctx=None, 
+            get_state=None, 
+            set_state=None, 
+            delete_state=None
+        ):
+            # Get user ID from context
+            user_id = ctx.get("user_id", "default_user")
+            
+            # Retrieve user-specific preferences
+            user_prefs = await get_state(f"prefs:{user_id}", {
+                "tone": "professional",
+                "verbosity": "concise",
+                "expertise_level": "intermediate"
+            })
+            
+            # Update preferences if requested
+            if update_preferences and preferences:
+                user_prefs.update(preferences)
+                await set_state(f"prefs:{user_id}", user_prefs)
+            
+            # Get conversation history
+            history = await get_state(f"history:{user_id}", [])
+            
+            # Process query using preferences and history
+            response = process_personalized_query(
+                query, 
+                user_preferences=user_prefs,
+                conversation_history=history
+            )
+            
+            # Update conversation history
+            history.append({"query": query, "response": response})
+            if len(history) > 20:  # Keep only recent history
+                history = history[-20:]
+            await set_state(f"history:{user_id}", history)
+            
+            return {
+                "response": response,
+                "preferences": user_prefs
+            }
+        ```
+        
+        State persistence across server restarts:
+        ```python
+        # First call to the tool
+        @with_state_management("task.progress")
+        async def long_running_task(task_id: str, step: int = None, ctx=None, 
+                                   get_state=None, set_state=None, delete_state=None):
+            # Get current progress
+            progress = await get_state(task_id, {"completed_steps": [], "current_step": 0})
+            
+            # Update progress if a new step is provided
+            if step is not None:
+                progress["current_step"] = step
+                progress["completed_steps"].append({
+                    "step": step,
+                    "timestamp": time.time()
+                })
+                await set_state(task_id, progress)
+            
+            # Even if the server restarts, the next call will retrieve the saved progress
+            return {
+                "task_id": task_id,
+                "progress": progress,
+                "completed": len(progress["completed_steps"]),
+                "current_step": progress["current_step"]
+            }
+        ```
+        
+    Implementation Pattern:
+    The decorator works by injecting three async state management functions into the
+    decorated function's keyword arguments:
+    
+    1. `get_state(key, default=None)`:
+       - Retrieves state values from the persistent store
+       - If key doesn't exist, returns the provided default value
+       - Example: `user_data = await get_state("user:12345", {})`
+    
+    2. `set_state(key, value)`: 
+       - Stores a value in the persistent state store
+       - Automatically serializes complex Python objects (dicts, lists, etc.)
+       - Example: `await set_state("session:abc", {"authenticated": True})`
+    
+    3. `delete_state(key)`:
+       - Removes a key and its associated value from the store
+       - Example: `await delete_state("temporary_data")`
+    
+    Notes:
+        - The decorated function must accept get_state, set_state, delete_state, and ctx
+          parameters, either explicitly or via **kwargs.
+        - State persistence depends on the MCP server configuration. If persistence is
+          enabled, state will survive server restarts.
+        - For large objects, consider storing only references or identifiers in the state
+          and using a separate storage system for the actual data.
+        - The state store is shared across all server instances, so state keys should be
+          chosen to avoid collisions between different tools and features.
     """
     def decorator(func):
         @functools.wraps(func)

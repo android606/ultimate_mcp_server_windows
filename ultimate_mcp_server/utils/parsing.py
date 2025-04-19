@@ -12,7 +12,7 @@ from typing import Any, Dict
 from ultimate_mcp_server.utils import get_logger
 
 # Initialize logger
-logger = get_logger("ultimate.utils.parsing")
+logger = get_logger("ultimate_mcp_server.utils.parsing")
 
 def extract_json_from_markdown(text: str) -> str:
     """Extracts a JSON string embedded within markdown code fences.
@@ -99,14 +99,43 @@ def extract_json_from_markdown(text: str) -> str:
     return cleaned_text
 
 def _repair_json(text: str, aggressive=False) -> str:
-    """Repair common JSON issues in LLM outputs.
+    """
+    Repair common JSON formatting issues in LLM-generated output.
+    
+    This internal utility function applies a series of transformations to fix common
+    JSON formatting problems that frequently occur in LLM outputs. It can operate in
+    two modes: standard and aggressive.
+    
+    In standard mode (aggressive=False), it applies basic repairs like:
+    - Removing trailing commas before closing brackets/braces
+    - Ensuring property names are properly quoted
+    - Basic structure validation
+    
+    In aggressive mode (aggressive=True), it applies more extensive repairs:
+    - Fixing unterminated string literals by adding missing quotes
+    - Balancing unmatched brackets and braces
+    - Adding missing values for dangling properties
+    - Handling truncated JSON at the end of strings
+    - Attempting to recover partial JSON structures
+    
+    The aggressive repairs are particularly useful when dealing with outputs from
+    models that have been truncated mid-generation or contain structural errors
+    that would normally make the JSON unparseable.
     
     Args:
-        text: The JSON-like string to repair
-        aggressive: Whether to apply more aggressive repair techniques
+        text: The JSON-like string to repair, potentially containing formatting errors
+        aggressive: Whether to apply more extensive repair techniques beyond basic
+                   formatting fixes. Default is False (basic repairs only).
         
     Returns:
-        Repaired JSON string
+        A repaired JSON string that is more likely to be parseable. Note that even
+        with aggressive repairs, the function cannot guarantee valid JSON for
+        severely corrupted inputs.
+    
+    Note:
+        This function is intended for internal use by extract_json_from_markdown.
+        While it attempts to fix common issues, it may not address all possible
+        JSON formatting problems, especially in severely malformed inputs.
     """
     if not text:
         return text
@@ -324,7 +353,7 @@ async def parse_result(result: Any) -> Dict[str, Any]:
                     repair_prompt = (
                         f"The following text is supposed to be JSON but failed parsing. "
                         f"Please extract the valid JSON data from it and return *only* the raw JSON string, nothing else. "
-                        f"If it\'s impossible to extract valid JSON, return an empty JSON object {{}}. "
+                        f"If it's impossible to extract valid JSON, return an empty JSON object {{}}. "
                         f"Problematic text:\n\n```\n{json_str}\n```"
                     )
                     
@@ -364,14 +393,52 @@ async def parse_result(result: Any) -> Dict[str, Any]:
         return {"error": f"Error parsing result: {str(e)}"}
 
 async def process_mcp_result(result: Any) -> Dict[str, Any]:
-    """Process result from MCP tool call, handling both list and dictionary formats.
+    """
+    Process and normalize results from MCP tool calls into a consistent dictionary format.
     
-    This is a more user-friendly alias for parse_result that provides the same functionality.
+    This function serves as a user-friendly interface for handling and normalizing
+    the various types of results that can be returned from MCP tools and provider operations.
+    It acts as a bridge between the raw MCP tool outputs and downstream application code
+    that expects a consistent dictionary structure.
+    
+    The function handles multiple return formats:
+    - TextContent objects with a .text attribute
+    - List results containing TextContent objects or dictionaries
+    - Direct dictionary returns
+    - JSON-like strings embedded in markdown code blocks
+    
+    Key features:
+    - Automatic extraction of JSON from markdown code fences
+    - JSON repair for malformed or truncated LLM outputs
+    - Fallback to LLM-based repair for difficult parsing cases
+    - Consistent error handling and reporting
+    
+    This function is especially useful in:
+    - Handling results from completion tools where LLMs may return JSON in various formats
+    - Processing tool responses that contain structured data embedded in text
+    - Creating a consistent interface for downstream processing of MCP tool results
+    - Simplifying error handling in client applications
     
     Args:
-        result: Result from an MCP tool call or provider operation
+        result: The raw result from an MCP tool call or provider operation, which could
+               be a TextContent object, a list, a dictionary, or another structure
             
     Returns:
-        Processed dictionary containing the result data
+        A dictionary containing either:
+        - The successfully parsed result data
+        - An error description with diagnostic information if parsing failed
+        
+    Example:
+        ```python
+        result = await some_mcp_tool()
+        processed_data = await process_mcp_result(result)
+        
+        # Check for errors in the processed result
+        if "error" in processed_data:
+            print(f"Error processing result: {processed_data['error']}")
+        else:
+            # Use the normalized data
+            print(f"Processed data: {processed_data}")
+        ```
     """
     return await parse_result(result) 

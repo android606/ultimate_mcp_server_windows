@@ -9,7 +9,7 @@ from ultimate_mcp_server.utils import get_logger
 
 from .base import with_error_handling, with_tool_metrics
 
-logger = get_logger("ultimate.tools.provider")
+logger = get_logger("ultimate_mcp_server.tools.provider")
 
 # --- Helper to get provider_status reliably (Re-introduced) ---
 

@@ -275,6 +275,9 @@ Process documents and data efficiently:
 -   **Grok Integration**: Native support for xAI's Grok.
 -   **DeepSeek Support**: Optimized handling for DeepSeek models.
 -   **OpenRouter Integration**: Access a wide variety via OpenRouter API key.
+-   **Gemini Integration**: Comprehensive support for Google's Gemini models.
+-   **Anthropic Integration**: Full support for Claude models including Claude 3.5 Sonnet and Haiku.
+-   **OpenAI Integration**: Complete support for GPT-3.5, GPT-4.0, and newer models.
 
 ### 🔧 Meta Tools for Self-Improvement & Dynamic Integration
 -   **Tool Discovery**: Agents can query available tools, parameters, descriptions (`list_tools`).
@@ -303,7 +306,7 @@ Process documents and data efficiently:
 ### ⚙️ System Features
 -   **Rich Logging**: Colorful, informative console logs via `Rich`.
 -   **Health Monitoring**: `/healthz` endpoint for readiness checks.
--   **Command-Line Interface**: `ultimate-mcp-server` CLI for management and interaction.
+-   **Command-Line Interface**: `umcp` CLI for management and interaction.
 
 ---
 
@@ -320,13 +323,12 @@ git clone https://github.com/Dicklesworthstone/ultimate_mcp_server.git
 cd ultimate_mcp_server
 
 # Create a virtual environment and install dependencies using uv:
-uv venv --python 3.13  # Requires Python 3.13+
+uv venv --python 3.13
 source .venv/bin/activate
-uv pip install -e ".[all]"  # Installs core + all optional tool dependencies
-# Or install only base dependencies: uv pip install -e .
-# Or specific extras: uv pip install -e ".[ocr,browser]"
+uv lock --upgrade
+uv sync --all-extras
 ```
-*Note: Some tools like OCR, Browser Automation, Excel have optional dependencies. Use `.[all]` or specify extras like `.[ocr]` as needed.*
+*Note: The `uv sync --all-extras` command installs all optional extras defined in the project (e.g., OCR, Browser Automation, Excel). If you only need specific extras, adjust your project dependencies and run `uv sync` without `--all-extras`.*
 
 ### ⚙️ .env Configuration
 
@@ -340,31 +342,37 @@ GEMINI_API_KEY=your_google_ai_studio_key... # For Google AI Studio (Gemini API)
 # Or use GOOGLE_APPLICATION_CREDENTIALS=/path/to/your/service-account-key.json for Vertex AI
 DEEPSEEK_API_KEY=your_deepseek_key...
 OPENROUTER_API_KEY=your_openrouter_key...
-# X_API_KEY=your_grok_key... # If using Grok via xAI API
+GROK_API_KEY=your_grok_key... # For Grok via xAI API
 
 # --- Server Configuration (Defaults shown) ---
-SERVER_PORT=8013
-SERVER_HOST=127.0.0.1 # Change to 0.0.0.0 to listen on all interfaces (needed for Docker/external access)
-# API_PREFIX=/
+GATEWAY_SERVER_PORT=8013
+GATEWAY_SERVER_HOST=127.0.0.1 # Change to 0.0.0.0 to listen on all interfaces (needed for Docker/external access)
+# GATEWAY_API_PREFIX=/
 
 # --- Logging Configuration (Defaults shown) ---
 LOG_LEVEL=INFO # DEBUG, INFO, WARNING, ERROR, CRITICAL
 USE_RICH_LOGGING=true # Set to false for plain text logs
 
 # --- Cache Configuration (Defaults shown) ---
-CACHE_ENABLED=true
-CACHE_TTL=86400 # Default Time-To-Live in seconds (24 hours)
-# CACHE_TYPE=memory # Options might include 'memory', 'redis', 'diskcache' (check implementation)
-# CACHE_MAX_SIZE=1000 # Example: Max number of items for memory cache
-# REDIS_URL=redis://localhost:6379/0 # Required if CACHE_TYPE=redis
+GATEWAY_CACHE_ENABLED=true
+GATEWAY_CACHE_TTL=86400 # Default Time-To-Live in seconds (24 hours)
+# GATEWAY_CACHE_TYPE=memory # Options might include 'memory', 'redis', 'diskcache' (check implementation)
+# GATEWAY_CACHE_MAX_SIZE=1000 # Example: Max number of items for memory cache
+# GATEWAY_CACHE_DIR=./.cache # Directory for disk cache storage
 
 # --- Provider Timeouts & Retries (Defaults shown) ---
-# PROVIDER_TIMEOUT=120 # Default timeout in seconds for API calls
-# PROVIDER_MAX_RETRIES=3 # Default max retries on failure
+# GATEWAY_PROVIDER_TIMEOUT=120 # Default timeout in seconds for API calls
+# GATEWAY_PROVIDER_MAX_RETRIES=3 # Default max retries on failure
+
+# --- Provider-Specific Configuration ---
+# GATEWAY_OPENAI_DEFAULT_MODEL=gpt-4.1-mini # Customize default model
+# GATEWAY_ANTHROPIC_DEFAULT_MODEL=claude-3-5-sonnet-20241022 # Customize default model
+# GATEWAY_GEMINI_DEFAULT_MODEL=gemini-2.0-pro # Customize default model
 
 # --- Tool Specific Config (Examples) ---
-# ALLOWED_DIRS=/path/to/safe/dir1,/path/to/safe/dir2 # For Filesystem tools
-# PLAYWRIGHT_BROWSER_TYPE=chromium # firefox, webkit
+# GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES=["/path/to/safe/dir1","/path/to/safe/dir2"] # For Filesystem tools (JSON array)
+# GATEWAY_AGENT_MEMORY_DB_PATH=unified_agent_memory.db # Path for agent memory database
+# GATEWAY_PROMPT_TEMPLATES_DIR=./prompt_templates # Directory for prompt templates
 ```
 
 ### ▶️ Run
@@ -373,21 +381,429 @@ Make sure your virtual environment is active (`source .venv/bin/activate`).
 
 ```bash
 # Start the MCP server with all registered tools found
-python -m ultimate.cli.main run
-# Or use the installed CLI command (if installed globally or venv path is active):
-ultimate-mcp-server run
+umcp run
 
 # Start the server including only specific tools
-ultimate-mcp-server run --include-tools completion,chunk_document,read_file,write_file
+umcp run --include-tools completion chunk_document read_file write_file
 
-# Start the server excluding specific tools (e.g., browser tools if Playwright isn't set up)
-ultimate-mcp-server run --exclude-tools browser_init,browser_navigate,research_and_synthesize_report
+# Start the server excluding specific tools
+umcp run --exclude-tools browser_init browser_navigate research_and_synthesize_report
 
 # Start with Docker (ensure .env file exists in the project root or pass environment variables)
 docker compose up --build # Add --build the first time or after changes
 ```
 
 Once running, the server will typically be available at `http://localhost:8013` (or the host/port configured in your `.env` or command line). You should see log output indicating the server has started and which tools are registered.
+
+## 💻 Command Line Interface (CLI)
+
+The Ultimate MCP Server provides a powerful command-line interface (CLI) through the `umcp` command that allows you to manage the server, interact with LLM providers, test features, and explore examples. This section details all available commands and their options.
+
+### 🌟 Global Options
+
+The `umcp` command supports the following global option:
+
+```bash
+umcp --version  # Display version information
+```
+
+### 🚀 Server Management
+
+#### Starting the Server
+
+The `run` command starts the Ultimate MCP Server with specified options:
+
+```bash
+# Basic server start with default settings from .env
+umcp run
+
+# Run on a specific host and port
+umcp run --host 0.0.0.0 --port 9000
+
+# Run with multiple worker processes
+umcp run --workers 4
+
+# Enable debug logging for detailed output
+umcp run --debug
+
+# Run only with specific tools
+umcp run --include-tools completion chunk_document read_file write_file
+
+# Run with all tools except certain ones
+umcp run --exclude-tools browser_init browser_navigate
+```
+
+Example output:
+```
+┌─ Starting Ultimate MCP Server ───────────────────┐
+│ Host: 0.0.0.0                                    │
+│ Port: 9000                                       │
+│ Workers: 4                                       │
+│ Transport mode: sse                              │
+└────────────────────────────────────────────────┘
+
+INFO:     Started server process [12345]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:9000 (Press CTRL+C to quit)
+```
+
+Available options:
+- `--host`: Host or IP address to bind the server to (default: from .env)
+- `--port`: Port to listen on (default: from .env)
+- `--workers`: Number of worker processes to spawn (default: from .env)
+- `--transport-mode`: Transport mode for server communication ('sse' or 'stdio')
+- `--debug`: Enable debug logging
+- `--include-tools`: List of tool names to include (comma-separated)
+- `--exclude-tools`: List of tool names to exclude (comma-separated)
+
+### 🔌 Provider Management
+
+#### Listing Providers
+
+The `providers` command displays information about configured LLM providers:
+
+```bash
+# List all configured providers
+umcp providers
+
+# Check API keys for all configured providers
+umcp providers --check
+
+# List available models for each provider
+umcp providers --models
+
+# Check keys and list models
+umcp providers --check --models
+```
+
+Example output:
+```
+┌─ LLM Providers ──────────────────────────────────────────────────┐
+│ Provider   Status   Default Model            API Key             │
+├───────────────────────────────────────────────────────────────────┤
+│ openai     ✓        gpt-4.1-mini            sk-...5vX [VALID]    │
+│ anthropic  ✓        claude-3-5-sonnet-20241022 sk-...Hr [VALID]  │
+│ gemini     ✓        gemini-2.0-pro          [VALID]              │
+│ deepseek   ✗        deepseek-chat           [NOT CONFIGURED]     │
+│ openrouter ✓        --                      [VALID]              │
+│ grok       ✓        grok-1                  [VALID]              │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+With `--models`:
+```
+OPENAI MODELS:
+  - gpt-4.1-mini
+  - gpt-4o
+  - gpt-4-0125-preview
+  - gpt-3.5-turbo
+
+ANTHROPIC MODELS:
+  - claude-3-5-sonnet-20241022
+  - claude-3-5-haiku-20241022
+  - claude-3-opus-20240229
+  ...
+```
+
+Available options:
+- `--check`: Check API keys for all configured providers
+- `--models`: List available models for each provider
+
+#### Testing a Provider
+
+The `test` command allows you to test a specific provider:
+
+```bash
+# Test the default OpenAI model with a simple prompt
+umcp test openai
+
+# Test a specific model with a custom prompt
+umcp test anthropic --model claude-3-5-haiku-20241022 --prompt "Write a short poem about coding."
+
+# Test Gemini with a different prompt
+umcp test gemini --prompt "What are three interesting AI research papers from 2024?"
+```
+
+Example output:
+```
+Testing provider 'anthropic'...
+
+Provider: anthropic
+Model: claude-3-5-haiku-20241022
+Prompt: Write a short poem about coding.
+
+❯ Response:
+Code flows like water,
+Logic cascades through the mind—
+Bugs bloom like flowers.
+
+Tokens: 13 input, 19 output
+Cost: $0.00006
+Response time: 0.82s
+```
+
+Available options:
+- `--model`: Model ID to test (defaults to the provider's default)
+- `--prompt`: Prompt text to send (default: "Hello, world!")
+
+### ⚡ Direct Text Generation
+
+The `complete` command lets you generate text directly from the CLI:
+
+```bash
+# Generate text with default provider (OpenAI)
+umcp complete --prompt "Write a concise explanation of quantum computing."
+
+# Specify a provider and model
+umcp complete --provider anthropic --model claude-3-5-sonnet-20241022 --prompt "What are the key differences between Rust and Go?"
+
+# Use a system prompt (for supported providers)
+umcp complete --provider openai --model gpt-4o --system "You are an expert programmer. Keep your answers technical and concise." --prompt "Explain dependency injection."
+
+# Stream the response token by token
+umcp complete --provider openai --prompt "Count from 1 to 10." --stream
+
+# Adjust temperature and token limit
+umcp complete --provider gemini --temperature 1.2 --max-tokens 250 --prompt "Generate a creative sci-fi story opening."
+
+# Read prompt from stdin
+echo "Tell me about space exploration." | umcp complete
+```
+
+Example output:
+```
+Quantum computing uses quantum bits (qubits) that can exist in multiple states simultaneously, unlike classical bits (0 or 1). This quantum superposition, along with entanglement, allows quantum computers to process vast amounts of information in parallel, potentially solving certain complex problems exponentially faster than classical computers. Applications include cryptography, materials science, and optimization problems.
+
+Tokens: 13 input, 72 output
+Cost: $0.00006
+Response time: 0.37s
+```
+
+Available options:
+- `--provider`: Provider to use (default: openai)
+- `--model`: Model ID (defaults to provider's default)
+- `--prompt`: Prompt text (reads from stdin if not provided)
+- `--temperature`: Sampling temperature (0.0-2.0, default: 0.7)
+- `--max-tokens`: Maximum tokens to generate
+- `--system`: System prompt for providers that support it
+- `--stream`: Stream the response token by token
+
+### 💾 Cache Management
+
+The `cache` command allows you to view or clear the request cache:
+
+```bash
+# Show cache status
+umcp cache --status
+
+# Clear the cache (with confirmation prompt)
+umcp cache --clear
+
+# Show stats and clear the cache in one command
+umcp cache --status --clear
+```
+
+Example output:
+```
+Cache Status:
+  Backend: memory
+  Enabled: True
+  Items: 127
+  Hit rate: 73.2%
+  Estimated savings: $1.47
+```
+
+Available options:
+- `--status`: Show cache status (enabled by default)
+- `--clear`: Clear the cache (will prompt for confirmation)
+
+### 📊 Benchmarking
+
+The `benchmark` command lets you compare performance and cost across providers:
+
+```bash
+# Run default benchmark (3 runs per provider)
+umcp benchmark
+
+# Benchmark only specific providers
+umcp benchmark --providers openai,anthropic
+
+# Benchmark with specific models
+umcp benchmark --providers openai,anthropic --models gpt-4o,claude-3.5-sonnet
+
+# Use a custom prompt and more runs
+umcp benchmark --prompt "Explain the process of photosynthesis in detail." --runs 5
+```
+
+Example output:
+```
+┌─ Benchmark Results ───────────────────────────────────────────────────────┐
+│ Provider    Model               Avg Time   Tokens    Cost      Tokens/sec │
+├──────────────────────────────────────────────────────────────────────────┤
+│ openai      gpt-4.1-mini        0.47s      76 / 213  $0.00023  454        │
+│ anthropic   claude-3-5-haiku    0.52s      76 / 186  $0.00012  358        │
+│ gemini      gemini-2.0-pro      0.64s      76 / 201  $0.00010  314        │
+│ deepseek    deepseek-chat       0.71s      76 / 195  $0.00006  275        │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+Available options:
+- `--providers`: List of providers to benchmark (default: all configured)
+- `--models`: Model IDs to benchmark (defaults to default model of each provider)
+- `--prompt`: Prompt text to use (default: built-in benchmark prompt)
+- `--runs`: Number of runs per provider/model (default: 3)
+
+### 🧰 Tool Management
+
+The `tools` command lists available tools, optionally filtered by category:
+
+```bash
+# List all tools
+umcp tools
+
+# List tools in a specific category
+umcp tools --category document
+
+# Show related example scripts
+umcp tools --examples
+```
+
+Example output:
+```
+┌─ Ultimate MCP Server Tools ─────────────────────────────────────────┐
+│ Category    Tool                           Example Script            │
+├──────────────────────────────────────────────────────────────────────┤
+│ completion  generate_completion            simple_completion_demo.py │
+│ completion  stream_completion              simple_completion_demo.py │
+│ completion  chat_completion                claude_integration_demo.py│
+│ document    summarize_document             document_processing.py    │
+│ document    chunk_document                 document_processing.py    │
+│ extraction  extract_json                   advanced_extraction_demo.py│
+│ filesystem  read_file                      filesystem_operations_demo.py│
+└──────────────────────────────────────────────────────────────────────┘
+
+Tip: Run examples using the command:
+  umcp examples <example_name>
+```
+
+Available options:
+- `--category`: Filter tools by category
+- `--examples`: Show example scripts alongside tools
+
+### 📚 Example Management
+
+The `examples` command lets you list and run example scripts:
+
+```bash
+# List all example scripts
+umcp examples
+
+# List example scripts in a more concise format
+umcp examples --list
+
+# Run a specific example
+umcp examples rag_example.py
+
+# Can also run by just the name without extension
+umcp examples rag_example
+```
+
+Example output when listing:
+```
+┌─ Ultimate MCP Server Example Scripts ─────────────────────────────────┐
+│ Category             Example Script                                   │
+├────────────────────────────────────────────────────────────────────────┤
+│ text-generation      simple_completion_demo.py                        │
+│ text-generation      claude_integration_demo.py                       │
+│ document-processing  document_processing.py                           │
+│ search-and-retrieval rag_example.py                                   │
+│ browser-automation   browser_automation_demo.py                       │
+└────────────────────────────────────────────────────────────────────────┘
+
+Run an example:
+  umcp examples <example_name>
+```
+
+When running an example:
+```
+Running example: rag_example.py
+
+Creating vector knowledge base 'demo_kb'...
+Adding sample documents...
+Retrieving context for query: "What are the benefits of clean energy?"
+Generated response:
+Based on the retrieved context, clean energy offers several benefits:
+...
+```
+
+Available options:
+- `--list`: List example scripts only
+- `--category`: Filter examples by category
+
+### 🔎 Getting Help
+
+Every command has detailed help available:
+
+```bash
+# General help
+umcp --help
+
+# Help for a specific command
+umcp run --help
+umcp providers --help
+umcp complete --help
+```
+
+Example output:
+```
+Usage: umcp [OPTIONS] COMMAND [ARGS]...
+
+  Ultimate MCP Server: Multi-provider LLM management server
+  Unified CLI to run your server, manage providers, and more.
+
+Options:
+  --version, -v                   Show the application version and exit.
+  --help                          Show this message and exit.
+
+Commands:
+  run          Run the Ultimate MCP Server
+  providers    List Available Providers
+  test         Test a Specific Provider
+  complete     Generate Text Completion
+  cache        Cache Management
+  benchmark    Benchmark Providers
+  tools        List Available Tools
+  examples     Run or List Example Scripts
+```
+
+Command-specific help:
+```
+Usage: umcp run [OPTIONS]
+
+  Run the Ultimate MCP Server
+
+  Start the server with optional overrides.
+
+  Examples:
+    umcp run --host 0.0.0.0 --port 8000 --workers 4 --transport-mode sse
+    umcp run --debug
+
+Options:
+  --host TEXT                     Host or IP address to bind the server to.
+                                  Defaults from config.
+  --port INTEGER                  Port to listen on. Defaults from config.
+  --workers INTEGER               Number of worker processes to spawn.
+                                  Defaults from config.
+  --transport-mode [sse|stdio]    Transport mode for server communication.
+                                  Options: 'sse' or 'stdio'.
+  --debug                         Enable debug logging for detailed output.
+  --include-tools TEXT            List of tool names to include when running
+                                  the server.
+  --exclude-tools TEXT            List of tool names to exclude when running
+                                  the server.
+  --help                          Show this message and exit.
+```
 
 ---
 
@@ -930,28 +1346,6 @@ Answer the question: Who is the CEO of Meta Platforms, Inc.?
         else:
              print(f"Graph query failed: {query_response['error']}")
 
-        # --- Optional: Client-side visualization using networkx and matplotlib ---
-        # try:
-        #     if isinstance(graph_data, dict) and 'nodes' in graph_data and 'links' in graph_data:
-        #         G = nx.DiGraph()
-        #         for node in graph_data['nodes']: G.add_node(node['id'], label=node['label'], type=node['type'])
-        #         for link in graph_data['links']: G.add_edge(link['source'], link['target'], type=link['type'])
-        #
-        #         pos = nx.spring_layout(G, k=0.9)
-        #         labels = nx.get_node_attributes(G, 'label')
-        #         edge_labels = nx.get_edge_attributes(G, 'type')
-        #
-        #         plt.figure(figsize=(12, 8))
-        #         nx.draw(G, pos, with_labels=False, node_size=2500, node_color='skyblue', font_size=10, arrows=True)
-        #         nx.draw_networkx_labels(G, pos, labels=labels)
-        #         nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_color='red')
-        #         plt.title("Extracted Entity Relationship Graph")
-        #         plt.show()
-        # except ImportError:
-        #      print("\n(Install networkx and matplotlib to visualize the graph client-side)")
-        # except Exception as e:
-        #      print(f"\n(Graph visualization failed: {e})")
-        # --- End Optional Visualization ---
 
     else:
         print(f"Entity relationship extraction failed: {entity_graph_response.get('error', 'Unknown error')}")
@@ -1996,43 +2390,42 @@ This combined example library and testing framework provides invaluable resource
 
 ## 💻 CLI Commands
 
-Ultimate MCP Server comes with a command-line interface (`ultimate-mcp-server` or `python -m ultimate.cli.main`) for server management and tool interaction:
+Ultimate MCP Server comes with a command-line interface (`umcp`) for server management and tool interaction:
 
 ```bash
 # Show available commands and global options
-ultimate-mcp-server --help
+umcp --help
 
 # --- Server Management ---
 # Start the server (loads .env, registers tools)
-ultimate-mcp-server run [--host HOST] [--port PORT] [--include-tools LIST] [--exclude-tools LIST]
+umcp run [--host HOST] [--port PORT] [--include-tools tool1 tool2] [--exclude-tools tool3 tool4]
 
 # --- Information ---
-# List configured LLM providers (checks API keys in environment)
-ultimate-mcp-server providers
+# List configured LLM providers
+umcp providers [--check] [--models]
 
-# List available/registered MCP tools
-ultimate-mcp-server tools [--category CATEGORY] [--verbose] [--schema TOOL_NAME]
+# List available tools
+umcp tools [--category CATEGORY] [--examples]
 
 # --- Testing & Interaction ---
 # Test connection and basic generation for a specific provider
-ultimate-mcp-server test <provider_name> [--model MODEL_NAME] [--prompt TEXT]
+umcp test <provider_name> [--model MODEL_NAME] [--prompt TEXT]
 
 # Generate a completion directly from the CLI
-ultimate-mcp-server complete --provider <provider_name> --model <model_name> --prompt "Your prompt here" [OPTIONS...]
+umcp complete --provider <provider_name> --model <model_name> --prompt "Your prompt here" [--temperature N] [--max-tokens N] [--system TEXT] [--stream]
 
 # --- Cache Management ---
-# Check cache status (type, enabled, size, TTL) and basic stats
-ultimate-mcp-server cache --status
+# View or clear the request cache
+umcp cache [--status] [--clear]
 
-# Clear the cache (use with caution!)
-ultimate-mcp-server cache --clear [--force]
+# --- Benchmark ---
+umcp benchmark [--providers P1 P2] [--models M1 M2] [--prompt TEXT] [--runs N]
 
-# --- Other potential commands (check --help) ---
-# ultimate-mcp-server config # View effective configuration
-# ultimate-mcp-server benchmark # Run performance benchmarks
+# --- Examples ---
+umcp examples [--list] [<example_name>] [--category CATEGORY]
 ```
 
-Each command typically has additional options. Use `ultimate-mcp-server COMMAND --help` to see options for a specific command (e.g., `ultimate-mcp-server complete --help`).
+Each command typically has additional options. Use `umcp COMMAND --help` to see options for a specific command (e.g., `umcp complete --help`).
 
 ---
 
@@ -2052,9 +2445,9 @@ Control which tools are registered when the server starts using CLI flags:
 -   `--exclude-tools tool3,tool4,...`: Register all tools *except* those specified.
     ```bash
     # Example: Start with only filesystem and basic completion tools
-    ultimate-mcp-server run --include-tools read_file,write_file,list_directory,completion
+    umcp run --include-tools read_file,write_file,list_directory,completion
     # Example: Start with all tools except browser automation
-    ultimate-mcp-server run --exclude-tools browser_init,browser_navigate,browser_click
+    umcp run --exclude-tools browser_init,browser_navigate,browser_click
     ```
     This is useful for creating lightweight instances, managing dependencies, or restricting agent capabilities.
 
@@ -2079,7 +2472,7 @@ Control which tools are registered when the server starts using CLI flags:
 
 ### Tool-Specific Configuration
 Individual tools might load their own configuration from environment variables. Examples:
--   `ALLOWED_DIRS`: Comma-separated list of base directories filesystem tools are restricted to. **Crucial for security.**
+-   `ALLOWED_DIRS`: Comma-separated list of base directories filesystem tools are restricted to. **Crucially for security.**
 -   `PLAYWRIGHT_BROWSER_TYPE`: (Default: `chromium`) Browser used by Playwright tools (`chromium`, `firefox`, `webkit`).
 -   `PLAYWRIGHT_TIMEOUT`: Default timeout for Playwright actions.
 -   `DATABASE_URL`: Connection string for the SQL Database Interaction tools (uses SQLAlchemy).
@@ -2092,7 +2485,7 @@ Individual tools might load their own configuration from environment variables. 
 
 ## ☁️ Deployment Considerations
 
-While `ultimate-mcp-server run` or `docker compose up` are fine for development, consider these for more robust deployments:
+While `umcp run` or `docker compose up` are fine for development, consider these for more robust deployments:
 
 ### 1. Running as a Background Service
 Ensure the server runs continuously and restarts automatically.

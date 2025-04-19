@@ -9,7 +9,76 @@ logger = get_logger(__name__)
 
 
 class KnowledgeBaseManager:
-    """Manager for knowledge base collections."""
+    """
+    Manager for creating and maintaining knowledge bases for RAG applications.
+    
+    The KnowledgeBaseManager provides a high-level interface for working with vector 
+    databases as knowledge bases for Retrieval-Augmented Generation (RAG) systems.
+    It abstracts the complexities of vector database operations, focusing on the 
+    domain-specific needs of knowledge management for AI applications.
+    
+    Key Features:
+    - Knowledge base lifecycle management (create, delete, list, get)
+    - Document ingestion with metadata support
+    - Vector embedding management for semantic search
+    - Document chunking and processing
+    - Persistence and durability guarantees
+    - Metadata tracking for knowledge base statistics
+    
+    Architecture:
+    The manager sits between RAG applications and the underlying vector database,
+    providing domain-specific operations while delegating storage and embedding
+    to specialized services. It primarily interacts with:
+    1. Vector Database Service - for persistent storage of embeddings and documents
+    2. Embedding Service - for converting text to vector representations
+    3. Text Chunking Service - for breaking documents into optimal retrieval units
+    
+    Technical Characteristics:
+    - Asynchronous API for high throughput in server environments
+    - Thread-safe operations for concurrent access
+    - Consistent error handling and logging
+    - Idempotent operations where possible
+    - Transactional guarantees for critical operations
+    
+    This service is typically accessed through the singleton get_knowledge_base_manager()
+    function, which ensures a single instance is shared across the application.
+    
+    Example Usage:
+    ```python
+    # Get the manager
+    kb_manager = get_knowledge_base_manager()
+    
+    # Create a new knowledge base
+    await kb_manager.create_knowledge_base(
+        name="company_policies",
+        description="Corporate policy documents and guidelines"
+    )
+    
+    # Add documents with metadata
+    await kb_manager.add_documents(
+        knowledge_base_name="company_policies",
+        documents=[
+            "All employees must complete annual security training.",
+            "Remote work is available for eligible positions with manager approval."
+        ],
+        metadatas=[
+            {"source": "security_policy.pdf", "category": "security", "page": 12},
+            {"source": "hr_handbook.pdf", "category": "remote_work", "page": 45}
+        ],
+        chunk_size=500,
+        chunk_method="semantic"
+    )
+    
+    # List available knowledge bases
+    kb_list = await kb_manager.list_knowledge_bases()
+    print(f"Found {kb_list['count']} knowledge bases")
+    
+    # Get details about a specific knowledge base
+    kb_info = await kb_manager.get_knowledge_base("company_policies")
+    doc_count = kb_info.get("metadata", {}).get("doc_count", 0)
+    print(f"Knowledge base contains {doc_count} document chunks")
+    ```
+    """
     
     def __init__(self, vector_service: VectorDatabaseService):
         """Initialize the knowledge base manager.

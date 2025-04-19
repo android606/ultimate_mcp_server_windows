@@ -16,7 +16,7 @@ from ultimate_mcp_server.exceptions import ToolExecutionError, ToolInputError
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.marqo_fused_search")
+logger = get_logger("ultimate_mcp_server.tools.marqo_fused_search")
 
 # --- Configuration Loading ---
 
@@ -73,7 +73,31 @@ CACHE_FILE_PATH = os.path.join(CACHE_FILE_DIR, "marqo_docstring_cache.json")
 # --- LLM Client for Doc Generation ---
 
 async def _call_llm_for_doc_generation(prompt: str) -> Optional[str]:
-    """Calls the Ultimate MCP Server CompletionClient to generate documentation based on the prompt."""
+    """
+    Calls an LLM to generate dynamic documentation for the Marqo search tool.
+    
+    This function uses the Ultimate MCP Server's CompletionClient to send a prompt to an
+    LLM (preferring Gemini) and retrieve generated content for enhancing the tool's documentation.
+    It handles the entire process including client initialization, LLM API call configuration,
+    and error handling.
+    
+    The function is designed with low temperature settings for predictable, factual outputs 
+    and enables caching to avoid redundant LLM calls for the same configuration.
+    
+    Args:
+        prompt: A detailed prompt string containing information about the Marqo index 
+               configuration and instructions for generating appropriate documentation.
+               
+    Returns:
+        str: The generated documentation text if successful.
+        None: If the LLM call fails or returns empty content.
+        
+    Notes:
+        - Uses the Gemini provider by default, but will fall back to other providers if needed.
+        - Sets temperature to 0.3 for consistent, deterministic outputs.
+        - Limits output to 400 tokens, which is sufficient for documentation purposes.
+        - Enables caching to improve performance for repeated calls.
+    """
     try:
         # Instantiate the client - assumes necessary env vars/config are set for the gateway
         client = CompletionClient()
@@ -666,7 +690,32 @@ _docstring_augmentation_result: Optional[str] = None # Store the generated strin
 _docstring_generation_done: bool = False # Flag to ensure generation/loading happens only once
 
 async def trigger_dynamic_docstring_generation():
-    """Runs the generation process, checking cache first. Should be called once from the main async context."""
+    """
+    Dynamically enhances the Marqo search tool docstring with index-specific documentation.
+    
+    This function uses an LLM to analyze the Marqo index configuration and generate custom
+    documentation explaining the specific data domain, available filters, and example queries
+    for the configured index. The resulting documentation is appended to the marqo_fused_search
+    function's docstring.
+    
+    The function implements a caching mechanism:
+    1. First checks for a cached docstring in the CACHE_FILE_PATH
+    2. Validates cache freshness by comparing the modification time of the config file
+    3. If cache is invalid or missing, calls an LLM to generate a new docstring
+    4. Saves the new docstring to cache for future use
+    
+    This function should be called once during application startup, before any documentation
+    is accessed. It is designed for async environments like FastAPI's startup events or
+    any async initialization code.
+    
+    Dependencies:
+    - Requires marqo_index_config.json to be properly configured
+    - Uses CompletionClient to communicate with LLMs, requiring valid API keys
+    - Needs write access to the cache directory for saving generated docstrings
+    
+    Returns:
+        None. The result is applied directly to the marqo_fused_search.__doc__ attribute.
+    """
     global _docstring_augmentation_result, _docstring_generation_done
     if _docstring_generation_done:
         return # Already done
@@ -740,7 +789,24 @@ async def trigger_dynamic_docstring_generation():
 
 
 def _apply_generated_docstring():
-    """Applies the augmentation result to the actual docstring. Can be called after generation."""
+    """
+    Applies the dynamically generated documentation to the marqo_fused_search function's docstring.
+    
+    This function takes the content from _docstring_augmentation_result (generated either via LLM 
+    or loaded from cache) and appends it to the existing docstring of the marqo_fused_search function.
+    The function checks for the presence of a marker ("Configuration-Specific Notes:") to avoid 
+    applying the same augmentation multiple times.
+    
+    This function is called automatically at the end of trigger_dynamic_docstring_generation()
+    and should not typically be called directly. It's designed as a separate function to allow
+    for potential manual application in specialized scenarios.
+    
+    The function accesses the global variable _docstring_augmentation_result, which must be set
+    prior to calling this function.
+    
+    Side Effects:
+        Modifies marqo_fused_search.__doc__ by appending the dynamically generated content.
+    """
     global _docstring_augmentation_result
 
     # Check if augmentation was successful and produced content

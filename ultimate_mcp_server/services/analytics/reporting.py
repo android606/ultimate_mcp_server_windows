@@ -20,7 +20,41 @@ except ImportError:
 
 
 class AnalyticsReporting:
-    """Reporting and visualization for Ultimate MCP Server analytics."""
+    """Provides comprehensive reporting and visualization capabilities for Ultimate MCP Server analytics.
+    
+    This class offers tools to generate detailed usage, cost, and provider-specific reports
+    in various formats (JSON, HTML, Markdown) with optional data visualizations. It serves
+    as the primary interface for extracting actionable insights from the server's operational
+    metrics and presenting them in human-readable formats.
+    
+    Features:
+    - Multiple report types: usage reports, provider-specific analysis, and cost breakdowns
+    - Multiple output formats: JSON, HTML, and Markdown
+    - Optional data visualizations using matplotlib (when available)
+    - Customizable reporting periods
+    - Persistent report storage
+    
+    The reporting system uses the metrics tracked by the MetricsTracker to generate these
+    reports, providing insights into token usage, costs, request patterns, cache efficiency,
+    and provider/model distribution.
+    
+    Usage:
+        # Create a reporting instance
+        reporter = AnalyticsReporting()
+        
+        # Generate a usage report for the last 7 days
+        report_path = reporter.generate_usage_report(days=7, output_format="html")
+        
+        # Generate a cost analysis report for the last month
+        cost_report = reporter.generate_cost_report(days=30, output_format="json")
+        
+        # Generate a provider-specific report
+        provider_report = reporter.generate_provider_report(
+            provider="anthropic", 
+            days=14,
+            output_format="markdown"
+        )
+    """
     
     def __init__(
         self,

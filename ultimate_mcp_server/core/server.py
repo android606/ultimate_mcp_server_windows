@@ -13,10 +13,10 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI
 from mcp.server.fastmcp import Context, FastMCP
 
-import ultimate
+import ultimate_mcp_server
 
 # Import core specifically to set the global instance
-import ultimate.core
+import ultimate_mcp_server.core
 from ultimate_mcp_server.config import get_config, load_config
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.state_store import StateStore
@@ -29,7 +29,7 @@ from ultimate_mcp_server.utils.logging import logger
 
 # --- Define Logging Configuration Dictionary ---
 
-LOG_FILE_PATH = "logs/ultimate.log"
+LOG_FILE_PATH = "logs/ultimate_mcp_server.log"
 
 # Ensure log directory exists before config is used
 log_dir = os.path.dirname(LOG_FILE_PATH)
@@ -66,7 +66,7 @@ LOGGING_CONFIG = {
             "stream": "ext://sys.stderr",  # Changed from stdout to stderr
         },
         "rich_console": { # Rich console handler
-            "()": "ultimate.utils.logging.formatter.create_rich_console_handler",
+            "()": "ultimate_mcp_server.utils.logging.formatter.create_rich_console_handler",
             "stderr": True,  # Add this parameter to use stderr
         },
         "file": { # File handler
@@ -94,17 +94,17 @@ LOGGING_CONFIG = {
         "uvicorn": {"handlers": ["rich_console"], "level": "INFO", "propagate": False},
         "uvicorn.error": {"level": "INFO", "propagate": True}, # Propagate errors to root
         "uvicorn.access": {"handlers": ["access", "file"], "level": "INFO", "propagate": False},
-        "ultimate": { # Our application's logger namespace
+        "ultimate_mcp_server": { # Our application's logger namespace
             "handlers": ["rich_console", "file"],
             "level": "DEBUG",
             "propagate": False,
         },
-        "ultimate.tools": { # Tools-specific logger
+        "ultimate_mcp_server.tools": { # Tools-specific logger
             "handlers": ["tools_file"],
             "level": "DEBUG",
             "propagate": True, # Propagate to parent for console display
         },
-        "ultimate.completions": { # Completions-specific logger
+        "ultimate_mcp_server.completions": { # Completions-specific logger
             "handlers": ["completions_file"],
             "level": "DEBUG",
             "propagate": True, # Propagate to parent for console display
@@ -123,12 +123,39 @@ _server_app = None
 _gateway_instance = None
 
 # Get loggers
-tools_logger = get_logger("ultimate.tools")
-completions_logger = get_logger("ultimate.completions")
+tools_logger = get_logger("ultimate_mcp_server.tools")
+completions_logger = get_logger("ultimate_mcp_server.completions")
 
 @dataclass
 class ProviderStatus:
-    """Status information for a provider."""
+    """
+    Structured representation of an LLM provider's configuration and availability status.
+    
+    This dataclass encapsulates all essential status information about a language model
+    provider in the Ultimate MCP Server. It's used to track the state of each provider,
+    including whether it's properly configured, successfully initialized, and what models
+    it offers. This information is vital for:
+    
+    1. Displaying provider status to clients via API endpoints
+    2. Making runtime decisions about provider availability
+    3. Debugging provider configuration and connectivity issues
+    4. Resource listings and capability discovery
+    
+    The status is typically maintained in the Gateway's provider_status dictionary,
+    with provider names as keys and ProviderStatus instances as values.
+    
+    Attributes:
+        enabled: Whether the provider is enabled in the configuration.
+                This reflects the user's intent, not actual availability.
+        available: Whether the provider is successfully initialized and ready for use.
+                  This is determined by runtime checks during server initialization.
+        api_key_configured: Whether a valid API key was found for this provider.
+                           A provider might be enabled but have no API key configured.
+        models: List of available models from this provider, with each model represented
+               as a dictionary containing model ID, name, and capabilities.
+        error: Error message explaining why a provider is unavailable, or None if
+              the provider initialized successfully or hasn't been initialized yet.
+    """
     enabled: bool
     available: bool
     api_key_configured: bool
@@ -136,7 +163,26 @@ class ProviderStatus:
     error: Optional[str] = None
 
 class Gateway:
-    """Main Ultimate MCP Server implementation."""
+    """
+    Main Ultimate MCP Server implementation and central orchestrator.
+    
+    The Gateway class serves as the core of the Ultimate MCP Server, providing a unified
+    interface to multiple LLM providers (OpenAI, Anthropic, etc.) and implementing the
+    Model Control Protocol (MCP). It manages provider connections, tool registration,
+    state persistence, and request handling.
+    
+    Key responsibilities:
+    - Initializing and managing connections to LLM providers
+    - Registering and exposing tools for model interaction
+    - Providing consistent error handling and logging
+    - Managing state persistence across requests
+    - Exposing resources (guides, examples, reference info) for models
+    - Implementing the MCP protocol for standardized model interaction
+    
+    The Gateway is designed to be instantiated once per server instance and serves
+    as the central hub for all model interactions. It can be accessed globally through
+    the ultimate_mcp_server.core._gateway_instance reference.
+    """
     
     def __init__(
         self, 
@@ -144,17 +190,35 @@ class Gateway:
         register_tools: bool = True,
         provider_exclusions: List[str] = None
     ):
-        """Initialize Gateway.
+        """
+        Initialize the MCP Gateway with configured providers and tools.
+        
+        This constructor sets up the complete MCP Gateway environment, including:
+        - Loading configuration from environment variables and config files
+        - Setting up logging infrastructure
+        - Initializing the MCP server framework
+        - Creating a state store for persistence
+        - Registering tools and resources based on configuration
+        
+        The initialization process is designed to be flexible, allowing for customization
+        through the provided parameters and the configuration system. Provider initialization
+        is deferred until server startup to ensure proper async handling.
         
         Args:
-            name: Server name
-            register_tools: Whether to register tools with the server
-            provider_exclusions: List of provider names to exclude from initialization
+            name: Server instance name, used for logging and identification purposes.
+                 Default is "main".
+            register_tools: Whether to register standard MCP tools with the server.
+                           If False, only the minimal core functionality will be available.
+                           Default is True.
+            provider_exclusions: List of provider names to exclude from initialization.
+                                This allows selectively disabling specific providers
+                                regardless of their configuration status.
+                                Default is None (no exclusions).
         """
         self.name = name
         self.providers = {}
         self.provider_status = {}
-        self.logger = get_logger(f"ultimate.{name}")
+        self.logger = get_logger(f"ultimate_mcp_server.{name}")
         self.event_handlers = {}
         self.provider_exclusions = provider_exclusions or []
         self.api_meta_tool = None # Initialize api_meta_tool attribute
@@ -195,7 +259,33 @@ class Gateway:
         self.logger.info(f"Ultimate MCP Server '{self.name}' initialized")
     
     def log_tool_calls(self, func):
-        """Decorator to log MCP tool calls."""
+        """
+        Decorator to log MCP tool calls with detailed timing and result information.
+        
+        This decorator wraps MCP tool functions to provide consistent logging of:
+        - Tool name and parameters at invocation time
+        - Execution time for performance tracking
+        - Success or failure status
+        - Summarized results or error information
+        
+        The decorator ensures that all tool calls are logged to a dedicated tools logger,
+        which helps with diagnostics, debugging, and monitoring of tool usage patterns.
+        Successful calls include timing information and a brief summary of the result,
+        while failed calls include exception details.
+        
+        Args:
+            func: The async function to wrap with logging. This should be a tool function
+                 registered with the MCP server that will be called by models.
+                
+        Returns:
+            A wrapped async function that performs the same operations as the original
+            but with added logging before and after execution.
+            
+        Note:
+            This decorator is automatically applied to all functions registered as tools
+            via the @mcp.tool() decorator in the _register_tools method, so it doesn't
+            need to be applied manually in most cases.
+        """
         @wraps(func)
         async def wrapper(*args, **kwargs):
             start_time = time.time()
@@ -233,13 +323,38 @@ class Gateway:
     
     @asynccontextmanager
     async def _server_lifespan(self, server: FastMCP):
-        """Server lifespan context manager.
+        """
+        Async context manager managing the server lifecycle during startup and shutdown.
+        
+        This method implements the lifespan protocol used by FastMCP (based on ASGI) to:
+        1. Perform startup initialization before the server begins accepting requests
+        2. Clean up resources when the server is shutting down
+        3. Make shared context available to request handlers during the server's lifetime
+        
+        During startup, this method:
+        - Initializes all configured LLM providers
+        - Triggers dynamic docstring generation for tools that need it
+        - Sets the global Gateway instance for access from other components
+        - Prepares a shared context dictionary for use by request handlers
+        
+        During shutdown, it:
+        - Clears the global Gateway instance reference
+        - Handles any necessary cleanup of resources
+        
+        The lifespan context is active throughout the entire server runtime, from
+        startup until shutdown is initiated.
         
         Args:
-            server: MCP server instance
+            server: The FastMCP server instance that's starting up, which provides
+                   the framework context for the lifespan.
             
         Yields:
-            Dict containing initialized resources
+            Dict containing initialized resources that will be available to all
+            request handlers during the server's lifetime.
+            
+        Note:
+            This method is called automatically by the FastMCP framework during
+            server startup and is not intended to be called directly.
         """
         self.logger.info(f"Starting Ultimate MCP Server '{self.name}'")
         
@@ -252,7 +367,9 @@ class Gateway:
         self.logger.info("Initiating dynamic docstring generation for Marqo tool...")
         try:
             # Import the function here to avoid circular imports
-            from ultimate_mcp_server.tools.marqo_fused_search import trigger_dynamic_docstring_generation
+            from ultimate_mcp_server.tools.marqo_fused_search import (
+                trigger_dynamic_docstring_generation,
+            )
             await trigger_dynamic_docstring_generation()
             self.logger.info("Dynamic docstring generation/loading complete.")
         except Exception as e:
@@ -261,7 +378,7 @@ class Gateway:
 
         # --- Set the global instance variable --- 
         # Make the fully initialized instance accessible globally AFTER init
-        ultimate.core._gateway_instance = self
+        ultimate_mcp_server.core._gateway_instance = self
         self.logger.info("Global gateway instance set.")
         # ----------------------------------------
 
@@ -275,19 +392,45 @@ class Gateway:
         
         try:
             # Import and call trigger_dynamic_docstring_generation again
-            from ultimate_mcp_server.tools.marqo_fused_search import trigger_dynamic_docstring_generation
+            from ultimate_mcp_server.tools.marqo_fused_search import (
+                trigger_dynamic_docstring_generation,
+            )
             await trigger_dynamic_docstring_generation()
             logger.info("Dynamic docstring generation/loading complete.")
             yield context
         finally:
             # --- Clear the global instance on shutdown --- 
-            ultimate.core._gateway_instance = None
+            ultimate_mcp_server.core._gateway_instance = None
             self.logger.info("Global gateway instance cleared.")
             # -------------------------------------------
             self.logger.info(f"Shutting down Ultimate MCP Server '{self.name}'")
     
     async def _initialize_providers(self):
-        """Initialize all enabled providers based on the loaded config."""
+        """
+        Initialize all enabled LLM providers based on the loaded configuration.
+        
+        This asynchronous method performs the following steps:
+        1. Identifies which providers are enabled and properly configured with API keys
+        2. Skips providers that are in the exclusion list (specified at Gateway creation)
+        3. Initializes each valid provider in parallel using asyncio tasks
+        4. Updates the provider_status dictionary with the initialization results
+        
+        The method uses a defensive approach, handling cases where:
+        - A provider is enabled but missing API keys
+        - Configuration is incomplete or inconsistent
+        - Initialization errors occur with specific providers
+        
+        After initialization, the Gateway will have a populated providers dictionary
+        with available provider instances, and a comprehensive provider_status dictionary
+        with status information for all providers (including those that failed to initialize).
+        
+        This method is automatically called during server startup and is not intended
+        to be called directly by users of the Gateway class.
+        
+        Raises:
+            No exceptions are propagated from this method. All provider initialization
+            errors are caught, logged, and reflected in the provider_status dictionary.
+        """
         self.logger.info("Initializing LLM providers")
 
         cfg = get_config()
@@ -330,7 +473,32 @@ class Gateway:
         self.logger.info(f"Providers initialized: {len(available_providers)}/{len(providers_to_init)} available")
 
     async def _initialize_provider(self, provider_name: str):
-        """Initialize a single provider using ONLY the loaded configuration."""
+        """
+        Initialize a single LLM provider with its API key and configuration.
+        
+        This method is responsible for initializing an individual provider by:
+        1. Retrieving the provider's configuration and API key
+        2. Importing the appropriate provider class
+        3. Instantiating the provider with the configured API key
+        4. Calling the provider's initialize method to establish connectivity
+        5. Recording the provider's status (including available models)
+        
+        The method handles errors gracefully, ensuring that exceptions during any
+        stage of initialization are caught, logged, and reflected in the provider's
+        status rather than propagated up the call stack.
+        
+        Args:
+            provider_name: Name of the provider to initialize, matching a value
+                          in the Provider enum (e.g., "openai", "anthropic").
+                          
+        Returns:
+            None. Results are stored in the Gateway's providers and provider_status
+            dictionaries rather than returned directly.
+            
+        Note:
+            This method is called by _initialize_providers during server startup
+            and is not intended to be called directly by users of the Gateway class.
+        """
         api_key = None
         api_key_configured = False
         provider_config = None
@@ -436,14 +604,28 @@ class Gateway:
     
     @property
     def system_instructions(self) -> str:
-        """Return system-level instructions for LLMs on how to use the gateway.
+        """
+        Return comprehensive system-level instructions for LLMs on how to use the gateway.
         
-        These instructions are intended to be included in the system prompt for LLMs
-        that will be using the Ultimate MCP Server tools, to help them understand the most
-        effective ways to use the available capabilities.
+        This property generates detailed instructions that are injected into the system prompt
+        for LLMs using the Gateway. These instructions serve as a guide for LLMs to effectively
+        utilize the available tools and capabilities, helping them understand:
+        
+        - The categories of available tools and their purposes
+        - Best practices for provider and model selection
+        - Error handling strategies and patterns
+        - Recommendations for efficient and appropriate tool usage
+        - Guidelines for choosing the right tool for specific tasks
+        
+        The instructions are designed to be clear and actionable, helping LLMs make
+        informed decisions about when and how to use different components of the
+        Ultimate MCP Server. They're structured in a hierarchical format with sections
+        covering core categories, best practices, and additional resources.
         
         Returns:
-            String containing formatted instructions
+            A formatted string containing detailed instructions for LLMs on how to
+            effectively use the Gateway's tools and capabilities. These instructions
+            are automatically included in the system prompt for all LLM interactions.
         """
         return """
 # Ultimate MCP Server Tool Usage Instructions
@@ -509,7 +691,27 @@ first and be prepared to adapt to available providers.
 """
         
     def _register_tools(self):
-        """Register MCP tools."""
+        """
+        Register all MCP tools with the server instance.
+        
+        This internal method sets up all available tools in the Ultimate MCP Server,
+        making them accessible to LLMs through the MCP protocol. It handles:
+        
+        1. Setting up the basic echo tool for connectivity testing
+        2. Calling the register_all_tools function to set up all specialized tools
+           from the tools module
+        
+        The registration process wraps each tool function with logging functionality
+        via the log_tool_calls decorator, ensuring consistent logging behavior across
+        all tools. This provides valuable diagnostic information during tool execution.
+        
+        All registered tools become available through the MCP interface and can be
+        discovered and used by LLMs interacting with the server.
+        
+        Note:
+            This method is called automatically during Gateway initialization when
+            register_tools=True (the default) and is not intended to be called directly.
+        """
         # Import here to avoid circular dependency
         from ultimate_mcp_server.tools import register_all_tools
         
@@ -534,7 +736,32 @@ first and be prepared to adapt to available providers.
         register_all_tools(self.mcp)
 
     def _register_resources(self):
-        """Register MCP resources."""
+        """
+        Register all MCP resources with the server instance.
+        
+        This internal method registers standard MCP resources that provide static
+        information and guidance to LLMs using the Ultimate MCP Server. Resources differ
+        from tools in that they:
+        
+        1. Provide static reference information rather than interactive functionality
+        2. Are accessed via URI-like identifiers (e.g., "info://server", "guide://llm")
+        3. Don't require API calls or external services to generate their responses
+        
+        Registered resources include:
+        - Server and tool information (info:// resources)
+        - Provider details (provider:// resources)
+        - Usage guides and tutorials (guide:// resources)
+        - Example workflows and usage patterns (examples:// resources)
+        
+        These resources serve as a knowledge base for LLMs to better understand how to
+        effectively use the available tools and follow best practices. They help reduce
+        the need for extensive contextual information in prompts by making reference
+        material available on-demand through the MCP protocol.
+        
+        Note:
+            This method is called automatically during Gateway initialization when
+            register_tools=True (the default) and is not intended to be called directly.
+        """
         
         @self.mcp.resource("info://server")
         def get_server_info() -> Dict[str, Any]:
@@ -1602,7 +1829,37 @@ first and be prepared to adapt to available providers.
         # ... rest of MCP initialization ...
 
 def create_server() -> FastAPI:
-    """Create and configure the FastAPI server."""
+    """
+    Create and configure the FastAPI server instance for the Ultimate MCP Server.
+    
+    This function serves as the main entry point for setting up the HTTP server
+    component of the Ultimate MCP Server using FastAPI. It handles:
+    
+    1. Singleton management - ensuring only one server instance exists
+    2. Gateway initialization - creating the Gateway if not already instantiated
+    3. CORS configuration - setting up Cross-Origin Resource Sharing middleware
+    4. Health check endpoints - adding utility endpoints for monitoring
+    
+    The function follows a singleton pattern, returning an existing server instance
+    if one has already been created, or creating a new one if needed. This ensures
+    consistent server state across multiple calls.
+    
+    The server instance created by this function can be used with ASGI servers like
+    Uvicorn to serve HTTP requests, or with the FastMCP transport modes for more
+    specialized communication patterns.
+    
+    Returns:
+        FastAPI: Configured FastAPI application instance ready for deployment.
+        The returned application has CORS middleware and health endpoints configured.
+        
+    Example:
+        ```python
+        # Create and run the server with Uvicorn
+        app = create_server()
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+        ```
+    """
     global _server_app
     
     # Check if server already exists
@@ -1630,7 +1887,26 @@ def create_server() -> FastAPI:
     # Add health check endpoint
     @app.get("/health")
     async def health():
-        """Health check endpoint."""
+        """
+        Health check endpoint for monitoring server status.
+        
+        This endpoint provides a simple way to verify that the server is running and
+        responsive. It can be used by load balancers, monitoring systems, or client
+        applications to check if the server is operational.
+        
+        Returns:
+            dict: A simple status object containing:
+                - status: "ok" if the server is healthy
+                - version: Current server version string
+        
+        Example response:
+            ```json
+            {
+                "status": "ok",
+                "version": "0.1.0"
+            }
+            ```
+        """
         return {
             "status": "ok",
             "version": "0.1.0",
@@ -1651,17 +1927,69 @@ def start_server(
     include_tools: Optional[List[str]] = None,
     exclude_tools: Optional[List[str]] = None,
 ) -> None:
-    """Start the Ultimate MCP Server Server using dictConfig for logging.
+    """
+    Start the Ultimate MCP Server with configurable settings.
+    
+    This function serves as the main entry point for starting the Ultimate MCP Server
+    in either SSE (HTTP server) or stdio (direct process communication) mode. It handles
+    complete server initialization including:
+    
+    1. Configuration loading and parameter validation
+    2. Logging setup with proper levels and formatting
+    3. Gateway instantiation with tool registration
+    4. Transport mode selection and server startup
+    
+    The function provides flexibility in server configuration through parameters that
+    override settings from the configuration file, allowing for quick adjustments without
+    modifying configuration files. It also supports tool filtering, enabling selective
+    registration of specific tools.
     
     Args:
-        host: Host to bind to (default: from config)
-        port: Port to listen on (default: from config)
-        workers: Number of worker processes (default: from config)
-        log_level: Log level (default: from config)
-        reload: Whether to reload the server on code changes
-        transport_mode: Transport mode to use ("sse" for HTTP or "stdio" for direct process communication)
-        include_tools: List of tool names to include (default: include all)
-        exclude_tools: List of tool names to exclude (takes precedence over include_tools)
+        host: Hostname or IP address to bind the server to (e.g., "localhost", "0.0.0.0").
+             If None, uses the value from the configuration file.
+        port: TCP port for the server to listen on when in SSE mode.
+             If None, uses the value from the configuration file.
+        workers: Number of worker processes to spawn for handling requests.
+                Higher values improve concurrency but increase resource usage.
+                If None, uses the value from the configuration file.
+        log_level: Logging verbosity level. One of "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL".
+                  If None, uses the value from the configuration file.
+        reload: Whether to automatically reload the server when code changes are detected.
+               Useful during development but not recommended for production.
+        transport_mode: Communication mode for the server. Options:
+                       - "sse": Run as an HTTP server with Server-Sent Events for streaming
+                       - "stdio": Run using standard input/output for direct process communication
+        include_tools: Optional list of specific tool names to include in registration.
+                      If provided, only these tools will be registered unless they are
+                      also in exclude_tools. If None, all tools are included by default.
+        exclude_tools: Optional list of tool names to exclude from registration.
+                      These tools will not be registered even if they are also in include_tools.
+                      
+    Raises:
+        ValueError: If transport_mode is not one of the valid options.
+        ConfigurationError: If there are critical errors in the server configuration.
+        
+    Note:
+        This function does not return as it initiates the server event loop, which
+        runs until interrupted (e.g., by a SIGINT signal). In SSE mode, it starts 
+        a Uvicorn server; in stdio mode, it runs the FastMCP stdio handler.
+        
+    Example:
+        ```python
+        # Start in SSE mode on custom host/port with increased log verbosity
+        start_server(
+            host="0.0.0.0",
+            port=8080,
+            log_level="DEBUG",
+            transport_mode="sse"
+        )
+        
+        # Start in stdio mode with specific tools
+        start_server(
+            transport_mode="stdio",
+            include_tools=["generate_completion", "chat_completion"]
+        )
+        ```
     """
     server_host = host or get_config().server.host
     server_port = port or get_config().server.port
@@ -1687,9 +2015,9 @@ def start_server(
 
     # Update LOGGING_CONFIG with the final level
     LOGGING_CONFIG["root"]["level"] = final_log_level
-    LOGGING_CONFIG["loggers"]["ultimate"]["level"] = final_log_level
-    LOGGING_CONFIG["loggers"]["ultimate.tools"]["level"] = final_log_level
-    LOGGING_CONFIG["loggers"]["ultimate.completions"]["level"] = final_log_level
+    LOGGING_CONFIG["loggers"]["ultimate_mcp_server"]["level"] = final_log_level
+    LOGGING_CONFIG["loggers"]["ultimate_mcp_server.tools"]["level"] = final_log_level
+    LOGGING_CONFIG["loggers"]["ultimate_mcp_server.completions"]["level"] = final_log_level
     
     # Set Uvicorn access level based on final level
     LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = final_log_level if final_log_level != "CRITICAL" else "CRITICAL"

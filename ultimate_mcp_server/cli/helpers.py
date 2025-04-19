@@ -18,7 +18,17 @@ console = Console(file=sys.stderr)
 
 
 def print_cost_table() -> None:
-    """Print a table of model costs."""
+    """Display pricing information for all supported LLM models.
+    
+    This function creates and prints a formatted table showing the cost per million tokens
+    for various LLM models across all supported providers (OpenAI, Anthropic, DeepSeek, etc.).
+    The table separates input token costs from output token costs, as these are typically
+    billed at different rates.
+    
+    Models are grouped by provider and sorted alphabetically for easy reference.
+    This information is useful for cost planning, provider comparison, and
+    understanding the financial implications of different model choices.
+    """
     # Create table
     table = Table(title="Model Cost Per Million Tokens")
     table.add_column("Provider", style="cyan")
@@ -64,25 +74,37 @@ def print_cost_table() -> None:
 
 
 def format_tokens(tokens: int) -> str:
-    """Format token count with thousands separator.
+    """Format token count with thousands separator for better readability.
+    
+    Converts raw token counts (e.g., 1234567) into a more human-readable format
+    with commas as thousand separators (e.g., "1,234,567"). This improves
+    the readability of token usage statistics in CLI outputs and reports.
     
     Args:
-        tokens: Token count
+        tokens: Raw token count as an integer
         
     Returns:
-        Formatted token count
+        Formatted string with thousand separators (e.g., "1,234,567")
     """
     return f"{tokens:,}"
 
 
 def format_duration(seconds: float) -> str:
-    """Format duration in a human-readable format.
+    """Format time duration in a human-friendly, adaptive format.
+    
+    Converts raw seconds into a more readable format, automatically selecting
+    the appropriate unit based on the magnitude:
+    - Milliseconds for durations under 0.1 seconds
+    - Seconds with decimal precision for durations under 60 seconds
+    - Minutes and seconds for longer durations
+    
+    This provides intuitive time displays in benchmarks and performance reports.
     
     Args:
-        seconds: Duration in seconds
+        seconds: Duration in seconds (can be fractional)
         
     Returns:
-        Formatted duration
+        Formatted string like "50ms", "2.45s", or "1m 30.5s" depending on duration
     """
     if seconds < 0.1:
         return f"{seconds * 1000:.0f}ms"
@@ -95,15 +117,19 @@ def format_duration(seconds: float) -> str:
 
 
 def save_output_to_file(text: str, file_path: str, mode: str = "w") -> bool:
-    """Save output text to a file.
+    """Write text content to a file with error handling and user feedback.
+    
+    This utility function safely writes text to a file, handling encoding
+    and providing user feedback on success or failure. It's commonly used
+    to save LLM outputs, generated code, or other text data for later use.
     
     Args:
-        text: Text to save
-        file_path: Path to save to
-        mode: File mode (w for write, a for append)
+        text: The string content to write to the file
+        file_path: Target file path (absolute or relative to current directory)
+        mode: File open mode - "w" for overwrite or "a" for append to existing content
         
     Returns:
-        True if successful
+        Boolean indicating success (True) or failure (False)
     """
     try:
         with open(file_path, mode, encoding="utf-8") as f:
@@ -117,13 +143,17 @@ def save_output_to_file(text: str, file_path: str, mode: str = "w") -> bool:
 
 
 def load_file_content(file_path: str) -> Optional[str]:
-    """Load content from a file.
+    """Read and return the entire contents of a text file.
+    
+    This utility function safely reads text from a file with proper UTF-8 encoding,
+    handling any errors that may occur during the process. It's useful for loading
+    prompts, templates, or other text files needed for LLM operations.
     
     Args:
-        file_path: Path to load from
+        file_path: Path to the file to read (absolute or relative to current directory)
         
     Returns:
-        File content or None if error
+        The file's contents as a string if successful, or None if an error occurred
     """
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -134,20 +164,30 @@ def load_file_content(file_path: str) -> Optional[str]:
 
 
 def print_markdown(markdown_text: str) -> None:
-    """Print formatted Markdown.
+    """Display Markdown content with proper formatting and styling.
+    
+    Renders Markdown text with appropriate styling (headings, bold, italic, 
+    lists, code blocks, etc.) in the terminal using Rich's Markdown renderer.
+    This provides a more readable and visually appealing output for 
+    documentation, examples, or LLM responses that use Markdown formatting.
     
     Args:
-        markdown_text: Markdown text to print
+        markdown_text: Raw Markdown-formatted text to render
     """
     md = Markdown(markdown_text)
     console.print(md)
 
 
 def print_json(json_data: Union[Dict, List]) -> None:
-    """Print formatted JSON.
+    """Display JSON data with syntax highlighting and proper formatting.
+    
+    Converts a Python dictionary or list into a properly indented JSON string
+    and displays it with syntax highlighting for improved readability.
+    This is useful for displaying API responses, configuration data,
+    or other structured data in a human-friendly format.
     
     Args:
-        json_data: JSON data to print
+        json_data: Python dictionary or list to be displayed as formatted JSON
     """
     json_str = json.dumps(json_data, indent=2)
     syntax = Syntax(json_str, "json", theme="monokai", word_wrap=True)
@@ -155,11 +195,17 @@ def print_json(json_data: Union[Dict, List]) -> None:
 
 
 def print_code(code: str, language: str = "python") -> None:
-    """Print formatted code.
+    """Display source code with syntax highlighting and line numbers.
+    
+    Renders code with proper syntax highlighting based on the specified language,
+    along with line numbers for easier reference. This improves readability
+    when displaying code examples, LLM-generated code, or code snippets
+    from files.
     
     Args:
-        code: Code to print
-        language: Programming language
+        code: Source code text to display
+        language: Programming language for syntax highlighting (e.g., "python",
+                 "javascript", "rust", "sql", etc.)
     """
     syntax = Syntax(code, language, theme="monokai", line_numbers=True)
     console.print(syntax)
@@ -170,12 +216,23 @@ def print_model_comparison(
     models: List[str],
     metrics: List[Dict[str, Any]]
 ) -> None:
-    """Print a comparison of models for a provider.
+    """Display a side-by-side comparison of multiple models from the same provider.
+    
+    Creates a formatted table comparing performance metrics for different models
+    from the same LLM provider. This is useful for identifying the optimal model
+    for specific use cases based on response time, throughput, and cost metrics.
+    
+    The comparison includes:
+    - Response time (formatted appropriately for the magnitude)
+    - Processing speed (tokens per second)
+    - Cost per request
+    - Total token usage
     
     Args:
-        provider: Provider name
-        models: List of model names
-        metrics: List of metrics dictionaries
+        provider: Name of the LLM provider (e.g., "openai", "anthropic")
+        models: List of model identifiers to compare
+        metrics: List of dictionaries containing performance metrics for each model,
+                with keys like "time", "tokens_per_second", "cost", "total_tokens"
     """
     # Create table
     table = Table(title=f"{provider.capitalize()} Model Comparison")
@@ -200,7 +257,19 @@ def print_model_comparison(
 
 
 def print_environment_info() -> None:
-    """Print information about the current environment."""
+    """Display current environment configuration for diagnostics.
+    
+    Creates a formatted table showing important environment variables and their
+    current values, with a focus on API keys, logging configuration, and cache settings.
+    This is useful for troubleshooting and verifying that the environment is
+    configured correctly before running the server or other commands.
+    
+    The output includes:
+    - Status of API keys for each supported provider (set or not set)
+    - Logging level configuration
+    - Cache settings
+    - Other relevant environment variables
+    """
     # Create table
     table = Table(title="Environment Information")
     table.add_column("Setting", style="cyan")
@@ -222,7 +291,20 @@ def print_environment_info() -> None:
 
 
 def print_examples() -> None:
-    """Print examples of using the CLI."""
+    """Display common usage examples for the CLI commands.
+    
+    Shows a set of syntax-highlighted example commands demonstrating how to use
+    the most common features of the Ultimate MCP Server CLI. This helps users
+    quickly learn the command patterns and options available without having to
+    consult the full documentation.
+    
+    Examples cover:
+    - Starting the server
+    - Listing and testing providers
+    - Generating completions (with and without streaming)
+    - Running benchmarks
+    - Managing the cache
+    """
     examples = """
 # Run the server
 ultimate-mcp-server run --host 0.0.0.0 --port 8013
@@ -254,14 +336,19 @@ ultimate-mcp-server cache --clear
 
 
 def confirm_action(message: str, default: bool = False) -> bool:
-    """Prompt the user to confirm an action.
+    """Prompt the user for confirmation before performing a potentially destructive action.
+    
+    Displays a yes/no prompt with the specified message and waits for user input.
+    This is used to confirm potentially destructive operations like clearing the cache
+    or deleting files to prevent accidental data loss.
     
     Args:
-        message: Confirmation message
-        default: Default response if user just presses Enter
+        message: The question or confirmation message to display to the user
+        default: The default response if the user just presses Enter without typing
+                 anything (True for yes, False for no)
         
     Returns:
-        True if confirmed, False if canceled
+        Boolean indicating whether the user confirmed (True) or canceled (False) the action
     """
     default_str = "Y/n" if default else "y/N"
     response = input(f"{message} [{default_str}]: ")

@@ -554,7 +554,33 @@ def find_demo_scripts() -> List[Path]:
     return scripts
 
 async def run_script(script_path: Path) -> Tuple[int, str, str]:
-    """Run a single script and capture its output and exit code."""
+    """
+    Run a single Python script as a subprocess and capture its output.
+    
+    This async function executes a Python script in a separate process using the same
+    Python interpreter that's running this script. It captures both standard output
+    and standard error streams, as well as the exit code of the process.
+    
+    The function uses asyncio.create_subprocess_exec for non-blocking execution,
+    allowing multiple scripts to be run concurrently if needed, although the current
+    implementation runs them sequentially.
+    
+    Args:
+        script_path (Path): The path to the Python script to be executed.
+            This should be a fully resolved path object pointing to a valid Python file.
+    
+    Returns:
+        Tuple[int, str, str]: A tuple containing:
+            - exit_code (int): The return code of the process (0 typically means success)
+            - stdout (str): The captured standard output as a string, with encoding errors ignored
+            - stderr (str): The captured standard error as a string, with encoding errors ignored
+    
+    Note:
+        - The function waits for the script to complete before returning
+        - Any encoding errors in stdout/stderr are ignored during decoding
+        - The script is executed with the same Python interpreter as the parent process
+        - No environment variables or arguments are passed to the script
+    """
     command = [PYTHON_EXECUTABLE, str(script_path)]
     
     process = await asyncio.create_subprocess_exec(
@@ -569,7 +595,43 @@ async def run_script(script_path: Path) -> Tuple[int, str, str]:
     return exit_code, stdout.decode(errors='ignore'), stderr.decode(errors='ignore')
 
 def check_for_errors(script_name: str, exit_code: int, stdout: str, stderr: str) -> Tuple[bool, str]:
-    """Check script output/exit code against expectations for that script."""
+    """
+    Check script output against predefined expectations to determine success or failure.
+    
+    This function analyzes the execution results of a demo script and determines if it
+    succeeded or failed based on:
+    1. Comparing the actual exit code against the expected exit code for the script
+    2. Checking for unexpected error messages in stdout and stderr
+    3. Applying script-specific patterns for allowed errors and warnings
+    
+    The function uses the DEMO_EXPECTATIONS dictionary to get script-specific expectations
+    including allowed error patterns. For scripts without specific expectations defined,
+    it applies default success criteria (exit code 0 and no critical error indicators).
+    
+    The function handles two types of patterns for allowed output:
+    - allowed_stderr_patterns: Regex patterns for permitted messages in stderr
+    - allowed_stdout_patterns: Regex patterns for permitted messages in stdout
+    
+    Args:
+        script_name (str): Name of the script being checked (used to lookup expectations)
+        exit_code (int): The actual exit code returned by the script
+        stdout (str): The captured standard output from the script
+        stderr (str): The captured standard error from the script
+    
+    Returns:
+        Tuple[bool, str]: A tuple containing:
+            - success (bool): True if the script execution meets all success criteria
+            - reason (str): A descriptive message explaining the result
+                            "Success" for successful executions
+                            Error details for failed executions
+    
+    Note:
+        - Log messages at INFO, DEBUG, and WARNING levels are generally ignored
+          unless they match critical error patterns
+        - Script-specific allowed patterns take precedence over default error indicators
+        - If no script-specific expectations exist, only the DEFAULT_ERROR_INDICATORS
+          are used to check for problems
+    """
     
     expectations = DEMO_EXPECTATIONS.get(script_name, {})
     expected_exit_code = expectations.get("expected_exit_code", 0)
@@ -583,6 +645,39 @@ def check_for_errors(script_name: str, exit_code: int, stdout: str, stderr: str)
     # --- Refined Error Log Checking --- 
     
     def find_unexpected_lines(output: str, allowed_patterns: List[str], default_indicators: List[str]) -> List[str]:
+        """
+        Find lines in script output that indicate errors or unexpected behavior.
+        
+        This function analyzes the output of a script (either stdout or stderr) and
+        identifies lines that may indicate an error or unexpected behavior. It handles
+        two different checking modes:
+        
+        1. With allowed_patterns: All lines that don't match at least one of the allowed
+           patterns are considered unexpected.
+        2. Without allowed_patterns: Only lines containing any of the default_indicators
+           are considered unexpected.
+        
+        The first mode is more restrictive (whitelist approach) while the second is
+        more permissive (blacklist approach). The function chooses the appropriate mode
+        based on whether allowed_patterns is provided.
+        
+        Args:
+            output (str): The script output to analyze (either stdout or stderr)
+            allowed_patterns (List[str]): List of regex patterns for allowed output lines.
+                If provided, any line not matching at least one pattern is unexpected.
+            default_indicators (List[str]): List of string indicators of critical errors.
+                Only used when allowed_patterns is empty, to identify error lines.
+        
+        Returns:
+            List[str]: A list of lines from the output that are considered unexpected or
+                      indicative of errors. Empty list means no unexpected lines found.
+        
+        Note:
+            - Empty lines are always ignored
+            - When allowed_patterns is provided, the function uses a whitelist approach
+            - When allowed_patterns is empty, the function uses a blacklist approach
+            - Regex matching is used for allowed_patterns, simple substring matching for default_indicators
+        """
         lines = output.strip().splitlines()
         unexpected_lines = []
         for line in lines:
@@ -616,6 +711,28 @@ def check_for_errors(script_name: str, exit_code: int, stdout: str, stderr: str)
     # Filter out lines that are just INFO/DEBUG/WARNING level logs unless they are explicitly disallowed
     # (This assumes default log format: YYYY-MM-DD HH:MM:SS] LEVEL ...) or rich format
     def is_ignorable_log(line: str) -> bool:
+        """
+        Determine if a log line can be safely ignored for error detection.
+        
+        This function identifies standard INFO, DEBUG, and WARNING level log messages
+        that should typically be ignored when checking for errors, unless they are
+        explicitly flagged as problematic by other patterns.
+        
+        The function recognizes common log line formats:
+        - Standard timestamp-prefixed format: [YYYY-MM-DD HH:MM:SS] LEVEL message
+        - Simple level-prefixed format: LEVEL message
+        
+        Args:
+            line (str): The log line to analyze
+            
+        Returns:
+            bool: True if the line appears to be a standard INFO, DEBUG, or WARNING
+                 log message that can be safely ignored. False otherwise.
+                 
+        Note:
+            This function only identifies the format of standard log lines;
+            it doesn't analyze the content of the messages themselves.
+        """
         line_lower = line.lower()  # noqa: F841
         return (
             re.match(r"^\[\d{2}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}\]\s+(INFO|DEBUG|WARNING)\s+", line.strip()) or 
@@ -636,7 +753,35 @@ def check_for_errors(script_name: str, exit_code: int, stdout: str, stderr: str)
     return True, "Success"
 
 def write_script_output_to_log(script_name: str, exit_code: int, stdout: str, stderr: str, is_success: bool):
-    """Write script output to the consolidated log file."""
+    """
+    Write the complete output of a script run to the consolidated log file.
+    
+    This function appends the execution results of a single script to a consolidated
+    log file for record-keeping and debugging purposes. The log includes:
+    - A header with the script name, exit code, and success/failure status
+    - The complete stdout output captured during execution
+    - The complete stderr output captured during execution
+    
+    Each script's log entry is clearly separated with delimiters for easy navigation
+    and searching within the log file.
+    
+    Args:
+        script_name (str): Name of the script that was executed
+        exit_code (int): The exit code returned by the script
+        stdout (str): The complete standard output captured during execution
+        stderr (str): The complete standard error captured during execution
+        is_success (bool): Whether the script execution was considered successful
+                         according to the check_for_errors criteria
+    
+    Returns:
+        None: The function writes to the log file specified by OUTPUT_LOG_FILE
+             but doesn't return any value
+    
+    Note:
+        - The function appends to the log file, preserving previous entries
+        - If stdout or stderr is empty, a placeholder message is logged
+        - No limit is placed on the size of the logged output
+    """
     with open(OUTPUT_LOG_FILE, "a", encoding="utf-8") as log_file:
         # Write script header with result
         log_file.write(f"\n{'=' * 80}\n")
@@ -655,7 +800,41 @@ def write_script_output_to_log(script_name: str, exit_code: int, stdout: str, st
         log_file.write("\n")
 
 async def main():
-    """Main function to run all demo scripts and report results."""
+    """
+    Main function to run all demo scripts and generate a comprehensive report.
+    
+    This async function coordinates the entire process of:
+    1. Finding all demo scripts in the examples directory
+    2. Running each script sequentially and capturing its output
+    3. Checking each script's result against expected behavior
+    4. Logging detailed output to a consolidated log file
+    5. Generating a rich, interactive summary report in the console
+    
+    The function implements a progress bar display using rich.progress to provide
+    real-time feedback during execution. After all scripts have run, it displays
+    a detailed table summarizing the results of each script, including status,
+    exit code, and relevant output snippets.
+    
+    The function follows these specific steps:
+    - Locate Python scripts in the examples directory (skipping certain files)
+    - Initialize/clear the consolidated log file
+    - Run each script in sequence, updating the progress bar
+    - Check each script's output against expectations
+    - Write detailed output for each script to the log file
+    - Generate and display a summary table with success/failure indicators
+    - Display final counts of succeeded and failed scripts
+    
+    Returns:
+        int: Exit code for the parent process:
+            - 0 if all scripts succeed
+            - 1 if any script fails or if no scripts are found
+    
+    Note:
+        - Scripts listed in SCRIPTS_TO_SKIP are excluded from execution
+        - The function creates a new consolidated log file each time it runs
+        - Progress information is displayed using a rich progress bar
+        - The summary table highlights both successful and failed scripts
+    """
     console.print(Rule("[bold blue]Running All Example Scripts[/bold blue]"))
     
     scripts = find_demo_scripts()

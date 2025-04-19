@@ -5,7 +5,10 @@ import re  # Add re
 import time  # Add time
 from typing import Any, Dict, List, Optional, Tuple, Union  # Add List, Union, Tuple
 
-from ultimate_mcp_server.constants import COST_PER_MILLION_TOKENS, Provider  # Add COST_PER_MILLION_TOKENS
+from ultimate_mcp_server.constants import (  # Add COST_PER_MILLION_TOKENS
+    COST_PER_MILLION_TOKENS,
+    Provider,
+)
 from ultimate_mcp_server.core.providers.base import get_provider  # Add get_provider
 from ultimate_mcp_server.exceptions import (  # Add ToolInputError
     ProviderError,
@@ -16,10 +19,12 @@ from ultimate_mcp_server.exceptions import (  # Add ToolInputError
 # Remove BaseTool import if no longer needed
 # from ultimate_mcp_server.tools.base import BaseTool 
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
-from ultimate_mcp_server.tools.completion import generate_completion  # Add generate_completion import
+from ultimate_mcp_server.tools.completion import (
+    generate_completion,  # Add generate_completion import
+)
 from ultimate_mcp_server.utils import get_logger
 
-logger = get_logger("ultimate.tools.meta")
+logger = get_logger("ultimate_mcp_server.tools.meta")
 
 # --- Standalone Tool Functions --- 
 

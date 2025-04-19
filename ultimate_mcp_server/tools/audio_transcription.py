@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 import aiofiles
 import httpx
 from docx import Document
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 
 from ultimate_mcp_server.constants import Provider, TaskType
 from ultimate_mcp_server.core.providers.base import get_provider
@@ -39,7 +39,7 @@ from ultimate_mcp_server.tools.completion import chat_completion, generate_compl
 from ultimate_mcp_server.utils import get_logger
 from ultimate_mcp_server.utils.text import count_tokens
 
-logger = get_logger("ultimate.tools.audio")
+logger = get_logger("ultimate_mcp_server.tools.audio")
 
 # --- Constants and Enums ---
 
@@ -147,7 +147,7 @@ class AudioEnhancementParams(BaseModel):
         description="Output sample rate in Hz"
     )
     
-    @validator('custom_filters')
+    @field_validator('custom_filters')
     def validate_custom_filters(cls, v):
         """Validate that custom filters don't contain dangerous commands."""
         if v:
