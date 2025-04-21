@@ -417,19 +417,22 @@ The `run` command starts the Ultimate MCP Server with specified options:
 # Basic server start with default settings from .env
 umcp run
 
-# Run on a specific host and port
-umcp run --host 0.0.0.0 --port 9000
+# Run on a specific host (-h) and port (-p)
+umcp run -h 0.0.0.0 -p 9000
 
-# Run with multiple worker processes
-umcp run --workers 4
+# Run with multiple worker processes (-w)
+umcp run -w 4
 
-# Enable debug logging for detailed output
-umcp run --debug
+# Enable debug logging (-d)
+umcp run -d
 
-# Run only with specific tools
+# Use stdio transport (-t)
+umcp run -t stdio
+
+# Run only with specific tools (no shortcut for --include-tools)
 umcp run --include-tools completion chunk_document read_file write_file
 
-# Run with all tools except certain ones
+# Run with all tools except certain ones (no shortcut for --exclude-tools)
 umcp run --exclude-tools browser_init browser_navigate
 ```
 
@@ -449,11 +452,11 @@ INFO:     Uvicorn running on http://0.0.0.0:9000 (Press CTRL+C to quit)
 ```
 
 Available options:
-- `--host`: Host or IP address to bind the server to (default: from .env)
-- `--port`: Port to listen on (default: from .env)
-- `--workers`: Number of worker processes to spawn (default: from .env)
-- `--transport-mode`: Transport mode for server communication ('sse' or 'stdio')
-- `--debug`: Enable debug logging
+- `-h, --host`: Host or IP address to bind the server to (default: from .env)
+- `-p, --port`: Port to listen on (default: from .env)
+- `-w, --workers`: Number of worker processes to spawn (default: from .env)
+- `-t, --transport-mode`: Transport mode for server communication ('sse' or 'stdio', default: sse)
+- `-d, --debug`: Enable debug logging
 - `--include-tools`: List of tool names to include (comma-separated)
 - `--exclude-tools`: List of tool names to exclude (comma-separated)
 
@@ -467,14 +470,14 @@ The `providers` command displays information about configured LLM providers:
 # List all configured providers
 umcp providers
 
-# Check API keys for all configured providers
-umcp providers --check
+# Check API keys (-c) for all configured providers
+umcp providers -c
 
-# List available models for each provider
+# List available models (no shortcut for --models)
 umcp providers --models
 
 # Check keys and list models
-umcp providers --check --models
+umcp providers -c --models
 ```
 
 Example output:
@@ -507,7 +510,7 @@ ANTHROPIC MODELS:
 ```
 
 Available options:
-- `--check`: Check API keys for all configured providers
+- `-c, --check`: Check API keys for all configured providers
 - `--models`: List available models for each provider
 
 #### Testing a Provider
@@ -518,7 +521,7 @@ The `test` command allows you to test a specific provider:
 # Test the default OpenAI model with a simple prompt
 umcp test openai
 
-# Test a specific model with a custom prompt
+# Test a specific model (--model) with a custom prompt (--prompt)
 umcp test anthropic --model claude-3-5-haiku-20241022 --prompt "Write a short poem about coding."
 
 # Test Gemini with a different prompt
@@ -552,22 +555,22 @@ Available options:
 The `complete` command lets you generate text directly from the CLI:
 
 ```bash
-# Generate text with default provider (OpenAI)
+# Generate text with default provider (OpenAI) using a prompt (--prompt)
 umcp complete --prompt "Write a concise explanation of quantum computing."
 
-# Specify a provider and model
+# Specify a provider (--provider) and model (--model)
 umcp complete --provider anthropic --model claude-3-5-sonnet-20241022 --prompt "What are the key differences between Rust and Go?"
 
-# Use a system prompt (for supported providers)
-umcp complete --provider openai --model gpt-4o --system "You are an expert programmer. Keep your answers technical and concise." --prompt "Explain dependency injection."
+# Use a system prompt (--system)
+umcp complete --provider openai --model gpt-4o --system "You are an expert programmer..." --prompt "Explain dependency injection."
 
-# Stream the response token by token
-umcp complete --provider openai --prompt "Count from 1 to 10." --stream
+# Stream the response token by token (-s)
+umcp complete --provider openai --prompt "Count from 1 to 10." -s
 
-# Adjust temperature and token limit
+# Adjust temperature (--temperature) and token limit (--max-tokens)
 umcp complete --provider gemini --temperature 1.2 --max-tokens 250 --prompt "Generate a creative sci-fi story opening."
 
-# Read prompt from stdin
+# Read prompt from stdin (no --prompt needed)
 echo "Tell me about space exploration." | umcp complete
 ```
 
@@ -587,17 +590,20 @@ Available options:
 - `--temperature`: Sampling temperature (0.0-2.0, default: 0.7)
 - `--max-tokens`: Maximum tokens to generate
 - `--system`: System prompt for providers that support it
-- `--stream`: Stream the response token by token
+- `-s, --stream`: Stream the response token by token
 
 ### 💾 Cache Management
 
 The `cache` command allows you to view or clear the request cache:
 
 ```bash
-# Show cache status
+# Show cache status (default action)
+umcp cache
+
+# Explicitly show status (no shortcut for --status)
 umcp cache --status
 
-# Clear the cache (with confirmation prompt)
+# Clear the cache (no shortcut for --clear, with confirmation prompt)
 umcp cache --clear
 
 # Show stats and clear the cache in one command
@@ -615,7 +621,7 @@ Cache Status:
 ```
 
 Available options:
-- `--status`: Show cache status (enabled by default)
+- `--status`: Show cache status (enabled by default if no other flag)
 - `--clear`: Clear the cache (will prompt for confirmation)
 
 ### 📊 Benchmarking
@@ -632,8 +638,8 @@ umcp benchmark --providers openai,anthropic
 # Benchmark with specific models
 umcp benchmark --providers openai,anthropic --models gpt-4o,claude-3.5-sonnet
 
-# Use a custom prompt and more runs
-umcp benchmark --prompt "Explain the process of photosynthesis in detail." --runs 5
+# Use a custom prompt and more runs (-r)
+umcp benchmark --prompt "Explain the process of photosynthesis in detail." -r 5
 ```
 
 Example output:
@@ -652,7 +658,7 @@ Available options:
 - `--providers`: List of providers to benchmark (default: all configured)
 - `--models`: Model IDs to benchmark (defaults to default model of each provider)
 - `--prompt`: Prompt text to use (default: built-in benchmark prompt)
-- `--runs`: Number of runs per provider/model (default: 3)
+- `-r, --runs`: Number of runs per provider/model (default: 3)
 
 ### 🧰 Tool Management
 
@@ -696,11 +702,11 @@ Available options:
 The `examples` command lets you list and run example scripts:
 
 ```bash
-# List all example scripts
+# List all example scripts (default action)
 umcp examples
 
-# List example scripts in a more concise format
-umcp examples --list
+# Explicitly list example scripts (-l)
+umcp examples -l
 
 # Run a specific example
 umcp examples rag_example.py
@@ -738,7 +744,7 @@ Based on the retrieved context, clean energy offers several benefits:
 ```
 
 Available options:
-- `--list`: List example scripts only
+- `-l, --list`: List example scripts only
 - `--category`: Filter examples by category
 
 ### 🔎 Getting Help
@@ -786,18 +792,20 @@ Usage: umcp run [OPTIONS]
   Start the server with optional overrides.
 
   Examples:
-    umcp run --host 0.0.0.0 --port 8000 --workers 4 --transport-mode sse
-    umcp run --debug
+    umcp run -h 0.0.0.0 -p 8000 -w 4 -t sse
+    umcp run -d
 
 Options:
-  --host TEXT                     Host or IP address to bind the server to.
+  -h, --host TEXT                 Host or IP address to bind the server to.
                                   Defaults from config.
-  --port INTEGER                  Port to listen on. Defaults from config.
-  --workers INTEGER               Number of worker processes to spawn.
+  -p, --port INTEGER              Port to listen on. Defaults from config.
+  -w, --workers INTEGER           Number of worker processes to spawn.
                                   Defaults from config.
-  --transport-mode [sse|stdio]    Transport mode for server communication.
-                                  Options: 'sse' or 'stdio'.
-  --debug                         Enable debug logging for detailed output.
+  -t, --transport-mode [sse|stdio]
+                                  Transport mode for server communication (-t
+                                  shortcut). Options: 'sse' or 'stdio'.
+  -d, --debug                     Enable debug logging for detailed output (-d
+                                  shortcut).
   --include-tools TEXT            List of tool names to include when running
                                   the server.
   --exclude-tools TEXT            List of tool names to exclude when running
@@ -2806,3 +2814,20 @@ This project builds upon the work of many fantastic open-source projects and ser
 ---
 
 > _This README provides a comprehensive overview. For specific tool parameters, advanced configuration options, and detailed implementation notes, please refer to the source code and individual tool documentation within the project._
+
+### Running the Server
+
+Start the server using the CLI:
+
+```bash
+# Start in default stdio mode
+umcp run
+
+# Start in SSE mode for web interfaces or remote clients
+umcp run --transport-mode sse
+# Or use the shortcut:
+umcp run -t sse
+
+# Run on a specific host and port (SSE mode)
+umcp run -t sse --host 0.0.0.0 --port 8080
+```

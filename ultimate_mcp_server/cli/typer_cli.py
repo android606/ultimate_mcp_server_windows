@@ -180,32 +180,37 @@ EXAMPLE_CATEGORIES: Dict[str, List[str]] = {
 # Define option constants to avoid function calls in default arguments
 HOST_OPTION = typer.Option(
     None,
+    "-h",
     "--host",
-    help="[cyan]Host[/cyan] or [cyan]IP address[/cyan] to bind the server to. Defaults from config.",
+    help="[cyan]Host[/cyan] or [cyan]IP address[/cyan] to bind the server to (-h shortcut). Defaults from config.",
     rich_help_panel="Server Options",
 )
 PORT_OPTION = typer.Option(
     None,
+    "-p",
     "--port",
-    help="[cyan]Port[/cyan] to listen on. Defaults from config.",
+    help="[cyan]Port[/cyan] to listen on (-p shortcut). Defaults from config.",
     rich_help_panel="Server Options",
 )
 WORKERS_OPTION = typer.Option(
     None,
+    "-w",
     "--workers",
-    help="[cyan]Number of worker[/cyan] processes to spawn. Defaults from config.",
+    help="[cyan]Number of worker[/cyan] processes to spawn (-w shortcut). Defaults from config.",
     rich_help_panel="Server Options",
 )
 TRANSPORT_MODE_OPTION = typer.Option(
     TransportMode.SSE,
+    "-t",
     "--transport-mode",
-    help="[cyan]Transport mode[/cyan] for server communication. Options: 'sse' or 'stdio'.",
+    help="[cyan]Transport mode[/cyan] for server communication (-t shortcut). Options: 'sse' or 'stdio'.",
     rich_help_panel="Server Options",
 )
 DEBUG_OPTION = typer.Option(
     False,
+    "-d",
     "--debug",
-    help="[yellow]Enable debug logging[/yellow] for detailed output.",
+    help="[yellow]Enable debug logging[/yellow] for detailed output (-d shortcut).",
     rich_help_panel="Server Options",
 )
 INCLUDE_TOOLS_OPTION = typer.Option(
@@ -223,8 +228,9 @@ EXCLUDE_TOOLS_OPTION = typer.Option(
 
 CHECK_OPTION = typer.Option(
     False,
+    "-c",
     "--check",
-    help="[yellow]Check API keys[/yellow] for all configured providers.",
+    help="[yellow]Check API keys[/yellow] for all configured providers (-c shortcut).",
     rich_help_panel="Provider Options",
 )
 MODELS_OPTION = typer.Option(
@@ -285,8 +291,9 @@ SYSTEM_OPTION = typer.Option(
 )
 STREAM_OPTION = typer.Option(
     False,
+    "-s",
     "--stream",
-    help="[cyan]Stream[/cyan] the response token by token.",
+    help="[cyan]Stream[/cyan] the response token by token (-s shortcut).",
     rich_help_panel="Completion Options",
 )
 
@@ -324,8 +331,9 @@ BENCHMARK_PROMPT_OPTION = typer.Option(
 )
 RUNS_OPTION = typer.Option(
     3,
+    "-r",
     "--runs",
-    help="[green]Number of runs[/green] per provider/model (default: 3)",
+    help="[green]Number of runs[/green] per provider/model (-r shortcut, default: 3)",
     rich_help_panel="Benchmark Options",
 )
 
@@ -363,8 +371,9 @@ SHOW_EXAMPLES_OPTION = typer.Option(
 
 LIST_OPTION = typer.Option(
     False,
+    "-l",
     "--list",
-    help="[green]List examples[/green] instead of running one.",
+    help="[green]List examples[/green] instead of running one (-l shortcut).",
     rich_help_panel="Examples Options",
 )
 

@@ -934,14 +934,14 @@ async def _check_protection_heuristics(
     Check if a bulk operation on multiple files triggers safety protection heuristics.
     (Modified to use get_protection_config which reads from validated config)
     """
-    # --- Use get_protection_config which reads from main config ---
-    config = get_protection_config(operation_type)
-    if not config.get('enabled', False):
+    protection_config = get_protection_config()
+
+    if not protection_config.get('enabled', False):
         return # Protection disabled for this operation type
 
     num_paths = len(paths)
     # --- Read thresholds from the loaded config dictionary ---
-    max_files_threshold = config.get('max_files_threshold', 100)
+    max_files_threshold = protection_config.get('max_files_threshold', 100)
 
     # Only run detailed checks if the number of files exceeds the threshold
     if num_paths <= max_files_threshold:
@@ -963,7 +963,7 @@ async def _check_protection_heuristics(
 
     total_attempted = len(paths)
     # --- Read threshold from config dict ---
-    max_errors_pct = config.get('max_stat_errors_pct', 10.0)
+    max_errors_pct = protection_config.get('max_stat_errors_pct', 10.0)
     if total_attempted > 0 and (failed_stat_count / total_attempted * 100) > max_errors_pct:
          raise ProtectionTriggeredError(
              f"Operation blocked because safety check could not reliably gather file metadata ({failed_stat_count}/{total_attempted} failures).",
@@ -995,8 +995,8 @@ async def _check_protection_heuristics(
     num_unique_extensions = len(extensions)
 
     # --- Read thresholds from config dict ---
-    dt_threshold = config.get('datetime_stddev_threshold_sec', 60 * 60 * 24 * 30)
-    type_threshold = config.get('file_type_variance_threshold', 5)
+    dt_threshold = protection_config.get('datetime_stddev_threshold_sec', 60 * 60 * 24 * 30)
+    type_threshold = protection_config.get('file_type_variance_threshold', 5)
 
     triggered = False
     reasons = []
