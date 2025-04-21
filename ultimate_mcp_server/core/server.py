@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from mcp.server.fastmcp import Context, FastMCP
 
 import ultimate_mcp_server
@@ -231,6 +231,10 @@ class Gateway:
         # Initialize logger
         self.logger.info(f"Initializing {self.name}...")
         
+        # Set MCP protocol version to 2025-03-25
+        import os
+        os.environ["MCP_PROTOCOL_VERSION"] = "2025-03-25"
+        
         # Create MCP server with host and port settings
         self.mcp = FastMCP(
             self.name,
@@ -239,7 +243,8 @@ class Gateway:
             port=get_config().server.port,
             instructions=self.system_instructions,
             timeout=300,
-            debug=True
+            debug=True,
+            server_version="2025-03-25"  # Use protocol version 2025-03-25
         )
         
         # Initialize the state store
@@ -1957,8 +1962,10 @@ def start_server(
         reload: Whether to automatically reload the server when code changes are detected.
                Useful during development but not recommended for production.
         transport_mode: Communication mode for the server. Options:
-                       - "sse": Run as an HTTP server with Server-Sent Events for streaming
-                       - "stdio": Run using standard input/output for direct process communication
+-                      - "sse": Run as an HTTP server with Server-Sent Events for streaming
+-                      - "stdio": Run using standard input/output for direct process communication
++                      - "stdio": Run using standard input/output for direct process communication (default)
++                      - "sse": Run as an HTTP server with Server-Sent Events for streaming
         include_tools: Optional list of specific tool names to include in registration.
                       If provided, only these tools will be registered unless they are
                       also in exclude_tools. If None, all tools are included by default.
@@ -2035,7 +2042,7 @@ def start_server(
     if not _gateway_instance:
         # Create gateway with tool filtering based on config
         cfg = get_config()
-        _gateway_instance = Gateway(register_tools=True)
+        _gateway_instance = Gateway(name=cfg.server.name, register_tools=True)
     
     # Log startup info to stderr instead of using logging directly
     print("Starting Ultimate MCP Server server", file=sys.stderr)
@@ -2058,6 +2065,25 @@ def start_server(
         
         # Get the SSE app from FastMCP
         app = _gateway_instance.mcp.sse_app()
+        
+        # Add root endpoint to the SSE app for MCP discovery
+        from fastapi.responses import JSONResponse
+        
+        async def root_endpoint(request):
+            """Root endpoint for MCP server discovery"""
+            response = JSONResponse({
+                "type": "mcp-server",
+                "version": "1.0.0",
+                "transport": "sse",
+                "endpoint": "/sse"
+            })
+            response.headers["X-MCP-Server"] = "true"
+            response.headers["X-MCP-Version"] = "1.0.0"
+            response.headers["X-MCP-Transport"] = "sse"
+            return response
+            
+        # Add the root endpoint to the app using add_route
+        app.add_route("/", root_endpoint)
         
         # Log SSE endpoint
         print(f"SSE endpoint available at: http://{server_host}:{server_port}/sse", file=sys.stderr)

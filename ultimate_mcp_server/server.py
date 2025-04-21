@@ -18,7 +18,7 @@ def main():
     running it directly as a standalone application. It provides a command-line interface
     for configuring key server parameters, including:
     
-    - Transport mode: Choose between stdio communication for CLI/pipe usage or SSE 
+    - Transport mode: Choose between stdio communication for CLI/pipe usage (default) or SSE 
       over HTTP for browser/UI integration
     - Server host/port: Configure the network binding for SSE mode
     - Worker count: Control parallelism for request handling
@@ -33,8 +33,8 @@ def main():
     Command-line arguments take precedence over configuration file settings,
     allowing for quick overrides without modifying configuration files.
     
-    When called without arguments, the server starts in stdio mode with settings
-    from the configuration file or environment variables.
+    When called without arguments, the server starts in stdio mode (the default)
+    with settings from the configuration file or environment variables.
     
     Examples:
         # Start in stdio mode (default)

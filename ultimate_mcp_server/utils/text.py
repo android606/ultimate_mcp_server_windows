@@ -786,13 +786,13 @@ def get_text_stats(text: str) -> Dict[str, Any]:
     
     The metrics provided in the output dictionary:
     - char_count: Total number of characters in the text, including whitespace.
-    - word_count: Total number of words, using word boundary regex (\b\w+\b).
+    - word_count: Total number of words, using word boundary regex (\\b\\w+\\b).
       This counts sequences of alphanumeric characters as words.
     - sentence_count: Number of sentences, detected by looking for periods, 
       question marks, or exclamation points followed by spaces, with special
       handling for common abbreviations to reduce false positives.
     - paragraph_count: Number of paragraphs, determined by double newline 
-      sequences (\n\n) which typically indicate paragraph breaks.
+      sequences (\\n\\n) which typically indicate paragraph breaks.
     - avg_word_length: Average length of words in characters, rounded to 
       one decimal place. Provides a simple readability indicator.
     - avg_sentence_length: Average number of words per sentence, rounded to
