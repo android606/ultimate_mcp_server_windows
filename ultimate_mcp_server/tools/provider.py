@@ -154,8 +154,6 @@ async def list_models(
 
     models = {}
     if provider:
-        if not isinstance(provider, str):
-             raise ToolError(status_code=400, detail=f"Invalid provider parameter type: {type(provider)}. Provider name must be a string.")
         if provider not in provider_status:
             valid_providers = list(provider_status.keys())
             raise ToolError(status_code=404, detail=f"Invalid provider specified: '{provider}'. Valid options: {valid_providers}")
@@ -168,7 +166,7 @@ async def list_models(
                 "warning": f"Provider '{provider}' is configured but currently unavailable. Reason: {status.error or 'Unknown error'}"
             }
         # Use model details directly from the ProviderStatus object
-        models[provider] = [m.dict() for m in status.models] if status.models else []
+        models[provider] = [m for m in status.models] if status.models else []
     else:
         # List models for all *available* providers
         any_available = False
@@ -176,7 +174,7 @@ async def list_models(
             if status.available:
                 any_available = True
                  # Use model details directly from the ProviderStatus object
-                models[name] = [m.dict() for m in status.models] if status.models else []
+                models[name] = [m for m in status.models] if status.models else []
             # else: Provider not available, don't include it unless specifically requested
 
         if not any_available:

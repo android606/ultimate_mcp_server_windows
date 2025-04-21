@@ -34,7 +34,11 @@ class OpenRouterProvider(BaseProvider):
         config = get_config().providers.openrouter
         super().__init__(**kwargs)
         self.name = "openrouter"
-        self.default_model = config.default_model
+        
+        # Use config default first, then fallback to constants
+        self.default_model = config.default_model or DEFAULT_MODELS.get(Provider.OPENROUTER)
+        if not config.default_model:
+            logger.debug(f"No default model set in config for OpenRouter, using fallback from constants: {self.default_model}")
 
         # Get base_url from config, fallback to kwargs, then constant
         self.base_url = config.base_url or kwargs.get("base_url", DEFAULT_OPENROUTER_BASE_URL)
@@ -138,6 +142,11 @@ class OpenRouterProvider(BaseProvider):
 
         # Use default model if not specified
         model = model or self.default_model
+
+        # Ensure we have a model name before proceeding
+        if model is None:
+            logger.error("Completion failed: No model specified and no default model configured for OpenRouter.")
+            raise ValueError("No model specified and no default model configured for OpenRouter.")
 
         # Strip provider prefix only if it matches OUR provider name
         if model.startswith(f"{self.provider_name}:"):

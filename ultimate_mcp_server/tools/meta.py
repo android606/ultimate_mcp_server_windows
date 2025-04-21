@@ -53,11 +53,14 @@ async def get_tool_info(
     """
     # Robust context checking is essential here
     if ctx is None or not hasattr(ctx, 'request_context') or ctx.request_context is None or not hasattr(ctx.request_context, 'lifespan_context') or ctx.request_context.lifespan_context is None:
-        logger.error("Context or lifespan_context is None or invalid in get_tool_info")
-        return {
-            "error": "Server context not available. Tool information cannot be retrieved.",
-            "tools": []
-        }
+        error_msg = "Context or lifespan_context is None or invalid in get_tool_info. Cannot access tool registry."
+        logger.error(error_msg)
+        # Raise an error instead of returning a dict to make the problem explicit upstream
+        raise ValueError(error_msg)
+        # return {
+        #     "error": "Server context not available. Tool information cannot be retrieved.",
+        #     "tools": []
+        # }
 
     # Get tools from registry via context
     lifespan_ctx = ctx.request_context.lifespan_context
@@ -375,15 +378,15 @@ async def get_tool_recommendations(
     
     # Get information about available tools using the refactored function
     # Pass the context received by this function
-    tools_info = await get_tool_info(ctx=ctx) 
-    
-    # Handle potential error from get_tool_info if context was bad
-    if "error" in tools_info:
-        logger.warning(f"Could not get tool info for recommendations: {tools_info['error']}")
+    tools_info = {}
+    try:
+        tools_info = await get_tool_info(ctx=ctx)
+    except ValueError as e:
+        logger.warning(f"Could not get tool info for recommendations due to context error: {e}")
         return {
-             "error": "Could not retrieve tool information needed for recommendations. Server context might be unavailable.",
-             "message": "Cannot provide recommendations without knowing available tools."
-         }
+            "error": f"Could not retrieve tool information needed for recommendations: {e}",
+            "message": "Cannot provide recommendations without knowing available tools."
+        }
          
     available_tools = [t["name"] for t in tools_info.get("tools", [])]
     if not available_tools:
