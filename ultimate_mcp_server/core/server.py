@@ -542,24 +542,11 @@ class Gateway:
             # --- API Key is configured, proceed with initialization ---
             self.logger.debug(f"Initializing provider {provider_name} with key from config.")
 
-            # Import provider classes (consider moving imports outside the loop if performance is critical)
-            from ultimate_mcp_server.core.providers.anthropic import AnthropicProvider
-            from ultimate_mcp_server.core.providers.deepseek import DeepSeekProvider
-            from ultimate_mcp_server.core.providers.gemini import GeminiProvider
-            from ultimate_mcp_server.core.providers.grok import GrokProvider
-            from ultimate_mcp_server.core.providers.openai import OpenAIProvider
-            from ultimate_mcp_server.core.providers.openrouter import OpenRouterProvider
+            # Import PROVIDER_REGISTRY to use centralized provider registry
+            from ultimate_mcp_server.core.providers import PROVIDER_REGISTRY
 
-            providers = {
-                Provider.OPENAI.value: OpenAIProvider,
-                Provider.ANTHROPIC.value: AnthropicProvider,
-                Provider.DEEPSEEK.value: DeepSeekProvider,
-                Provider.GEMINI.value: GeminiProvider,
-                Provider.OPENROUTER.value: OpenRouterProvider,
-                Provider.GROK.value: GrokProvider,
-            }
-
-            provider_class = providers.get(provider_name)
+            # Use the registry instead of hardcoded providers dictionary
+            provider_class = PROVIDER_REGISTRY.get(provider_name)
             if not provider_class:
                 raise ValueError(f"Invalid provider name mapping: {provider_name}")
 
@@ -2123,6 +2110,33 @@ def start_server(
     if transport_mode == "sse":
         # Run in SSE mode (HTTP server)
         import uvicorn
+        import os
+        import subprocess
+        import threading
+        import time
+        
+        # Set up a function to run the tool context estimator after the server starts
+        def run_tool_context_estimator():
+            # Wait a bit for the server to start up
+            time.sleep(5)
+            try:
+                # Run the tool context estimator script with the --quiet flag
+                result = subprocess.run(
+                    ["python", "mcp_tool_context_estimator.py", "--quiet"],
+                    capture_output=True,
+                    text=True
+                )
+                # Output the results to stderr
+                if result.stdout:
+                    print("\n--- Tool Context Window Analysis ---", file=sys.stderr)
+                    print(result.stdout, file=sys.stderr)
+                    print("-" * 40, file=sys.stderr)
+            except Exception as e:
+                print(f"Error running tool context estimator: {str(e)}", file=sys.stderr)
+        
+        # Start the tool context estimator in a separate thread
+        if os.path.exists("mcp_tool_context_estimator.py"):
+            threading.Thread(target=run_tool_context_estimator, daemon=True).start()
         
         # Get the SSE app from FastMCP
         app = _gateway_instance.mcp.sse_app()

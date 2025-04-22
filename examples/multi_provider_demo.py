@@ -14,6 +14,7 @@ from rich.markup import escape  # noqa: E402
 from rich.panel import Panel  # noqa: E402
 from rich.rule import Rule  # noqa: E402
 from rich.table import Table  # noqa: E402
+from rich.console import Console
 
 # Project imports
 from ultimate_mcp_server.constants import Provider  # noqa: E402
@@ -21,9 +22,11 @@ from ultimate_mcp_server.core.server import Gateway  # noqa: E402
 from ultimate_mcp_server.utils import get_logger  # noqa: E402
 from ultimate_mcp_server.utils.display import CostTracker  # Import CostTracker
 from ultimate_mcp_server.utils.logging.console import console  # noqa: E402
+from ultimate_mcp_server.tools.completion import generate_completion, multi_completion
 
-# Initialize logger
+# Initialize logger and console
 logger = get_logger("example.multi_provider")
+console = Console()
 
 async def run_provider_comparison(tracker: CostTracker):
     """Run a comparison of completions across multiple providers using Rich."""
@@ -47,7 +50,8 @@ async def run_provider_comparison(tracker: CostTracker):
         {"provider": Provider.GEMINI.value, "model": "gemini-2.0-flash-lite"}, 
         {"provider": Provider.DEEPSEEK.value, "model": "deepseek-chat"}, 
         {"provider": Provider.GROK.value, "model": "grok-3-mini-latest"},
-        {"provider": Provider.OPENROUTER.value, "model": "mistralai/mistral-nemo"}
+        {"provider": Provider.OPENROUTER.value, "model": "mistralai/mistral-nemo"},
+        {"provider": Provider.OLLAMA.value, "model": "llama3.2"}
     ]
     
     results_data = []

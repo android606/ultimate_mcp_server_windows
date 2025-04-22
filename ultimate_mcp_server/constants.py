@@ -74,7 +74,11 @@ class Provider(str, Enum):
     DEEPSEEK = "deepseek"
     GEMINI = "gemini"
     OPENROUTER = "openrouter"
+    OLLAMA = "ollama"
     GROK = "grok"
+    MISTRAL = "mistral"
+    AWS = "aws"
+    AZURE = "azure"
 
 
 class TaskType(str, Enum):
@@ -176,6 +180,13 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     "grok-3-fast-latest": {"input": 5.0, "output": 25.0},
     "grok-3-mini-latest": {"input": 0.30, "output": 0.50},
     "grok-3-mini-fast-latest": {"input": 0.60, "output": 4.0},
+    
+    # Ollama models (very low estimated costs since they run locally)
+    "llama3.2": {"input": 0.0001, "output": 0.0001},
+    "llama3.1": {"input": 0.0001, "output": 0.0001},
+    "mistral": {"input": 0.0001, "output": 0.0001},
+    "gemma": {"input": 0.0001, "output": 0.0001},
+    "phi3": {"input": 0.0001, "output": 0.0001},
 }
 
 
@@ -189,7 +200,8 @@ DEFAULT_MODELS = {
     Provider.DEEPSEEK: "deepseek-chat",
     Provider.GEMINI: "gemini-2.5-pro-exp-03-25",
     Provider.OPENROUTER: "mistralai/mistral-nemo",
-    Provider.GROK: "grok-3-latest"
+    Provider.GROK: "grok-3-latest",
+    Provider.OLLAMA: "llama3.2"
 }
 
 
@@ -247,5 +259,43 @@ EMOJI_MAP = {
     Provider.DEEPSEEK: "🟠", 
     Provider.GEMINI: "🔵",
     Provider.OPENROUTER: "🌐",
+    Provider.OLLAMA: "🦙",
     Provider.GROK: "⚡"
+}
+
+
+# Base toolset categories for the server
+BASE_TOOLSET_CATEGORIES = {
+    "Completion": ["generate_completion", "stream_completion", "chat_completion", "multi_completion"],
+    "Provider": ["get_provider_status", "list_models"],
+    "Filesystem": ["read_file", "write_file", "edit_file", "list_directory", "directory_tree", "search_files"],
+    "Optimization": ["estimate_cost", "compare_models", "recommend_model"],
+    "Text Processing": ["run_ripgrep", "run_awk", "run_sed", "run_jq"],
+    "Meta": ["get_tool_info", "get_llm_instructions", "get_tool_recommendations"],
+    "Search": ["marqo_fused_search"],
+    # Browser automation tools
+    "Browser": [
+        "browser_init", "browser_navigate", "browser_click", "browser_type", 
+        "browser_screenshot", "browser_close", "browser_select", "browser_checkbox", 
+        "browser_get_text", "browser_get_attributes", "browser_execute_javascript", 
+        "browser_wait", "browser_back", "browser_forward", "browser_reload", 
+        "browser_get_console_logs", "browser_download_file", "browser_upload_file", 
+        "browser_pdf", "browser_tab_new", "browser_tab_close", "browser_tab_list", 
+        "browser_tab_select"
+    ],
+    "Web Research": [
+        "execute_web_workflow", "extract_structured_data_from_pages", 
+        "find_and_download_pdfs", "multi_engine_search_summary",
+        "monitor_web_data_points", "research_and_synthesize_report"
+    ],
+    # HTML to markdown tools
+    "HTML Processing": [
+        "clean_and_format_text_as_markdown", "detect_content_type", 
+        "batch_format_texts", "optimize_markdown_formatting"
+    ],
+    # Extraction tools
+    "Extraction": [
+        "extract_json", "extract_table", "extract_key_value_pairs", 
+        "extract_semantic_schema"
+    ]
 }

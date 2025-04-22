@@ -23,6 +23,7 @@ from ultimate_mcp_server.cli.commands import (
     run_server,
     test_provider,
 )
+from ultimate_mcp_server.constants import BASE_TOOLSET_CATEGORIES
 from ultimate_mcp_server.utils import get_logger
 
 # Use consistent namespace and get console for Rich output
@@ -432,19 +433,9 @@ def run(
         server_info_str += "\nTool Loading: [yellow]All Available Tools[/yellow]"
     else:
         server_info_str += "\nTool Loading: [yellow]Base Toolset Only[/yellow] (Use --load-all-tools to load all)"
-        # Organize tools by category for display
-        base_toolset_categories = {
-            "Completion": ["generate_completion", "stream_completion", "chat_completion", "multi_completion"],
-            "Provider": ["get_provider_status", "list_models"],
-            "Filesystem": ["read_file", "write_file", "edit_file", "list_directory", "directory_tree", "search_files"],
-            "Optimization": ["estimate_cost", "compare_models", "recommend_model"],
-            "Text Processing": ["run_ripgrep", "run_awk", "run_sed", "run_jq"],
-            "Meta": ["get_tool_info", "get_llm_instructions", "get_tool_recommendations"],
-            "Search": ["marqo_fused_search"]
-        }
         # Format the categories for display
         category_lines = []
-        for category, tools in base_toolset_categories.items():
+        for category, tools in BASE_TOOLSET_CATEGORIES.items():
             category_lines.append(f"    [cyan]{category}[/cyan]: {', '.join(tools)}")
         
         server_info_str += "\n  [bold]Includes:[/bold]\n" + "\n".join(category_lines)

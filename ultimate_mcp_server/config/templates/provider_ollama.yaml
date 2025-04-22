@@ -1,0 +1,20 @@
+# Ollama provider configuration
+
+# Whether the provider is enabled
+enabled: true
+
+# API endpoint for the Ollama service (default is localhost:11434)
+api_url: http://localhost:11434
+
+# Default model to use for this provider
+default_model: llama3.2
+
+# Maximum time (in seconds) to wait for a request to complete
+request_timeout: 300
+
+# Optional notes about this provider configuration
+notes: >
+  Ollama is a framework for running open-source language models locally.
+  Make sure you have Ollama installed and running locally (https://ollama.com/download)
+  and have pulled the models you want to use with 'ollama pull <model>'.
+  Common models include: llama3.2, mistral, gemma, phi3, etc. 

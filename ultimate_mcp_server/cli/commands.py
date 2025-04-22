@@ -1,6 +1,7 @@
 """Command implementations for the Ultimate MCP Server CLI."""
 import asyncio
 import inspect
+import os
 import sys
 import time
 from typing import List, Optional
@@ -18,7 +19,7 @@ from rich.rule import Rule
 from rich.table import Table
 
 from ultimate_mcp_server.config import get_config
-from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.constants import BASE_TOOLSET_CATEGORIES, Provider
 from ultimate_mcp_server.core.providers.base import get_provider
 from ultimate_mcp_server.core.server import Gateway, start_server
 from ultimate_mcp_server.services.cache import get_cache_service
@@ -97,19 +98,9 @@ def run_server(
         console.print("Tool Loading: [yellow]All Available Tools[/yellow]")
     else:
         console.print("Tool Loading: [yellow]Base Toolset Only[/yellow] (Use --load-all-tools to load all)")
-        # Organize tools by category for display
-        base_toolset_categories = {
-            "Completion": ["generate_completion", "stream_completion", "chat_completion", "multi_completion"],
-            "Provider": ["get_provider_status", "list_models"],
-            "Filesystem": ["read_file", "write_file", "edit_file", "list_directory", "directory_tree", "search_files"],
-            "Optimization": ["estimate_cost", "compare_models", "recommend_model"],
-            "Text Processing": ["run_ripgrep", "run_awk", "run_sed", "run_jq"],
-            "Meta": ["get_tool_info", "get_llm_instructions", "get_tool_recommendations"],
-            "Search": ["marqo_fused_search"]
-        }
         # Format the categories for display
         console.print("  [bold]Includes:[/bold]")
-        for category, tools in base_toolset_categories.items():
+        for category, tools in BASE_TOOLSET_CATEGORIES.items():
             console.print(f"    [cyan]{category}[/cyan]: {', '.join(tools)}")
     
     # Print tool filtering info if enabled
@@ -121,7 +112,11 @@ def run_server(
     
     console.print()
     
-    # Start server using the factory pattern 
+    # Set environment variables for the tool context estimator to use
+    os.environ["MCP_SERVER_HOST"] = cfg.server.host
+    os.environ["MCP_SERVER_PORT"] = str(cfg.server.port)
+    
+    # Just run the server directly - no threading, no token analysis
     start_server(
         host=cfg.server.host,
         port=cfg.server.port,
