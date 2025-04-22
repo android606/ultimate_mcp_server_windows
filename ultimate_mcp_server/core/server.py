@@ -188,7 +188,8 @@ class Gateway:
         self, 
         name: str = "main", 
         register_tools: bool = True,
-        provider_exclusions: List[str] = None
+        provider_exclusions: List[str] = None,
+        load_all_tools: bool = False  # Added: Flag to control tool loading
     ):
         """
         Initialize the MCP Gateway with configured providers and tools.
@@ -214,6 +215,8 @@ class Gateway:
                                 This allows selectively disabling specific providers
                                 regardless of their configuration status.
                                 Default is None (no exclusions).
+            load_all_tools: If True, load all available tools. If False (default),
+                           load only the defined 'Base Toolset'.
         """
         self.name = name
         self.providers = {}
@@ -222,6 +225,7 @@ class Gateway:
         self.event_handlers = {}
         self.provider_exclusions = provider_exclusions or []
         self.api_meta_tool = None # Initialize api_meta_tool attribute
+        self.load_all_tools = load_all_tools  # Store the flag
         
         # Load configuration if not already loaded
         if get_config() is None:
@@ -258,7 +262,7 @@ class Gateway:
         
         # Register tools if requested
         if register_tools:
-            self._register_tools()
+            self._register_tools(load_all=self.load_all_tools)
             self._register_resources()
         
         self.logger.info(f"Ultimate MCP Server '{self.name}' initialized")
@@ -632,12 +636,15 @@ class Gateway:
             effectively use the Gateway's tools and capabilities. These instructions
             are automatically included in the system prompt for all LLM interactions.
         """
-        return """
+        # Tool loading message can be adjusted based on self.load_all_tools if needed
+        tool_loading_info = "all available tools" if self.load_all_tools else "the Base Toolset"
+        
+        return f"""
 # Ultimate MCP Server Tool Usage Instructions
         
 You have access to the Ultimate MCP Server, which provides unified access to multiple language model
-providers (OpenAI, Anthropic, etc.) through a standardized interface. Follow these instructions
-to effectively use the gateway tools.
+providers (OpenAI, Anthropic, etc.) through a standardized interface. This server instance has loaded {tool_loading_info}. 
+Follow these instructions to effectively use the available tools.
 
 ## Core Tool Categories
 
@@ -683,7 +690,7 @@ to effectively use the gateway tools.
 For more detailed information and examples, access these MCP resources:
 - `info://server`: Basic server information
 - `info://tools`: Overview of available tools
-- `provider://{provider_name}`: Details about a specific provider
+- `provider://{{provider_name}}`: Details about a specific provider
 - `guide://llm`: Comprehensive usage guide for LLMs
 - `guide://error-handling`: Detailed error handling guidance
 - `examples://workflows`: Detailed examples of common workflows
@@ -695,7 +702,7 @@ for each tool. All providers may not be available at all times, so always check 
 first and be prepared to adapt to available providers.
 """
         
-    def _register_tools(self):
+    def _register_tools(self, load_all: bool = False):
         """
         Register all MCP tools with the server instance.
         
@@ -703,8 +710,8 @@ first and be prepared to adapt to available providers.
         making them accessible to LLMs through the MCP protocol. It handles:
         
         1. Setting up the basic echo tool for connectivity testing
-        2. Calling the register_all_tools function to set up all specialized tools
-           from the tools module
+        2. Conditionally calling the register_all_tools function to set up either
+           the 'Base Toolset' or all specialized tools based on the `load_all` flag.
         
         The registration process wraps each tool function with logging functionality
         via the log_tool_calls decorator, ensuring consistent logging behavior across
@@ -712,6 +719,9 @@ first and be prepared to adapt to available providers.
         
         All registered tools become available through the MCP interface and can be
         discovered and used by LLMs interacting with the server.
+        
+        Args:
+            load_all: If True, register all tools. If False, register only the base set.
         
         Note:
             This method is called automatically during Gateway initialization when
@@ -737,8 +747,64 @@ first and be prepared to adapt to available providers.
             self.logger.info(f"Echo tool called with message: {message}")
             return {"message": message}
 
-        self.logger.info("Calling register_all_tools to register all tools...")
-        register_all_tools(self.mcp)
+        # Define our base toolset - use function names not module names
+        base_toolset = [
+            # Completion tools
+            "generate_completion", 
+            "stream_completion", 
+            "chat_completion", 
+            "multi_completion",
+            
+            # Provider tools
+            "get_provider_status", 
+            "list_models",
+            
+            # Filesystem tools
+            "read_file", 
+            "write_file", 
+            "edit_file", 
+            "list_directory", 
+            "directory_tree", 
+            "search_files",
+            
+            # Optimization tools
+            "estimate_cost", 
+            "compare_models", 
+            "recommend_model",
+            
+            # Local text tools
+            "run_ripgrep", 
+            "run_awk", 
+            "run_sed", 
+            "run_jq",
+            
+            # Meta tools
+            "get_tool_info", 
+            "get_llm_instructions", 
+            "get_tool_recommendations",
+            
+            # Search tools
+            "marqo_fused_search"
+        ]
+        
+        # Conditionally register tools based on load_all flag
+        if load_all:
+            self.logger.info("Calling register_all_tools to register ALL available tools...")
+            register_all_tools(self.mcp)
+        else:
+            self.logger.info("Calling register_all_tools to register only the BASE toolset...")
+            # Check if tool_registration filter is enabled in config
+            cfg = get_config()
+            if cfg.tool_registration.filter_enabled:
+                # If filtering is already enabled, respect that configuration
+                self.logger.info("Tool filtering is enabled - using config filter settings")
+                register_all_tools(self.mcp)
+            else:
+                # Otherwise, set up filtering for base toolset
+                cfg.tool_registration.filter_enabled = True
+                cfg.tool_registration.included_tools = base_toolset
+                self.logger.info(f"Registering base toolset: {', '.join(base_toolset)}")
+                register_all_tools(self.mcp)
 
     def _register_resources(self):
         """
@@ -1931,6 +1997,7 @@ def start_server(
     transport_mode: str = "stdio",  # Changed default from "sse" to "stdio"
     include_tools: Optional[List[str]] = None,
     exclude_tools: Optional[List[str]] = None,
+    load_all_tools: bool = False,  # Added: Flag to control tool loading
 ) -> None:
     """
     Start the Ultimate MCP Server with configurable settings.
@@ -1962,15 +2029,14 @@ def start_server(
         reload: Whether to automatically reload the server when code changes are detected.
                Useful during development but not recommended for production.
         transport_mode: Communication mode for the server. Options:
--                      - "sse": Run as an HTTP server with Server-Sent Events for streaming
--                      - "stdio": Run using standard input/output for direct process communication
-+                      - "stdio": Run using standard input/output for direct process communication (default)
-+                      - "sse": Run as an HTTP server with Server-Sent Events for streaming
+                      - "stdio": Run using standard input/output for direct process communication (default)
+                      - "sse": Run as an HTTP server with Server-Sent Events for streaming
         include_tools: Optional list of specific tool names to include in registration.
                       If provided, only these tools will be registered unless they are
                       also in exclude_tools. If None, all tools are included by default.
         exclude_tools: Optional list of tool names to exclude from registration.
                       These tools will not be registered even if they are also in include_tools.
+        load_all_tools: If True, load all available tools. If False (default), load only the base set.
                       
     Raises:
         ValueError: If transport_mode is not one of the valid options.
@@ -1980,23 +2046,6 @@ def start_server(
         This function does not return as it initiates the server event loop, which
         runs until interrupted (e.g., by a SIGINT signal). In SSE mode, it starts 
         a Uvicorn server; in stdio mode, it runs the FastMCP stdio handler.
-        
-    Example:
-        ```python
-        # Start in SSE mode on custom host/port with increased log verbosity
-        start_server(
-            host="0.0.0.0",
-            port=8080,
-            log_level="DEBUG",
-            transport_mode="sse"
-        )
-        
-        # Start in stdio mode with specific tools
-        start_server(
-            transport_mode="stdio",
-            include_tools=["generate_completion", "chat_completion"]
-        )
-        ```
     """
     server_host = host or get_config().server.host
     server_port = port or get_config().server.port
@@ -2042,7 +2091,11 @@ def start_server(
     if not _gateway_instance:
         # Create gateway with tool filtering based on config
         cfg = get_config()
-        _gateway_instance = Gateway(name=cfg.server.name, register_tools=True)
+        _gateway_instance = Gateway(
+            name=cfg.server.name, 
+            register_tools=True,
+            load_all_tools=load_all_tools  # Pass the flag to Gateway
+        )
     
     # Log startup info to stderr instead of using logging directly
     print("Starting Ultimate MCP Server server", file=sys.stderr)
@@ -2052,6 +2105,14 @@ def start_server(
     print(f"Log level: {final_log_level}", file=sys.stderr)
     print(f"Transport mode: {transport_mode}", file=sys.stderr)
     
+    # Log tool loading strategy
+    if load_all_tools:
+        print("Tool Loading: ALL available tools", file=sys.stderr)
+    else:
+        print("Tool Loading: Base Toolset Only", file=sys.stderr)
+        base_toolset = ["completion", "filesystem", "optimization", "provider", "local_text", "meta", "search"]
+        print(f"  (Includes: {', '.join(base_toolset)})", file=sys.stderr)
+
     # Log tool filtering info if enabled
     if cfg.tool_registration.filter_enabled:
         if cfg.tool_registration.included_tools:

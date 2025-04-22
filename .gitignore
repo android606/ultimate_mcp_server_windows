@@ -212,3 +212,6 @@ examples/data/
 examples/output/
 all_demo_script_console_output_log.txt
 examples/data/Steve_Jobs_Introducing_The_iPhone_compressed.md
+conversion_outputs/
+error_log.txt
+test_documents/

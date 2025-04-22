@@ -1942,6 +1942,100 @@ class CostTracker:
         self.data[provider][model]["output_tokens"] += output_tokens
         self.data[provider][model]["total_tokens"] += total_tokens
         self.data[provider][model]["calls"] += 1
+        
+    def record_call(self, provider: str, model: str, input_tokens: int, output_tokens: int, cost: float):
+        """
+        Directly record a call with explicit token counts and cost.
+        
+        This method allows manual tracking of API calls with explicit parameter values,
+        useful when the cost information isn't available in a structured result object.
+        
+        Args:
+            provider: The provider name (e.g., "openai", "anthropic")
+            model: The model name (e.g., "gpt-4", "claude-3-opus")
+            input_tokens: Number of input (prompt) tokens
+            output_tokens: Number of output (completion) tokens
+            cost: The cost of the API call in USD
+            
+        Example:
+            ```python
+            tracker.record_call(
+                provider="openai",
+                model="gpt-4o",
+                input_tokens=1500,
+                output_tokens=350,
+                cost=0.03
+            )
+            ```
+        """
+        if provider not in self.data:
+            self.data[provider] = {}
+        if model not in self.data[provider]:
+            self.data[provider][model] = {
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "calls": 0
+            }
+            
+        total_tokens = input_tokens + output_tokens
+        
+        self.data[provider][model]["cost"] += cost
+        self.data[provider][model]["input_tokens"] += input_tokens
+        self.data[provider][model]["output_tokens"] += output_tokens
+        self.data[provider][model]["total_tokens"] += total_tokens
+        self.data[provider][model]["calls"] += 1
+        
+    def add_custom_cost(self, description: str, provider: str, model: str, cost: float, 
+                        input_tokens: int = 0, output_tokens: int = 0):
+        """
+        Add a custom cost entry with an optional description.
+        
+        This method is useful for tracking costs that aren't directly tied to a specific
+        API call, such as batch processing fees, infrastructure costs, or estimated costs.
+        
+        Args:
+            description: A descriptive label for this cost entry (e.g., "Batch Processing")
+            provider: The provider name or service category
+            model: The model name or service type
+            cost: The cost amount in USD
+            input_tokens: Optional input token count (default: 0)
+            output_tokens: Optional output token count (default: 0)
+            
+        Example:
+            ```python
+            tracker.add_custom_cost(
+                "Batch Processing",
+                "openai",
+                "gpt-4-turbo",
+                0.25,
+                input_tokens=5000,
+                output_tokens=1200
+            )
+            ```
+        """
+        # Format the model name to include the description
+        custom_model = f"{model} ({description})"
+        
+        if provider not in self.data:
+            self.data[provider] = {}
+        if custom_model not in self.data[provider]:
+            self.data[provider][custom_model] = {
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "calls": 0
+            }
+            
+        total_tokens = input_tokens + output_tokens
+        
+        self.data[provider][custom_model]["cost"] += cost
+        self.data[provider][custom_model]["input_tokens"] += input_tokens
+        self.data[provider][custom_model]["output_tokens"] += output_tokens
+        self.data[provider][custom_model]["total_tokens"] += total_tokens
+        self.data[provider][custom_model]["calls"] += 1
 
     def display_summary(self, console_instance: Optional[Console] = None, title: str = "Total Demo Cost Summary"):
         """

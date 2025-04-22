@@ -36,6 +36,7 @@ def run_server(
     transport_mode: str = "sse",
     include_tools: Optional[List[str]] = None,
     exclude_tools: Optional[List[str]] = None,
+    load_all_tools: bool = False,
 ) -> None:
     """Start the Ultimate MCP Server with specified configuration.
     
@@ -55,6 +56,9 @@ def run_server(
                        available tools are registered)
         exclude_tools: Blocklist of specific tool names to exclude (takes precedence over
                        include_tools if both are specified)
+        load_all_tools: If True, load all available tools. If False (default), load only 
+                       the Base Toolset (completion, filesystem, optimization, provider, 
+                       local_text, meta, search).
     """
     # Get the current config
     cfg = get_config()
@@ -88,6 +92,26 @@ def run_server(
     console.print(f"Log level: [cyan]{effective_log_level.upper()}[/cyan]")
     console.print(f"Transport mode: [cyan]{transport_mode}[/cyan]")
     
+    # Tool Loading Status
+    if load_all_tools:
+        console.print("Tool Loading: [yellow]All Available Tools[/yellow]")
+    else:
+        console.print("Tool Loading: [yellow]Base Toolset Only[/yellow] (Use --load-all-tools to load all)")
+        # Organize tools by category for display
+        base_toolset_categories = {
+            "Completion": ["generate_completion", "stream_completion", "chat_completion", "multi_completion"],
+            "Provider": ["get_provider_status", "list_models"],
+            "Filesystem": ["read_file", "write_file", "edit_file", "list_directory", "directory_tree", "search_files"],
+            "Optimization": ["estimate_cost", "compare_models", "recommend_model"],
+            "Text Processing": ["run_ripgrep", "run_awk", "run_sed", "run_jq"],
+            "Meta": ["get_tool_info", "get_llm_instructions", "get_tool_recommendations"],
+            "Search": ["marqo_fused_search"]
+        }
+        # Format the categories for display
+        console.print("  [bold]Includes:[/bold]")
+        for category, tools in base_toolset_categories.items():
+            console.print(f"    [cyan]{category}[/cyan]: {', '.join(tools)}")
+    
     # Print tool filtering info if enabled
     if cfg.tool_registration.filter_enabled:
         if cfg.tool_registration.included_tools:
@@ -106,6 +130,7 @@ def run_server(
         transport_mode=transport_mode,
         include_tools=cfg.tool_registration.included_tools if cfg.tool_registration.filter_enabled else None,
         exclude_tools=cfg.tool_registration.excluded_tools if cfg.tool_registration.filter_enabled else None,
+        load_all_tools=load_all_tools,
     )
 
 

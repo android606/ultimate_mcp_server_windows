@@ -48,6 +48,7 @@ from .document import (
     process_document_batch,
     summarize_document,
 )
+from .document_conversion_tool import convert_document
 from .entity_relation_graph import extract_entity_graph
 
 # Import new standalone functions from extraction.py
@@ -110,6 +111,7 @@ from .rag import (
     list_knowledge_bases,
     retrieve_context,
 )
+from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
 from .sql_database_interactions import (
     analyze_column_statistics,
     connect_to_database,
@@ -264,6 +266,13 @@ __all__ = [
     "extract_structured_data_from_pages",
     "find_and_download_pdfs",
     "multi_engine_search_summary",
+
+    # Document conversion tool
+    "convert_document",
+
+    # Sentiment analysis tool
+    "analyze_business_sentiment",
+    "analyze_business_text_batch",
 ]
 
 logger = get_logger("ultimate_mcp_server.tools")

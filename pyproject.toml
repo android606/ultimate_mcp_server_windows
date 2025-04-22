@@ -96,6 +96,7 @@ dependencies = [
     "jsonpointer",    
     "pygments",
     "typer",  # For CLI interface
+    "docling" # For document conversion
 ]
 
 [project.optional-dependencies]

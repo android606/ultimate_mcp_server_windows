@@ -216,13 +216,20 @@ DEBUG_OPTION = typer.Option(
 INCLUDE_TOOLS_OPTION = typer.Option(
     None,
     "--include-tools",
-    help="[green]List of tool names to include[/green] when running the server.",
+    help="[green]List of tool names to include[/green] when running the server. Adds to the 'Base Toolset' by default, or to all tools if --load-all-tools is used.",
     rich_help_panel="Server Options",
 )
 EXCLUDE_TOOLS_OPTION = typer.Option(
     None,
     "--exclude-tools",
-    help="[red]List of tool names to exclude[/red] when running the server.",
+    help="[red]List of tool names to exclude[/red] when running the server. Applies after including tools.",
+    rich_help_panel="Server Options",
+)
+LOAD_ALL_TOOLS_OPTION = typer.Option(
+    False,
+    "-a",
+    "--load-all-tools",
+    help="[yellow]Load all available tools[/yellow] instead of just the default 'Base Toolset' (-a shortcut).",
     rich_help_panel="Server Options",
 )
 
@@ -387,6 +394,7 @@ def run(
     debug: bool = DEBUG_OPTION,
     include_tools: List[str] = INCLUDE_TOOLS_OPTION,
     exclude_tools: List[str] = EXCLUDE_TOOLS_OPTION,
+    load_all_tools: bool = LOAD_ALL_TOOLS_OPTION,
 ):
     """
     [bold green]Run the Ultimate MCP Server[/bold green]
@@ -395,13 +403,17 @@ def run(
     The server exposes MCP-protocol compatible endpoints that AI agents can use to
     access various tools and capabilities.
 
+    By default, only the [yellow]'Base Toolset'[/yellow] is loaded to optimize context window usage.
+    Use `--load-all-tools` to load all available tools.
+
     Network settings control server accessibility, workers affect concurrency,
     and tool filtering lets you customize which capabilities are exposed.
 
     [bold]Examples:[/bold]
-      [cyan]umcp run --host 0.0.0.0 --port 8000 --workers 4 --transport-mode sse[/cyan]
-      [cyan]umcp run --debug[/cyan]
-      [cyan]umcp run --include-tools completion,document,filesystem[/cyan]
+      [cyan]umcp run --host 0.0.0.0 --port 8000 --workers 4[/cyan] (Runs with Base Toolset)
+      [cyan]umcp run --load-all-tools --debug[/cyan] (Runs with all tools and debug logging)
+      [cyan]umcp run --include-tools browser,audio[/cyan] (Adds browser and audio tools to the Base Toolset)
+      [cyan]umcp run --load-all-tools --exclude-tools filesystem[/cyan] (Loads all tools except filesystem)
     """
     # Set debug mode if requested
     if debug:
@@ -414,6 +426,29 @@ def run(
         f"Workers: [cyan]{workers or 'default from config'}[/cyan]\n"
         f"Transport mode: [cyan]{transport_mode}[/cyan]"
     )
+    
+    # Tool Loading Status
+    if load_all_tools:
+        server_info_str += "\nTool Loading: [yellow]All Available Tools[/yellow]"
+    else:
+        server_info_str += "\nTool Loading: [yellow]Base Toolset Only[/yellow] (Use --load-all-tools to load all)"
+        # Organize tools by category for display
+        base_toolset_categories = {
+            "Completion": ["generate_completion", "stream_completion", "chat_completion", "multi_completion"],
+            "Provider": ["get_provider_status", "list_models"],
+            "Filesystem": ["read_file", "write_file", "edit_file", "list_directory", "directory_tree", "search_files"],
+            "Optimization": ["estimate_cost", "compare_models", "recommend_model"],
+            "Text Processing": ["run_ripgrep", "run_awk", "run_sed", "run_jq"],
+            "Meta": ["get_tool_info", "get_llm_instructions", "get_tool_recommendations"],
+            "Search": ["marqo_fused_search"]
+        }
+        # Format the categories for display
+        category_lines = []
+        for category, tools in base_toolset_categories.items():
+            category_lines.append(f"    [cyan]{category}[/cyan]: {', '.join(tools)}")
+        
+        server_info_str += "\n  [bold]Includes:[/bold]\n" + "\n".join(category_lines)
+
 
     # Print tool filtering info if enabled
     if include_tools or exclude_tools:
@@ -434,6 +469,7 @@ def run(
         transport_mode=transport_mode,
         include_tools=include_tools,
         exclude_tools=exclude_tools,
+        load_all_tools=load_all_tools,
     )
 
 

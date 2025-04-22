@@ -29,6 +29,12 @@ from playwright.async_api import (
     Response,
     async_playwright,
 )
+from playwright.async_api import (
+    Error as PlaywrightError,
+)
+from playwright.async_api import (
+    TimeoutError as PlaywrightTimeoutError,
+)
 
 from ultimate_mcp_server.constants import TaskType
 from ultimate_mcp_server.exceptions import ToolError, ToolInputError
@@ -1779,24 +1785,55 @@ async def browser_navigate(
         
         return result
         
+    except PlaywrightTimeoutError as timeout_err:
+        error_msg = f"Navigation timed out after {timeout}ms for URL: {url}"
+        logger.error(error_msg, emoji_key="error", url=url, timeout=timeout)
+        # Raise ToolError using the correct signature
+        raise ToolError(
+            message=error_msg,
+            error_code="TIMEOUT",
+            http_status_code=408,
+            details={"url": url, "timeout_ms": timeout} # Add details instead of cause
+        ) from timeout_err
+    except PlaywrightError as playwright_err:
+        error_msg = f"Playwright error during navigation to {url}: {playwright_err}"
+        err_lower = str(playwright_err).lower()
+        error_code = "PLAYWRIGHT_NAVIGATION_ERROR"
+        http_status = 500
+        details = {"url": url, "playwright_error": str(playwright_err)} # Add details
+        if "net::err_connection_refused" in err_lower:
+            error_code = "CONNECTION_REFUSED"
+            http_status = 502
+        elif "net::err_name_not_resolved" in err_lower:
+            error_code = "DNS_ERROR"
+            http_status = 502
+        elif "timeout" in err_lower:
+            error_code = "TIMEOUT"
+            http_status = 408
+            error_msg = f"Navigation failed for {url} (likely timeout): {playwright_err}"
+            details["timeout_ms"] = timeout # Add timeout to details if relevant
+        elif "ssl error" in err_lower or "cert" in err_lower:
+             error_code = "SSL_ERROR"
+             http_status = 502
+        elif "does not look like a valid url" in err_lower:
+             error_code = "INVALID_URL"
+             http_status = 400
+        logger.error(error_msg, emoji_key="error", url=url, error_code=error_code)
+        raise ToolError(
+            message=error_msg,
+            error_code=error_code,
+            http_status_code=http_status,
+            details=details
+        ) from playwright_err
     except Exception as e:
-        error_msg = f"Navigation failed: {str(e)}"
-        logger.error(
-            error_msg,
-            emoji_key="error",
-            url=url
-        )
-        
-        if "net::ERR_NAME_NOT_RESOLVED" in str(e):
-            raise ToolError(f"Could not resolve host: {url}", http_status_code=404) from e
-        elif "net::ERR_CONNECTION_REFUSED" in str(e):
-            raise ToolError(f"Connection refused: {url}", http_status_code=502) from e
-        elif "Timeout" in str(e):
-            raise ToolError(f"Navigation timed out after {timeout}ms: {url}", http_status_code=408) from e
-        elif "ERR_ABORTED" in str(e):
-            raise ToolError(f"Navigation was aborted: {url}", http_status_code=499) from e
-        else:
-            raise ToolError(error_msg, http_status_code=500) from e
+        error_msg = f"Unexpected error during navigation to {url}: {type(e).__name__}: {e}"
+        logger.error(error_msg, emoji_key="error", url=url, exc_info=True)
+        raise ToolError(
+            message=error_msg,
+            error_code="UNEXPECTED_NAVIGATION_ERROR",
+            http_status_code=500,
+            details={"url": url, "exception_type": type(e).__name__, "exception_message": str(e)}
+        ) from e
 
 @with_tool_metrics
 @with_error_handling
@@ -2331,75 +2368,96 @@ async def browser_click(
 
         # Prepare click options
         click_options = {
-            "button": button,
+            "button": button, # type: ignore # Allow valid literals
             "click_count": click_count,
             "delay": delay,
             "force": force
+            # Consider adding a specific timeout for the click itself
+            # "timeout": 10000 # e.g., 10 seconds
         }
 
         if modifiers:
-            click_options["modifiers"] = modifiers
+            # Ensure modifiers is a list before assigning
+            if isinstance(modifiers, list):
+                 click_options["modifiers"] = modifiers # type: ignore # Allow valid list of literals
 
         if position_x is not None and position_y is not None:
             click_options["position"] = {"x": position_x, "y": position_y}
 
-        # Click element
+        # Click element using prepared options dictionary
         logger.info(
             f"Clicking on {element_description} ({selector})",
             emoji_key="click",
             button=button,
-            click_count=click_count
+            click_count=click_count,
+            options=click_options # Log the options being used
         )
+        await element.click(**click_options) # Use dictionary unpacking
 
-        await page.click(selector, **click_options)
-
-        # Capture snapshot if requested
-        snapshot_data = None
-        if capture_snapshot:
-            # Wait a bit for any animations or page changes to complete
-            await asyncio.sleep(0.5)
-
-            snapshot_data = await _capture_snapshot(page)
-            page_id = _current_page_id or "unknown"
-            _snapshot_cache[page_id] = snapshot_data
-
+        processing_time = time.time() - start_time
+        logger.success(
+            f"Successfully clicked {element_description}",
+            emoji_key="success",
+            selector=selector,
+            time=processing_time
+        )
         processing_time = time.time() - start_time
 
         result = {
             "success": True,
-            "element_description": element_description,
+            "message": f"Clicked element matching selector: {selector}",
             "processing_time": processing_time
         }
-
-        if snapshot_data:
-            result["snapshot"] = snapshot_data
-
-        logger.success(
-            f"Successfully clicked {element_description}",
-            emoji_key=TaskType.BROWSER.value,
-            time=processing_time
-        )
-
+        snapshot_data = None
+        if capture_snapshot:
+            snapshot_data = await _capture_snapshot(page)
+            result["page_snapshot"] = snapshot_data
         return result
 
+    except PlaywrightTimeoutError as timeout_err:
+        error_msg = f"Click operation timed out waiting for selector: {selector}"
+        logger.error(error_msg, emoji_key="error", selector=selector)
+        raise ToolError(
+            message=error_msg,
+            error_code="TIMEOUT",
+            http_status_code=408,
+            details={"selector": selector}
+        ) from timeout_err
+    except PlaywrightError as playwright_err:
+        error_msg = f"Playwright error during click on selector '{selector}': {playwright_err}"
+        err_lower = str(playwright_err).lower()
+        error_code = "PLAYWRIGHT_CLICK_ERROR"
+        http_status = 500
+        details = {"selector": selector, "playwright_error": str(playwright_err)} # Add details
+        if "selector validation failed" in err_lower or "invalid selector" in err_lower:
+            error_code = "INVALID_SELECTOR"
+            http_status = 400
+            error_msg = f"Invalid selector syntax provided for click: '{selector}'. Error: {playwright_err}"
+        elif "element is not visible" in err_lower:
+            error_code = "ELEMENT_NOT_VISIBLE"
+            http_status = 404
+        elif "element is detached from dom" in err_lower:
+            error_code = "ELEMENT_DETACHED"
+            http_status = 404
+        elif "no element found" in err_lower:
+             error_code = "ELEMENT_NOT_FOUND"
+             http_status = 404
+        logger.error(error_msg, emoji_key="error", selector=selector, error_code=error_code)
+        raise ToolError(
+            message=error_msg,
+            error_code=error_code,
+            http_status_code=http_status,
+            details=details
+        ) from playwright_err
     except Exception as e:
-        if isinstance(e, (ToolError, ToolInputError)):
-            raise
-
-        error_msg = f"Click operation failed: {str(e)}"
-        logger.error(
-            error_msg,
-            emoji_key="error",
-            selector=selector
-        )
-
-        if "TimeoutError" in str(e):
-            raise ToolError(
-                message=f"Timeout while clicking on element: {selector}", # FIX: Use message
-                http_status_code=408
-            ) from e
-
-        raise ToolError(message=error_msg, http_status_code=500) from e
+        error_msg = f"Unexpected error during click on selector '{selector}': {type(e).__name__}: {e}"
+        logger.error(error_msg, emoji_key="error", selector=selector, exc_info=True)
+        raise ToolError(
+            message=error_msg,
+            error_code="UNEXPECTED_CLICK_ERROR",
+            http_status_code=500,
+            details={"selector": selector, "exception_type": type(e).__name__, "exception_message": str(e)}
+        ) from e
 
 @with_tool_metrics
 @with_error_handling
