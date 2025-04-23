@@ -68,7 +68,7 @@ class OpenAIProvider(BaseProvider):
         
     async def generate_completion(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7,
@@ -101,8 +101,16 @@ class OpenAIProvider(BaseProvider):
             model = model.split("/", 1)[1]
             self.logger.debug(f"Stripped provider prefix from model name: {original_model} -> {model}")
         
-        # Create messages
-        messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
+        # Handle case when messages are provided instead of prompt (for chat_completion)
+        messages = kwargs.pop("messages", None)
+        
+        # If neither prompt nor messages are provided, raise an error
+        if prompt is None and not messages:
+            raise ValueError("Either 'prompt' or 'messages' must be provided")
+            
+        # Create messages if not already provided
+        if not messages:
+            messages = [{"role": "user", "content": prompt}]
         
         # Prepare API call parameters
         params = {
@@ -132,10 +140,11 @@ class OpenAIProvider(BaseProvider):
         # --- End special handling ---
         
         # Log request
+        prompt_length = len(prompt) if prompt else sum(len(m.get("content", "")) for m in messages)
         self.logger.info(
             f"Generating completion with OpenAI model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=prompt_length
         )
         
         try:
@@ -146,6 +155,12 @@ class OpenAIProvider(BaseProvider):
             
             # Extract response text
             completion_text = response.choices[0].message.content
+            
+            # Create message object for chat_completion
+            message = {
+                "role": "assistant",
+                "content": completion_text
+            }
             
             # Create standardized response
             result = ModelResponse(
@@ -158,6 +173,9 @@ class OpenAIProvider(BaseProvider):
                 processing_time=processing_time,
                 raw_response=response,
             )
+            
+            # Add message to result for chat_completion
+            result.message = message
             
             # Log success
             self.logger.success(
@@ -184,7 +202,7 @@ class OpenAIProvider(BaseProvider):
             
     async def generate_completion_stream(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7,
@@ -217,8 +235,16 @@ class OpenAIProvider(BaseProvider):
             model = model.split("/", 1)[1]
             self.logger.debug(f"Stripped provider prefix from model name (stream): {original_model} -> {model}")
         
-        # Create messages
-        messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
+        # Handle case when messages are provided instead of prompt (for chat_completion)
+        messages = kwargs.pop("messages", None)
+        
+        # If neither prompt nor messages are provided, raise an error
+        if prompt is None and not messages:
+            raise ValueError("Either 'prompt' or 'messages' must be provided")
+            
+        # Create messages if not already provided
+        if not messages:
+            messages = [{"role": "user", "content": prompt}]
         
         # Prepare API call parameters
         params = {
@@ -236,10 +262,11 @@ class OpenAIProvider(BaseProvider):
         params.update(kwargs)
         
         # Log request
+        prompt_length = len(prompt) if prompt else sum(len(m.get("content", "")) for m in messages)
         self.logger.info(
             f"Generating streaming completion with OpenAI model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=prompt_length
         )
         
         start_time = time.time()

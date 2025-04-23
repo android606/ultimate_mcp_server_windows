@@ -117,6 +117,7 @@ class TaskType(str, Enum):
         ```
     """
     COMPLETION = "completion"
+    CHAT = "chat"
     SUMMARIZATION = "summarization"
     EXTRACTION = "extraction"
     GENERATION = "generation"
@@ -236,6 +237,7 @@ EMOJI_MAP = {
     
     # Task-specific emojis
     "completion": "✍️",
+    "chat": "💬",
     "summarization": "📝",
     "extraction": "🔍",
     "generation": "🎨",

@@ -352,6 +352,20 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
     current_tools_subset = current_tools["tools"]
     all_tools_subset = all_tools["tools"]
     
+    # Determine if we're likely comparing the same set vs different sets
+    same_toolsets = len(current_tools_subset) == len(all_tools_subset)
+    if same_toolsets and not quiet:
+        console.print("[yellow]Warning: Current tool count equals all tools count.[/yellow]")
+        console.print("[yellow]This suggests the server is already running with --load-all-tools[/yellow]")
+    
+    # Adjust column labels based on what we're comparing
+    current_label = "Current Tools"
+    all_label = "All Tools" 
+    if same_toolsets:
+        # If the sets are the same size, make it clearer what we're comparing
+        current_label = "Tools Set A"
+        all_label = "Tools Set B"
+    
     # Get JSON representations
     current_tools_json = "\n".join(format_tool_for_llm(tool) for tool in current_tools_subset)
     all_tools_json = "\n".join(format_tool_for_llm(tool) for tool in all_tools_subset)
@@ -391,7 +405,7 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
         f.write(all_tools_prompt)
     console.print("[green]Saved all tools JSON to all_tools_sent_to_llm.json[/green]\n\n")
     
-    # Create data for display
+    # Create data for display - ensure the data is correct and consistent
     data = {
         "current_tools": {
             "count": len(current_tools_subset),
@@ -416,21 +430,21 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
     
     # Add columns - including percentage column 
     table.add_column("Metric", style="white")
-    table.add_column("Current Tools", style="cyan")
-    table.add_column("All Tools", style="magenta")
+    table.add_column(current_label, style="cyan")
+    table.add_column(all_label, style="magenta")
     table.add_column("Difference", style="yellow")
-    table.add_column("Current Tools as % of All Tools", style="green")
+    table.add_column(f"{current_label} as % of {all_label}", style="green")
     
     # SECTION 1: Number of Tools
     # Calculate percentage for count
-    count_percentage = (data["current_tools"]["count"] / data["all_tools"]["count"]) * 100 if data["all_tools"]["count"] > 0 else 0
+    count_percentage = (data["current_tools"]["count"] / data["all_tools"]["count"]) * 100 if data["all_tools"]["count"] > 0 else 100
     
-    # Add rows
+    # Add rows - keep consistent format with other rows for the number of tools
     table.add_row(
         "Number of Tools", 
         str(data["current_tools"]["count"]), 
         str(data["all_tools"]["count"]),
-        str(data["all_tools"]["count"] - data["current_tools"]["count"]),
+        str(data["current_tools"]["count"] - data["all_tools"]["count"]),
         f"{count_percentage:.2f}%"
     )
     
@@ -439,24 +453,24 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
     
     # SECTION 2: Full Prompt stats
     # Calculate percentage for full prompt size
-    full_size_percentage = (data["current_tools"]["full_size_kb"] / data["all_tools"]["full_size_kb"]) * 100 if data["all_tools"]["full_size_kb"] > 0 else 0
+    full_size_percentage = (data["current_tools"]["full_size_kb"] / data["all_tools"]["full_size_kb"]) * 100 if data["all_tools"]["full_size_kb"] > 0 else 100
     
     table.add_row(
         "Full Prompt Size (KB)", 
         f"{data['current_tools']['full_size_kb']:,.2f}", 
         f"{data['all_tools']['full_size_kb']:,.2f}",
-        f"{data['all_tools']['full_size_kb'] - data['current_tools']['full_size_kb']:,.2f}",
+        f"{data['current_tools']['full_size_kb'] - data['all_tools']['full_size_kb']:,.2f}",
         f"{full_size_percentage:.2f}%"
     )
     
     # Calculate percentage for full tokens
-    full_tokens_percentage = (data["current_tools"]["full_tokens"] / data["all_tools"]["full_tokens"]) * 100 if data["all_tools"]["full_tokens"] > 0 else 0
+    full_tokens_percentage = (data["current_tools"]["full_tokens"] / data["all_tools"]["full_tokens"]) * 100 if data["all_tools"]["full_tokens"] > 0 else 100
     
     table.add_row(
         "Full Prompt Token Count", 
         f"{data['current_tools']['full_tokens']:,}", 
         f"{data['all_tools']['full_tokens']:,}",
-        f"{data['all_tools']['full_tokens'] - data['current_tools']['full_tokens']:,}",
+        f"{data['current_tools']['full_tokens'] - data['all_tools']['full_tokens']:,}",
         f"{full_tokens_percentage:.2f}%"
     )
     
@@ -477,10 +491,10 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
         if model in MODEL_PRICES:
             current_cost = data["current_tools"]["costs"][model]
             all_cost = data["all_tools"]["costs"][model]
-            diff_cost = all_cost - current_cost
+            diff_cost = current_cost - all_cost
             
             # Calculate percentage
-            cost_percentage = (current_cost / all_cost) * 100 if all_cost > 0 else 0
+            cost_percentage = (current_cost / all_cost) * 100 if all_cost > 0 else 100
             
             table.add_row(
                 f"Cost ({model})",
@@ -650,20 +664,62 @@ async def main():
             return
         
         if args.no_all_tools:
-            # If we're not doing the comparison, just analyze the current toolset
+            # If we're not doing the comparison, create a meaningful subset for comparison
             if not quiet_mode:
-                console.print("[yellow]Skipping comparison with all tools[/yellow]")
-            subset_tools = current_tools["tools"][:len(current_tools["tools"])//2] if len(current_tools["tools"]) > 1 else current_tools["tools"]
-            analyze_tools_token_usage(
-                {"tools": subset_tools, **{k: v for k, v in current_tools.items() if k != "tools"}},
-                current_tools,
-                quiet=quiet_mode
-            )
+                console.print("[yellow]Skipping comparison with full --load-all-tools[/yellow]")
+                console.print("[green]Creating an artificial subset of current tools for comparison[/green]")
+            
+            # Create a more meaningful subset by taking half the tools
+            # If we have 1-4 tools, use all of them to avoid empty subset
+            total_tools = len(current_tools["tools"])
+            subset_size = max(total_tools // 2, min(total_tools, 4))
+            subset_tools = current_tools["tools"][:subset_size]
+            
+            if not quiet_mode:
+                console.print(f"[green]Created subset with {subset_size} tools out of {total_tools} total[/green]")
+            
+            # Create subset version
+            subset_data = {
+                "tools": subset_tools, 
+                "server_name": current_tools["server_name"] + " (Subset)",
+                "server_version": current_tools["server_version"],
+                "server_instructions": current_tools["server_instructions"]
+            }
+            
+            # Analyze token usage with the artificial subset vs full
+            analyze_tools_token_usage(subset_data, current_tools, quiet=quiet_mode)
         else:
             # Get the complete toolset that would be available with --load-all-tools
             all_tools = await get_complete_toolset(quiet=quiet_mode)
             
-            # Analyze token usage with full prompt simulation, comparing current to all
+            # Check if current server is likely already running with all tools
+            current_tool_count = len(current_tools["tools"])
+            all_tool_count = len(all_tools["tools"])
+            
+            if abs(current_tool_count - all_tool_count) <= 2:  # Allow small difference
+                if not quiet_mode:
+                    console.print(f"[yellow]Warning: Current server has {current_tool_count} tools, "
+                                 f"which is very close to the expected all-tools count of {all_tool_count}[/yellow]")
+                    console.print("[yellow]This suggests the server is already running with --load-all-tools[/yellow]")
+                
+                # For accurate comparison when counts are the same, we should just use the same data for both
+                # to ensure metrics are consistent
+                same_tools_data = {
+                    "tools": current_tools["tools"].copy(),
+                    "server_name": "Current Server",
+                    "server_version": current_tools["server_version"],
+                    "server_instructions": current_tools["server_instructions"]
+                }
+                
+                # Create a deep copy to ensure they're exactly the same
+                all_tools = {
+                    "tools": current_tools["tools"].copy(),
+                    "server_name": "All Tools",
+                    "server_version": current_tools["server_version"],
+                    "server_instructions": current_tools["server_instructions"]
+                }
+            
+            # Analyze token usage with full prompt simulation
             analyze_tools_token_usage(current_tools, all_tools, quiet=quiet_mode)
     except KeyboardInterrupt:
         console.print("[bold yellow]Operation cancelled by user[/bold yellow]")

@@ -85,6 +85,51 @@ async def run_basic_completion(gateway, tracker: CostTracker):
         raise
 
 
+async def run_chat_completion(gateway, tracker: CostTracker):
+    """Run a chat completion example."""
+    logger.info("Starting chat completion example", emoji_key="start")
+    console.print(Rule("[bold blue]Chat Completion[/bold blue]"))
+
+    try:
+        # Get OpenAI provider from gateway
+        provider = gateway.providers.get(Provider.OPENAI.value)
+        if not provider:
+            logger.error(f"Provider {Provider.OPENAI.value} not available or initialized", emoji_key="error")
+            return
+        
+        # Define chat messages
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that provides concise answers."},
+            {"role": "user", "content": "What is the difference between deep learning and machine learning?"}
+        ]
+        
+        # Generate chat completion using OpenAI
+        logger.info("Generating chat completion...", emoji_key="processing")
+        result = await provider.generate_completion(
+            messages=messages,
+            temperature=0.7,
+            max_tokens=200
+        )
+        
+        # Log simple success message
+        logger.success("Chat completion generated successfully!", emoji_key="success")
+
+        # Display results using the utility function
+        display_completion_result(
+            console=console,
+            result=result,
+            title="Deep Learning vs Machine Learning"
+        )
+        
+        # Track cost
+        tracker.add_call(result)
+
+    except Exception as e:
+        # Use logger for errors
+        logger.error(f"Error generating chat completion: {str(e)}", emoji_key="error", exc_info=True)
+        raise
+
+
 async def run_streaming_completion(gateway):
     """Run a streaming completion example."""
     logger.info("Starting streaming completion example", emoji_key="start")
@@ -286,6 +331,11 @@ async def main():
         
         # Run basic completion
         await run_basic_completion(gateway, tracker)
+        
+        console.print() # Add space
+        
+        # Run chat completion
+        await run_chat_completion(gateway, tracker)
         
         console.print() # Add space
         
