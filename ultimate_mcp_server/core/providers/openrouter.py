@@ -494,37 +494,12 @@ class OpenRouterProvider(BaseProvider):
         """Return a list of fallback models when API is not accessible."""
         return [
             {
-                "id": "openai/gpt-4.1-mini",
-                "provider": self.provider_name,
-                "description": "OpenAI: Fast, balances cost and performance.",
-            },
-            {
-                "id": "openai/gpt-4o",
-                "provider": self.provider_name,
-                "description": "OpenAI: Most capable model.",
-            },
-            {
-                "id": "anthropic/claude-3.5-sonnet",
-                "provider": self.provider_name,
-                "description": "Anthropic: Strong general reasoning.",
-            },
-            {
-                "id": "anthropic/claude-3-haiku",
-                "provider": self.provider_name,
-                "description": "Anthropic: Fast and affordable.",
-            },
-            {
-                "id": "google/gemini-pro-1.5",
-                "provider": self.provider_name,
-                "description": "Google: Large context window.",
-            },
-            {
-                "id": "google/gemini-flash-1.5",
-                "provider": self.provider_name,
-                "description": "Google: Fast and cost-effective.",
-            },
-            {
                 "id": "mistralai/mistral-large",
+                "provider": self.provider_name,
+                "description": "Mistral: Strong open-weight model.",
+            },
+            {
+                "id": "mistralai/mistral-nemo",
                 "provider": self.provider_name,
                 "description": "Mistral: Strong open-weight model.",
             },
@@ -532,7 +507,7 @@ class OpenRouterProvider(BaseProvider):
                 "id": "meta-llama/llama-3-70b-instruct",
                 "provider": self.provider_name,
                 "description": "Meta: Powerful open-source instruction-tuned model.",
-            }
+            },
         ]
 
 # Make available via discovery

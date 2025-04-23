@@ -127,7 +127,7 @@ class OllamaConfig(BaseModel):
     """Configuration for the Ollama provider."""
 
     # API endpoint (default is localhost:11434)
-    api_url: str = "http://localhost:11434"
+    api_url: str = "http://127.0.0.1:11434"
     
     # Default model to use if none specified
     default_model: str = "llama3.2"
@@ -159,12 +159,23 @@ class OllamaProvider(BaseProvider):
 
     provider_name = Provider.OLLAMA
     
-    def __init__(self):
-        """Initialize the Ollama provider."""
+    def __init__(self, api_key: Optional[str] = None, **kwargs):
+        """Initialize the Ollama provider.
+        
+        Args:
+            api_key: Not used by Ollama, included for API compatibility with other providers
+            **kwargs: Additional provider-specific options
+        """
+        # Skip API key, it's not used by Ollama but we accept it for compatibility
         super().__init__()
         self.logger = get_logger(f"provider.{Provider.OLLAMA}")
+        self.logger.info("Initializing Ollama provider...")
         self.config = self._load_config()
-        self.session = None
+        self.logger.info(f"Loaded config: API URL={self.config.api_url}, default_model={self.config.default_model}, enabled={self.config.enabled}")
+        
+        # Initialize session to None, we'll create it when needed
+        self._session = None
+        
         self.client_session_params = {
             "timeout": aiohttp.ClientTimeout(total=self.config.request_timeout)
         }
@@ -192,6 +203,23 @@ class OllamaProvider(BaseProvider):
             "input": 0.0001,  # $0.0001 per 1M tokens (effectively free)
             "output": 0.0001,  # $0.0001 per 1M tokens (effectively free)
         }
+        self.logger.info("Ollama provider initialization completed")
+
+    @property
+    async def session(self) -> aiohttp.ClientSession:
+        """Get the current session or create a new one if needed."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(**self.client_session_params)
+        return self._session
+    
+    async def __aenter__(self):
+        """Enter async context, initializing the provider."""
+        await self.initialize()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit async context, ensuring proper shutdown."""
+        await self.shutdown()
 
     async def initialize(self) -> bool:
         """Initialize the provider, creating a new HTTP session.
@@ -204,77 +232,131 @@ class OllamaProvider(BaseProvider):
             bool: True if initialization was successful, False otherwise
         """
         try:
-            # Create a session with a short timeout for the initial check
-            init_timeout = aiohttp.ClientTimeout(total=5.0)  # 5 second timeout for checking availability
-            self.session = aiohttp.ClientSession(timeout=init_timeout)
-            
-            # Try to connect to Ollama and check if it's running
-            try:
-                async with self.session.get(f"{self.config.api_url}/api/tags", timeout=5.0) as response:
-                    if response.status == 200:
-                        # Ollama is running, recreate session with normal timeout
-                        await self.session.close()
-                        self.session = aiohttp.ClientSession(**self.client_session_params)
-                        self.logger.info("Ollama service is available and running", emoji_key="provider")
-                        self._initialized = True
-                        return True
-                    else:
+            # Create a temporary session with a short timeout for the initial check
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5.0)) as check_session:
+                # Try to connect to Ollama and check if it's running
+                self.logger.info(f"Attempting to connect to Ollama at {self.config.api_url}/api/tags", emoji_key="provider")
+                
+                # First try the configured URL
+                try:
+                    async with check_session.get(f"{self.config.api_url}/api/tags", timeout=5.0) as response:
+                        if response.status == 200:
+                            # Ollama is running, we'll create the main session when needed later
+                            self.logger.info("Ollama service is available and running", emoji_key="provider")
+                            self._initialized = True
+                            return True
+                        else:
+                            self.logger.warning(
+                                f"Ollama service responded with status {response.status}. "
+                                "The service might be misconfigured.",
+                                emoji_key="warning"
+                            )
+                except aiohttp.ClientConnectionError:
+                    # Try alternate localhost format (127.0.0.1 instead of localhost or vice versa)
+                    alternate_url = self.config.api_url.replace("localhost", "127.0.0.1") if "localhost" in self.config.api_url else self.config.api_url.replace("127.0.0.1", "localhost")
+                    self.logger.info(f"Connection failed, trying alternate URL: {alternate_url}", emoji_key="provider")
+                    
+                    try:
+                        async with check_session.get(f"{alternate_url}/api/tags", timeout=5.0) as response:
+                            if response.status == 200:
+                                # Update the config to use the working URL
+                                self.logger.info(f"Connected successfully using alternate URL: {alternate_url}", emoji_key="provider")
+                                self.config.api_url = alternate_url
+                                self._initialized = True
+                                return True
+                            else:
+                                self.logger.warning(
+                                    f"Ollama service at alternate URL responded with status {response.status}. "
+                                    "The service might be misconfigured.",
+                                    emoji_key="warning"
+                                )
+                    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                         self.logger.warning(
-                            f"Ollama service responded with status {response.status}. "
-                            "The service might be misconfigured.",
+                            f"Could not connect to alternate URL: {str(e)}. "
+                            "Make sure Ollama is installed and running: https://ollama.com/download",
                             emoji_key="warning"
                         )
-            except aiohttp.ClientConnectionError as e:
-                # Connection error indicates Ollama is likely not running
-                self.logger.warning(
-                    f"Ollama service is not available (connection error: {str(e)}). "
-                    "Make sure Ollama is installed and running: https://ollama.com/download",
-                    emoji_key="warning"
-                )
-            except aiohttp.ClientError as e:
-                # Other client errors
-                self.logger.warning(
-                    f"Could not connect to Ollama service: {str(e)}. "
-                    "Make sure Ollama is installed and running: https://ollama.com/download",
-                    emoji_key="warning"
-                )
-            except asyncio.TimeoutError:
-                # Timeout indicates Ollama is likely not responding
-                self.logger.warning(
-                    "Connection to Ollama service timed out. "
-                    "Make sure Ollama is installed and running: https://ollama.com/download",
-                    emoji_key="warning"
-                )
-                
+                except aiohttp.ClientError as e:
+                    # Other client errors
+                    self.logger.warning(
+                        f"Could not connect to Ollama service: {str(e)}. "
+                        "Make sure Ollama is installed and running: https://ollama.com/download",
+                        emoji_key="warning"
+                    )
+                except asyncio.TimeoutError:
+                    # Timeout indicates Ollama is likely not responding
+                    self.logger.warning(
+                        "Connection to Ollama service timed out. "
+                        "Make sure Ollama is installed and running: https://ollama.com/download",
+                        emoji_key="warning"
+                    )
+            
             # If we got here, Ollama is not available
-            if self.session and not self.session.closed:
-                await self.session.close()
             self._initialized = False
             return False
             
         except Exception as e:
             # Catch any other exceptions to avoid spamming errors
             self.logger.error(f"Unexpected error initializing Ollama provider: {str(e)}", emoji_key="error")
-            if self.session and not self.session.closed:
-                await self.session.close()
-                self.session = None
             self._initialized = False
             return False
 
     async def shutdown(self) -> None:
         """Shutdown the provider, closing the HTTP session."""
-        if self.session and not self.session.closed:
-            await self.session.close()
-        self._initialized = False
+        try:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
+        except Exception as e:
+            self.logger.warning(f"Error closing Ollama session during shutdown: {str(e)}", emoji_key="warning")
+        finally:
+            self._initialized = False
 
     def _load_config(self) -> OllamaConfig:
         """Load Ollama configuration from app configuration."""
         try:
+            self.logger.info("Loading Ollama config from app configuration")
             config = get_config()
+            # Print entire config for debugging
+            self.logger.debug(f"Full config: {config}")
+            
+            if not hasattr(config, 'providers'):
+                self.logger.warning("Config doesn't have 'providers' attribute")
+                return OllamaConfig()
+                
+            if not hasattr(config.providers, Provider.OLLAMA):
+                self.logger.warning(f"Config doesn't have '{Provider.OLLAMA}' provider configured")
+                return OllamaConfig()
+            
             provider_config = getattr(config.providers, Provider.OLLAMA, {})
-            return OllamaConfig(**provider_config.dict())
+            self.logger.info(f"Found provider config: {provider_config}")
+            
+            if hasattr(provider_config, 'dict'):
+                self.logger.info("Provider config has 'dict' method, using it")
+                return OllamaConfig(**provider_config.dict())
+            else:
+                self.logger.warning("Provider config doesn't have 'dict' method, attempting direct conversion")
+                # Try to convert to dict directly
+                config_dict = {}
+                
+                # Define mapping from ProviderConfig field names to OllamaConfig field names
+                field_mapping = {
+                    'base_url': 'api_url',       # ProviderConfig -> OllamaConfig
+                    'default_model': 'default_model',
+                    'timeout': 'request_timeout',
+                    'enabled': 'enabled'
+                }
+                
+                # Map fields from provider_config to OllamaConfig's expected field names
+                for provider_key, ollama_key in field_mapping.items():
+                    if hasattr(provider_config, provider_key):
+                        config_dict[ollama_key] = getattr(provider_config, provider_key)
+                        self.logger.info(f"Mapped {provider_key} to {ollama_key}: {getattr(provider_config, provider_key)}")
+                
+                self.logger.info(f"Created config dict: {config_dict}")
+                return OllamaConfig(**config_dict)
         except Exception as e:
-            self.logger.warning(f"Error loading Ollama config: {e}. Using defaults.")
+            self.logger.error(f"Error loading Ollama config: {e}", exc_info=True)
             return OllamaConfig()
 
     def get_default_model(self) -> str:
@@ -312,36 +394,13 @@ class OllamaProvider(BaseProvider):
                 return False
                 
         try:
-            # Use a short timeout for the health check to avoid hanging
-            timeout = aiohttp.ClientTimeout(total=3.0)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Use a dedicated session with short timeout for health check
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=3.0)) as session:
                 try:
                     async with session.get(f"{self.config.api_url}/api/tags") as response:
-                        if response.status == 200:
-                            return True
-                        else:
-                            self.logger.warning(
-                                f"Ollama service check failed with status: {response.status}",
-                                emoji_key="warning"
-                            )
-                            return False
-                except aiohttp.ClientConnectionError:
-                    self.logger.warning(
-                        "Ollama connection refused - service may not be running",
-                        emoji_key="warning"
-                    )
-                    return False
-                except asyncio.TimeoutError:
-                    self.logger.warning(
-                        "Ollama service check timed out after 3 seconds",
-                        emoji_key="warning"
-                    )
-                    return False
-                except Exception as e:
-                    self.logger.warning(
-                        f"Error checking Ollama service: {str(e)}",
-                        emoji_key="warning"
-                    )
+                        return response.status == 200
+                except (aiohttp.ClientConnectionError, asyncio.TimeoutError, Exception) as e:
+                    self.logger.warning(f"Ollama service check failed: {str(e)}", emoji_key="warning")
                     return False
         except Exception as e:
             self.logger.warning(f"Failed to create session for Ollama check: {str(e)}", emoji_key="warning")
@@ -381,38 +440,22 @@ class OllamaProvider(BaseProvider):
             try:
                 initialized = await self.initialize()
                 if not initialized:
-                    self.logger.warning(
-                        "Cannot list Ollama models because the service is not available",
-                        emoji_key="warning"
-                    )
+                    self.logger.warning("Cannot list Ollama models because the service is not available", emoji_key="warning")
                     return []
             except Exception:
-                self.logger.warning(
-                    "Cannot list Ollama models because initialization failed",
-                    emoji_key="warning"
-                )
+                self.logger.warning("Cannot list Ollama models because initialization failed", emoji_key="warning")
                 return []
             
         try:
-            # Set a reasonable timeout for the API call
-            timeout = aiohttp.ClientTimeout(total=10.0)
-            
-            # Use a temporary session if our main one is closed
-            if self.session is None or self.session.closed:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    return await self._fetch_models(session)
-            else:
-                # Use the existing session
-                return await self._fetch_models(self.session)
+            # Create a dedicated session for this operation to avoid shared session issues
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10.0)) as session:
+                return await self._fetch_models(session)
         except Exception as e:
-            self.logger.warning(
-                f"Error listing Ollama models: {str(e)}. The service may not be running.",
-                emoji_key="warning"
-            )
+            self.logger.warning(f"Error listing Ollama models: {str(e)}. The service may not be running.", emoji_key="warning")
             return []
-            
+
     async def _fetch_models(self, session: aiohttp.ClientSession) -> List[Model]:
-        """Internal helper to fetch models using the provided session."""
+        """Fetch models using the provided session."""
         try:
             async with session.get(self._build_api_url("tags")) as response:
                 if response.status != 200:
@@ -429,6 +472,8 @@ class OllamaProvider(BaseProvider):
                     # Extract additional info if available
                     description = f"Ollama model: {model_id}"
                     model_size = model_info.get("size", 0)
+                    size_gb = None
+                    
                     if model_size:
                         # Convert to GB for readability if size is provided in bytes
                         size_gb = model_size / (1024 * 1024 * 1024)
@@ -439,6 +484,7 @@ class OllamaProvider(BaseProvider):
                         name=model_id,
                         description=description,
                         provider=self.provider_name,
+                        size=f"{size_gb:.2f} GB" if size_gb else "Unknown"
                     ))
                 
                 return models
@@ -494,7 +540,6 @@ class OllamaProvider(BaseProvider):
                         output_tokens=0,
                         total_tokens=0,
                         processing_time=0.0,
-                        cost=0.0,
                         metadata={
                             "error": "Ollama service is not available. Make sure Ollama is installed and running: https://ollama.com/download"
                         }
@@ -509,7 +554,6 @@ class OllamaProvider(BaseProvider):
                     output_tokens=0,
                     total_tokens=0,
                     processing_time=0.0,
-                    cost=0.0,
                     metadata={
                         "error": f"Failed to initialize Ollama provider: {str(e)}. Make sure Ollama is installed and running: https://ollama.com/download"
                     }
@@ -557,51 +601,58 @@ class OllamaProvider(BaseProvider):
             
             try:
                 start_time = time.time()
-                async with self.session.post(self._build_api_url("chat"), json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
+                # Use a dedicated session for this request
+                async with aiohttp.ClientSession(**self.client_session_params) as session:
+                    async with session.post(self._build_api_url("chat"), json=payload) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            return ModelResponse(
+                                text="",
+                                model=f"{self.provider_name}/{model_id}",
+                                provider=self.provider_name,
+                                input_tokens=0,
+                                output_tokens=0,
+                                total_tokens=0,
+                                processing_time=time.time() - start_time,
+                                metadata={
+                                    "error": f"Ollama API error: {response.status} - {error_text}",
+                                    "cost": 0.0
+                                }
+                            )
+                        
+                        data = await response.json()
+                        
+                        # Extract response message
+                        response_message = data.get("message", {})
+                        content = response_message.get("content", "")
+                        
+                        # Extract token counts if available
+                        input_tokens = data.get("prompt_eval_count", 0)  # Ollama's token count for input
+                        output_tokens = data.get("eval_count", 0)  # Ollama's token count for output
+                        
+                        # If token counts are 0, make a rough estimate based on text length
+                        if output_tokens == 0 and content:
+                            # Rough estimate: ~1.3 tokens per word
+                            output_tokens = len(content.split()) + len(content) // 10
+                        
+                        total_tokens = input_tokens + output_tokens
+                        
+                        # Calculate processing time
+                        processing_time = time.time() - start_time
+                        
+                        # Calculate cost (estimated)
+                        cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
+                        
                         return ModelResponse(
-                            text="",
+                            text=content,
                             model=f"{self.provider_name}/{model_id}",
                             provider=self.provider_name,
-                            input_tokens=0,
-                            output_tokens=0,
-                            total_tokens=0,
-                            processing_time=time.time() - start_time,
-                            cost=0.0,
-                            metadata={
-                                "error": f"Ollama API error: {response.status} - {error_text}"
-                            }
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            total_tokens=total_tokens,
+                            processing_time=processing_time,
+                            metadata={"cost": cost}
                         )
-                    
-                    data = await response.json()
-                    
-                    # Extract response message
-                    response_message = data.get("message", {})
-                    content = response_message.get("content", "")
-                    
-                    # Extract token counts if available
-                    input_tokens = data.get("prompt_eval_count", 0)  # Ollama's token count for input
-                    output_tokens = data.get("eval_count", 0)  # Ollama's token count for output
-                    total_tokens = input_tokens + output_tokens
-                    
-                    # Calculate processing time
-                    processing_time = time.time() - start_time
-                    
-                    # Calculate cost (estimated)
-                    cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
-                    
-                    return ModelResponse(
-                        text=content,
-                        model=f"{self.provider_name}/{model_id}",
-                        provider=self.provider_name,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        total_tokens=total_tokens,
-                        processing_time=processing_time,
-                        cost=cost,
-                        model_outputs={},  # Any model-specific outputs
-                    )
             except aiohttp.ClientConnectionError as e:
                 processing_time = time.time() - start_time
                 # Return connection error message
@@ -613,9 +664,9 @@ class OllamaProvider(BaseProvider):
                     output_tokens=0,
                     total_tokens=0,
                     processing_time=processing_time,
-                    cost=0.0,
                     metadata={
-                        "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible."
+                        "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.",
+                        "cost": 0.0
                     }
                 )
             except Exception as e:
@@ -631,9 +682,9 @@ class OllamaProvider(BaseProvider):
                     output_tokens=0,
                     total_tokens=0,
                     processing_time=processing_time,
-                    cost=0.0,
                     metadata={
-                        "error": f"Error generating chat completion: {str(e)}"
+                        "error": f"Error generating chat completion: {str(e)}",
+                        "cost": 0.0
                     }
                 )
         else:
@@ -658,50 +709,57 @@ class OllamaProvider(BaseProvider):
             
             try:
                 start_time = time.time()
-                async with self.session.post(self._build_api_url("generate"), json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
+                # Use a dedicated session for this request
+                async with aiohttp.ClientSession(**self.client_session_params) as session:
+                    async with session.post(self._build_api_url("generate"), json=payload) as response:
+                        if response.status != 200:
+                            error_text = await response.text()
+                            return ModelResponse(
+                                text="",
+                                model=f"{self.provider_name}/{model_id}",
+                                provider=self.provider_name,
+                                input_tokens=0,
+                                output_tokens=0,
+                                total_tokens=0,
+                                processing_time=time.time() - start_time,
+                                metadata={
+                                    "error": f"Ollama API error: {response.status} - {error_text}",
+                                    "cost": 0.0
+                                }
+                            )
+                        
+                        data = await response.json()
+                        
+                        # Extract response text
+                        content = data.get("response", "")
+                        
+                        # Extract token counts if available
+                        input_tokens = data.get("prompt_eval_count", 0)
+                        output_tokens = data.get("eval_count", 0)
+                        
+                        # If token counts are 0, make a rough estimate based on text length
+                        if output_tokens == 0 and content:
+                            # Rough estimate: ~1.3 tokens per word
+                            output_tokens = len(content.split()) + len(content) // 10
+                            
+                        total_tokens = input_tokens + output_tokens
+                        
+                        # Calculate processing time
+                        processing_time = time.time() - start_time
+                        
+                        # Calculate cost (estimated)
+                        cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
+                        
                         return ModelResponse(
-                            text="",
+                            text=content,
                             model=f"{self.provider_name}/{model_id}",
                             provider=self.provider_name,
-                            input_tokens=0,
-                            output_tokens=0,
-                            total_tokens=0,
-                            processing_time=time.time() - start_time,
-                            cost=0.0,
-                            metadata={
-                                "error": f"Ollama API error: {response.status} - {error_text}"
-                            }
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            total_tokens=total_tokens,
+                            processing_time=processing_time,
+                            metadata={"cost": cost}
                         )
-                    
-                    data = await response.json()
-                    
-                    # Extract response text
-                    content = data.get("response", "")
-                    
-                    # Extract token counts if available
-                    input_tokens = data.get("prompt_eval_count", 0)
-                    output_tokens = data.get("eval_count", 0)
-                    total_tokens = input_tokens + output_tokens
-                    
-                    # Calculate processing time
-                    processing_time = time.time() - start_time
-                    
-                    # Calculate cost (estimated)
-                    cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
-                    
-                    return ModelResponse(
-                        text=content,
-                        model=f"{self.provider_name}/{model_id}",
-                        provider=self.provider_name,
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        total_tokens=total_tokens,
-                        processing_time=processing_time,
-                        cost=cost,
-                        model_outputs={},  # Any model-specific outputs
-                    )
             except aiohttp.ClientConnectionError as e:
                 processing_time = time.time() - start_time
                 # Return connection error message
@@ -713,9 +771,9 @@ class OllamaProvider(BaseProvider):
                     output_tokens=0,
                     total_tokens=0,
                     processing_time=processing_time,
-                    cost=0.0,
                     metadata={
-                        "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible."
+                        "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.",
+                        "cost": 0.0
                     }
                 )
             except Exception as e:
@@ -731,9 +789,9 @@ class OllamaProvider(BaseProvider):
                     output_tokens=0,
                     total_tokens=0,
                     processing_time=processing_time,
-                    cost=0.0,
                     metadata={
-                        "error": f"Error generating completion: {str(e)}"
+                        "error": f"Error generating completion: {str(e)}",
+                        "cost": 0.0
                     }
                 )
 
@@ -763,480 +821,495 @@ class OllamaProvider(BaseProvider):
             Tuples containing (text_chunk, metadata) as they are received.
             If Ollama is not available, yields a single error message with metadata.
         """
-        # Check if provider is initialized before attempting to generate
-        if not self._initialized:
-            try:
-                initialized = await self.initialize()
-                if not initialized:
+        try:
+            # Check if provider is initialized before attempting to generate
+            if not self._initialized:
+                try:
+                    initialized = await self.initialize()
+                    if not initialized:
+                        # Yield an error message and immediately terminate
+                        error_metadata = {
+                            "model": f"{self.provider_name}/{model or self.get_default_model()}",
+                            "provider": self.provider_name,
+                            "error": "Ollama service is not available. Make sure Ollama is installed and running: https://ollama.com/download",
+                            "finish_reason": "error",
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
+                            "processing_time": 0.0,
+                        }
+                        yield "", error_metadata
+                        return
+                except Exception as e:
                     # Yield an error message and immediately terminate
                     error_metadata = {
                         "model": f"{self.provider_name}/{model or self.get_default_model()}",
                         "provider": self.provider_name,
-                        "error": "Ollama service is not available. Make sure Ollama is installed and running: https://ollama.com/download",
+                        "error": f"Failed to initialize Ollama provider: {str(e)}. Make sure Ollama is installed and running: https://ollama.com/download",
                         "finish_reason": "error",
                         "input_tokens": 0,
                         "output_tokens": 0,
                         "total_tokens": 0,
-                        "cost": 0.0,
                         "processing_time": 0.0,
                     }
                     yield "", error_metadata
                     return
-            except Exception as e:
-                # Yield an error message and immediately terminate
-                error_metadata = {
-                    "model": f"{self.provider_name}/{model or self.get_default_model()}",
-                    "provider": self.provider_name,
-                    "error": f"Failed to initialize Ollama provider: {str(e)}. Make sure Ollama is installed and running: https://ollama.com/download",
-                    "finish_reason": "error",
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "total_tokens": 0,
-                    "cost": 0.0,
-                    "processing_time": 0.0,
-                }
-                yield "", error_metadata
-                return
-                
-        # Use default model if none specified
-        model_id = model or self.get_default_model()
-        
-        # Remove any provider prefix if present
-        if "/" in model_id:
-            parts = model_id.split("/", 1)
-            if parts[0] == self.provider_name:
-                model_id = parts[1]
-        
-        # Track token counts and timing for the final metadata
-        start_time = time.time()
-        input_tokens = 0
-        output_tokens = 0
-        last_token_count = 0
-        
-        # Prepare the payload based on whether this is a chat or generate request
-        if system is not None or model_id.startswith(("llama", "gpt", "claude", "phi", "mistral")):
-            # Use chat endpoint for chat-compatible models
-            messages = []
-            
-            # Add system message if provided
-            if system:
-                messages.append({"role": "system", "content": system})
-                
-            # Add user message (the prompt)
-            messages.append({"role": "user", "content": prompt})
-            
-            payload = {
-                "model": model_id,
-                "messages": messages,
-                "temperature": temperature,
-                "stream": True,  # Enable streaming
-            }
-            
-            # Add optional parameters
-            if max_tokens:
-                payload["max_tokens"] = max_tokens
-            if stop:
-                payload["stop"] = stop
-                
-            # Add any additional parameters
-            for key, value in kwargs.items():
-                if key not in payload and value is not None:
-                    payload[key] = value
-            
-            try:
-                # Start streaming request
-                async with self.session.post(self._build_api_url("chat"), json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        error_metadata = {
-                            "model": f"{self.provider_name}/{model_id}",
-                            "provider": self.provider_name,
-                            "error": f"Ollama streaming API error: {response.status} - {error_text}",
-                            "finish_reason": "error",
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
-                            "cost": 0.0,
-                            "processing_time": time.time() - start_time,
-                        }
-                        yield "", error_metadata
-                        return
                     
-                    # Process streaming response
-                    buffer = ""
+            # Use default model if none specified
+            model_id = model or self.get_default_model()
+            
+            # Remove any provider prefix if present
+            if "/" in model_id:
+                parts = model_id.split("/", 1)
+                if parts[0] == self.provider_name:
+                    model_id = parts[1]
+            
+            # Track token counts and timing for the final metadata
+            start_time = time.time()
+            input_tokens = 0
+            output_tokens = 0
+            last_token_count = 0
+            
+            # Create a dedicated session for streaming
+            async with aiohttp.ClientSession(**self.client_session_params) as streaming_session:
+                # Prepare the payload based on whether this is a chat or generate request
+                if system is not None or model_id.startswith(("llama", "gpt", "claude", "phi", "mistral")):
+                    # Use chat endpoint for chat-compatible models
+                    messages = []
+                    
+                    # Add system message if provided
+                    if system:
+                        messages.append({"role": "system", "content": system})
+                        
+                    # Add user message (the prompt)
+                    messages.append({"role": "user", "content": prompt})
+                    
+                    payload = {
+                        "model": model_id,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "stream": True,  # Enable streaming
+                    }
+                    
+                    # Add optional parameters
+                    if max_tokens:
+                        payload["max_tokens"] = max_tokens
+                    if stop:
+                        payload["stop"] = stop
+                        
+                    # Add any additional parameters
+                    for key, value in kwargs.items():
+                        if key not in payload and value is not None:
+                            payload[key] = value
+                    
                     try:
-                        async for line in response.content:
-                            if not line.strip():
-                                continue
-                                
-                            # Parse the line as JSON
-                            try:
-                                data = json.loads(line)
-                                
-                                # Check if this is the final message with statistics
-                                if data.get("done", False):
-                                    # Update token counts from the final message
-                                    input_tokens = data.get("prompt_eval_count", input_tokens)
-                                    total_output_tokens = data.get("eval_count", output_tokens)
-                                    
-                                    # Calculate the tokens in this last chunk
-                                    new_tokens = total_output_tokens - last_token_count
-                                    output_tokens = total_output_tokens
-                                    
-                                    # No more content to yield in final message
-                                    break
-                                
-                                # Extract the content from the message
-                                if "message" in data:
-                                    chunk_text = data["message"].get("content", "")
-                                else:
-                                    chunk_text = data.get("content", "")
-                                
-                                # Update token count if available
-                                if "eval_count" in data:
-                                    current_count = data["eval_count"]
-                                    new_tokens = current_count - last_token_count
-                                    last_token_count = current_count
-                                    output_tokens = current_count
-                                else:
-                                    # Estimate token count (very rough approximation)
-                                    new_tokens = len(chunk_text.split()) // 4 or 1
-                                
-                                # Yield the chunk
-                                metadata = {
+                        # Start streaming request
+                        async with streaming_session.post(self._build_api_url("chat"), json=payload) as response:
+                            if response.status != 200:
+                                error_text = await response.text()
+                                error_metadata = {
                                     "model": f"{self.provider_name}/{model_id}",
                                     "provider": self.provider_name,
-                                    "finish_reason": None,
+                                    "error": f"Ollama streaming API error: {response.status} - {error_text}",
+                                    "finish_reason": "error",
+                                    "input_tokens": 0,
+                                    "output_tokens": 0,
+                                    "total_tokens": 0,
+                                    "cost": 0.0,
+                                    "processing_time": time.time() - start_time,
+                                }
+                                yield "", error_metadata
+                                return
+                            
+                            # Process streaming response
+                            buffer = ""
+                            try:
+                                async for line in response.content:
+                                    if not line.strip():
+                                        continue
+                                        
+                                    # Parse the line as JSON
+                                    try:
+                                        data = json.loads(line)
+                                        
+                                        # Check if this is the final message with statistics
+                                        if data.get("done", False):
+                                            # Update token counts from the final message
+                                            input_tokens = data.get("prompt_eval_count", input_tokens)
+                                            total_output_tokens = data.get("eval_count", output_tokens)
+                                            
+                                            # Calculate the tokens in this last chunk
+                                            new_tokens = total_output_tokens - last_token_count
+                                            output_tokens = total_output_tokens
+                                            
+                                            # No more content to yield in final message
+                                            break
+                                        
+                                        # Extract the content from the message
+                                        if "message" in data:
+                                            chunk_text = data["message"].get("content", "")
+                                        else:
+                                            chunk_text = data.get("content", "")
+                                        
+                                        # Update token count if available
+                                        if "eval_count" in data:
+                                            current_count = data["eval_count"]
+                                            new_tokens = current_count - last_token_count
+                                            last_token_count = current_count
+                                            output_tokens = current_count
+                                        else:
+                                            # Estimate token count (very rough approximation)
+                                            new_tokens = len(chunk_text.split()) // 4 or 1
+                                        
+                                        # Yield the chunk
+                                        metadata = {
+                                            "model": f"{self.provider_name}/{model_id}",
+                                            "provider": self.provider_name,
+                                            "finish_reason": None,
+                                            "input_tokens": input_tokens,
+                                            "output_tokens": output_tokens,
+                                            "total_tokens": input_tokens + output_tokens,
+                                            "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
+                                            "processing_time": time.time() - start_time,
+                                        }
+                                        
+                                        yield chunk_text, metadata
+                                        
+                                    except json.JSONDecodeError:
+                                        # Handle incomplete JSON or other parsing errors
+                                        buffer += line.decode("utf-8")
+                                        
+                                        try:
+                                            # Try to parse the accumulated buffer
+                                            data = json.loads(buffer)
+                                            buffer = ""
+                                            
+                                            # Process the data as above
+                                            # (This is a simplified version; you might want to deduplicate this logic)
+                                            if "message" in data:
+                                                chunk_text = data["message"].get("content", "")
+                                            else:
+                                                chunk_text = data.get("content", "")
+                                            
+                                            new_tokens = 1  # Default estimation
+                                            
+                                            metadata = {
+                                                "model": f"{self.provider_name}/{model_id}",
+                                                "provider": self.provider_name,
+                                                "finish_reason": None,
+                                                "input_tokens": input_tokens,
+                                                "output_tokens": output_tokens,
+                                                "total_tokens": input_tokens + output_tokens,
+                                                "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
+                                                "processing_time": time.time() - start_time,
+                                            }
+                                            
+                                            yield chunk_text, metadata
+                                            
+                                        except json.JSONDecodeError:
+                                            # Still incomplete, continue accumulating
+                                            continue
+                            except Exception as e:
+                                # Handle errors during streaming content processing
+                                self.logger.warning(f"Error processing streaming content: {str(e)}", emoji_key="warning")
+                                error_metadata = {
+                                    "model": f"{self.provider_name}/{model_id}",
+                                    "provider": self.provider_name,
+                                    "error": f"Error processing streaming content: {str(e)}",
+                                    "finish_reason": "error",
                                     "input_tokens": input_tokens,
                                     "output_tokens": output_tokens,
                                     "total_tokens": input_tokens + output_tokens,
-                                    "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
+                                    "cost": self._estimate_token_cost(model_id, input_tokens, output_tokens),
                                     "processing_time": time.time() - start_time,
                                 }
-                                
-                                yield chunk_text, metadata
-                                
-                            except json.JSONDecodeError:
-                                # Handle incomplete JSON or other parsing errors
-                                buffer += line.decode("utf-8")
-                                
-                                try:
-                                    # Try to parse the accumulated buffer
-                                    data = json.loads(buffer)
-                                    buffer = ""
-                                    
-                                    # Process the data as above
-                                    # (This is a simplified version; you might want to deduplicate this logic)
-                                    if "message" in data:
-                                        chunk_text = data["message"].get("content", "")
-                                    else:
-                                        chunk_text = data.get("content", "")
-                                    
-                                    new_tokens = 1  # Default estimation
-                                    
-                                    metadata = {
-                                        "model": f"{self.provider_name}/{model_id}",
-                                        "provider": self.provider_name,
-                                        "finish_reason": None,
-                                        "input_tokens": input_tokens,
-                                        "output_tokens": output_tokens,
-                                        "total_tokens": input_tokens + output_tokens,
-                                        "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
-                                        "processing_time": time.time() - start_time,
-                                    }
-                                    
-                                    yield chunk_text, metadata
-                                    
-                                except json.JSONDecodeError:
-                                    # Still incomplete, continue accumulating
-                                    continue
-                    except Exception as e:
-                        # Handle errors during streaming content processing
-                        self.logger.warning(f"Error processing streaming content: {str(e)}", emoji_key="warning")
+                                yield "", error_metadata
+                                return
+                        
+                        # Final metadata with complete information
+                        total_tokens = input_tokens + output_tokens
+                        processing_time = time.time() - start_time
+                        cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
+                        
+                        # Yield final empty chunk with complete metadata
+                        final_metadata = {
+                            "model": f"{self.provider_name}/{model_id}",
+                            "provider": self.provider_name,
+                            "finish_reason": "stop",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": total_tokens,
+                            "cost": cost,
+                            "processing_time": processing_time,
+                        }
+                        
+                        yield "", final_metadata
+                        
+                    except aiohttp.ClientConnectionError as e:
+                        # Handle connection errors gracefully
+                        processing_time = time.time() - start_time
                         error_metadata = {
                             "model": f"{self.provider_name}/{model_id}",
                             "provider": self.provider_name,
-                            "error": f"Error processing streaming content: {str(e)}",
+                            "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.",
                             "finish_reason": "error",
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
                             "total_tokens": input_tokens + output_tokens,
-                            "cost": self._estimate_token_cost(model_id, input_tokens, output_tokens),
-                            "processing_time": time.time() - start_time,
-                        }
-                        yield "", error_metadata
-                        return
-                
-                # Final metadata with complete information
-                total_tokens = input_tokens + output_tokens
-                processing_time = time.time() - start_time
-                cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
-                
-                # Yield final empty chunk with complete metadata
-                final_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "finish_reason": "stop",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                    "cost": cost,
-                    "processing_time": processing_time,
-                }
-                
-                yield "", final_metadata
-                
-            except aiohttp.ClientConnectionError as e:
-                # Handle connection errors gracefully
-                processing_time = time.time() - start_time
-                error_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.",
-                    "finish_reason": "error",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "cost": 0.0,
-                    "processing_time": processing_time,
-                }
-                yield "", error_metadata
-            except asyncio.TimeoutError:
-                # Handle timeout errors gracefully
-                processing_time = time.time() - start_time
-                error_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "error": "Connection to Ollama timed out. Check if the service is overloaded or unresponsive.",
-                    "finish_reason": "error",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "cost": 0.0,
-                    "processing_time": processing_time,
-                }
-                yield "", error_metadata
-            except Exception as e:
-                # Handle any other exceptions
-                processing_time = time.time() - start_time
-                if isinstance(e, ProviderError):
-                    raise
-                
-                error_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "error": f"Error generating streaming chat completion: {str(e)}",
-                    "finish_reason": "error",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "cost": 0.0,
-                    "processing_time": processing_time,
-                }
-                yield "", error_metadata
-        else:
-            # Use generate endpoint for non-chat models
-            payload = {
-                "model": model_id,
-                "prompt": prompt,
-                "temperature": temperature,
-                "stream": True,  # Enable streaming
-            }
-            
-            # Add optional parameters
-            if max_tokens:
-                payload["max_tokens"] = max_tokens
-            if stop:
-                payload["stop"] = stop
-            
-            # Add any additional parameters
-            for key, value in kwargs.items():
-                if key not in payload and value is not None:
-                    payload[key] = value
-            
-            try:
-                # Start streaming request
-                async with self.session.post(self._build_api_url("generate"), json=payload) as response:
-                    if response.status != 200:
-                        error_text = await response.text()
-                        error_metadata = {
-                            "model": f"{self.provider_name}/{model_id}",
-                            "provider": self.provider_name,
-                            "error": f"Ollama streaming API error: {response.status} - {error_text}",
-                            "finish_reason": "error",
-                            "input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
                             "cost": 0.0,
-                            "processing_time": time.time() - start_time,
+                            "processing_time": processing_time,
                         }
                         yield "", error_metadata
-                        return
-                    
-                    # Process streaming response
-                    buffer = ""
-                    try:
-                        async for line in response.content:
-                            if not line.strip():
-                                continue
-                                
-                            # Parse the line as JSON
-                            try:
-                                data = json.loads(line)
-                                
-                                # Check if this is the final message
-                                if data.get("done", False):
-                                    # Update token counts from the final message
-                                    input_tokens = data.get("prompt_eval_count", input_tokens)
-                                    total_output_tokens = data.get("eval_count", output_tokens)
-                                    
-                                    # Calculate the tokens in this last chunk
-                                    new_tokens = total_output_tokens - last_token_count
-                                    output_tokens = total_output_tokens
-                                    
-                                    # No more content to yield in final message
-                                    break
-                                
-                                # Extract the content from the response
-                                chunk_text = data.get("response", "")
-                                
-                                # Update token count if available
-                                if "eval_count" in data:
-                                    current_count = data["eval_count"]
-                                    new_tokens = current_count - last_token_count
-                                    last_token_count = current_count
-                                    output_tokens = current_count
-                                else:
-                                    # Estimate token count (very rough approximation)
-                                    new_tokens = len(chunk_text.split()) // 4 or 1
-                                
-                                # Yield the chunk
-                                metadata = {
-                                    "model": f"{self.provider_name}/{model_id}",
-                                    "provider": self.provider_name,
-                                    "finish_reason": None,
-                                    "input_tokens": input_tokens,
-                                    "output_tokens": output_tokens,
-                                    "total_tokens": input_tokens + output_tokens,
-                                    "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
-                                    "processing_time": time.time() - start_time,
-                                }
-                                
-                                yield chunk_text, metadata
-                                
-                            except json.JSONDecodeError:
-                                # Handle incomplete JSON or other parsing errors
-                                buffer += line.decode("utf-8")
-                                
-                                try:
-                                    # Try to parse the accumulated buffer
-                                    data = json.loads(buffer)
-                                    buffer = ""
-                                    
-                                    # Process the data as above
-                                    chunk_text = data.get("response", "")
-                                    new_tokens = 1  # Default estimation
-                                    
-                                    metadata = {
-                                        "model": f"{self.provider_name}/{model_id}",
-                                        "provider": self.provider_name,
-                                        "finish_reason": None,
-                                        "input_tokens": input_tokens,
-                                        "output_tokens": output_tokens,
-                                        "total_tokens": input_tokens + output_tokens,
-                                        "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
-                                        "processing_time": time.time() - start_time,
-                                    }
-                                    
-                                    yield chunk_text, metadata
-                                    
-                                except json.JSONDecodeError:
-                                    # Still incomplete, continue accumulating
-                                    continue
-                    except Exception as e:
-                        # Handle errors during streaming content processing
-                        self.logger.warning(f"Error processing streaming content: {str(e)}", emoji_key="warning")
+                    except asyncio.TimeoutError:
+                        # Handle timeout errors gracefully
+                        processing_time = time.time() - start_time
                         error_metadata = {
                             "model": f"{self.provider_name}/{model_id}",
                             "provider": self.provider_name,
-                            "error": f"Error processing streaming content: {str(e)}",
+                            "error": "Connection to Ollama timed out. Check if the service is overloaded or unresponsive.",
                             "finish_reason": "error",
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
                             "total_tokens": input_tokens + output_tokens,
-                            "cost": self._estimate_token_cost(model_id, input_tokens, output_tokens),
-                            "processing_time": time.time() - start_time,
+                            "cost": 0.0,
+                            "processing_time": processing_time,
                         }
                         yield "", error_metadata
-                        return
-                
-                # Final metadata with complete information
-                total_tokens = input_tokens + output_tokens
-                processing_time = time.time() - start_time
-                cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
-                
-                # Yield final empty chunk with complete metadata
-                final_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "finish_reason": "stop",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                    "cost": cost,
-                    "processing_time": processing_time,
-                }
-                
-                yield "", final_metadata
-                
-            except aiohttp.ClientConnectionError as e:
-                # Handle connection errors gracefully
-                processing_time = time.time() - start_time
-                error_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.",
-                    "finish_reason": "error",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "cost": 0.0,
-                    "processing_time": processing_time,
-                }
-                yield "", error_metadata
-            except asyncio.TimeoutError:
-                # Handle timeout errors gracefully
-                processing_time = time.time() - start_time
-                error_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "error": "Connection to Ollama timed out. Check if the service is overloaded or unresponsive.",
-                    "finish_reason": "error",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "cost": 0.0,
-                    "processing_time": processing_time,
-                }
-                yield "", error_metadata
-            except Exception as e:
-                # Handle any other exceptions
-                processing_time = time.time() - start_time
-                if isinstance(e, ProviderError):
-                    raise
-                
-                error_metadata = {
-                    "model": f"{self.provider_name}/{model_id}",
-                    "provider": self.provider_name,
-                    "error": f"Error generating streaming completion: {str(e)}",
-                    "finish_reason": "error",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "cost": 0.0,
-                    "processing_time": processing_time,
-                }
-                yield "", error_metadata
+                    except Exception as e:
+                        # Handle any other exceptions
+                        processing_time = time.time() - start_time
+                        if isinstance(e, ProviderError):
+                            raise
+                        
+                        error_metadata = {
+                            "model": f"{self.provider_name}/{model_id}",
+                            "provider": self.provider_name,
+                            "error": f"Error generating streaming chat completion: {str(e)}",
+                            "finish_reason": "error",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "cost": 0.0,
+                            "processing_time": processing_time,
+                        }
+                        yield "", error_metadata
+                else:
+                    # Use generate endpoint for non-chat models
+                    payload = {
+                        "model": model_id,
+                        "prompt": prompt,
+                        "temperature": temperature,
+                        "stream": True,  # Enable streaming
+                    }
+                    
+                    # Add optional parameters
+                    if max_tokens:
+                        payload["max_tokens"] = max_tokens
+                    if stop:
+                        payload["stop"] = stop
+                    
+                    # Add any additional parameters
+                    for key, value in kwargs.items():
+                        if key not in payload and value is not None:
+                            payload[key] = value
+                    
+                    try:
+                        # Start streaming request
+                        async with streaming_session.post(self._build_api_url("generate"), json=payload) as response:
+                            if response.status != 200:
+                                error_text = await response.text()
+                                error_metadata = {
+                                    "model": f"{self.provider_name}/{model_id}",
+                                    "provider": self.provider_name,
+                                    "error": f"Ollama streaming API error: {response.status} - {error_text}",
+                                    "finish_reason": "error",
+                                    "input_tokens": 0,
+                                    "output_tokens": 0,
+                                    "total_tokens": 0,
+                                    "cost": 0.0,
+                                    "processing_time": time.time() - start_time,
+                                }
+                                yield "", error_metadata
+                                return
+                            
+                            # Process streaming response
+                            buffer = ""
+                            try:
+                                async for line in response.content:
+                                    if not line.strip():
+                                        continue
+                                        
+                                    # Parse the line as JSON
+                                    try:
+                                        data = json.loads(line)
+                                        
+                                        # Check if this is the final message
+                                        if data.get("done", False):
+                                            # Update token counts from the final message
+                                            input_tokens = data.get("prompt_eval_count", input_tokens)
+                                            total_output_tokens = data.get("eval_count", output_tokens)
+                                            
+                                            # Calculate the tokens in this last chunk
+                                            new_tokens = total_output_tokens - last_token_count
+                                            output_tokens = total_output_tokens
+                                            
+                                            # No more content to yield in final message
+                                            break
+                                        
+                                        # Extract the content from the response
+                                        chunk_text = data.get("response", "")
+                                        
+                                        # Update token count if available
+                                        if "eval_count" in data:
+                                            current_count = data["eval_count"]
+                                            new_tokens = current_count - last_token_count
+                                            last_token_count = current_count
+                                            output_tokens = current_count
+                                        else:
+                                            # Estimate token count (very rough approximation)
+                                            new_tokens = len(chunk_text.split()) // 4 or 1
+                                        
+                                        # Yield the chunk
+                                        metadata = {
+                                            "model": f"{self.provider_name}/{model_id}",
+                                            "provider": self.provider_name,
+                                            "finish_reason": None,
+                                            "input_tokens": input_tokens,
+                                            "output_tokens": output_tokens,
+                                            "total_tokens": input_tokens + output_tokens,
+                                            "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
+                                            "processing_time": time.time() - start_time,
+                                        }
+                                        
+                                        yield chunk_text, metadata
+                                        
+                                    except json.JSONDecodeError:
+                                        # Handle incomplete JSON or other parsing errors
+                                        buffer += line.decode("utf-8")
+                                        
+                                        try:
+                                            # Try to parse the accumulated buffer
+                                            data = json.loads(buffer)
+                                            buffer = ""
+                                            
+                                            # Process the data as above
+                                            chunk_text = data.get("response", "")
+                                            new_tokens = 1  # Default estimation
+                                            
+                                            metadata = {
+                                                "model": f"{self.provider_name}/{model_id}",
+                                                "provider": self.provider_name,
+                                                "finish_reason": None,
+                                                "input_tokens": input_tokens,
+                                                "output_tokens": output_tokens,
+                                                "total_tokens": input_tokens + output_tokens,
+                                                "cost": self._estimate_token_cost(model_id, input_tokens, new_tokens),
+                                                "processing_time": time.time() - start_time,
+                                            }
+                                            
+                                            yield chunk_text, metadata
+                                            
+                                        except json.JSONDecodeError:
+                                            # Still incomplete, continue accumulating
+                                            continue
+                            except Exception as e:
+                                # Handle errors during streaming content processing
+                                self.logger.warning(f"Error processing streaming content: {str(e)}", emoji_key="warning")
+                                error_metadata = {
+                                    "model": f"{self.provider_name}/{model_id}",
+                                    "provider": self.provider_name,
+                                    "error": f"Error processing streaming content: {str(e)}",
+                                    "finish_reason": "error",
+                                    "input_tokens": input_tokens,
+                                    "output_tokens": output_tokens,
+                                    "total_tokens": input_tokens + output_tokens,
+                                    "cost": self._estimate_token_cost(model_id, input_tokens, output_tokens),
+                                    "processing_time": time.time() - start_time,
+                                }
+                                yield "", error_metadata
+                                return
+                        
+                        # Final metadata with complete information
+                        total_tokens = input_tokens + output_tokens
+                        processing_time = time.time() - start_time
+                        cost = self._estimate_token_cost(model_id, input_tokens, output_tokens)
+                        
+                        # Yield final empty chunk with complete metadata
+                        final_metadata = {
+                            "model": f"{self.provider_name}/{model_id}",
+                            "provider": self.provider_name,
+                            "finish_reason": "stop",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": total_tokens,
+                            "cost": cost,
+                            "processing_time": processing_time,
+                        }
+                        
+                        yield "", final_metadata
+                        
+                    except aiohttp.ClientConnectionError as e:
+                        # Handle connection errors gracefully
+                        processing_time = time.time() - start_time
+                        error_metadata = {
+                            "model": f"{self.provider_name}/{model_id}",
+                            "provider": self.provider_name,
+                            "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.",
+                            "finish_reason": "error",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "cost": 0.0,
+                            "processing_time": processing_time,
+                        }
+                        yield "", error_metadata
+                    except asyncio.TimeoutError:
+                        # Handle timeout errors gracefully
+                        processing_time = time.time() - start_time
+                        error_metadata = {
+                            "model": f"{self.provider_name}/{model_id}",
+                            "provider": self.provider_name,
+                            "error": "Connection to Ollama timed out. Check if the service is overloaded or unresponsive.",
+                            "finish_reason": "error",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "cost": 0.0,
+                            "processing_time": processing_time,
+                        }
+                        yield "", error_metadata
+                    except Exception as e:
+                        # Handle any other exceptions
+                        processing_time = time.time() - start_time
+                        if isinstance(e, ProviderError):
+                            raise
+                        
+                        error_metadata = {
+                            "model": f"{self.provider_name}/{model_id}",
+                            "provider": self.provider_name,
+                            "error": f"Error generating streaming completion: {str(e)}",
+                            "finish_reason": "error",
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "total_tokens": input_tokens + output_tokens,
+                            "cost": 0.0,
+                            "processing_time": processing_time,
+                        }
+                        yield "", error_metadata
+        except Exception as e:
+            # Handle any exceptions that occur outside the main processing logic
+            error_metadata = {
+                "model": f"{self.provider_name}/{model or self.get_default_model()}",
+                "provider": self.provider_name,
+                "error": f"Unexpected error in streaming: {str(e)}",
+                "finish_reason": "error",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost": 0.0,
+                "processing_time": 0.0,
+            }
+            yield "", error_metadata
 
     async def create_embeddings(
         self,
@@ -1270,7 +1343,6 @@ class OllamaProvider(BaseProvider):
                         output_tokens=0,
                         total_tokens=0,
                         processing_time=0.0,
-                        cost=0.0,
                         metadata={
                             "error": "Ollama service is not available. Make sure Ollama is installed and running: https://ollama.com/download",
                             "embeddings": []
@@ -1286,7 +1358,6 @@ class OllamaProvider(BaseProvider):
                     output_tokens=0,
                     total_tokens=0,
                     processing_time=0.0,
-                    cost=0.0,
                     metadata={
                         "error": f"Failed to initialize Ollama provider: {str(e)}. Make sure Ollama is installed and running: https://ollama.com/download",
                         "embeddings": []
@@ -1314,53 +1385,55 @@ class OllamaProvider(BaseProvider):
         try:
             start_time = time.time()
             
-            # Process each text individually (Ollama supports batching but we'll use same pattern as other providers)
-            for text in texts:
-                payload = {
-                    "model": model_id,
-                    "prompt": text,
-                }
-                
-                # Add any additional parameters
-                for key, value in kwargs.items():
-                    if key not in payload and value is not None:
-                        payload[key] = value
-                
-                try:
-                    async with self.session.post(self._build_api_url("embeddings"), json=payload, timeout=30.0) as response:
-                        if response.status != 200:
-                            error_text = await response.text()
-                            errors.append(f"Ollama API error: {response.status} - {error_text}")
-                            # Continue with the next text
-                            continue
-                        
-                        data = await response.json()
-                        
-                        # Extract embeddings
-                        embedding = data.get("embedding", [])
-                        
-                        if not embedding:
-                            errors.append(f"No embedding returned for text: {text[:50]}...")
-                            continue
-                        
-                        # Store the embedding
-                        result_embeddings.append(embedding)
-                        
-                        # Check dimensions for consistency
-                        dimensions = len(embedding)
-                        if all_dimensions is None:
-                            all_dimensions = dimensions
-                        elif dimensions != all_dimensions:
-                            errors.append(f"Inconsistent embedding dimensions: got {dimensions}, expected {all_dimensions}")
-                except aiohttp.ClientConnectionError as e:
-                    errors.append(f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.")
-                    break
-                except asyncio.TimeoutError:
-                    errors.append("Connection to Ollama timed out. Check if the service is overloaded.")
-                    break
-                except Exception as e:
-                    errors.append(f"Error generating embedding: {str(e)}")
-                    continue
+            # Create a dedicated session for this embeddings request
+            async with aiohttp.ClientSession(**self.client_session_params) as session:
+                # Process each text individually (Ollama supports batching but we'll use same pattern as other providers)
+                for text in texts:
+                    payload = {
+                        "model": model_id,
+                        "prompt": text,
+                    }
+                    
+                    # Add any additional parameters
+                    for key, value in kwargs.items():
+                        if key not in payload and value is not None:
+                            payload[key] = value
+                    
+                    try:
+                        async with session.post(self._build_api_url("embeddings"), json=payload, timeout=30.0) as response:
+                            if response.status != 200:
+                                error_text = await response.text()
+                                errors.append(f"Ollama API error: {response.status} - {error_text}")
+                                # Continue with the next text
+                                continue
+                            
+                            data = await response.json()
+                            
+                            # Extract embeddings
+                            embedding = data.get("embedding", [])
+                            
+                            if not embedding:
+                                errors.append(f"No embedding returned for text: {text[:50]}...")
+                                continue
+                            
+                            # Store the embedding
+                            result_embeddings.append(embedding)
+                            
+                            # Check dimensions for consistency
+                            dimensions = len(embedding)
+                            if all_dimensions is None:
+                                all_dimensions = dimensions
+                            elif dimensions != all_dimensions:
+                                errors.append(f"Inconsistent embedding dimensions: got {dimensions}, expected {all_dimensions}")
+                    except aiohttp.ClientConnectionError as e:
+                        errors.append(f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.")
+                        break
+                    except asyncio.TimeoutError:
+                        errors.append("Connection to Ollama timed out. Check if the service is overloaded.")
+                        break
+                    except Exception as e:
+                        errors.append(f"Error generating embedding: {str(e)}")
+                        continue
             
             # Calculate processing time
             processing_time = time.time() - start_time
@@ -1377,11 +1450,11 @@ class OllamaProvider(BaseProvider):
                 output_tokens=0,            # No output tokens for embeddings
                 total_tokens=total_tokens,
                 processing_time=processing_time,
-                cost=estimated_cost,
                 metadata={
                     "embeddings": result_embeddings,
                     "dimensions": all_dimensions or 0,
                     "errors": errors if errors else None,
+                    "cost": estimated_cost
                 }
             )
             
@@ -1395,10 +1468,10 @@ class OllamaProvider(BaseProvider):
                 output_tokens=0,
                 total_tokens=0,
                 processing_time=0.0,
-                cost=0.0,
                 metadata={
                     "error": f"Connection to Ollama failed: {str(e)}. Make sure Ollama is running and accessible.",
-                    "embeddings": []
+                    "embeddings": [],
+                    "cost": 0.0
                 }
             )
         except Exception as e:
@@ -1413,9 +1486,9 @@ class OllamaProvider(BaseProvider):
                 output_tokens=0,
                 total_tokens=0,
                 processing_time=0.0,
-                cost=0.0,
                 metadata={
                     "error": f"Error generating embeddings: {str(e)}",
-                    "embeddings": result_embeddings  # Include any embeddings we did get
+                    "embeddings": result_embeddings,
+                    "cost": 0.0
                 }
             )

@@ -182,11 +182,9 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     "grok-3-mini-fast-latest": {"input": 0.60, "output": 4.0},
     
     # Ollama models (very low estimated costs since they run locally)
-    "llama3.2": {"input": 0.0001, "output": 0.0001},
-    "llama3.1": {"input": 0.0001, "output": 0.0001},
-    "mistral": {"input": 0.0001, "output": 0.0001},
-    "gemma": {"input": 0.0001, "output": 0.0001},
-    "phi3": {"input": 0.0001, "output": 0.0001},
+    "mix_77/gemma3-qat-tools:27b": {"input": 0.0001, "output": 0.0001},
+    "JollyLlama/GLM-Z1-32B-0414-Q4_K_M:latest": {"input": 0.0001, "output": 0.0001},
+    "llama3.2-vision:latest": {"input": 0.0001, "output": 0.0001},
 }
 
 
@@ -201,7 +199,7 @@ DEFAULT_MODELS = {
     Provider.GEMINI: "gemini-2.5-pro-exp-03-25",
     Provider.OPENROUTER: "mistralai/mistral-nemo",
     Provider.GROK: "grok-3-latest",
-    Provider.OLLAMA: "llama3.2"
+    Provider.OLLAMA: "mix_77/gemma3-qat-tools:27b"
 }
 
 

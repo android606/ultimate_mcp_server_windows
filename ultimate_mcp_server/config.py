@@ -219,6 +219,7 @@ class ProvidersConfig(BaseModel):
     gemini: ProviderConfig = Field(default_factory=ProviderConfig, description="Gemini provider configuration")
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig, description="OpenRouter provider configuration")
     grok: ProviderConfig = Field(default_factory=ProviderConfig, description="Grok (xAI) provider configuration")
+    ollama: ProviderConfig = Field(default_factory=ProviderConfig, description="Ollama provider configuration")
 
 class FilesystemProtectionConfig(BaseModel):
     """Configuration for filesystem protection heuristics."""
@@ -535,23 +536,48 @@ def load_config(
     except Exception as e: # Catch potential decouple issues
         config_logger.warning(f"Could not load optional OpenRouter headers from env: {e}")
 
+    # --- Load Ollama Provider Settings ---
+    ollama_conf = loaded_config.providers.ollama
+    try:
+        enabled_env = decouple_config.get('OLLAMA_ENABLED', default=None)
+        if enabled_env is not None:
+            ollama_conf.enabled = enabled_env.lower() == 'true'
+            config_logger.debug(f"Setting Ollama enabled from env/'.env': {ollama_conf.enabled}")
+        
+        api_url_env = decouple_config.get('OLLAMA_API_URL', default=None)
+        if api_url_env:
+            ollama_conf.base_url = api_url_env
+            config_logger.debug(f"Setting Ollama base_url from env/'.env': {ollama_conf.base_url}")
+        
+        default_model_env = decouple_config.get('OLLAMA_DEFAULT_MODEL', default=None)
+        if default_model_env:
+            ollama_conf.default_model = default_model_env
+            config_logger.debug(f"Setting Ollama default_model from env/'.env': {ollama_conf.default_model}")
+        
+        request_timeout_env = decouple_config.get('OLLAMA_REQUEST_TIMEOUT', default=None)
+        if request_timeout_env is not None:
+            ollama_conf.timeout = int(request_timeout_env)
+            config_logger.debug(f"Setting Ollama timeout from env/'.env': {ollama_conf.timeout}")
+    except Exception as e:
+        config_logger.warning(f"Could not load optional Ollama settings from env: {e}")
+
     # Example for generic provider settings like base_url, default_model, organization
-    for provider_name in ["openai", "anthropic", "deepseek", "gemini", "openrouter", "grok"]:
+    for provider_name in ["openai", "anthropic", "deepseek", "gemini", "openrouter", "grok", "ollama"]:
         provider_conf = getattr(loaded_config.providers, provider_name, None)
         if provider_conf:
             p_name_upper = provider_name.upper()
             try:
-                base_url_env = decouple_config.get(f"GATEWAY_{p_name_upper}_BASE_URL", default=None)
+                base_url_env = decouple_config.get(f"{p_name_upper}_BASE_URL", default=None)
                 if base_url_env:
                     provider_conf.base_url = base_url_env
                     config_logger.debug(f"Setting {provider_name} base_url from env/'.env'.")
 
-                default_model_env = decouple_config.get(f"GATEWAY_{p_name_upper}_DEFAULT_MODEL", default=None)
+                default_model_env = decouple_config.get(f"{p_name_upper}_DEFAULT_MODEL", default=None)
                 if default_model_env:
                     provider_conf.default_model = default_model_env
                     config_logger.debug(f"Setting {provider_name} default_model from env/'.env'.")
 
-                org_env = decouple_config.get(f"GATEWAY_{p_name_upper}_ORGANIZATION", default=None)
+                org_env = decouple_config.get(f"{p_name_upper}_ORGANIZATION", default=None)
                 if org_env:
                     provider_conf.organization = org_env
                     config_logger.debug(f"Setting {provider_name} organization from env/'.env'.")
