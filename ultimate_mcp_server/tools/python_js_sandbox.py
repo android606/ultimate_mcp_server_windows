@@ -335,7 +335,10 @@ async def _get_browser() -> pw.Browser:
     global _BROWSER
     if _BROWSER is None:
         logger.info("Launching headless Chromium …")
-        _BROWSER = await pw.async_playwright().start().chromium.launch(
+        # Get the playwright instance - properly awaited
+        playwright = await pw.async_playwright()
+        # Then launch the browser
+        _BROWSER = await playwright.chromium.launch(
             args=["--no-sandbox"]
         )
         # ensure graceful shutdown when the host process exits

@@ -43,7 +43,7 @@ from ultimate_mcp_server.tools.base import (  # noqa: E402
     with_tool_metrics,
 )
 from ultimate_mcp_server.tools.completion import generate_completion  # noqa: E402
-from ultimate_mcp_server.tools.document import chunk_document  # noqa: E402
+from ultimate_mcp_server.tools.document_conversion_and_processing import chunk_document  # noqa: E402
 from ultimate_mcp_server.utils import get_logger  # noqa: E402
 
 logger = get_logger("ultimate_mcp_server.tools.entity_graph")

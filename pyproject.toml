@@ -79,7 +79,9 @@ dependencies = [
     "pillow", # For OCR
     "pytesseract", # For OCR
     "pdf2image", # For OCR
+    "PyPDF2", # PDF conversion
     "pdfplumber", # For OCR
+    "python-docx", # For word file conversion
     "fitz", # For OCR
     "pymupdf", # For OCR
     "beautifulsoup4", # Dealing with HTML
@@ -101,18 +103,18 @@ dependencies = [
     "boto3", # For AWS secrets management
     "hvac", # For HashiVault pw management
     "pandera", # Data validation
+    "rapidfuzz",
 ]
 
 [project.optional-dependencies]
 # Advanced AI model libraries
 advanced = [
-    # PyTorch and core dependencies must be first
-    "torch",             # PyTorch for transformers
-    "torchvision",
-    "torchaudio",
+    # PyTorch nightly builds for Python 3.13 compatibility
+    "torch>=2.3.0.dev20240101",             # PyTorch for transformers
+    "torchvision>=0.18.0.dev20240101",
+    "torchaudio>=2.3.0.dev20240101",
     # Other dependencies that require PyTorch
     "transformers",     # For Hugging Face models
-    "flash-attn",
     "accelerate",       # For optimized model inference
 ]
 
@@ -204,3 +206,16 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "F", "B", "I", "Q"]
 ignore = ["E203", "E501", "Q000"]
+
+[tool.uv]
+index-url = "https://pypi.org/simple"
+extra-index-url = ["https://download.pytorch.org/whl/nightly/cu126"]
+
+[tool.uv.dependency-overrides.torch]
+url = "https://download.pytorch.org/whl/nightly/cu126"
+
+[tool.uv.dependency-overrides.torchvision]
+url = "https://download.pytorch.org/whl/nightly/cu126"
+
+[tool.uv.dependency-overrides.torchaudio]
+url = "https://download.pytorch.org/whl/nightly/cu126"

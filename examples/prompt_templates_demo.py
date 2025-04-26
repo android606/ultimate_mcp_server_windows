@@ -403,32 +403,7 @@ async def demonstrate_llm_with_templates(tracker: CostTracker):
             provider_name = p_name
             logger.info(f"Using provider {p_name}", emoji_key="provider")
             break
-    
-    if not provider:
-        logger.warning("No providers available. Using mock response for demo.", emoji_key="warning")
-        # Create a mock response for demonstration purposes
-        mock_response = """Le renard brun rapide saute par-dessus le chien paresseux."""
-        
-        # Display mock response
-        console.print(Panel(
-            escape(mock_response),
-            title="[bold yellow]Mock Translation (No Providers Available)[/bold yellow]",
-            subtitle=f'Original: "{translation_vars['text']}"',
-            border_style="yellow",
-            expand=False
-        ))
-        
-        # Show mock stats
-        mock_stats = Table(title="[yellow]Mock Translation Stats[/yellow]", show_header=False, box=box.ROUNDED)
-        mock_stats.add_column("Metric", style="cyan")
-        mock_stats.add_column("Value", style="white")
-        mock_stats.add_row("Provider", "[yellow]Mock (Demo Only)[/yellow]")
-        mock_stats.add_row("Input Tokens", "~15")
-        mock_stats.add_row("Output Tokens", "~8")
-        mock_stats.add_row("Mock Cost", "$0.00 (demo)")
-        console.print(mock_stats)
-        return
-        
+
     try:
         model = provider.get_default_model()
         logger.info(f"Using provider {provider_name} with model {model}", emoji_key="provider")

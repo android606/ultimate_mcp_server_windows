@@ -1,637 +1,742 @@
 #!/usr/bin/env python
-"""Python sandbox execution demo using Ultimate MCP Server."""
+"""Demonstration script for PythonSandboxTool in Ultimate MCP Server."""
+
 import asyncio
+import os
 import sys
-import time
+import tempfile
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Third-party imports
-# These imports need to be below sys.path modification, which is why they have noqa comments
-from rich import box  # noqa: E402
-from rich.markup import escape  # noqa: E402
-from rich.panel import Panel  # noqa: E402
-from rich.rule import Rule  # noqa: E402
-from rich.table import Table  # noqa: E402
+# Rich imports for nice UI
+from rich import box
+from rich.console import Console
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.traceback import install as install_rich_traceback
 
-from ultimate_mcp_server.constants import TaskType  # noqa: E402
+from ultimate_mcp_server.core.server import Gateway
+from ultimate_mcp_server.exceptions import ToolError
+from ultimate_mcp_server.tools.python_js_sandbox import PythonSandboxTool
+from ultimate_mcp_server.utils import get_logger
 
-# Project imports
-from ultimate_mcp_server.core.server import Gateway  # noqa: E402
-from ultimate_mcp_server.tools.python_js_sandbox import PythonSandboxTool  # noqa: E402
-from ultimate_mcp_server.utils import get_logger  # noqa: E402
-from ultimate_mcp_server.utils.display import CostTracker  # noqa: E402
-from ultimate_mcp_server.utils.logging.console import console  # noqa: E402
+# Initialize Rich console and logger
+console = Console()
+logger = get_logger("demo.python_sandbox")
 
-# Initialize logger
-logger = get_logger("example.python_sandbox_demo")
+# Install rich tracebacks for better error display
+install_rich_traceback(show_locals=False, width=console.width)
 
+# --- Demo Helper Functions ---
 
-async def run_basic_execution(sandbox_tool):
-    """Demonstrate basic one-shot Python code execution."""
-    console.print(Rule("[bold blue]Basic Python Execution[/bold blue]"))
-    logger.info("Demonstrating basic Python code execution", emoji_key="start")
+def display_result(title: str, result: Dict[str, Any], code_str: Optional[str] = None) -> None:
+    """Display execution result with enhanced formatting."""
+    console.print(Rule(f"[bold cyan]{escape(title)}[/bold cyan]"))
+
+    if code_str:
+        console.print(Panel(
+            Syntax(code_str.strip(), "python", theme="monokai", line_numbers=True, word_wrap=True),
+            title="Executed Code",
+            border_style="blue",
+            padding=(1, 2)
+        ))
     
-    # Simple code to execute
+    if not result.get("success", True):  # Most results don't have a success field
+        error_msg = result.get("error", "Unknown error")
+        console.print(Panel(
+            f"[bold red]:x: Operation Failed:[/]\n{escape(error_msg)}",
+            title="Error",
+            border_style="red",
+            padding=(1, 2),
+            expand=False
+        ))
+        return
+    
+    # Create output panel for stdout/stderr
+    output_parts = []
+    
+    if stdout := result.get("stdout", ""):
+        output_parts.append(f"[bold green]STDOUT:[/]\n{escape(stdout)}")
+    
+    if stderr := result.get("stderr", ""):
+        if output_parts:
+            output_parts.append("\n")
+        output_parts.append(f"[bold red]STDERR:[/]\n{escape(stderr)}")
+    
+    if output_parts:
+        console.print(Panel(
+            "\n".join(output_parts),
+            title="Output",
+            border_style="yellow",
+            padding=(1, 2)
+        ))
+    
+    # Display result value if present
+    if "result" in result and result["result"] is not None:
+        console.print(Panel(
+            Syntax(str(result["result"]), "python", theme="monokai", line_numbers=False, word_wrap=True),
+            title="Result Value",
+            border_style="green",
+            padding=(1, 2)
+        ))
+    
+    # Display execution stats
+    stats_table = Table(title="Execution Statistics", box=box.ROUNDED, show_header=False, padding=(0, 1), border_style="dim")
+    stats_table.add_column("Metric", style="cyan", justify="right")
+    stats_table.add_column("Value", style="white")
+    
+    if "elapsed_py_ms" in result:
+        stats_table.add_row("Python Execution Time", f"{result['elapsed_py_ms']:.2f} ms")
+    if "elapsed_wall_ms" in result:
+        stats_table.add_row("Wall Clock Time", f"{result['elapsed_wall_ms']:.2f} ms")
+    if "session_id" in result:
+        stats_table.add_row("Session ID", result["session_id"])
+    if "handle" in result:
+        stats_table.add_row("REPL Handle", result["handle"])
+    
+    console.print(stats_table)
+    console.print()  # Add spacing
+
+# --- Demo Functions ---
+
+async def basic_execution_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate basic Python code execution."""
+    console.print(Rule("[bold green]1. Basic Python Execution Demo[/bold green]", style="green"))
+    logger.info("Starting basic execution demo")
+    
+    # Simple Python code
     code = """
-import numpy as np
 import math
 
-# Calculate some values
-numbers = np.array([1, 2, 3, 4, 5])
-mean_value = np.mean(numbers)
-std_dev = np.std(numbers)
-sqrt_sum = math.sqrt(np.sum(numbers))
+def calculate_circle_area(radius):
+    return math.pi * radius ** 2
 
-# Print results
-print(f"Numbers: {numbers}")
-print(f"Mean: {mean_value:.2f}")
-print(f"Standard Deviation: {std_dev:.2f}")
-print(f"Square Root of Sum: {sqrt_sum:.2f}")
+# Calculate area of a circle with radius 5
+area = calculate_circle_area(5)
+print(f"The area of a circle with radius 5 is {area:.2f}")
 
-# Store result for return
-result = {
-    "mean": float(mean_value),
-    "std_dev": float(std_dev),
-    "sqrt_sum": float(sqrt_sum)
-}
+# Assign to result for return value
+result = f"Circle area calculation complete. Area = {area:.4f}"
 """
+
+    console.print("[cyan]Executing basic Python code...[/]")
     
     try:
-        # Execute the code
-        logger.info("Executing basic Python code...", emoji_key=TaskType.CODE_EXECUTION.value)
-        start_time = time.time()
+        with console.status("[bold cyan]Running Python code...", spinner="dots"):
+            execution_result = await python_tool.execute_python(
+                code=code,
+                timeout_ms=5000
+            )
         
-        result = await sandbox_tool.execute_python(
-            code=code,
-            packages=["numpy"],  # numpy is already preloaded, but specifying for clarity
-            timeout_ms=10000
-        )
-        
-        execution_time = time.time() - start_time
-        
-        # Format and display result
-        stdout = result.get("stdout", "").strip()
-        result_value = result.get("result")
-        
-        # Log success
-        logger.success(
-            "Code execution completed successfully",
-            emoji_key="success",
-            elapsed_ms=execution_time * 1000,
-            session_id=result.get("session_id")
-        )
-        
-        # Display code
-        console.print(Panel(
-            code.strip(),
-            title="[bold cyan]Python Code[/bold cyan]",
-            border_style="blue",
-            expand=False
-        ))
-        
-        # Display stdout
-        if stdout:
-            console.print(Panel(
-                escape(stdout),
-                title="[bold green]Standard Output[/bold green]",
-                border_style="green",
-                expand=False
-            ))
-        
-        # Display returned result
-        if result_value:
-            # Format result nicely if it's a dictionary
-            if isinstance(result_value, dict):
-                result_table = Table(title="Return Value", box=box.SIMPLE, show_header=True)
-                result_table.add_column("Metric", style="cyan")
-                result_table.add_column("Value", style="yellow")
-                
-                for key, value in result_value.items():
-                    # Format floating point values
-                    if isinstance(value, float):
-                        formatted_value = f"{value:.4f}"
-                    else:
-                        formatted_value = str(value)
-                    result_table.add_row(key, formatted_value)
-                
-                console.print(result_table)
-            else:
-                # For non-dict results, just display as text
-                console.print(Panel(
-                    str(result_value),
-                    title="[bold magenta]Return Value[/bold magenta]",
-                    border_style="magenta",
-                    expand=False
-                ))
-        
-        # Display execution stats
-        stats_table = Table(title="Execution Statistics", box=box.SIMPLE, show_header=False)
-        stats_table.add_column("Metric", style="blue")
-        stats_table.add_column("Value", style="white")
-        stats_table.add_row("Python Execution Time", f"{result.get('elapsed_py_ms', 0):.2f} ms")
-        stats_table.add_row("Total Wall Time", f"{result.get('elapsed_wall_ms', 0):.2f} ms")
-        stats_table.add_row("Session ID", result.get("session_id", "N/A"))
-        console.print(stats_table)
+        display_result("Basic Python Execution", execution_result, code)
         
     except Exception as e:
-        logger.error(f"Error during basic code execution: {str(e)}", emoji_key="error", exc_info=True)
-
-
-async def run_repl_execution(sandbox_tool):
-    """Demonstrate REPL-mode execution with state preservation."""
-    console.print(Rule("[bold blue]REPL Mode with State Preservation[/bold blue]"))
-    logger.info("Demonstrating REPL mode with persistent state", emoji_key="start")
+        logger.error(f"Basic execution demo failed: {e}")
+        console.print(f"[bold red]:x: Execution Error:[/]\n{escape(str(e))}")
     
-    # First code execution - define class and variables
-    setup_code = """
+    console.print()  # Spacing
+
+async def package_loading_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate loading Python packages."""
+    console.print(Rule("[bold green]2. Package Loading Demo[/bold green]", style="green"))
+    logger.info("Starting package loading demo")
+    
+    # NumPy example
+    numpy_code = """
 import numpy as np
-import matplotlib.pyplot as plt
 
-class DataAnalyzer:
-    def __init__(self, data):
-        self.data = np.array(data)
-    
-    def calculate_stats(self):
-        return {
-            "mean": float(np.mean(self.data)),
-            "median": float(np.median(self.data)),
-            "std_dev": float(np.std(self.data)),
-            "min": float(np.min(self.data)),
-            "max": float(np.max(self.data))
-        }
-    
-    def transform(self, operation="square"):
-        if operation == "square":
-            return self.data ** 2
-        elif operation == "sqrt":
-            return np.sqrt(self.data)
-        elif operation == "log":
-            return np.log(self.data)
-        else:
-            raise ValueError(f"Unknown operation: {operation}")
+# Create a simple array
+arr = np.array([1, 2, 3, 4, 5])
+print(f"Array: {arr}")
+print(f"Mean: {np.mean(arr)}")
+print(f"Standard deviation: {np.std(arr)}")
 
-# Create an analyzer with some data
-data = [10, 25, 17, 32, 8, 42, 30]
-analyzer = DataAnalyzer(data)
+# Create a 3x3 identity matrix
+identity = np.eye(3)
+print(f"3x3 Identity matrix:\\n{identity}")
 
-print(f"Initialized DataAnalyzer with data: {data}")
+result = "NumPy operations completed successfully"
 """
-    
-    # Second code execution - use the previously defined class and data
-    analysis_code = """
-# Use the previously defined analyzer
-stats = analyzer.calculate_stats()
-print(f"Data statistics: {stats}")
 
-# Transform the data
-squared_data = analyzer.transform("square")
-print(f"Squared data: {squared_data}")
-
-# Store results for return
-result = {
-    "original_stats": stats,
-    "squared_data": squared_data.tolist()
-}
-"""
+    console.print("[cyan]Executing code with NumPy package...[/]")
     
     try:
-        # First execution - setup
-        logger.info("REPL Step 1: Initializing with class definition and data", emoji_key=TaskType.CODE_EXECUTION.value)
-        repl_result1 = await sandbox_tool.repl_python(
-            code=setup_code,
-            packages=["numpy", "matplotlib"],
-            timeout_ms=15000
-        )
+        with console.status("[bold cyan]Running Python code with NumPy...", spinner="dots"):
+            numpy_result = await python_tool.execute_python(
+                code=numpy_code,
+                packages=["numpy"],
+                timeout_ms=10000  # Give it more time for package loading
+            )
         
-        # Get handle for persistent session
-        handle = repl_result1.get("handle")
-        logger.info(f"REPL session initialized with handle: {handle}", emoji_key="info")
+        display_result("NumPy Package Demo", numpy_result, numpy_code)
         
-        # Display first execution output
-        console.print(Panel(
-            escape(repl_result1.get("stdout", "").strip()),
-            title="[bold cyan]REPL Step 1 Output[/bold cyan]",
-            border_style="cyan",
-            expand=False
-        ))
+        # Now try with Pandas (which depends on NumPy)
+        console.print("[cyan]Now executing code with Pandas (depends on NumPy)...[/]")
         
-        # Second execution - analysis using persistent state
-        logger.info("REPL Step 2: Using persistent state to analyze data", emoji_key=TaskType.CODE_EXECUTION.value)
-        repl_result2 = await sandbox_tool.repl_python(
-            code=analysis_code,
-            handle=handle,  # Reuse the same session handle
-            timeout_ms=15000
-        )
-        
-        # Display second execution output
-        console.print(Panel(
-            escape(repl_result2.get("stdout", "").strip()),
-            title="[bold green]REPL Step 2 Output[/bold green]",
-            border_style="green",
-            expand=False
-        ))
-        
-        # Display returned result from second execution
-        result_value = repl_result2.get("result")
-        if result_value and isinstance(result_value, dict):
-            # Create a nice table for the statistics
-            stats_table = Table(title="Data Analysis Results", box=box.SIMPLE)
-            
-            # Original stats section
-            stats_table.add_section()
-            stats_table.add_row("[bold]Original Statistics[/bold]", "")
-            
-            if "original_stats" in result_value:
-                for key, value in result_value["original_stats"].items():
-                    stats_table.add_row(key, f"{value:.2f}")
-            
-            # Transformed data section
-            stats_table.add_section()
-            stats_table.add_row("[bold]Squared Data[/bold]", "")
-            
-            if "squared_data" in result_value:
-                squared_str = ", ".join(f"{val:.1f}" for val in result_value["squared_data"])
-                stats_table.add_row("Values", squared_str)
-            
-            console.print(stats_table)
-        
-        # Log success
-        logger.success(
-            "REPL execution completed successfully",
-            emoji_key="success",
-            handle=handle
-        )
-        
-    except Exception as e:
-        logger.error(f"Error during REPL execution: {str(e)}", emoji_key="error", exc_info=True)
-
-
-async def run_data_visualization(sandbox_tool):
-    """Demonstrate creating data visualizations with matplotlib."""
-    console.print(Rule("[bold blue]Data Visualization with Matplotlib[/bold blue]"))
-    logger.info("Demonstrating data visualization capabilities", emoji_key="start")
-    
-    # Code to generate a visualization
-    viz_code = """
+        pandas_code = """
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
-from io import StringIO
 
-# Create sample data
-np.random.seed(42)
-dates = pd.date_range('20230101', periods=20)
-df = pd.DataFrame({
-    'Category A': np.random.randn(20).cumsum(),
-    'Category B': np.random.randn(20).cumsum(),
-    'Category C': np.random.randn(20).cumsum(),
-}, index=dates)
-
-# Create a basic visualization
-plt.figure(figsize=(10, 6))
-df.plot()
-plt.title('Random Walk Comparison')
-plt.xlabel('Date')
-plt.ylabel('Value')
-plt.grid(True, alpha=0.3)
-plt.legend(loc='best')
-
-# Instead of saving to file, capture and convert to text
-from matplotlib.backends.backend_agg import FigureCanvasAgg
-import matplotlib.pyplot as plt
-import base64
-from io import BytesIO
-
-# Save plot to a buffer
-buffer = BytesIO()
-canvas = FigureCanvasAgg(plt.gcf())
-canvas.print_png(buffer)
-buffer.seek(0)
-
-# Generate a base64 encoded version of this plot
-b64_img = base64.b64encode(buffer.read()).decode('utf-8')
-
-# Print some info about the dataframe
-print("DataFrame Summary:")
-print(df.describe())
-
-# Return a dict with the visualization and data
-result = {
-    "b64_image": b64_img,
-    "data_shape": df.shape,
-    "data_summary": df.describe().to_dict()
+# Create a simple DataFrame
+data = {
+    'Name': ['Alice', 'Bob', 'Charlie', 'David'],
+    'Age': [25, 30, 35, 40],
+    'City': ['New York', 'San Francisco', 'Los Angeles', 'Chicago']
 }
+
+df = pd.DataFrame(data)
+print("DataFrame:")
+print(df)
+
+# Basic stats
+print("\\nSummary statistics for Age:")
+print(df['Age'].describe())
+
+result = df.to_dict()  # Return the DataFrame as a dictionary
 """
-    
-    try:
-        # Execute the visualization code
-        logger.info("Generating data visualization...", emoji_key=TaskType.CODE_EXECUTION.value)
-        viz_result = await sandbox_tool.execute_python(
-            code=viz_code,
-            packages=["numpy", "matplotlib", "pandas"],
-            timeout_ms=20000
-        )
+
+        with console.status("[bold cyan]Running Python code with Pandas...", spinner="dots"):
+            pandas_result = await python_tool.execute_python(
+                code=pandas_code,
+                packages=["numpy", "pandas"],
+                timeout_ms=15000  # Pandas can take longer to load
+            )
         
-        # Log success
-        logger.success(
-            "Visualization generation completed successfully",
-            emoji_key="success",
-            elapsed_ms=viz_result.get("elapsed_wall_ms")
-        )
-        
-        # Display stdout (dataframe description)
-        stdout = viz_result.get("stdout", "").strip()
-        if stdout:
-            console.print(Panel(
-                escape(stdout),
-                title="[bold cyan]Data Summary[/bold cyan]",
-                border_style="cyan",
-                expand=False
-            ))
-        
-        # Get the result with the base64 encoded image
-        result_value = viz_result.get("result")
-        if result_value and isinstance(result_value, dict) and "b64_image" in result_value:
-            b64_img = result_value["b64_image"]
-            
-            # Note about the image viewing
-            console.print("[yellow]Note: In a real application environment, you would decode and display the base64 image.[/yellow]")
-            console.print(f"[green]A base64-encoded visualization was successfully generated ({len(b64_img)//1024} KB)[/green]")
-            
-            # Display data shape
-            if "data_shape" in result_value:
-                console.print(f"[cyan]Data Shape: {result_value['data_shape']}[/cyan]")
-        
-        # Display execution stats
-        stats_table = Table(title="Visualization Execution Statistics", box=box.SIMPLE, show_header=False)
-        stats_table.add_column("Metric", style="blue")
-        stats_table.add_column("Value", style="white")
-        stats_table.add_row("Python Execution Time", f"{viz_result.get('elapsed_py_ms', 0):.2f} ms")
-        stats_table.add_row("Total Wall Time", f"{viz_result.get('elapsed_wall_ms', 0):.2f} ms")
-        console.print(stats_table)
+        display_result("Pandas Package Demo", pandas_result, pandas_code)
         
     except Exception as e:
-        logger.error(f"Error during visualization generation: {str(e)}", emoji_key="error", exc_info=True)
-
-
-async def run_network_access_demo(sandbox_tool):
-    """Demonstrate optional network access capabilities."""
-    console.print(Rule("[bold blue]Network Access Capabilities[/bold blue]"))
-    logger.info("Demonstrating network access capabilities (when enabled)", emoji_key="start")
+        logger.error(f"Package loading demo failed: {e}")
+        console.print(f"[bold red]:x: Package Loading Error:[/]\n{escape(str(e))}")
     
-    # Code that attempts to access network resources
-    network_code = """
-import requests
-import json
+    console.print()  # Spacing
 
-# Function to make a request and handle errors gracefully
-def fetch_data(url):
+async def repl_mode_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate REPL mode with persistent state."""
+    console.print(Rule("[bold green]3. REPL Mode Demo[/bold green]", style="green"))
+    logger.info("Starting REPL mode demo")
+    
+    repl_handle = None
+    
     try:
-        response = requests.get(url, timeout=5)
-        response.raise_for_status()  # Raise an exception for 4XX/5XX responses
-        return {
-            "status": response.status_code,
-            "content_type": response.headers.get('content-type', ''),
-            "data": response.json() if 'application/json' in response.headers.get('content-type', '') else None,
-            "success": True
-        }
-    except requests.exceptions.RequestException as e:
-        print(f"Request error: {e}")
-        return {"success": False, "error": str(e)}
+        # Step 1: Define variables and functions
+        step1_code = """
+# Define a class
+class Person:
+    def __init__(self, name, age):
+        self.name = name
+        self.age = age
+    
+    def greet(self):
+        return f"Hello, my name is {self.name} and I'm {self.age} years old."
 
-# Try to fetch data from a public API (JSONPlaceholder - a common test API)
-api_url = "https://jsonplaceholder.typicode.com/todos/1"
-result = fetch_data(api_url)
+# Create a list of people
+people = [
+    Person("Alice", 30),
+    Person("Bob", 25),
+    Person("Charlie", 35)
+]
 
-if result["success"]:
-    print(f"Successfully fetched data from {api_url}")
-    print(f"Status code: {result['status']}")
-    print(f"Content type: {result['content_type']}")
-    if result["data"]:
-        print(f"Data: {json.dumps(result['data'], indent=2)}")
-else:
-    print(f"Failed to fetch data: {result.get('error', 'Unknown error')}")
+# Define a function
+def find_person(name):
+    return next((p for p in people if p.name == name), None)
+
+print("Defined Person class and created a list of people")
+print("Also defined find_person() function")
+
+# No explicit result
 """
-    
-    try:
-        # Execute once without network access (this should fail)
-        logger.info("Executing with network access disabled (should fail)", emoji_key="info")
-        no_network_result = await sandbox_tool.execute_python(
-            code=network_code,
-            allow_network=False,  # Explicitly disable network access
-            packages=["requests"],
-            timeout_ms=15000
-        )
+
+        console.print("[cyan]Step 1: Defining variables, classes, and functions in REPL...[/]")
         
-        # Display the result (should contain an error)
-        console.print(Panel(
-            escape(no_network_result.get("stdout", "").strip()),
-            title="[bold red]With Network Access Disabled[/bold red]",
-            border_style="red",
-            expand=False
-        ))
+        with console.status("[bold cyan]Running first REPL code block...", spinner="dots"):
+            step1_result = await python_tool.repl_python(
+                code=step1_code,
+                timeout_ms=5000
+            )
         
-        # Now execute with network access enabled
-        logger.info("Executing with network access enabled", emoji_key=TaskType.CODE_EXECUTION.value)
-        network_result = await sandbox_tool.execute_python(
-            code=network_code,
-            allow_network=True,  # Enable network access
-            packages=["requests"],
-            timeout_ms=15000
-        )
+        display_result("REPL Step 1: Define Variables and Functions", step1_result, step1_code)
+        repl_handle = step1_result.get("handle")
         
-        # Display the result (should show successful API call)
-        console.print(Panel(
-            escape(network_result.get("stdout", "").strip()),
-            title="[bold green]With Network Access Enabled[/bold green]",
-            border_style="green",
-            expand=False
-        ))
+        # Step 2: Use previously defined variables and functions
+        step2_code = """
+# Find a person from the list defined in the previous step
+alice = find_person("Alice")
+print(alice.greet())
+
+# Add a new person
+people.append(Person("David", 40))
+print(f"Now we have {len(people)} people in our list")
+
+# Set result to be the list of names
+result = [person.name for person in people]
+"""
+
+        console.print("[cyan]Step 2: Using previously defined variables and functions...[/]")
         
-        # Log success
-        logger.success(
-            "Network access demonstration completed",
-            emoji_key="success"
-        )
+        with console.status("[bold cyan]Running second REPL code block...", spinner="dots"):
+            step2_result = await python_tool.repl_python(
+                code=step2_code,
+                handle=repl_handle,
+                timeout_ms=5000
+            )
+        
+        display_result("REPL Step 2: Use Previously Defined State", step2_result, step2_code)
+        
+        # Step 3: Add an import and use more complex operations
+        step3_code = """
+import random
+
+# Randomly select a person
+selected = random.choice(people)
+print(f"Randomly selected: {selected.name}")
+
+# Update ages
+for person in people:
+    person.age += 1
+
+print("Everyone is now one year older:")
+for person in people:
+    print(f"{person.name} is now {person.age} years old")
+
+# Count total age
+total_age = sum(person.age for person in people)
+result = f"Total age of all {len(people)} people: {total_age}"
+"""
+
+        console.print("[cyan]Step 3: Adding imports and performing more operations...[/]")
+        
+        with console.status("[bold cyan]Running third REPL code block...", spinner="dots"):
+            step3_result = await python_tool.repl_python(
+                code=step3_code,
+                handle=repl_handle,
+                timeout_ms=5000
+            )
+        
+        display_result("REPL Step 3: Adding Imports", step3_result, step3_code)
+        
+        # Step 4: Reset the REPL and show that state is cleared
+        step4_code = """
+# Try to access previously defined variables
+try:
+    print(f"People list length: {len(people)}")
+    print("State persisted successfully")
+    result = True
+except NameError as e:
+    print(f"Error: {e}")
+    print("State has been reset as expected")
+    result = False
+"""
+
+        console.print("[cyan]Step 4: Resetting REPL state...[/]")
+        
+        with console.status("[bold cyan]Resetting REPL and testing state...", spinner="dots"):
+            step4_result = await python_tool.repl_python(
+                code=step4_code,
+                handle=repl_handle,
+                reset=True,  # Reset the REPL state
+                timeout_ms=5000
+            )
+        
+        display_result("REPL Step 4: Reset State", step4_result, step4_code)
         
     except Exception as e:
-        logger.error(f"Error during network access demo: {str(e)}", emoji_key="error", exc_info=True)
-
-
-async def run_sandbox_performance_test(sandbox_tool):
-    """Test performance of the sandbox with various computational tasks."""
-    console.print(Rule("[bold blue]Sandbox Performance Testing[/bold blue]"))
-    logger.info("Testing sandbox performance with different computational tasks", emoji_key="start")
+        logger.error(f"REPL mode demo failed: {e}")
+        console.print(f"[bold red]:x: REPL Mode Error:[/]\n{escape(str(e))}")
     
-    # Performance test code - includes multiple different computational tasks
-    perf_code = """
-import numpy as np
+    console.print()  # Spacing
+
+async def error_handling_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate error handling."""
+    console.print(Rule("[bold green]4. Error Handling Demo[/bold green]", style="green"))
+    logger.info("Starting error handling demo")
+    
+    # Code with syntax error
+    syntax_error_code = """
+def calculate_ratio(a, b)
+    # Missing colon after function definition
+    return a / b
+
+result = calculate_ratio(10, 2)
+"""
+
+    console.print("[cyan]Executing code with syntax error...[/]")
+    
+    try:
+        with console.status("[bold cyan]Running code with syntax error...", spinner="dots"):
+            syntax_result = await python_tool.execute_python(
+                code=syntax_error_code,
+                timeout_ms=5000
+            )
+        
+        display_result("Syntax Error Handling", syntax_result, syntax_error_code)
+    except ToolError as e:
+        logger.warning(f"Caught expected ToolError: {e}")
+        console.print(Panel(
+            f"[bold red]Expected Error:[/]\n{escape(str(e))}",
+            title="Syntax Error Result",
+            border_style="yellow",
+            padding=(1, 2)
+        ))
+    except Exception as e:
+        logger.error(f"Unexpected error type: {e}")
+        console.print(f"[bold red]:x: Unexpected Error Type:[/]\n{escape(str(e))}")
+    
+    # Code with runtime error
+    runtime_error_code = """
+def calculate_ratio(a, b):
+    return a / b
+
+# Division by zero will cause a runtime error
+result = calculate_ratio(10, 0)
+"""
+
+    console.print("[cyan]Executing code with runtime error (division by zero)...[/]")
+    
+    try:
+        with console.status("[bold cyan]Running code with runtime error...", spinner="dots"):
+            runtime_result = await python_tool.execute_python(
+                code=runtime_error_code,
+                timeout_ms=5000
+            )
+        
+        display_result("Runtime Error Handling", runtime_result, runtime_error_code)
+        
+    except Exception as e:
+        logger.error(f"Error handling demo failed: {e}")
+        console.print(f"[bold red]:x: Error Handling Demo Failed:[/]\n{escape(str(e))}")
+    
+    console.print()  # Spacing
+
+async def timeout_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate timeout handling."""
+    console.print(Rule("[bold green]5. Timeout Handling Demo[/bold green]", style="green"))
+    logger.info("Starting timeout handling demo")
+    
+    # Code with infinite loop
+    timeout_code = """
 import time
-import pandas as pd
-import scipy.stats as stats
-import matplotlib.pyplot as plt
 
-# Dictionary to store performance results
-performance_results = {}
+print("Starting computation that will time out...")
+# This will run until timeout occurs
+for i in range(1000000):
+    # Do some work and print progress every 10000 iterations
+    if i % 10000 == 0:
+        print(f"Iteration {i}...")
+        time.sleep(0.1)  # Sleep to ensure we hit the timeout
 
-# 1. Basic numpy operations
-print("Testing basic NumPy operations...")
-start_time = time.time()
-size = 1000
-arr1 = np.random.random((size, size))
-arr2 = np.random.random((size, size))
-result = np.dot(arr1, arr2)
-array_ops_time = time.time() - start_time
-performance_results["numpy_matrix_multiply"] = array_ops_time
-print(f"NumPy {size}x{size} matrix multiplication: {array_ops_time:.4f} seconds")
-
-# 2. Pandas operations
-print("\\nTesting Pandas operations...")
-start_time = time.time()
-rows = 100000
-df = pd.DataFrame({
-    'A': np.random.randn(rows),
-    'B': np.random.randn(rows),
-    'C': np.random.choice(['X', 'Y', 'Z'], rows),
-    'D': np.random.randint(0, 100, rows)
-})
-# Perform some typical pandas operations
-grouped = df.groupby('C').agg({
-    'A': ['mean', 'median', 'std'],
-    'B': ['min', 'max', 'sum'],
-    'D': ['count', 'mean']
-})
-pandas_time = time.time() - start_time
-performance_results["pandas_group_agg"] = pandas_time
-print(f"Pandas operations on {rows} rows: {pandas_time:.4f} seconds")
-
-# 3. Statistical operations
-print("\\nTesting statistical operations...")
-start_time = time.time()
-sample_size = 10000
-# Generate some distributions
-dist1 = np.random.normal(0, 1, sample_size)
-dist2 = np.random.normal(0.5, 1.5, sample_size)
-# Run various statistical tests
-t_test = stats.ttest_ind(dist1, dist2)
-corr = np.corrcoef(dist1, dist2)[0, 1]
-ks_test = stats.ks_2samp(dist1, dist2)
-stats_time = time.time() - start_time
-performance_results["statistical_tests"] = stats_time
-print(f"Statistical operations: {stats_time:.4f} seconds")
-
-# 4. Pure Python operations (for comparison)
-print("\\nTesting pure Python operations...")
-start_time = time.time()
-result = 0
-iterations = 1000000
-for i in range(iterations):
-    result += i ** 2 / (i + 1)
-python_time = time.time() - start_time
-performance_results["pure_python_loop"] = python_time
-print(f"Pure Python loop ({iterations} iterations): {python_time:.4f} seconds")
-
-# Return the results
-result = performance_results
-print("\\nAll performance tests completed.")
+print("This line should never be reached due to timeout")
+result = "Completed successfully"
 """
+
+    console.print("[cyan]Executing code that should time out (short timeout)...[/]")
     
     try:
-        # Execute the performance test code
-        logger.info("Running performance tests...", emoji_key=TaskType.CODE_EXECUTION.value)
-        perf_result = await sandbox_tool.execute_python(
-            code=perf_code,
-            packages=["numpy", "pandas", "scipy", "matplotlib"],
-            timeout_ms=60000  # Longer timeout for performance tests
-        )
+        with console.status("[bold cyan]Running code with 2-second timeout...", spinner="dots"):
+            timeout_result = await python_tool.execute_python(
+                code=timeout_code,
+                timeout_ms=2000  # Only give it 2 seconds
+            )
         
-        # Log success
-        logger.success(
-            "Performance tests completed successfully",
-            emoji_key="success",
-            elapsed_ms=perf_result.get("elapsed_wall_ms")
-        )
-        
-        # Display stdout (performance results)
-        stdout = perf_result.get("stdout", "").strip()
-        if stdout:
+        # This should not be reached
+        display_result("Timeout Should Have Occurred", timeout_result, timeout_code)
+        console.print("[bold red]Error: Expected a timeout but code completed![/]")
+    except ToolError as e:
+        if "timeout" in str(e).lower():
+            logger.info("Caught expected timeout error")
             console.print(Panel(
-                escape(stdout),
-                title="[bold cyan]Performance Test Results[/bold cyan]",
-                border_style="cyan",
-                expand=False
+                f"[bold green]:heavy_check_mark: Timeout successfully detected:[/]\n{escape(str(e))}",
+                title="Timeout Handling",
+                border_style="green",
+                padding=(1, 2)
             ))
-        
-        # Display results in a table
-        result_value = perf_result.get("result")
-        if result_value and isinstance(result_value, dict):
-            perf_table = Table(title="Performance Summary", box=box.SIMPLE)
-            perf_table.add_column("Operation", style="blue")
-            perf_table.add_column("Time (seconds)", style="green", justify="right")
-            
-            for operation, time_value in result_value.items():
-                perf_table.add_row(operation, f"{time_value:.4f}")
-            
-            console.print(perf_table)
-        
-        # Display execution stats
-        stats_table = Table(title="Execution Statistics", box=box.SIMPLE, show_header=False)
-        stats_table.add_column("Metric", style="blue")
-        stats_table.add_column("Value", style="white")
-        stats_table.add_row("Python Execution Time", f"{perf_result.get('elapsed_py_ms', 0):.2f} ms")
-        stats_table.add_row("Total Wall Time", f"{perf_result.get('elapsed_wall_ms', 0):.2f} ms")
-        console.print(stats_table)
-        
+        else:
+            logger.error(f"Expected timeout error but got different error: {e}")
+            console.print(f"[bold yellow]Unexpected Error (expected timeout):[/]\n{escape(str(e))}")
     except Exception as e:
-        logger.error(f"Error during performance testing: {str(e)}", emoji_key="error", exc_info=True)
+        logger.error(f"Timeout demo failed with unexpected error type: {e}")
+        console.print(f"[bold red]:x: Unexpected Error Type:[/]\n{escape(str(e))}")
+    
+    console.print()  # Spacing
 
+async def network_access_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate network access control."""
+    console.print(Rule("[bold green]6. Network Access Control Demo[/bold green]", style="green"))
+    logger.info("Starting network access demo")
+    
+    # Network access denied code
+    network_denied_code = """
+try:
+    import urllib.request
+    
+    print("Attempting to fetch data from the internet...")
+    response = urllib.request.urlopen('https://httpbin.org/get')
+    data = response.read().decode('utf-8')
+    print(f"Data fetched successfully:\\n{data[:100]}...")
+    result = "Network request successful"
+except Exception as e:
+    print(f"Network error: {e}")
+    result = f"Network request failed: {str(e)}"
+"""
 
-async def main():
-    """Run Python sandbox demo examples."""
-    console.print("[bold blue]Python Sandbox Demonstration[/bold blue]")
-    logger.info("Starting Python Sandbox demonstration", emoji_key="start")
+    console.print("[cyan]Executing code with network access denied (default)...[/]")
     
     try:
-        # Initialize CostTracker (used in other demos, kept for consistency)
-        tracker = CostTracker()
+        with console.status("[bold cyan]Running code with network access denied...", spinner="dots"):
+            denied_result = await python_tool.execute_python(
+                code=network_denied_code,
+                timeout_ms=10000
+            )
         
-        # Create Gateway instance
-        gateway = Gateway("python-sandbox-demo", register_tools=False)
+        display_result("Network Access Denied (Default)", denied_result, network_denied_code)
         
-        # Initialize Python Sandbox Tool
-        sandbox_tool = PythonSandboxTool(gateway)
-        logger.info("Initialized Python Sandbox Tool", emoji_key="info")
+        # Network access allowed code (same code)
+        console.print("[cyan]Now executing the same code with network access allowed...[/]")
         
-        # Run each demo with spacing between them
-        await run_basic_execution(sandbox_tool)
-        console.print()
+        with console.status("[bold cyan]Running code with network access allowed...", spinner="dots"):
+            allowed_result = await python_tool.execute_python(
+                code=network_denied_code,
+                allow_network=True,  # Now allow network
+                timeout_ms=10000
+            )
         
-        await run_repl_execution(sandbox_tool)
-        console.print()
-        
-        await run_data_visualization(sandbox_tool)
-        console.print()
-        
-        await run_network_access_demo(sandbox_tool)
-        console.print()
-        
-        await run_sandbox_performance_test(sandbox_tool)
-        console.print()
-        
-        # Display final summary (would show costs if this were an LLM tool)
-        tracker.display_summary(console)
+        display_result("Network Access Allowed", allowed_result, network_denied_code)
         
     except Exception as e:
-        logger.critical(f"Demo failed: {str(e)}", emoji_key="critical", exc_info=True)
-        return 1
+        logger.error(f"Network access demo failed: {e}")
+        console.print(f"[bold red]:x: Network Access Demo Failed:[/]\n{escape(str(e))}")
     
-    logger.success("Python Sandbox Demo Finished Successfully!", emoji_key="complete")
-    return 0
+    console.print()  # Spacing
 
+async def filesystem_access_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate filesystem access."""
+    console.print(Rule("[bold green]7. Filesystem Access Demo[/bold green]", style="green"))
+    logger.info("Starting filesystem access demo")
+    
+    # Create a temporary file for testing
+    with tempfile.NamedTemporaryFile(suffix='.txt', delete=False, mode='w') as f:
+        f.write("Hello from the file system!\nThis is a test file created for the demo.")
+        temp_file_path = f.name
+    
+    try:
+        # Filesystem access code
+        fs_code = f"""
+import os
+
+# Get the path to the test file
+file_path = "{temp_file_path.replace('\\', '\\\\')}"  # Escape backslashes for Windows paths
+
+try:
+    # Try to read the file using standard Python
+    print(f"Attempting to read file: {{file_path}}")
+    
+    with open(file_path, 'r') as f:
+        content = f.read()
+        print(f"File content:\\n{{content}}")
+    
+    # Try to write to the file
+    with open(file_path, 'a') as f:
+        f.write("\\nAppended by Python sandbox!")
+    
+    print("File updated successfully")
+    result = "Filesystem operations completed"
+except Exception as e:
+    print(f"Filesystem error: {{e}}")
+    result = f"Filesystem operations failed: {{str(e)}}"
+"""
+
+        console.print("[cyan]Executing code with filesystem access denied (default)...[/]")
+        
+        with console.status("[bold cyan]Running code with filesystem access denied...", spinner="dots"):
+            denied_result = await python_tool.execute_python(
+                code=fs_code,
+                timeout_ms=10000
+            )
+        
+        display_result("Filesystem Access Denied (Default)", denied_result, fs_code)
+        
+        # Now try with mcpfs module
+        mcpfs_code = """
+try:
+    # Try using the mcpfs module (only available when allow_fs=True)
+    import mcpfs
+    
+    # Create a test file
+    test_file = "/tmp/python_sandbox_test.txt"
+    mcpfs.write_text(test_file, "Hello from mcpfs!\nThis is a secure filesystem access test.")
+    print(f"Successfully wrote to {test_file}")
+    
+    # Read it back
+    content = mcpfs.read_text(test_file)
+    print(f"File content from mcpfs.read_text():\\n{content}")
+    
+    # List directory
+    dir_listing = mcpfs.listdir("/tmp")
+    print(f"Directory listing of /tmp: {dir_listing}")
+    
+    result = "Secure filesystem operations completed via mcpfs"
+except ImportError as e:
+    print(f"mcpfs module not available: {e}")
+    result = "mcpfs module not available (expected when allow_fs=False)"
+except Exception as e:
+    print(f"Secure filesystem error: {e}")
+    result = f"Secure filesystem operations failed: {str(e)}"
+"""
+
+        console.print("[cyan]Now trying with secure filesystem (mcpfs) access denied...[/]")
+        
+        with console.status("[bold cyan]Running code with mcpfs access denied...", spinner="dots"):
+            mcpfs_denied_result = await python_tool.execute_python(
+                code=mcpfs_code,
+                timeout_ms=10000
+            )
+        
+        display_result("Secure Filesystem (mcpfs) Access Denied", mcpfs_denied_result, mcpfs_code)
+        
+        console.print("[cyan]Now trying with secure filesystem (mcpfs) access allowed...[/]")
+        
+        with console.status("[bold cyan]Running code with mcpfs access allowed...", spinner="dots"):
+            mcpfs_allowed_result = await python_tool.execute_python(
+                code=mcpfs_code,
+                allow_fs=True,  # Now allow filesystem
+                timeout_ms=10000
+            )
+        
+        display_result("Secure Filesystem (mcpfs) Access Allowed", mcpfs_allowed_result, mcpfs_code)
+        
+    except Exception as e:
+        logger.error(f"Filesystem access demo failed: {e}")
+        console.print(f"[bold red]:x: Filesystem Access Demo Failed:[/]\n{escape(str(e))}")
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(temp_file_path)
+        except OSError:
+            pass
+    
+    console.print()  # Spacing
+
+async def data_visualization_demo(python_tool: PythonSandboxTool) -> None:
+    """Demonstrate data visualization capabilities."""
+    console.print(Rule("[bold green]8. Data Visualization Demo[/bold green]", style="green"))
+    logger.info("Starting data visualization demo")
+    
+    # Matplotlib code
+    matplotlib_code = """
+import numpy as np
+import matplotlib.pyplot as plt
+from io import BytesIO
+import base64
+
+# Generate data
+x = np.linspace(0, 10, 100)
+y1 = np.sin(x)
+y2 = np.cos(x)
+
+# Create plot
+plt.figure(figsize=(10, 6))
+plt.plot(x, y1, 'b-', label='sin(x)')
+plt.plot(x, y2, 'r--', label='cos(x)')
+plt.title('Sine and Cosine Functions')
+plt.xlabel('x')
+plt.ylabel('y')
+plt.grid(True)
+plt.legend()
+
+# Save plot to base64 for display
+buffer = BytesIO()
+plt.savefig(buffer, format='png')
+buffer.seek(0)
+img_str = base64.b64encode(buffer.read()).decode('utf-8')
+
+# Print the base64 string (could be used to display image in HTML)
+print("Generated plot as base64 string (first 100 chars):")
+print(img_str[:100] + "...")
+
+# Also display data summary
+print("\\nData summary:")
+print(f"x range: {x.min()} to {x.max()}")
+print(f"sin(x) range: {y1.min():.4f} to {y1.max():.4f}")
+print(f"cos(x) range: {y2.min():.4f} to {y2.max():.4f}")
+
+# Return the full base64 string as result
+result = f"data:image/png;base64,{img_str}"
+"""
+
+    console.print("[cyan]Executing code with matplotlib visualization...[/]")
+    
+    try:
+        with console.status("[bold cyan]Running data visualization code...", spinner="dots"):
+            viz_result = await python_tool.execute_python(
+                code=matplotlib_code,
+                packages=["numpy", "matplotlib"],
+                timeout_ms=15000
+            )
+        
+        # Special handling for base64 image result
+        result_copy = viz_result.copy()
+        if "result" in result_copy and isinstance(result_copy["result"], str) and result_copy["result"].startswith("data:image/png;base64,"):
+            result_copy["result"] = f"[Base64 image data - {len(result_copy['result'])} chars]"
+        
+        display_result("Matplotlib Visualization", result_copy, matplotlib_code)
+        
+        # Display a note about image handling
+        console.print(Panel(
+            "[yellow]Note:[/] In a real application, the base64 image data returned as the result "
+            "could be embedded in HTML for display. For this demo, we're just showing that "
+            "matplotlib works in the sandbox and can generate visualizations.",
+            border_style="yellow",
+            padding=(1, 2)
+        ))
+        
+    except Exception as e:
+        logger.error(f"Data visualization demo failed: {e}")
+        console.print(f"[bold red]:x: Data Visualization Demo Failed:[/]\n{escape(str(e))}")
+    
+    console.print()  # Spacing
+
+async def main() -> int:
+    """Run the Python Sandbox tools demo."""
+    console.print(Rule("[bold magenta]Python Sandbox Tools Demo[/bold magenta]"))
+    
+    exit_code = 0
+    
+    try:
+        # Create the Gateway and PythonSandboxTool
+        gateway = Gateway("python-sandbox-demo", register_tools=False)
+        python_tool = PythonSandboxTool(gateway)
+        
+        # Run the demonstrations
+        await basic_execution_demo(python_tool)
+        await package_loading_demo(python_tool)
+        await repl_mode_demo(python_tool)
+        await error_handling_demo(python_tool)
+        await timeout_demo(python_tool)
+        await network_access_demo(python_tool)
+        await filesystem_access_demo(python_tool)
+        await data_visualization_demo(python_tool)
+        
+        # Summary
+        console.print(Rule("[bold green]Demo Completed Successfully[/bold green]", style="green"))
+        console.print("[green]All Python Sandbox demonstrations completed successfully.[/]")
+        
+    except Exception as e:
+        logger.critical(f"Demo failed with unexpected error: {e}")
+        console.print(f"[bold red]CRITICAL ERROR: {escape(str(e))}[/]")
+        exit_code = 1
+    
+    return exit_code
 
 if __name__ == "__main__":
+    # Setup logging
+    import logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # Run the demo
     exit_code = asyncio.run(main())
     sys.exit(exit_code)

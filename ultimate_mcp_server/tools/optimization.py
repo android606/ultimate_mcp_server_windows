@@ -15,7 +15,10 @@ from ultimate_mcp_server.constants import COST_PER_MILLION_TOKENS
 from ultimate_mcp_server.exceptions import ToolError, ToolInputError
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.tools.completion import chat_completion
-from ultimate_mcp_server.tools.document import chunk_document, summarize_document
+from ultimate_mcp_server.tools.document_conversion_and_processing import (
+    chunk_document,
+    summarize_document,
+)
 from ultimate_mcp_server.tools.entity_relation_graph import extract_entity_graph
 from ultimate_mcp_server.tools.extraction import extract_json
 from ultimate_mcp_server.tools.ocr_tools import (

@@ -218,3 +218,6 @@ test_documents/
 complete_text_sent_to_llm_api_provider_to_register_active_toolset.txt
 all_tools_sent_to_llm.json
 current_tools_sent_to_llm.json
+demo_output.txt
+browser_outputs/
+examples/demo.db

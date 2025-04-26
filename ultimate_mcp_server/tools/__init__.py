@@ -1,6 +1,7 @@
 """MCP Tools for Ultimate MCP Server."""
 
 import inspect
+import sys
 from typing import Any, Dict
 
 from ultimate_mcp_server.tools.base import (
@@ -17,8 +18,6 @@ from .audio_transcription import (
     extract_audio_transcript_key_points,
     transcribe_audio,
 )
-
-# Import cognitive and agent memory tools
 from .cognitive_and_agent_memory import (
     add_action_dependency,
     auto_update_focus,
@@ -66,18 +65,11 @@ from .cognitive_and_agent_memory import (
 
 # Import base decorators/classes that might be used by other tool modules
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
-from .docstring_refiner import refine_tool_documentation
-from .document import (
-    chunk_document,
-    extract_entities,
-    generate_qa_pairs,
-    process_document_batch,
-    summarize_document,
-)
-from .document_conversion_tool import convert_document
-from .entity_relation_graph import extract_entity_graph
 
-# Import new standalone functions from extraction.py
+# from .docstring_refiner import refine_tool_documentation
+from .document_conversion_and_processing import DocumentProcessingTool
+
+# from .entity_relation_graph import extract_entity_graph
 from .extraction import (
     extract_code_from_response,
     extract_json,
@@ -105,14 +97,7 @@ from .html_to_markdown import (
     optimize_markdown_formatting,
 )
 from .marqo_fused_search import marqo_fused_search
-from .meta import (
-    get_llm_instructions,
-    get_tool_info,
-    get_tool_recommendations,
-)
 from .meta_api_tool import register_api_meta_tools
-
-# Import OCR tools from ocr_tools.py
 from .ocr_tools import (
     analyze_pdf_structure,
     batch_process_documents,
@@ -121,19 +106,14 @@ from .ocr_tools import (
     process_image_ocr,
 )
 
-# Import standalone functions from optimization.py
-from .optimization import (
-    compare_models,
-    estimate_cost,
-    execute_optimized_workflow,
-    recommend_model,
-)
+# from .optimization import (
+#     compare_models,
+#     estimate_cost,
+#     execute_optimized_workflow,
+#     recommend_model,
+# )
 from .provider import get_provider_status, list_models
-
-# Import python js sandbox tools
-from .python_js_sandbox import (
-    execute_python_code,
-)
+from .python_js_sandbox import PythonSandboxTool
 from .rag import (
     add_documents,
     create_knowledge_base,
@@ -143,11 +123,8 @@ from .rag import (
     retrieve_context,
 )
 from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
-
-# Import smart browser tools
-from .smart_browser import (
-    search_web,
-)
+from .smart_browser import SmartBrowserTool
+from .sql_databases import SQLTool
 from .text_classification import text_classification
 from .text_redline_tools import (
     compare_documents_redline,
@@ -169,26 +146,22 @@ __all__ = [
     "with_error_handling",
     "register_tool", 
     
-    # Standalone tool functions (explicitly list them)
+    # LLM Completion tools
     "generate_completion",
     "stream_completion",
     "chat_completion",
     "multi_completion",
     "get_provider_status",
     "list_models",
-    "get_tool_info",
-    "get_llm_instructions",
-    "get_tool_recommendations",
-    "chunk_document",
-    "summarize_document",
-    "extract_entities",
-    "generate_qa_pairs",
-    "process_document_batch",
+
+    # Extraction tools
     "extract_json",
     "extract_table",
     "extract_key_value_pairs",
     "extract_semantic_schema",
-    "extract_entity_graph",
+    # "extract_entity_graph",
+
+    # Knowledge base tools
     "create_knowledge_base",
     "list_knowledge_bases",
     "delete_knowledge_base",
@@ -196,16 +169,13 @@ __all__ = [
     "retrieve_context",
     "generate_with_rag",
     "text_classification",
-    "create_tournament",
-    "get_tournament_status",
-    "list_tournaments",
-    "get_tournament_results",
-    "cancel_tournament",
-    "estimate_cost",
-    "compare_models",
-    "recommend_model",
-    "execute_optimized_workflow",
-    "refine_tool_documentation",
+
+    # Cost optimization tools
+    # "estimate_cost",
+    # "compare_models",
+    # "recommend_model",
+    # "execute_optimized_workflow",
+    # "refine_tool_documentation",
     
     # Filesystem tools
     "read_file",
@@ -246,20 +216,18 @@ __all__ = [
     # Marqo tool
     "marqo_fused_search",
 
-    # SQL tools
-
+    # Tournament tools
+    "create_tournament",
+    "get_tournament_status",
+    "list_tournaments",
+    "get_tournament_results",
+    "cancel_tournament",
 
     # Audio tools
     "transcribe_audio",
     "extract_audio_transcript_key_points",
     "chat_with_transcript",
     
-    # Browser automation tools
-
-
-    # Document conversion tool
-    "convert_document",
-
     # Sentiment analysis tool
     "analyze_business_sentiment",
     "analyze_business_text_batch",
@@ -314,132 +282,30 @@ logger = get_logger("ultimate_mcp_server.tools")
 
 # --- Tool Registration --- 
 
-# List of standalone functions to register
-STANDALONE_TOOL_FUNCTIONS = [
-    generate_completion,
-    stream_completion,
-    chat_completion,
-    multi_completion,
-    get_provider_status,
-    list_models,
-    get_tool_info,
-    get_llm_instructions,
-    get_tool_recommendations,
-    chunk_document,
-    summarize_document,
-    extract_entities,
-    generate_qa_pairs,
-    process_document_batch,
-    extract_json,
-    extract_table,
-    extract_key_value_pairs,
-    extract_semantic_schema,
-    extract_entity_graph,
-    create_knowledge_base,
-    list_knowledge_bases,
-    delete_knowledge_base,
-    add_documents,
-    retrieve_context,
-    generate_with_rag,
-    text_classification,
-    create_tournament,
-    get_tournament_status,
-    list_tournaments,
-    get_tournament_results,
-    cancel_tournament,
-    estimate_cost,
-    compare_models,
-    recommend_model,
-    execute_optimized_workflow,
-    refine_tool_documentation,
+# Generate STANDALONE_TOOL_FUNCTIONS by filtering __all__ for actual function objects
+# This eliminates the redundancy between __all__ and STANDALONE_TOOL_FUNCTIONS
+def _get_standalone_tool_functions():
+    """Dynamically generates list of standalone tool functions from __all__."""
+    current_module = sys.modules[__name__]
+    standalone_functions = []
     
-    # Filesystem tools
-    read_file,
-    read_multiple_files,
-    write_file,
-    edit_file,
-    create_directory,
-    list_directory,
-    directory_tree,
-    move_file,
-    search_files,
-    get_file_info,
-    list_allowed_directories,
-    
-    # OCR tools
-    extract_text_from_pdf,
-    process_image_ocr,
-    enhance_ocr_text,
-    analyze_pdf_structure,
-    batch_process_documents,
+    for item_name in __all__:
+        if item_name in ["BaseTool", "with_tool_metrics", "with_retry", 
+                         "with_error_handling", "register_tool"]:
+            # Skip base classes and decorators
+            continue
+            
+        # Get the actual item from the module
+        item = getattr(current_module, item_name, None)
+        
+        # Only include callable async functions (not classes or other exports)
+        if callable(item) and inspect.iscoroutinefunction(item):
+            standalone_functions.append(item)
+            
+    return standalone_functions
 
-    # HTML to Markdown tools
-    clean_and_format_text_as_markdown,
-    detect_content_type,
-    batch_format_texts,
-    optimize_markdown_formatting,
-
-    # Text Redline tools
-    compare_documents_redline,
-    create_html_redline,
-
-    # Marqo tool
-    marqo_fused_search,
-
-    # Added SQL tools
-
-    # Added Audio tools
-    transcribe_audio,
-    extract_audio_transcript_key_points,
-    chat_with_transcript,
-
-    # Browser automation tools
-
-    
-    # Cognitive and agent memory tools
-    initialize_memory_system,
-    create_workflow,
-    update_workflow_status,
-    record_action_start,
-    record_action_completion,
-    get_action_details,
-    summarize_context_block,
-    add_action_dependency,
-    get_action_dependencies,
-    record_artifact,
-    record_thought,
-    store_memory,
-    get_memory_by_id,
-    search_semantic_memories,
-    hybrid_search_memories,
-    create_memory_link,
-    query_memories,
-    list_workflows,
-    get_workflow_details,
-    get_recent_actions,
-    get_artifacts,
-    get_artifact_by_id,
-    create_thought_chain,
-    get_thought_chain,
-    get_working_memory,
-    focus_memory,
-    optimize_working_memory,
-    save_cognitive_state,
-    load_cognitive_state,
-    get_workflow_context,
-    auto_update_focus,
-    promote_memory_level,
-    update_memory,
-    get_linked_memories,
-    consolidate_memories,
-    generate_reflection,
-    summarize_text,
-    delete_expired_memories,
-    compute_memory_statistics,
-    generate_workflow_report,
-    visualize_reasoning_chain,
-    visualize_memory_network,
-]
+# Get the list of standalone functions to register
+STANDALONE_TOOL_FUNCTIONS = _get_standalone_tool_functions()
 
 
 def register_all_tools(mcp_server) -> Dict[str, Any]:
@@ -496,6 +362,56 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
         logger.info(f"Registered tool function: {tool_name}", emoji_key="⚙️")
         standalone_count += 1
     
+
+    # --- Register Class-Based Tools ---
+    # Register SmartBrowserTool
+    if (not filter_enabled or 
+        "smart_browser" in included_tools or 
+        (not included_tools and "smart_browser" not in excluded_tools)):
+        try:
+            SmartBrowserTool(mcp_server)  # Instantiate without assignment
+            # The @tool decorated methods will be registered when the class is instantiated
+            logger.info("Registered SmartBrowserTool class tools", emoji_key="⚙️")
+            standalone_count += 1  # Count the class as one registration for simplicity
+        except Exception as e:
+            logger.error(f"Failed to register SmartBrowserTool: {e}", exc_info=True)
+
+    # Register PythonJS Sandbox Tool
+    if (not filter_enabled or 
+        "python_js_sandbox" in included_tools or 
+        (not included_tools and "python_js_sandbox" not in excluded_tools)):
+        try:
+            PythonSandboxTool(mcp_server)  # Instantiate without assignment
+            # The @tool decorated methods will be registered when the class is instantiated
+            logger.info("Registered PythonJS Sandbox Tool class tools", emoji_key="⚙️")
+            standalone_count += 1  # Count the class as one registration for simplicity
+        except Exception as e:
+            logger.error(f"Failed to register PythonJS Sandbox Tool: {e}", exc_info=True)
+
+    # Register SQL Tool
+    if (not filter_enabled or 
+        "sql_tool" in included_tools or 
+        (not included_tools and "sql_tool" not in excluded_tools)):
+        try:
+            SQLTool(mcp_server)  # Instantiate without assignment
+            # The @tool decorated methods will be registered when the class is instantiated
+            logger.info("Registered SQL Tool class tools", emoji_key="⚙️")
+            standalone_count += 1  # Count the class as one registration for simplicity
+        except Exception as e:
+            logger.error(f"Failed to register SQL Tool: {e}", exc_info=True)
+    
+    # Register Document Processing Tool
+    if (not filter_enabled or 
+        "document_processing" in included_tools or 
+        (not included_tools and "document_processing" not in excluded_tools)):
+        try:
+            DocumentProcessingTool(mcp_server)  # Instantiate without assignment   
+            logger.info("Registered Document Processing Tool class tools", emoji_key="⚙️")
+            standalone_count += 1  # Count the class as one registration for simplicity
+        except Exception as e:
+            logger.error(f"Failed to register Document Processing Tool: {e}", exc_info=True)
+    
+
     # Special handling for meta_api_tool which is a module rather than a function
     # Only register if it passes the filtering criteria
     if (not filter_enabled or 

@@ -118,7 +118,7 @@ except ImportError:
     HAS_PDFPLUMBER = False
 
 try:
-    import fitz  # PyMuPDF
+    import pymupdf  # PyMuPDF
     HAS_PYMUPDF = True
 except ImportError:
     HAS_PYMUPDF = False
@@ -451,7 +451,7 @@ def _extract_text_from_pdf_direct(file_path: str, start_page: int = 0, max_pages
     
     elif HAS_PYMUPDF:
         try:
-            with fitz.open(file_path) as doc:
+            with pymupdf.open(file_path) as doc:
                 total_pages = len(doc)
                 end_page = total_pages if max_pages == 0 else min(start_page + max_pages, total_pages)
                 
@@ -1726,7 +1726,7 @@ async def analyze_pdf_structure(
         
         if pdf_lib == "pymupdf":
             # Use PyMuPDF for analysis
-            with fitz.open(file_path) as doc:
+            with pymupdf.open(file_path) as doc:
                 # Basic information
                 result["page_count"] = len(doc)
                 

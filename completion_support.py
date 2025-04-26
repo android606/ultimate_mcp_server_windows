@@ -24,13 +24,7 @@ Usage Example:
 # Create completion registry
 registry = CompletionRegistry()
 
-# Register static provider for a specific tool
-registry.register_provider("document_tool", StaticCompletionProvider({
-    "format": ["pdf", "txt", "docx"],
-    "language": ["en", "es", "fr", "de"]
-}))
-
-# Register dynamic provider for another tool
+# Register dynamic provider for a tool
 registry.register_provider("database_tool", DynamicCompletionProvider({
     "table_name": async_db_tables_function,
     "column_name": async_table_columns_function

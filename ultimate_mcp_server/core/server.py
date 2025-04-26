@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from mcp.server.fastmcp import Context, FastMCP
 
 import ultimate_mcp_server
@@ -370,6 +370,18 @@ class Gateway:
         # Initialize providers
         await self._initialize_providers()
 
+        # --- Initialize SmartBrowserTool browser if the tool is registered ---
+        try:
+            # Access the SmartBrowserTool browser initialization directly
+            from ultimate_mcp_server.tools.smart_browser import _ctx
+            # Initialize the browser in the current async context
+            self.logger.info("Pre-initializing browser for SmartBrowserTool...")
+            await _ctx()
+            self.logger.info("Browser for SmartBrowserTool successfully pre-initialized")
+        except Exception as e:
+            self.logger.warning(f"Could not pre-initialize SmartBrowserTool browser: {e}")
+        # ---------------------------------------------------------------------
+
         # --- Trigger Dynamic Docstring Generation ---
         # This should run after config is loaded but before the server is fully ready
         # It checks cache and potentially calls an LLM.
@@ -528,7 +540,7 @@ class Gateway:
             elif provider_name == Provider.OLLAMA.value and provider_config:
                 api_key = None
                 api_key_configured = True
-                self.logger.debug(f"Initializing Ollama provider without API key (not required)")
+                self.logger.debug("Initializing Ollama provider without API key (not required)")
             else:
                 # This case should ideally not be reached if checks in _initialize_providers are correct,
                 # but handle defensively.
@@ -747,7 +759,7 @@ first and be prepared to adapt to available providers.
         base_toolset = [
             # Completion tools
             "generate_completion", 
-            "stream_completion", 
+            # "stream_completion", # Not that useful for MCP
             "chat_completion", 
             "multi_completion",
             
@@ -2118,11 +2130,12 @@ def start_server(
     
     if transport_mode == "sse":
         # Run in SSE mode (HTTP server)
-        import uvicorn
         import os
         import subprocess
         import threading
         import time
+
+        import uvicorn
         
         # Set up a function to run the tool context estimator after the server starts
         def run_tool_context_estimator():
