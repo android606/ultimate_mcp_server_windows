@@ -11,8 +11,6 @@ from .base import with_error_handling, with_tool_metrics
 
 logger = get_logger("ultimate_mcp_server.tools.provider")
 
-# --- Helper to get provider_status reliably (Re-introduced) ---
-
 def _get_provider_status_dict() -> Dict[str, Any]:
     """Reliably gets the provider_status dictionary from the gateway instance."""
     provider_status = {}

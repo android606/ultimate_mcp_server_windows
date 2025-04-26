@@ -361,10 +361,6 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
     # Adjust column labels based on what we're comparing
     current_label = "Current Tools"
     all_label = "All Tools" 
-    if same_toolsets:
-        # If the sets are the same size, make it clearer what we're comparing
-        current_label = "Tools Set A"
-        all_label = "Tools Set B"
     
     # Get JSON representations
     current_tools_json = "\n".join(format_tool_for_llm(tool) for tool in current_tools_subset)

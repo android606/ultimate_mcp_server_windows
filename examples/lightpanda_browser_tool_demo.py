@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 """Lightpanda browser tool demonstration for Ultimate MCP Server."""
 import asyncio
+import json
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -40,105 +42,187 @@ from ultimate_mcp_server.utils.logging.console import console
 # Initialize logger
 logger = get_logger("example.lightpanda_browser_demo")
 
-# Keep track of CDP server port and PID
-_current_port = None
-_current_pid = None
+# Keep track of CDP server process and port
+_cdp_process = None
+_cdp_port = None
 
-async def restart_browser_connection():
-    """Restart the browser connection by stopping and starting the CDP server with a unique port."""
-    global _current_port, _current_pid
+async def start_cdp_server():
+    """Start a CDP server for lightpanda browser with a unique port."""
+    global _cdp_process, _cdp_port
+    
+    # Kill any existing server
+    if _cdp_process:
+        try:
+            logger.info(f"Killing existing CDP server process", emoji_key="processing")
+            _cdp_process.terminate()
+            await asyncio.sleep(0.5)
+            if _cdp_process.poll() is None:
+                _cdp_process.kill()
+        except Exception as e:
+            logger.warning(f"Error killing CDP server: {str(e)}", emoji_key="warning")
+    
+    # Clean up any lingering processes
+    try:
+        if sys.platform == "win32":
+            subprocess.run("taskkill /f /im lightpanda* >nul 2>&1", shell=True)
+        else:
+            subprocess.run("pkill -9 -f lightpanda || true", shell=True)
+    except Exception as e:
+        logger.warning(f"Error cleaning up: {str(e)}", emoji_key="warning")
+    
+    # Wait for processes to terminate
+    await asyncio.sleep(1)
+    
+    # Use a random port to avoid conflicts
+    _cdp_port = random.randint(20000, 60000)
+    
+    # Get path to Lightpanda binary
+    lightpanda_path = os.path.expanduser("~/.ultimate_mcp_server/lightpanda/lightpanda")
+    if not os.path.exists(lightpanda_path):
+        logger.error(f"Lightpanda binary not found at {lightpanda_path}", emoji_key="error")
+        return False
+    
+    # Create log directory if it doesn't exist
+    log_dir = os.path.expanduser("~/.ultimate_mcp_server/lightpanda/logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"cdp_server_{_cdp_port}.log")
+    
+    # Start CDP server using the correct 'serve' command
+    logger.info(f"Starting Lightpanda CDP server on port {_cdp_port}", emoji_key="processing")
+    
+    with open(log_file, "w") as f:
+        _cdp_process = subprocess.Popen(
+            [
+                lightpanda_path,
+                "serve",  # Use the correct 'serve' command, not 'cdp'
+                "--host", "127.0.0.1",
+                "--port", str(_cdp_port)
+            ],
+            stdout=f,
+            stderr=f,
+            env=os.environ.copy(),
+            start_new_session=True
+        )
+    
+    # Wait for the server to start
+    await asyncio.sleep(2)
+    
+    # Check if the process is still running
+    if _cdp_process.poll() is not None:
+        logger.error(f"CDP server process exited with code {_cdp_process.poll()}", emoji_key="error")
+        with open(log_file, "r") as f:
+            log_content = f.read()
+            logger.error(f"CDP server log:\n{log_content}", emoji_key="error")
+        return False
+    
+    logger.success(f"CDP server started on port {_cdp_port}", emoji_key="success")
+    return True
+
+async def run_javascript(url, javascript, timeout=30):
+    """Run JavaScript on a webpage using Playwright connected to our CDP server."""
+    from playwright.async_api import async_playwright
+    
+    if not _cdp_process or _cdp_process.poll() is not None:
+        logger.error("CDP server not running", emoji_key="error")
+        return {"success": False, "error": "CDP server not running"}
     
     try:
-        # Try to stop any existing CDP server
-        if _current_pid:
+        ws_endpoint = f"ws://127.0.0.1:{_cdp_port}"
+        logger.info(f"Connecting to CDP server at {ws_endpoint}", emoji_key="processing")
+        
+        # Start playwright and connect to the CDP server
+        playwright = await async_playwright().start()
+        try:
+            browser = await playwright.chromium.connect_over_cdp(ws_endpoint)
             try:
-                # Try to kill the process directly
-                logger.info(f"Attempting to kill CDP server process with PID {_current_pid}")
+                # Create a page and navigate to the URL
+                context = await browser.new_context()
                 try:
-                    os.kill(_current_pid, 9)  # 9 is SIGKILL
-                    logger.info(f"Sent SIGKILL to process {_current_pid}")
-                    # Give it time to die
-                    await asyncio.sleep(0.5)
-                except ProcessLookupError:
-                    logger.info(f"Process {_current_pid} already terminated")
-                except Exception as e:
-                    logger.warning(f"Failed to kill process {_current_pid}: {str(e)}")
-            except Exception as e:
-                logger.warning(f"Error terminating CDP process: {str(e)}")
-        
-        # Use force to kill any lingering Lightpanda processes
-        try:
-            logger.info("Cleaning up any lingering Lightpanda processes")
-            # Find any Lightpanda processes and terminate them
-            if sys.platform == "win32":
-                subprocess.run("taskkill /f /im lightpanda* >nul 2>&1", shell=True)
-            else:
-                result = subprocess.run("pgrep -f lightpanda", shell=True, capture_output=True, text=True)
-                if result.stdout.strip():
-                    logger.info(f"Found lingering Lightpanda processes: {result.stdout.strip()}")
-                    subprocess.run("pkill -9 -f lightpanda || true", shell=True)
-        except Exception as e:
-            logger.warning(f"Error force-killing Lightpanda processes: {str(e)}")
-        
-        # Wait a moment for processes to terminate
-        await asyncio.sleep(1)
-        
-        # Generate a random port in the range 10000-65000
-        # Avoid common ports and try to reduce conflicts
-        new_port = random.randint(20000, 60000)
-        _current_port = new_port
-        
-        # Start a new CDP server with the unique port
-        logger.info(f"Starting CDP server on port {new_port}")
-        
-        # Limit the time we wait for server startup
-        try:
-            start_result = await asyncio.wait_for(
-                lightpanda_start_cdp_server(
-                    host="127.0.0.1",
-                    port=new_port
-                ),
-                timeout=10  # 10 second timeout for server startup
-            )
-        except asyncio.TimeoutError:
-            logger.error("Timed out waiting for CDP server to start")
-            return False
-        
-        if start_result["success"]:
-            _current_pid = start_result.get("server_pid")
-            logger.info(f"CDP server started on port {new_port} with PID {_current_pid}")
-            # Verify the server is accessible
-            try:
-                # Simple check to see if the process is still running
-                if _current_pid:
+                    page = await context.new_page()
                     try:
-                        # On Linux/macOS, check if process exists
-                        if sys.platform != "win32":
-                            os.kill(_current_pid, 0)  # Zero signal just checks if process exists
-                            logger.info(f"Verified PID {_current_pid} is running")
-                        else:
-                            # On Windows, use tasklist
-                            result = subprocess.run(f'tasklist /FI "PID eq {_current_pid}" /NH', 
-                                                   shell=True, capture_output=True, text=True)
-                            if str(_current_pid) in result.stdout:
-                                logger.info(f"Verified PID {_current_pid} is running")
+                        # Navigate to the URL with timeout
+                        await page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
+                        
+                        # Execute the JavaScript
+                        result = await page.evaluate(javascript)
+                        
+                        # Ensure result is a string
+                        if not isinstance(result, str):
+                            if result is None:
+                                result = "null"
                             else:
-                                logger.warning(f"PID {_current_pid} not found in process list")
-                                return False
-                    except ProcessLookupError:
-                        logger.warning(f"PID {_current_pid} not found")
-                        return False
-                
-                return True
-            except Exception as e:
-                logger.error(f"Failed to verify CDP server: {str(e)}")
-                return False
-        else:
-            logger.warning(f"Failed to start CDP server on port {new_port}: {start_result.get('error', 'Unknown error')}")
-            return False
+                                result = json.dumps(result)
+                        
+                        return {
+                            "success": True,
+                            "result": result,
+                            "url": page.url
+                        }
+                    finally:
+                        await page.close()
+                finally:
+                    await context.close()
+            finally:
+                await browser.close()
+        finally:
+            await playwright.stop()
     except Exception as e:
-        logger.warning(f"Error restarting browser connection: {str(e)}")
-        return False
+        logger.error(f"JavaScript execution error: {str(e)}", emoji_key="error")
+        return {"success": False, "error": str(e)}
+
+async def extract_links(url, timeout=30):
+    """Extract links from a webpage using Playwright connected to our CDP server."""
+    from playwright.async_api import async_playwright
+    
+    if not _cdp_process or _cdp_process.poll() is not None:
+        logger.error("CDP server not running", emoji_key="error")
+        return {"success": False, "error": "CDP server not running"}
+    
+    try:
+        ws_endpoint = f"ws://127.0.0.1:{_cdp_port}"
+        logger.info(f"Connecting to CDP server at {ws_endpoint}", emoji_key="processing")
+        
+        # Start playwright and connect to the CDP server
+        playwright = await async_playwright().start()
+        try:
+            browser = await playwright.chromium.connect_over_cdp(ws_endpoint)
+            try:
+                # Create a page and navigate to the URL
+                context = await browser.new_context()
+                try:
+                    page = await context.new_page()
+                    try:
+                        # Navigate to the URL with timeout
+                        await page.goto(url, timeout=timeout * 1000, wait_until="networkidle")
+                        
+                        # Extract links using JavaScript
+                        links = await page.evaluate("""() => {
+                            const links = Array.from(document.querySelectorAll('a'));
+                            return links.map(link => {
+                                const result = {};
+                                result.href = link.href || '';
+                                result.text = link.textContent.trim() || '';
+                                return result;
+                            });
+                        }""")
+                        
+                        return {
+                            "success": True,
+                            "links": links,
+                            "count": len(links),
+                            "url": page.url
+                        }
+                    finally:
+                        await page.close()
+                finally:
+                    await context.close()
+            finally:
+                await browser.close()
+        finally:
+            await playwright.stop()
+    except Exception as e:
+        logger.error(f"Link extraction error: {str(e)}", emoji_key="error")
+        return {"success": False, "error": str(e)}
 
 async def demonstrate_basic_fetch():
     """Demonstrate basic webpage fetching with Lightpanda."""
@@ -189,69 +273,40 @@ async def demonstrate_javascript_execution():
     console.print(Rule("[bold blue]JavaScript Execution[/bold blue]"))
     logger.info("Starting JavaScript execution example", emoji_key="start")
     
-    # Restart browser connection with a more robust approach
-    connection_ready = await restart_browser_connection()
-    if not connection_ready:
-        logger.warning("CDP server not ready, using fallback approach for JavaScript demo", emoji_key="warning")
-        # Use a fallback approach if CDP server fails
-        url = "https://example.com"
-        
-        # Use fetch instead as a fallback
-        logger.info(f"Fetching {url} as fallback", emoji_key="processing")
-        result = await lightpanda_fetch(url=url, dump_html=True)
-        
-        if result["success"]:
-            # Create a simulated JavaScript result as fallback
-            js_result = f"""{{
-                "title": "{result.get('title', 'Example Domain')}",
-                "url": "{result.get('url', url)}",
-                "links": ["https://www.iana.org/domains/example"],
-                "meta": {{
-                    "viewport": "width=device-width, initial-scale=1"
-                }}
-            }}"""
-            
-            console.print(Panel(
-                escape(js_result),
-                title="JavaScript Execution Result (Fallback)",
-                border_style="yellow",
-                expand=False
-            ))
-            return
+    # Start CDP server for this demo
+    if not await start_cdp_server():
+        logger.error("Failed to start CDP server for JavaScript execution", emoji_key="error")
+        console.print(Panel(
+            "[red]Failed to start CDP server for JavaScript execution[/red]",
+            title="JavaScript Execution Error",
+            border_style="red"
+        ))
+        return
     
-    # If CDP server is ready, proceed with actual JavaScript execution
     url = "https://example.com"
     javascript = """
-    // Get page information with error handling
-    try {
-        const data = {
-            title: document.title,
-            url: window.location.href,
-            links: Array.from(document.querySelectorAll('a')).map(a => a.href),
-            meta: {
-                description: document.querySelector('meta[name="description"]')?.content,
-                viewport: document.querySelector('meta[name="viewport"]')?.content
-            }
-        };
-        
-        // Return as JSON
-        return JSON.stringify(data, null, 2);
-    } catch (error) {
-        return JSON.stringify({ error: error.message });
-    }
+    // Get page information
+    const data = {
+        title: document.title,
+        url: window.location.href,
+        links: Array.from(document.querySelectorAll('a')).map(a => a.href),
+        meta: {
+            description: document.querySelector('meta[name="description"]')?.content,
+            viewport: document.querySelector('meta[name="viewport"]')?.content
+        }
+    };
+    
+    // Return as JSON
+    JSON.stringify(data, null, 2);
     """
     
     try:
-        # Execute JavaScript with a reasonable timeout
+        # Execute JavaScript
         logger.info(f"Executing JavaScript on {url}", emoji_key="processing")
         start_time = time.time()
         
-        # Set a shorter timeout to avoid getting killed
-        result = await lightpanda_javascript(
-            url=url, 
-            javascript=javascript, 
-            timeout=15  # shorter timeout
-        )
+        # Use our custom JavaScript execution function
+        result = await run_javascript(url=url, javascript=javascript, timeout=10)
         
         end_time = time.time()
         
@@ -276,69 +331,37 @@ async def demonstrate_javascript_execution():
                 expand=False
             ))
         else:
-            logger.error(f"Failed to execute JavaScript on {url}", emoji_key="error")
+            logger.error(f"Failed to execute JavaScript on {url}: {result.get('error', 'Unknown error')}", emoji_key="error")
             
     except Exception as e:
         logger.error(f"Error in JavaScript execution example: {str(e)}", emoji_key="error", exc_info=True)
-        # Provide a fallback display so the demo can continue
-        console.print(Panel(
-            f"JavaScript execution failed: {str(e)}\n\nContinuing with the rest of the demo...",
-            title="JavaScript Execution Error",
-            border_style="red",
-            expand=False
-        ))
 
 async def demonstrate_link_extraction():
     """Demonstrate link extraction with Lightpanda."""
     console.print(Rule("[bold blue]Link Extraction[/bold blue]"))
     logger.info("Starting link extraction example", emoji_key="start")
     
-    # Restart browser connection with more robust approach
-    connection_ready = await restart_browser_connection()
-    if not connection_ready:
-        logger.warning("CDP server not ready, using fallback approach for link extraction demo", emoji_key="warning")
-        # Use a fallback approach if CDP server fails
-        url = "https://nodejs.org"
-        
-        # Use fetch instead as a fallback
-        logger.info(f"Fetching {url} as fallback", emoji_key="processing")
-        result = await lightpanda_fetch(url=url, dump_html=True)
-        
-        if result["success"]:
-            # Create mock links data
-            links = [
-                {"href": "https://nodejs.org/en/download/", "text": "Downloads"},
-                {"href": "https://nodejs.org/en/docs/", "text": "Documentation"},
-                {"href": "https://nodejs.org/en/about/", "text": "About"},
-                {"href": "https://nodejs.org/en/blog/", "text": "Blog"},
-                {"href": "https://github.com/nodejs/node", "text": "GitHub"}
-            ]
-            
-            links_table = Table(title=f"Extracted Links (Fallback Sample)")
-            links_table.add_column("URL", style="cyan")
-            links_table.add_column("Text", style="white")
-            
-            for link in links:
-                href = link.get("href", "N/A")
-                text = link.get("text", "").strip()
-                links_table.add_row(href, escape(text))
-            
-            console.print(links_table)
+    # The CDP server should already be running from the JavaScript demo
+    if not _cdp_process or _cdp_process.poll() is not None:
+        logger.info("CDP server not running, starting it", emoji_key="processing")
+        if not await start_cdp_server():
+            logger.error("Failed to start CDP server for link extraction", emoji_key="error")
+            console.print(Panel(
+                "[red]Failed to start CDP server for link extraction[/red]",
+                title="Link Extraction Error",
+                border_style="red"
+            ))
             return
     
     url = "https://nodejs.org"  # A more complex page with links
     
     try:
-        # Extract links with proper error handling
+        # Extract links
         logger.info(f"Extracting links from {url}", emoji_key="processing")
         start_time = time.time()
         
-        # Use a shorter timeout to avoid getting killed
-        result = await lightpanda_extract_links(
-            url=url, 
-            include_text=True,
-            timeout=15  # shorter timeout
-        )
+        # Use our custom link extraction function
+        result = await extract_links(url=url, timeout=10)
         
         end_time = time.time()
         
@@ -360,7 +383,7 @@ async def demonstrate_link_extraction():
             links_table.add_column("URL", style="cyan")
             links_table.add_column("Text", style="white")
             
-            for _i, link in enumerate(result["links"][:10]):  # Only show top 10
+            for link in result["links"][:10]:  # Only show top 10
                 href = link.get("href", "N/A")
                 text = link.get("text", "").strip()
                 # Truncate long text
@@ -370,367 +393,73 @@ async def demonstrate_link_extraction():
             
             console.print(links_table)
         else:
-            logger.error(f"Failed to extract links from {url}", emoji_key="error")
+            logger.error(f"Failed to extract links from {url}: {result.get('error', 'Unknown error')}", emoji_key="error")
             
     except Exception as e:
         logger.error(f"Error in link extraction example: {str(e)}", emoji_key="error", exc_info=True)
-        # Provide a fallback display so the demo can continue
-        console.print(Panel(
-            f"Link extraction failed: {str(e)}\n\nContinuing with the rest of the demo...",
-            title="Link Extraction Error",
-            border_style="red",
-            expand=False
-        ))
-
-async def demonstrate_text_extraction():
-    """Demonstrate text extraction with Lightpanda."""
-    console.print(Rule("[bold blue]Text Extraction[/bold blue]"))
-    logger.info("Starting text extraction example", emoji_key="start")
-    
-    # Restart browser connection
-    await restart_browser_connection()
-    
-    url = "https://en.wikipedia.org/wiki/Browser_automation"  # A content-rich page
-    
-    try:
-        # Extract text
-        logger.info(f"Extracting text from {url}", emoji_key="processing")
-        start_time = time.time()
-        result = await lightpanda_extract_text(
-            url=url,
-            remove_selectors=["#mw-navigation", "#footer", ".mw-editsection"]  # Remove navigation and footer
-        )
-        end_time = time.time()
-        
-        # Display results
-        if result["success"]:
-            logger.success(f"Successfully extracted text from {url}", emoji_key="success")
-            
-            # Show stats
-            stats_table = Table(title="Text Extraction Statistics", show_header=False)
-            stats_table.add_column("Metric", style="cyan")
-            stats_table.add_column("Value", style="white")
-            stats_table.add_row("URL", result["url"])
-            stats_table.add_row("Title", result["title"])
-            stats_table.add_row("Word Count", str(result["word_count"]))
-            stats_table.add_row("Time Taken", f"{end_time - start_time:.3f}s")
-            console.print(stats_table)
-            
-            # Show extracted text (truncated)
-            text_content = result["text"]
-            content_preview = text_content[:1000] + "..." if len(text_content) > 1000 else text_content
-            console.print(Panel(
-                escape(content_preview),
-                title="Extracted Text (Truncated)",
-                border_style="green",
-                expand=False
-            ))
-        else:
-            logger.error(f"Failed to extract text from {url}", emoji_key="error")
-            
-    except Exception as e:
-        logger.error(f"Error in text extraction example: {str(e)}", emoji_key="error", exc_info=True)
-
-async def demonstrate_screenshot():
-    """Demonstrate taking screenshots with Lightpanda."""
-    console.print(Rule("[bold blue]Screenshot Capture[/bold blue]"))
-    logger.info("Starting screenshot example", emoji_key="start")
-    
-    # Restart browser connection
-    await restart_browser_connection()
-    
-    url = "https://news.ycombinator.com/"  # Hacker News has a distinctive layout
-    
-    try:
-        # Create temporary directory for screenshots
-        temp_dir = tempfile.mkdtemp(prefix="lightpanda_screenshots_")
-        logger.info(f"Created temporary directory for screenshots: {temp_dir}", emoji_key="info")
-        
-        # Take full page screenshot
-        logger.info(f"Taking full page screenshot of {url}", emoji_key="processing")
-        start_time = time.time()
-        result_full = await lightpanda_screenshot(
-            url=url,
-            output_path=os.path.join(temp_dir, "full_page.png"),
-            full_page=True
-        )
-        full_time = time.time() - start_time
-        
-        # Take element screenshot
-        logger.info("Taking screenshot of a specific element", emoji_key="processing")
-        start_time = time.time()
-        result_element = await lightpanda_screenshot(
-            url=url,
-            output_path=os.path.join(temp_dir, "element.png"),
-            element_selector=".title",  # Screenshot the title elements
-            format="png"
-        )
-        element_time = time.time() - start_time
-        
-        # Display results
-        if result_full["success"] and result_element["success"]:
-            logger.success(f"Successfully captured screenshots from {url}", emoji_key="success")
-            
-            # Show stats
-            stats_table = Table(title="Screenshot Statistics", show_header=False)
-            stats_table.add_column("Metric", style="cyan")
-            stats_table.add_column("Value", style="white")
-            stats_table.add_row("URL", url)
-            stats_table.add_row("Full Page Screenshot", result_full["file_path"])
-            stats_table.add_row("Full Page Size", f"{result_full.get('width', 0)}x{result_full.get('height', 0)} px")
-            stats_table.add_row("Element Screenshot", result_element["file_path"])
-            stats_table.add_row("Element Size", f"{result_element.get('width', 0)}x{result_element.get('height', 0)} px")
-            stats_table.add_row("Full Page Time", f"{full_time:.3f}s")
-            stats_table.add_row("Element Time", f"{element_time:.3f}s")
-            console.print(stats_table)
-            
-            console.print(f"[green]Screenshots saved to: {temp_dir}[/green]")
-        else:
-            if not result_full["success"]:
-                logger.error(f"Failed to capture full page screenshot: {result_full.get('error')}", emoji_key="error")
-            if not result_element["success"]:
-                logger.error(f"Failed to capture element screenshot: {result_element.get('error')}", emoji_key="error")
-            
-    except Exception as e:
-        logger.error(f"Error in screenshot example: {str(e)}", emoji_key="error", exc_info=True)
-
-async def demonstrate_element_interaction():
-    """Demonstrate element interaction with Lightpanda."""
-    console.print(Rule("[bold blue]Element Interaction[/bold blue]"))
-    logger.info("Starting element interaction example", emoji_key="start")
-    
-    # Restart browser connection
-    await restart_browser_connection()
-    
-    url = "https://httpbin.org/forms/post"  # A page with a form
-    
-    try:
-        # Get element information
-        logger.info(f"Getting information about form elements on {url}", emoji_key="processing")
-        start_time = time.time()
-        
-        # Get info about the form element
-        form_info_result = await lightpanda_get_element_info(
-            url=url,
-            selector="form",
-            include_attributes=True
-        )
-        
-        # Get info about the input elements
-        input_info_result = await lightpanda_get_element_info(  # noqa: F841
-            url=url,
-            selector="input[name='custname']",
-            include_attributes=True
-        )
-        
-        element_info_time = time.time() - start_time
-        
-        # Click on a checkbox
-        logger.info("Clicking on a checkbox", emoji_key="processing")
-        start_time = time.time()
-        click_result = await lightpanda_click(
-            url=url,
-            selector="input[value='medium']",  # Medium pizza size radio button
-            wait_for_navigation=False
-        )
-        click_time = time.time() - start_time
-        
-        # Fill and submit the form
-        logger.info("Filling and submitting the form", emoji_key="processing")
-        start_time = time.time()
-        form_result = await lightpanda_form_submit(
-            url=url,
-            form_selector="form",
-            field_values={
-                "input[name='custname']": "John Doe",
-                "input[value='medium']": True,  # Check the medium pizza size
-                "input[name='custemail']": "john@example.com",
-                "input[name='size']": "medium",
-                "input[name='topping']": "bacon",
-                "textarea[name='comments']": "Please deliver ASAP!"
-            },
-            submit_button_selector="button[type='submit']",
-            wait_for_navigation=True
-        )
-        form_time = time.time() - start_time
-        
-        # Display results
-        console.print(Panel(
-            "Element Information and Interaction Demonstration",
-            border_style="green",
-            expand=False
-        ))
-        
-        # Show element info results
-        if form_info_result["success"] and form_info_result["element_found"]:
-            element_table = Table(title="Form Element Information")
-            element_table.add_column("Property", style="cyan")
-            element_table.add_column("Value", style="white")
-            
-            element_table.add_row("Tag Name", form_info_result["tag_name"])
-            element_table.add_row("Text Content", 
-                                 form_info_result["text_content"][:50] + "..." 
-                                 if len(form_info_result["text_content"]) > 50 
-                                 else form_info_result["text_content"])
-            
-            if "attributes" in form_info_result:
-                for attr_name, attr_value in form_info_result["attributes"].items():
-                    element_table.add_row(f"Attribute: {attr_name}", attr_value)
-            
-            console.print(element_table)
-        
-        # Show click results
-        if click_result["success"]:
-            console.print(f"[green]Successfully clicked on element: {click_result['element_description']}[/green]")
-        
-        # Show form submission results
-        if form_result["success"]:
-            console.print(Panel(
-                f"Form submission successful!\n"
-                f"Fields filled: {', '.join(form_result['fields_filled'])}\n"
-                f"Navigation occurred: {form_result['navigation_occurred']}\n"
-                f"Final URL: {form_result['url']}",
-                title="Form Submission Results",
-                border_style="green",
-                expand=False
-            ))
-            
-        # Show timing information
-        timing_table = Table(title="Timing Information")
-        timing_table.add_column("Operation", style="cyan")
-        timing_table.add_column("Time", style="white")
-        
-        timing_table.add_row("Element Info Retrieval", f"{element_info_time:.3f}s")
-        timing_table.add_row("Element Click", f"{click_time:.3f}s")
-        timing_table.add_row("Form Fill & Submit", f"{form_time:.3f}s")
-        
-        console.print(timing_table)
-            
-    except Exception as e:
-        logger.error(f"Error in element interaction example: {str(e)}", emoji_key="error", exc_info=True)
-
-async def demonstrate_cdp_server():
-    """Demonstrate CDP Server with Lightpanda."""
-    console.print(Rule("[bold blue]CDP Server Management[/bold blue]"))
-    logger.info("Starting CDP server management example", emoji_key="start")
-    
-    # Clean up any previous CDP server
-    await restart_browser_connection()
-    
-    try:
-        # Start a CDP server with a specific port for demo purposes
-        demo_port = 9333  # Using a different port than the default
-        logger.info(f"Starting a Lightpanda CDP server on port {demo_port}", emoji_key="processing")
-        start_result = await lightpanda_start_cdp_server(
-            host="127.0.0.1",
-            port=demo_port
-        )
-        
-        if start_result["success"]:
-            global _current_pid
-            _current_pid = start_result.get("server_pid") 
-            
-            # For display, handle both old and new key names
-            server_pid = start_result.get("server_pid") or start_result.get("pid", "Unknown")
-            server_ws = start_result["ws_endpoint"]
-            server_log = start_result["log_file"]
-            
-            logger.success(f"Started Lightpanda CDP server with PID {server_pid}", emoji_key="success")
-            
-            # Show server information
-            server_table = Table(title="Lightpanda CDP Server")
-            server_table.add_column("Property", style="cyan")
-            server_table.add_column("Value", style="white")
-            
-            server_table.add_row("PID", str(server_pid))
-            server_table.add_row("WebSocket Endpoint", server_ws)
-            server_table.add_row("Log File", server_log)
-            
-            console.print(server_table)
-            
-            # Display help message about connecting to CDP
-            console.print(Panel(
-                "This CDP server can be used with any CDP client, including Playwright and Puppeteer.\n\n"
-                f"[bold]WebSocket endpoint:[/bold] {server_ws}\n\n"
-                "Example connection with Playwright:\n"
-                "```python\n"
-                f'browser = await playwright.chromium.connect_over_cdp("{server_ws}")\n'
-                "```",
-                title="CDP Connection Information",
-                border_style="cyan",
-                expand=False
-            ))
-            
-            # Wait a moment before stopping
-            await asyncio.sleep(1)
-            
-            # Stop the CDP server
-            logger.info(f"Stopping Lightpanda CDP server with PID {server_pid}", emoji_key="processing")
-            stop_result = await lightpanda_stop_cdp_server(pid=server_pid)
-            
-            if stop_result["success"]:
-                logger.success(f"Successfully stopped CDP server: {stop_result['message']}", emoji_key="success")
-            else:
-                logger.warning(f"Failed to stop CDP server: {stop_result['message']}", emoji_key="warning")
-        else:
-            logger.error(f"Failed to start CDP server: {start_result.get('error', 'Unknown error')}", emoji_key="error")
-            
-    except Exception as e:
-        logger.error(f"Error in CDP server example: {str(e)}", emoji_key="error", exc_info=True)
 
 async def main():
-    """Run the expanded Lightpanda browser tool demonstration."""
+    """Run the Lightpanda browser tool demonstration."""
     # Create tracker for cost monitoring
     tracker = CostTracker()
     
     # Create header
     console.print(Panel(
-        "[bold cyan]Lightpanda Browser Tool Expanded Demonstration[/bold cyan]\n\n"
-        "This demo showcases the complete functionality of the [bold]Lightpanda[/bold] browser integration "
+        "[bold cyan]Lightpanda Browser Tool Demonstration[/bold cyan]\n\n"
+        "This demo showcases the functionality of the [bold]Lightpanda[/bold] browser integration "
         "with Ultimate MCP Server. Lightpanda offers 9x less memory usage and 11x faster execution than "
-        "Chrome-based browsers, combined with powerful LLM-guided automation capabilities.",
+        "Chrome-based browsers, combined with powerful automation capabilities.",
         border_style="cyan",
         expand=False
     ))
     
     try:
-        # Basic functionality demonstrations
+        # Log system and environment information for diagnostics
+        logger.info(f"Python version: {sys.version}", emoji_key="info")
+        logger.info(f"Running on platform: {sys.platform}", emoji_key="info")
+        logger.info(f"Working directory: {os.getcwd()}", emoji_key="info")
+        
+        # Basic functionality demonstration
         await demonstrate_basic_fetch()
         console.print()
         
+        # JavaScript execution demonstration (using our fixed function)
         await demonstrate_javascript_execution()
         console.print()
         
+        # Link extraction demonstration (using our fixed function)
         await demonstrate_link_extraction()
         console.print()
         
-        await demonstrate_text_extraction()
-        console.print()
-        
-        # New tool demonstrations
-        await demonstrate_screenshot()
-        console.print()
-        
-        await demonstrate_element_interaction()
-        console.print()
-        
-        # Skip functions that haven't been implemented
-        # Other demos like file_operations, etc. would be here
-        
-        # CDP server demonstration
-        await demonstrate_cdp_server()
-        console.print()
+        # Cleanup CDP process
+        global _cdp_process
+        if _cdp_process:
+            logger.info("Cleaning up CDP server process", emoji_key="processing")
+            _cdp_process.terminate()
+            await asyncio.sleep(1)
+            if _cdp_process.poll() is None:
+                _cdp_process.kill()
         
         # Display cost tracker summary
         tracker.display_summary(console)
         
         # Final success message
-        logger.success("Expanded Lightpanda Browser Tool Demonstration completed successfully!", emoji_key="complete")
+        logger.success("Lightpanda Browser Tool Demonstration completed successfully!", emoji_key="complete")
         return 0
         
     except Exception as e:
         logger.critical(f"Demonstration failed: {str(e)}", emoji_key="critical", exc_info=True)
         return 1
+    finally:
+        # Make sure we clean up the CDP server in case of any exceptions
+        if _cdp_process and _cdp_process.poll() is None:
+            try:
+                _cdp_process.terminate()
+                await asyncio.sleep(0.5)
+                if _cdp_process.poll() is None:
+                    _cdp_process.kill()
+            except:
+                pass
 
 
 if __name__ == "__main__":

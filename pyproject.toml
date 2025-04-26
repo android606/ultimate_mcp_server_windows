@@ -98,6 +98,9 @@ dependencies = [
     "typer",  # For CLI interface
     "docling", # For document conversion
     "aiohttp",
+    "boto3", # For AWS secrets management
+    "hvac", # For HashiVault pw management
+    "pandera", # Data validation
 ]
 
 [project.optional-dependencies]

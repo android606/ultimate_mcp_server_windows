@@ -2752,7 +2752,7 @@ async def record_thought(
     relevant_artifact_id: Optional[str] = None,
     relevant_memory_id: Optional[str] = None,
     db_path: str = DEFAULT_DB_PATH,
-    conn: Optional[aiosqlite.Connection] = None # Optional connection for transactions
+    conn: Optional[object] = None # Changed from aiosqlite.Connection to object to avoid JSON schema issues
 ) -> Dict[str, Any]:
     """Records a thought in a reasoning chain, potentially linking to memory and creating an associated memory entry.
 
@@ -2770,7 +2770,7 @@ async def record_thought(
         relevant_artifact_id: (Optional) ID of an artifact this thought relates to.
         relevant_memory_id: (Optional) ID of a memory this thought relates to.
         db_path: (Optional) Path to the SQLite database file. Used if `conn` is not provided.
-        conn: (Optional) An existing `aiosqlite.Connection` to use for database operations.
+        conn: (Optional) An existing database connection to use for database operations.
               If provided, commit/rollback is handled externally.
 
     Returns:

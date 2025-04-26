@@ -297,5 +297,20 @@ BASE_TOOLSET_CATEGORIES = {
     "Extraction": [
         "extract_json", "extract_table", "extract_key_value_pairs", 
         "extract_semantic_schema"
-    ]
+    ],
+    # Cognitive and agent memory tools
+    "Cognitive and Agent Memory": [
+        "initialize_memory_system", "create_workflow", "update_workflow_status",
+        "record_action_start", "record_action_completion", "get_action_details",
+        "summarize_context_block", "add_action_dependency", "get_action_dependencies",
+        "record_artifact", "record_thought", "store_memory", "get_memory_by_id",
+        "search_semantic_memories", "hybrid_search_memories", "create_memory_link",
+        "query_memories", "list_workflows", "get_workflow_details", "get_recent_actions",
+        "get_artifacts", "get_artifact_by_id", "create_thought_chain", "get_thought_chain",
+        "get_working_memory", "focus_memory", "optimize_working_memory",
+        "save_cognitive_state", "load_cognitive_state", "get_workflow_context",
+        "auto_update_focus", "promote_memory_level", "update_memory", "get_linked_memories",
+        "consolidate_memories", "generate_reflection", "summarize_text",
+        "delete_expired_memories", "compute_memory_statistics"
+    ],
 }

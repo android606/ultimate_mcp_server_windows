@@ -18,24 +18,50 @@ from .audio_transcription import (
     transcribe_audio,
 )
 
-# Import browser automation tools
-from .browser_automation import (
-    browser_checkbox,
-    browser_click,
-    browser_close,
-    browser_execute_javascript,
-    browser_get_attributes,
-    browser_get_text,
-    browser_init,
-    browser_navigate,
-    browser_screenshot,
-    browser_select,
-    browser_type,
-    browser_wait,
-    execute_web_workflow,
-    extract_structured_data_from_pages,
-    find_and_download_pdfs,
-    multi_engine_search_summary,
+# Import cognitive and agent memory tools
+from .cognitive_and_agent_memory import (
+    add_action_dependency,
+    auto_update_focus,
+    compute_memory_statistics,
+    consolidate_memories,
+    create_memory_link,
+    create_thought_chain,
+    create_workflow,
+    delete_expired_memories,
+    focus_memory,
+    generate_reflection,
+    generate_workflow_report,
+    get_action_dependencies,
+    get_action_details,
+    get_artifact_by_id,
+    get_artifacts,
+    get_linked_memories,
+    get_memory_by_id,
+    get_recent_actions,
+    get_thought_chain,
+    get_workflow_context,
+    get_workflow_details,
+    get_working_memory,
+    hybrid_search_memories,
+    initialize_memory_system,
+    list_workflows,
+    load_cognitive_state,
+    optimize_working_memory,
+    promote_memory_level,
+    query_memories,
+    record_action_completion,
+    record_action_start,
+    record_artifact,
+    record_thought,
+    save_cognitive_state,
+    search_semantic_memories,
+    store_memory,
+    summarize_context_block,
+    summarize_text,
+    update_memory,
+    update_workflow_status,
+    visualize_memory_network,
+    visualize_reasoning_chain,
 )
 
 # Import base decorators/classes that might be used by other tool modules
@@ -103,6 +129,11 @@ from .optimization import (
     recommend_model,
 )
 from .provider import get_provider_status, list_models
+
+# Import python js sandbox tools
+from .python_js_sandbox import (
+    execute_python_code,
+)
 from .rag import (
     add_documents,
     create_knowledge_base,
@@ -112,22 +143,10 @@ from .rag import (
     retrieve_context,
 )
 from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
-from .sql_database_interactions import (
-    analyze_column_statistics,
-    connect_to_database,
-    create_database_index,
-    create_database_view,
-    disconnect_from_database,
-    discover_database_schema,
-    execute_parameterized_query,
-    execute_query,
-    execute_query_with_pagination,
-    execute_transaction,
-    find_related_tables,
-    generate_database_documentation,
-    get_database_status,
-    get_table_details,
-    test_connection,
+
+# Import smart browser tools
+from .smart_browser import (
+    search_web,
 )
 from .text_classification import text_classification
 from .text_redline_tools import (
@@ -228,21 +247,7 @@ __all__ = [
     "marqo_fused_search",
 
     # SQL tools
-    "connect_to_database",
-    "disconnect_from_database",
-    "discover_database_schema",
-    "execute_query",
-    "generate_database_documentation",
-    "get_table_details",
-    "find_related_tables",
-    "analyze_column_statistics",
-    "execute_parameterized_query",
-    "create_database_view",
-    "create_database_index",
-    "test_connection",
-    "execute_transaction",
-    "execute_query_with_pagination",
-    "get_database_status",
+
 
     # Audio tools
     "transcribe_audio",
@@ -250,22 +255,7 @@ __all__ = [
     "chat_with_transcript",
     
     # Browser automation tools
-    "browser_init",
-    "browser_navigate",
-    "browser_click",
-    "browser_type",
-    "browser_screenshot",
-    "browser_close",
-    "browser_select",
-    "browser_checkbox",
-    "browser_get_text",
-    "browser_get_attributes",
-    "browser_execute_javascript",
-    "browser_wait",
-    "execute_web_workflow",
-    "extract_structured_data_from_pages",
-    "find_and_download_pdfs",
-    "multi_engine_search_summary",
+
 
     # Document conversion tool
     "convert_document",
@@ -273,6 +263,50 @@ __all__ = [
     # Sentiment analysis tool
     "analyze_business_sentiment",
     "analyze_business_text_batch",
+    
+    # Cognitive and agent memory tools
+    "initialize_memory_system",
+    "create_workflow",
+    "update_workflow_status",
+    "record_action_start",
+    "record_action_completion",
+    "get_action_details",
+    "summarize_context_block",
+    "add_action_dependency",
+    "get_action_dependencies",
+    "record_artifact",
+    "record_thought",
+    "store_memory",
+    "get_memory_by_id",
+    "search_semantic_memories",
+    "hybrid_search_memories",
+    "create_memory_link",
+    "query_memories",
+    "list_workflows",
+    "get_workflow_details",
+    "get_recent_actions",
+    "get_artifacts",
+    "get_artifact_by_id",
+    "create_thought_chain",
+    "get_thought_chain",
+    "get_working_memory",
+    "focus_memory",
+    "optimize_working_memory",
+    "save_cognitive_state",
+    "load_cognitive_state",
+    "get_workflow_context",
+    "auto_update_focus",
+    "promote_memory_level",
+    "update_memory",
+    "get_linked_memories",
+    "consolidate_memories",
+    "generate_reflection",
+    "summarize_text",
+    "delete_expired_memories",
+    "compute_memory_statistics",
+    "generate_workflow_report",
+    "visualize_reasoning_chain",
+    "visualize_memory_network",
 ]
 
 logger = get_logger("ultimate_mcp_server.tools")
@@ -353,21 +387,6 @@ STANDALONE_TOOL_FUNCTIONS = [
     marqo_fused_search,
 
     # Added SQL tools
-    connect_to_database,
-    disconnect_from_database,
-    discover_database_schema,
-    execute_query,
-    generate_database_documentation,
-    get_table_details,
-    find_related_tables,
-    analyze_column_statistics,
-    execute_parameterized_query,
-    create_database_view,
-    create_database_index,
-    test_connection,
-    execute_transaction,
-    execute_query_with_pagination,
-    get_database_status,
 
     # Added Audio tools
     transcribe_audio,
@@ -375,22 +394,51 @@ STANDALONE_TOOL_FUNCTIONS = [
     chat_with_transcript,
 
     # Browser automation tools
-    browser_init,
-    browser_navigate,
-    browser_click,
-    browser_type,
-    browser_screenshot,
-    browser_close,
-    browser_select,
-    browser_checkbox,
-    browser_get_text,
-    browser_get_attributes,
-    browser_execute_javascript,
-    browser_wait,
-    execute_web_workflow,
-    extract_structured_data_from_pages,
-    find_and_download_pdfs,
-    multi_engine_search_summary,
+
+    
+    # Cognitive and agent memory tools
+    initialize_memory_system,
+    create_workflow,
+    update_workflow_status,
+    record_action_start,
+    record_action_completion,
+    get_action_details,
+    summarize_context_block,
+    add_action_dependency,
+    get_action_dependencies,
+    record_artifact,
+    record_thought,
+    store_memory,
+    get_memory_by_id,
+    search_semantic_memories,
+    hybrid_search_memories,
+    create_memory_link,
+    query_memories,
+    list_workflows,
+    get_workflow_details,
+    get_recent_actions,
+    get_artifacts,
+    get_artifact_by_id,
+    create_thought_chain,
+    get_thought_chain,
+    get_working_memory,
+    focus_memory,
+    optimize_working_memory,
+    save_cognitive_state,
+    load_cognitive_state,
+    get_workflow_context,
+    auto_update_focus,
+    promote_memory_level,
+    update_memory,
+    get_linked_memories,
+    consolidate_memories,
+    generate_reflection,
+    summarize_text,
+    delete_expired_memories,
+    compute_memory_statistics,
+    generate_workflow_report,
+    visualize_reasoning_chain,
+    visualize_memory_network,
 ]
 
 
