@@ -221,3 +221,5 @@ current_tools_sent_to_llm.json
 demo_output.txt
 browser_outputs/
 examples/demo.db
+downloaded_files/
+examples/sample/backprop_paper.md

@@ -45,13 +45,13 @@ logger = get_logger("demo.document_processing_tool")
 install_rich_traceback(show_locals=False, width=console.width)
 
 # --- Configuration ---
-DEFAULT_PAPERS_DIR = "quantum_computing_papers"  # Directory containing PDF papers
+DEFAULT_SAMPLE_PDF_DIR = "examples/sample"
 SAMPLE_HTML_URL = "https://en.wikipedia.org/wiki/Quantum_computing"  # Sample HTML content
 DOWNLOADED_FILES_DIR = Path("downloaded_files")  # Directory for downloaded files
 
-# Use environment variables if available
+# Use environment variables if available, default to using GPU if available
+USE_GPU = os.environ.get("USE_GPU", "true").lower() == "true"
 MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", "2"))
-USE_GPU = os.environ.get("USE_GPU", "false").lower() == "true"
 ACCELERATOR_DEVICE = "cuda" if USE_GPU else "cpu"
 
 # Define result types using Union and Tuple
@@ -64,14 +64,9 @@ FileResult = Union[Path, None]
 def create_demo_layout() -> Layout:
     """Create a layout for the demo UI."""
     layout = Layout(name="root")
+    # Make header smaller, remove the large empty main area at startup
     layout.split(
-        Layout(name="header", size=3),
-        Layout(name="main", ratio=1),
-        Layout(name="footer", size=3)
-    )
-    layout["main"].split_row(
-        Layout(name="content", ratio=3),
-        Layout(name="stats", ratio=1)
+        Layout(name="header", size=3)
     )
     return layout
 
@@ -305,7 +300,7 @@ async def safe_tool_call(operation_name: str, tool_func: callable, *args, **kwar
             title=f"[red]{operation_name} Failed[/]",
             border_style="red"
         ))
-        return False, {"success": False, "error": str(e), "error_type": "input_error"}
+        return False, {"success": False, "error": str(e), "error_code": e.code}
     except ToolError as e:
         logger.error(f"Tool error during {operation_name}: {e}")
         console.print(Panel(
@@ -313,7 +308,7 @@ async def safe_tool_call(operation_name: str, tool_func: callable, *args, **kwar
             title=f"[red]{operation_name} Failed[/]",
             border_style="red"
         ))
-        return False, {"success": False, "error": str(e), "error_type": "tool_error"}
+        return False, {"success": False, "error": str(e), "error_code": e.code}
     except Exception as e:
         logger.error(f"Unexpected error during {operation_name}: {e}", exc_info=True)
         console.print(Panel(
@@ -321,7 +316,7 @@ async def safe_tool_call(operation_name: str, tool_func: callable, *args, **kwar
             title=f"[red]{operation_name} Failed[/]",
             border_style="red"
         ))
-        return False, {"success": False, "error": str(e), "error_type": "unexpected_error"}
+        return False, {"success": False, "error": str(e), "error_type": type(e).__name__}
 
 # --- Demo Functions ---
 
@@ -332,7 +327,7 @@ async def conversion_demo(doc_tool: DocumentProcessingTool) -> None:
     logger.info("Starting document conversion demo")
     
     # Find PDF files in the papers directory
-    papers_dir = Path(DEFAULT_PAPERS_DIR)
+    papers_dir = Path(DEFAULT_SAMPLE_PDF_DIR)
     if not papers_dir.exists():
         papers_dir.mkdir(parents=True, exist_ok=True)
         console.print(Panel(
@@ -394,6 +389,12 @@ async def conversion_demo(doc_tool: DocumentProcessingTool) -> None:
         for output_format in formats:
             progress.update(conversion_task, description=f"[cyan]Converting to {output_format.upper()}...")
             
+            # For markdown format, save in the same directory as the PDF with .md extension
+            if output_format == "markdown":
+                output_path = str(demo_pdf).replace(".pdf", ".md")
+            else:
+                output_path = None  # Let the tool generate a temporary path for other formats
+            
             # Use the safe_tool_call helper which handles ToolError and ToolInputError
             success, result = await safe_tool_call(
                 f"Convert to {output_format.upper()}", 
@@ -401,6 +402,7 @@ async def conversion_demo(doc_tool: DocumentProcessingTool) -> None:
                 document_path=str(demo_pdf),
                 output_format=output_format,
                 save_to_file=True,
+                output_path=output_path,
                 accelerator_device=ACCELERATOR_DEVICE
             )
             
@@ -701,7 +703,7 @@ async def table_extraction_demo(doc_tool: DocumentProcessingTool) -> None:
     logger.info("Starting table extraction demo")
     
     # Find PDF files in the papers directory
-    papers_dir = Path(DEFAULT_PAPERS_DIR)
+    papers_dir = Path(DEFAULT_SAMPLE_PDF_DIR)
     if not papers_dir.exists() or not list(papers_dir.glob("*.pdf")):
         console.print(Panel(
             "To demonstrate table extraction, we need PDF files with tables.\n"
@@ -1059,7 +1061,7 @@ async def batch_processing_demo(doc_tool: DocumentProcessingTool) -> None:
     logger.info("Starting batch processing demo")
     
     # Find all PDFs for batch processing
-    papers_dir = Path(DEFAULT_PAPERS_DIR)
+    papers_dir = Path(DEFAULT_SAMPLE_PDF_DIR)
     pdf_files = list(papers_dir.glob("*.pdf"))
     
     if not pdf_files:
@@ -1085,7 +1087,8 @@ async def batch_processing_demo(doc_tool: DocumentProcessingTool) -> None:
             "output_key": "conversion_result",
             "params": {
                 "output_format": "markdown",
-                "accelerator_device": "cpu"
+                "save_to_file": True,
+                "accelerator_device": ACCELERATOR_DEVICE
             },
             "promote_output": "content"  # Promote content for next step
         },
@@ -1201,8 +1204,8 @@ async def main() -> int:
     """Run the document processing tools demo."""
     start_time = dt.datetime.now()
     
-    # Create and display the main layout
-    layout = create_demo_layout()
+    # Create and display just the header
+    create_demo_layout()
     
     # Display system information in the header
     system_info = Text()
@@ -1212,8 +1215,9 @@ async def main() -> int:
     system_info.append(f"| Device: {ACCELERATOR_DEVICE} ", style="green" if USE_GPU else "yellow")
     system_info.append(f"| Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
     
-    layout["header"].update(Panel(system_info, border_style="magenta"))
-    console.print(layout["header"])
+    # Display just the header panel with more compact styling
+    header_panel = Panel(system_info, border_style="magenta", padding=(0, 1))
+    console.print(header_panel)
     
     exit_code = 0
     
@@ -1224,16 +1228,16 @@ async def main() -> int:
         
         # Ensure demo directories exist
         DOWNLOADED_FILES_DIR.mkdir(parents=True, exist_ok=True)
-        Path(DEFAULT_PAPERS_DIR).mkdir(parents=True, exist_ok=True)
+        Path(DEFAULT_SAMPLE_PDF_DIR).mkdir(parents=True, exist_ok=True)
         
         # Check if we have PDF files
-        pdf_files = list(Path(DEFAULT_PAPERS_DIR).glob("*.pdf"))
+        pdf_files = list(Path(DEFAULT_SAMPLE_PDF_DIR).glob("*.pdf"))
         if not pdf_files:
             # Show usage instructions as markdown
             demo_instructions = """
             # PDF Files Required
 
-            No PDF files found in the `quantum_computing_papers` directory.
+            No PDF files found in the sample directory.
 
             ## Instructions:
             

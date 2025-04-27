@@ -452,8 +452,11 @@ class DocumentProcessingTool(BaseTool):
         opts.generate_page_images = False
         opts.accelerator_options = AcceleratorOptions(num_threads=threads, device=device)
         try:
-            # Assuming PdfFormatOption applies generally; adjust if other formats need specific options
-            return DocumentConverter(format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)})
+            # Avoid using deprecated parameters like strict_text
+            converter_options = {
+                InputFormat.PDF: PdfFormatOption(pipeline_options=opts)
+            }
+            return DocumentConverter(format_options=converter_options)
         except Exception as e:
             self.logger.error(f"Failed to initialize DocumentConverter: {e}", exc_info=True)
             raise ToolError("INITIALIZATION_FAILED", details={"component": "DocumentConverter", "error": str(e)}) from e
@@ -473,8 +476,8 @@ class DocumentProcessingTool(BaseTool):
             if self._docling_available and isinstance(doc, DoclingDocument):
                 # For docling's Doc object
                 num_pages = doc.num_pages() if callable(getattr(doc, 'num_pages', None)) else 0
-                has_tables = any(p.content.has_tables() for p in doc.pages)
-                has_figures = any(p.content.has_figures() for p in doc.pages)
+                has_tables = any(p.content.has_tables() for p in doc.pages if hasattr(p, 'content'))
+                has_figures = any(p.content.has_figures() for p in doc.pages if hasattr(p, 'content'))
                 has_sections = bool(doc.get_sections()) # Check if sections list is non-empty
                 
                 return {
@@ -490,7 +493,7 @@ class DocumentProcessingTool(BaseTool):
                     return doc.get("metadata", {"num_pages": 0, "has_tables": False, "has_figures": False, "has_sections": False})
                 return {"num_pages": 0, "has_tables": False, "has_figures": False, "has_sections": False}
         except Exception as e:
-            self.logger.warning("Metadata collection failed: %s", e, exc_info=True)
+            self.logger.warning(f"Metadata collection failed: {e}", exc_info=True)
             # Return default values on error
             return {"num_pages": 0, "has_tables": False, "has_figures": False, "has_sections": False}
 
@@ -639,7 +642,6 @@ class DocumentProcessingTool(BaseTool):
                 raise ToolError("LLM_UNAVAILABLE", details={"reason": "generate_completion not available or not callable"})
 
             # Call generate_completion and expect a specific response structure
-            # Assuming generate_completion returns a dict with a 'content' key for the text
             response_dict = await generate_completion(
                 prompt=prompt,
                 provider=provider,
@@ -649,23 +651,31 @@ class DocumentProcessingTool(BaseTool):
                 additional_params=extra or {}
             )
 
-            if isinstance(response_dict, dict) and 'content' in response_dict:
-                 llm_content = response_dict['content']
-                 if isinstance(llm_content, str):
-                      return llm_content.strip() # Return the stripped text content
-                 else:
-                      self.logger.warning(f"LLM response 'content' is not a string: {type(llm_content)}. Converting.")
-                      return str(llm_content).strip()
+            if isinstance(response_dict, dict):
+                # Check for 'text' first (OpenAI format), then fall back to 'content' (older format)
+                if 'text' in response_dict:
+                    llm_content = response_dict['text']
+                elif 'content' in response_dict:
+                    llm_content = response_dict['content']
+                else:
+                    self.logger.error(f"LLM response has unexpected format: {response_dict}")
+                    raise ToolError("LLM_INVALID_RESPONSE", details={"response_received": str(response_dict)})
+                
+                if isinstance(llm_content, str):
+                    return llm_content.strip()  # Return the stripped text content
+                else:
+                    self.logger.warning(f"LLM response content is not a string: {type(llm_content)}. Converting.")
+                    return str(llm_content).strip()
             else:
-                 # Handle unexpected response format
-                 self.logger.error(f"LLM response has unexpected format: {response_dict}")
-                 raise ToolError("LLM_INVALID_RESPONSE", details={"response_received": str(response_dict)})
+                # Handle unexpected response format
+                self.logger.error(f"LLM response has unexpected format: {response_dict}")
+                raise ToolError("LLM_INVALID_RESPONSE", details={"response_received": str(response_dict)})
 
-        except ToolError as e: # Catch ToolErrors raised by generate_completion or above
-             raise e # Re-raise specific ToolErrors
+        except ToolError as e:  # Catch ToolErrors raised by generate_completion or above
+            raise e  # Re-raise specific ToolErrors
         except Exception as e:
-             self.logger.error(f"LLM call failed: {e}", exc_info=True)
-             raise ToolError("LLM_CALL_FAILED", details={"error": str(e)}) from e
+            self.logger.error(f"LLM call failed: {e}", exc_info=True)
+            raise ToolError("LLM_CALL_FAILED", details={"error": str(e)}) from e
 
     # ───────────────────── Markdown Processing Utils ─────────────────────
     def _sanitize(self, md: str) -> str:
@@ -691,21 +701,21 @@ class DocumentProcessingTool(BaseTool):
             return ""
 
         # Ensure blank lines around major block elements for better readability
-        # Headings
-        md = re.sub(r"(?<=\n\S[^\n]*)\n(#{1,6}\s+)", r"\n\n\1", md) # Add blank line before heading if needed
+        # Headings - Fix the look-behind pattern to use fixed-width
+        md = re.sub(r"\n\S+\n(#{1,6}\s+)", r"\n\n\1", md) # Add blank line before heading
         md = re.sub(r"(#{1,6}\s+[^\n]*)\n(?=\S)", r"\1\n\n", md) # Add blank line after heading if needed
 
         # Code blocks
-        md = re.sub(r"(?<=\n\S[^\n]*)\n(```)", r"\n\n\1", md) # Add blank line before code block fence
+        md = re.sub(r"\n\S+\n(```)", r"\n\n\1", md) # Add blank line before code block fence
         md = re.sub(r"(```)\n(?=\S)", r"\1\n\n", md) # Add blank line after code block fence
 
         # Blockquotes
-        md = re.sub(r"(?<=\n\S[^\n]*)\n(> )", r"\n\n\1", md) # Add blank line before blockquote
+        md = re.sub(r"\n\S+\n(> )", r"\n\n\1", md) # Add blank line before blockquote
         md = re.sub(r"(\n> [^\n]*)\n(?=[^>\s])", r"\1\n\n", md) # Add blank line after blockquote if followed by non-quote/non-whitespace
 
         # Lists (Unordered and Ordered)
         # Ensure blank line before the start of a list block
-        md = re.sub(r"(?<=\n\S[^\n]*)\n(\s*[-*+]\s+|\s*\d+\.\s+)", r"\n\n\1", md)
+        md = re.sub(r"\n\S+\n(\s*[-*+]\s+|\s*\d+\.\s+)", r"\n\n\1", md)
         # Ensure blank line after the end of a list block
         # This looks for the last list item followed by a line not starting as a list item (or whitespace)
         md = re.sub(r"(\n(\s*[-*+]\s+|\s*\d+\.\s+)[^\n]*)\n(?!\s*([-*+]|\d+\.)\s+)(\S)", r"\1\n\n\4", md)
@@ -1253,10 +1263,21 @@ class DocumentProcessingTool(BaseTool):
                  except Exception: 
                      return len(text) # Fallback on error
              return len(text)
+             
+        # Detect markdown tables for special handling
+        def is_markdown_table(text: str) -> bool:
+            if text.startswith('|') and '|' in text[1:] and '\n' in text:
+                lines = text.strip().split('\n')
+                if len(lines) >= 2 and all(line.strip().startswith('|') for line in lines):
+                    return True
+            return False
 
         for p in paragraphs:
             p_len = get_len(p)
             potential_new_len = current_chunk_len + (get_len("\n\n") if current_chunk_paragraphs else 0) + p_len
+
+            # Special handling for markdown tables
+            is_table = is_markdown_table(p)
 
             # If adding the next paragraph exceeds size (and current chunk is not empty)
             if current_chunk_paragraphs and potential_new_len > size:
@@ -1267,13 +1288,14 @@ class DocumentProcessingTool(BaseTool):
                 # Overlap logic for paragraphs is tricky. We can include the last few
                 # paragraphs from the previous chunk or just start with the current paragraph.
                 # Simple approach: Start new chunk with the current paragraph if it fits.
-                if p_len <= size:
+                if p_len <= size or is_table:
                      current_chunk_paragraphs = [p]
                      current_chunk_len = p_len
                 else:
                      # Paragraph itself is too long. Add it as its own oversized chunk
                      # or split it further using character/token chunking.
-                     self.logger.warning(f"Paragraph starting with '{p[:50]}...' (length {p_len}) exceeds chunk size {size}. Splitting paragraph.")
+                     if not is_table:  # Only log warning for non-table paragraphs
+                         self.logger.warning(f"Paragraph starting with '{p[:50]}...' (length {p_len}) exceeds chunk size {size}. Splitting paragraph.")
                      # Split the oversized paragraph using character chunking (respects 'size')
                      sub_chunks = self._char_chunks(p, size, overlap) # Use char chunking here
                      chunks.extend(sub_chunks)
@@ -1284,8 +1306,9 @@ class DocumentProcessingTool(BaseTool):
             # If current chunk is empty or adding the paragraph fits
             else:
                  # Handle case where the very first paragraph is too large
-                 if not current_chunk_paragraphs and p_len > size:
-                      self.logger.warning(f"First paragraph starting with '{p[:50]}...' (length {p_len}) exceeds chunk size {size}. Splitting paragraph.")
+                 if not current_chunk_paragraphs and p_len > size and not is_table:
+                      if not is_table:  # Only log warning for non-table paragraphs
+                          self.logger.warning(f"First paragraph starting with '{p[:50]}...' (length {p_len}) exceeds chunk size {size}. Splitting paragraph.")
                       sub_chunks = self._char_chunks(p, size, overlap)
                       chunks.extend(sub_chunks)
                       current_chunk_paragraphs = [] # Ensure reset
@@ -1332,14 +1355,32 @@ class DocumentProcessingTool(BaseTool):
                      full_section_text = f"# {title}\n\n{text}" if title and title != "Introduction" and title != "Main Content" else text
                      section_texts.append(full_section_text.strip())
 
+             # Function to check if text contains tables
+             def contains_markdown_table(text: str) -> bool:
+                 if '|' not in text:
+                     return False
+                 lines = text.strip().split('\n')
+                 for i, line in enumerate(lines):
+                     if line.strip().startswith('|') and line.strip().endswith('|'):
+                         if i+1 < len(lines) and '-|-' in lines[i+1]:
+                             return True
+                 return False
+
              # If sections are too large, chunk them further.
              final_chunks = []
              loop = asyncio.get_running_loop()
              for text in section_texts:
                   # Use character length check, consistent with paragraph chunking fallback
-                  if len(text) > size * 1.1: # Allow slightly larger sections before splitting
+                  # Allow tables to be kept whole even if they exceed size limit
+                  has_table = contains_markdown_table(text)
+                  if len(text) > size * 1.1 and not has_table: # Allow slightly larger sections before splitting
                       self.logger.warning(f"Section chunk starting with '{text[:50]}...' exceeds size limit ({len(text)} > {size}). Sub-chunking section using paragraphs.")
                       # Sub-chunk the large section using paragraph strategy (run in executor)
+                      sub_chunks = await loop.run_in_executor(None, self._paragraph_chunks, text, size, overlap)
+                      final_chunks.extend(sub_chunks)
+                  elif has_table and len(text) > size * 2:
+                      # For sections with tables that are very large, still sub-chunk but warn differently
+                      self.logger.info(f"Large section with tables ({len(text)} chars) will be sub-chunked while attempting to preserve table structure.")
                       sub_chunks = await loop.run_in_executor(None, self._paragraph_chunks, text, size, overlap)
                       final_chunks.extend(sub_chunks)
                   elif text: # Add section if it fits and is not empty
@@ -2255,7 +2296,7 @@ class DocumentProcessingTool(BaseTool):
         tables_raw_data: List[List[List[str]]] = [] # Expecting list of tables, each table is list of rows, each row is list of strings
         try:
             for page in doc_obj.pages:
-                if page.content and page.content.has_tables():
+                if hasattr(page, 'content') and page.content and callable(getattr(page.content, 'has_tables', None)) and page.content.has_tables():
                     # Assuming get_tables() returns list of tables, where each table is list[list[str]]
                     page_tables = page.content.get_tables()
                     if page_tables:
@@ -2266,7 +2307,7 @@ class DocumentProcessingTool(BaseTool):
                                   sanitized_tbl = [[str(cell) if cell is not None else "" for cell in row] for row in tbl]
                                   tables_raw_data.append(sanitized_tbl)
                              else:
-                                  self.logger.warning(f"Skipping malformed table structure found on page {page.page_idx}: {type(tbl)}")
+                                  self.logger.warning(f"Skipping malformed table structure found on page {getattr(page, 'page_idx', 'unknown')}: {type(tbl)}")
 
         except Exception as e:
              self.logger.error(f"Error accessing tables from Doc object: {e}", exc_info=True)
@@ -3364,6 +3405,10 @@ Classification Label:
                         if actual_input_key not in item_state:
                             raise ToolInputError(f"Required input key '{actual_input_key}' not found in state for item {item_idx}.", param_name=actual_input_key)
                         primary_input_value = item_state[actual_input_key]
+                        
+                        # Special validation for operations that require non-empty string documents
+                        if current_op_name in ["summarize_document", "extract_entities", "generate_qa_pairs", "classify_document", "identify_sections", "flag_risks"] and not (isinstance(primary_input_value, str) and primary_input_value.strip()):
+                            raise ToolInputError(f"Operation '{current_op_name}' requires a non-empty string document.", param_name=actual_input_key)
 
                         # Determine the parameter name for the primary input (convention or inspection)
                         # Convention used here:
