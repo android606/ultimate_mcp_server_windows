@@ -94,7 +94,6 @@ from ultimate_mcp_server.tools.filesystem import (
     create_directory,
     delete_path,
     get_unique_filepath,
-    read_binary_file,
     read_file,
     write_file,
 )
@@ -363,9 +362,6 @@ def _init_locator_cache_db_sync():
     except sqlite3.Error as e:
         logger.critical(f"Failed to initialize locator cache DB schema: {e}", exc_info=True)
         raise RuntimeError(f"Failed to initialize locator cache database: {e}") from e
-
-
-_init_locator_cache_db_sync()
 
 
 def _cache_put_sync(key: str, selector: str, dom_fp: str) -> None:
@@ -658,6 +654,10 @@ async def _log(event: str, **details):
 
 def _init_last_hash():
     global _last_hash
+    if _LOG_FILE is None:
+        logger.info("Audit log initialization skipped: _LOG_FILE path not set yet.")
+        return
+        
     if _LOG_FILE.exists():
         try:
             with open(_LOG_FILE, "rb") as f:
@@ -675,9 +675,6 @@ def _init_last_hash():
             _last_hash = None
     else:
         logger.info("No existing audit log found. Starting new chain.")
-
-
-_init_last_hash()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2551,12 +2548,9 @@ async def smart_download(
         if dest_dir:
             download_dir_path_str = str(dest_dir)
         else:
-            # Default: Use a relative path structure recognizable by FileSystemTool
-            # Example: Assumes 'smart_browser_root' is implicitly mapped or relative to an allowed base
-            default_dl_subdir = "downloads"
-            download_dir_path_str = f"smart_browser_root/{default_dl_subdir}"
-            # --- OR if using absolute paths directly (requires _HOME to be allowed): ---
-            # download_dir_path_str = str(_HOME / default_dl_subdir)
+            # Default: Use a path relative to the allowed 'storage' base directory
+            default_dl_subdir = "smart_browser_downloads"
+            download_dir_path_str = f"storage/{default_dl_subdir}"
 
         logger.info(f"Ensuring download directory exists: '{download_dir_path_str}' using filesystem tool.")
         create_dir_result = await create_directory(path=download_dir_path_str)
@@ -2627,7 +2621,7 @@ async def smart_download(
         await dl.save_as(out_path)
         logger.info(f"Playwright download save complete: {out_path}")
 
-        # --- Read back, analyze (same as before, using out_path) ---
+        # --- Read back, analyze (using out_path) ---
         file_data: Optional[bytes] = None
         file_size = -1
         sha256_hash = None
@@ -2635,25 +2629,25 @@ async def smart_download(
 
         try:
             read_path_str = str(out_path)
-            read_result = await read_binary_file(path=read_path_str) # Use the filesystem tool
+            read_result = await read_file(path=read_path_str) # Use the filesystem tool
 
             # ... (rest of the read_back logic is the same as previous answer) ...
             if isinstance(read_result, dict) and read_result.get("success"):
                 if isinstance(read_result.get("content"), list) and len(read_result["content"]) > 0:
                      content_block = read_result["content"][0]
-                     # Assume binary tool returns content like: {'type': 'binary', 'bytes': b'...'}
+                     # Handle binary content from read_file
                      if content_block.get("type") == "binary" and isinstance(content_block.get("bytes"), bytes):
                           file_data = content_block.get("bytes")
                           file_size = len(file_data)
-                     elif isinstance(content_block.get("text"), str): # Handle if read_binary_file falls back weirdly
-                          logger.warning(f"read_binary_file returned text content for {read_path_str}")
+                     elif isinstance(content_block.get("text"), str): # Handle if read_file falls back to text
+                          logger.warning(f"read_file returned text content for {read_path_str}")
                           read_back_error = "Read back tool returned unexpected text format for binary file."
                      else:
-                          read_back_error = "Filesystem tool did not return expected binary content block format."
+                          read_back_error = "Filesystem tool did not return expected content block format."
                 else:
                     read_back_error = "Filesystem tool read succeeded but content format unexpected or empty."
             else:
-                read_back_error = read_result.get('error', 'Filesystem tool failed to read back downloaded file.') if isinstance(read_result, dict) else 'Invalid response from read_binary_file'
+                read_back_error = read_result.get('error', 'Filesystem tool failed to read back downloaded file.') if isinstance(read_result, dict) else 'Invalid response from read_file'
 
         except ToolError as e:
             read_back_error = f"Filesystem tool error reading back {out_path}: {e}"
@@ -2674,8 +2668,7 @@ async def smart_download(
              # Raise ToolError to signal failure more clearly
              raise ToolError(info["error"], details=info)
 
-
-        # --- Hashing and Table Extraction (same as before) ---
+        # --- Hashing and Table Extraction ---
         sha256_hash = await _compute_hash_async(file_data)
         tables = []
         if out_path.suffix.lower() in (".pdf", ".xls", ".xlsx", ".csv"):
@@ -3847,6 +3840,7 @@ async def run_steps(page: Page, steps: Sequence[Dict[str, Any]]) -> List[Dict[st
                     press_enter=step.get("enter", False),
                     clear_before=step.get("clear_before", True),
                     target_kwargs=target_fallback,
+                    timeout_ms=5000,
                 )
                 step_result["success"] = True
 
@@ -4239,8 +4233,7 @@ class SmartBrowserTool(BaseTool):
 
             # --- Step 2: Prepare Internal Storage Directory using FileSystemTool ---
             try:
-                # Define the *relative* path structure within an allowed base.
-                # Assumes FileSystemTool is configured with '/home/ubuntu/ultimate_mcp_server/storage' as an allowed base.
+                # Define the path relative to the 'storage' directory
                 internal_storage_relative_path = "storage/smart_browser_internal"
 
                 logger.info(f"Ensuring internal storage directory exists: '{internal_storage_relative_path}' using filesystem tool.")
@@ -4268,6 +4261,7 @@ class SmartBrowserTool(BaseTool):
                 # Initialize components that depend on these paths NOW that they are defined
                 # Ensure these helper functions exist and use the global path variables correctly
                 _init_last_hash() # Depends on _LOG_FILE
+                # Now that paths are defined, initialize the database
                 _init_locator_cache_db_sync() # Depends on _CACHE_DB
 
             except ToolError as e:
@@ -4613,12 +4607,8 @@ class SmartBrowserTool(BaseTool):
             else:
                 safe_subfolder = _slugify(urlparse(start_url).netloc, 50) or "downloaded_pdfs" # Default folder name
 
-            # Construct relative path for FileSystemTool (assuming a base like 'smart_browser_root' or similar)
-            # Adjust 'smart_browser_root' if your FS tool uses a different base concept
-            download_base_relative = "smart_browser_root/downloads"
-            # --- OR if using absolute path directly (requires _HOME base to be allowed): ---
-            # download_base_relative = str(_HOME / "downloads")
-
+            # Construct path relative to the allowed 'storage' base directory
+            download_base_relative = "storage/smart_browser_site_pdfs"
             dest_dir_relative_path = f"{download_base_relative}/{safe_subfolder}"
 
             logger.info(f"Ensuring download directory exists: '{dest_dir_relative_path}' using filesystem tool.")
@@ -4761,15 +4751,10 @@ class SmartBrowserTool(BaseTool):
         logger.info(f"Collected content from {len(pages_content)} pages for package '{package}'.")
 
         # 3. Prepare Output Path and Directory using FileSystemTool
-        # Define a subdirectory within an assumed allowed base path.
-        # This relies on FileSystemTool being configured with a suitable base (e.g., 'browser_demo_outputs').
-        # The exact base directory isn't needed here, only the relative path for the tool.
-        output_subdir_name = "docs_collected"
-        # Construct the relative path for the directory creation tool
-        # Choose a base directory known to be allowed by FileSystemConfig
-        # For demo, let's assume 'browser_demo_outputs' is allowed. If not, adjust this.
-        allowed_base_for_demo = "browser_demo_outputs"
-        output_dir_relative_path = f"{allowed_base_for_demo}/{output_subdir_name}"
+        # Define a subdirectory within the storage directory
+        output_subdir_name = "smart_browser_docs_collected"
+        # Construct path relative to the allowed 'storage' base directory
+        output_dir_relative_path = f"storage/{output_subdir_name}"
 
         try:
             # Ensure the output directory exists using the filesystem tool.
@@ -4946,12 +4931,8 @@ class SmartBrowserTool(BaseTool):
 
         try:
             # --- Prepare Scratch Directory using FileSystemTool ---
-            # Construct relative path for FileSystemTool
-            # Example: Assumes 'smart_browser_root' is implicitly mapped or relative to an allowed base
-            scratch_base_relative = "smart_browser_root/scratch" # Or another configured allowed path
-            # --- OR if using absolute path directly (requires _HOME base to be allowed): ---
-            # scratch_base_relative = str(_HOME / "scratch")
-
+            # Construct path relative to the allowed 'storage' base directory
+            scratch_base_relative = "storage/smart_browser_scratch"
             scratch_dir_relative_path = f"{scratch_base_relative}/{scratch_subdir}"
 
             logger.info(f"Ensuring autopilot scratch directory exists: '{scratch_dir_relative_path}' using filesystem tool.")

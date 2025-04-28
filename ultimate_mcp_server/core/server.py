@@ -20,10 +20,14 @@ import ultimate_mcp_server.core
 from ultimate_mcp_server.config import get_config, load_config
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.state_store import StateStore
+from ultimate_mcp_server.graceful_shutdown import (
+    handle_quiet_exit,
+    redirect_stderr_during_shutdown,
+    register_shutdown_handler,
+    setup_signal_handlers,
+)
 
 # --- Import the trigger function directly instead of the whole module---
-# from ultimate_mcp_server.tools.marqo_fused_search import trigger_dynamic_docstring_generation
-# Import the function later when needed to avoid circular import
 from ultimate_mcp_server.utils import get_logger
 from ultimate_mcp_server.utils.logging import logger
 
@@ -2185,14 +2189,63 @@ def start_server(
         # Log SSE endpoint
         print(f"SSE endpoint available at: http://{server_host}:{server_port}/sse", file=sys.stderr)
         
-        # Run the app with uvicorn
-        uvicorn.run(
+        # Setup graceful shutdown
+        logger = logging.getLogger("ultimate_mcp_server.server")
+        
+        # Configure custom excepthook for clean exits
+        handle_quiet_exit()
+        
+        # Create a shutdown handler for gateway cleanup
+        async def cleanup_gateway():
+            global _gateway_instance
+            if _gateway_instance:
+                logger.info("Cleaning up Gateway instance...")
+                try:
+                    # Give tools a chance to clean up
+                    for tool_name, tool in _gateway_instance.mcp._tools.items():
+                        if hasattr(tool, "async_teardown") and callable(tool.async_teardown):
+                            try:
+                                logger.info(f"Running async_teardown for tool: {tool_name}")
+                                await tool.async_teardown()
+                            except Exception as e:
+                                logger.error(f"Error during teardown of tool {tool_name}: {e}")
+                    
+                    # Clear gateway instance
+                    logger.info("Global gateway instance cleared.")
+                    print("Shutting down Ultimate MCP Server", file=sys.stderr)
+                except Exception as e:
+                    logger.error(f"Error during gateway cleanup: {e}")
+        
+        # Register our shutdown handler
+        register_shutdown_handler(cleanup_gateway)
+        
+        # Define a custom Uvicorn server configuration with our signal handling
+        class GracefulUvicornServer(uvicorn.Server):
+            """Uvicorn server with enhanced signal handling for clean shutdown"""
+            
+            def run(self, sockets=None):
+                self.config.setup_event_loop()
+                loop = asyncio.get_event_loop()
+                
+                # Set up signal handlers with our custom logic
+                setup_signal_handlers(loop)
+                
+                # Redirect stderr during shutdown to reduce error spam
+                register_shutdown_handler(redirect_stderr_during_shutdown)
+                
+                # Run the server
+                return loop.run_until_complete(self.serve(sockets=sockets))
+        
+        # Create and run the server with our custom configuration
+        config = uvicorn.Config(
             app,
             host=server_host,
             port=server_port,
             log_config=LOGGING_CONFIG,
             log_level=final_log_level.lower(),
         )
+        server = GracefulUvicornServer(config=config)
+        server.run()
     else:
         # Run in stdio mode (direct process communication)
         print("Running in stdio mode for direct process communication", file=sys.stderr)

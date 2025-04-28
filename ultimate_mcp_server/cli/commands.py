@@ -22,6 +22,7 @@ from ultimate_mcp_server.config import get_config
 from ultimate_mcp_server.constants import BASE_TOOLSET_CATEGORIES, Provider
 from ultimate_mcp_server.core.providers.base import get_provider
 from ultimate_mcp_server.core.server import Gateway, start_server
+from ultimate_mcp_server.graceful_shutdown import handle_quiet_exit
 from ultimate_mcp_server.services.cache import get_cache_service
 from ultimate_mcp_server.utils import get_logger
 
