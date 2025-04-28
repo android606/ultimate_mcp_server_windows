@@ -57,7 +57,7 @@ class ModelResponse:
             text: The generated text content from the LLM. This is the primary output
                  that would be presented to users.
             model: The specific model name that generated this response (e.g., "gpt-4o",
-                  "claude-3-opus-20240229").
+                  "claude-3-5-haiku-20241022").
             provider: The provider name that served this response (e.g., "openai",
                      "anthropic").
             input_tokens: Number of input/prompt tokens consumed in this request.

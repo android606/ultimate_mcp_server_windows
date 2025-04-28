@@ -104,7 +104,7 @@ def count_tokens(text: str, model: Optional[str] = None) -> int:
     Args:
         text: Text string to count tokens for. Can be any length, including empty.
         model: Optional model name to select the appropriate tokenizer. Common values include
-               "gpt-4o", "gpt-4", "claude-3-opus", "claude-3-sonnet", etc.
+               "gpt-4o", "gpt-4", "claude-3-5-haiku-20241022", "claude-3-sonnet", etc.
         
     Returns:
         Estimated number of tokens in the text. Returns 0 for empty input.
@@ -640,8 +640,8 @@ def extract_structured_data(text: str, patterns: Dict[str, str]) -> Dict[str, An
     Args:
         text: Source text to extract data from
         patterns: Dictionary mapping field names to regex patterns.
-                 Example: {"email": r"Email:\s*([^\s@]+@[^\s@]+\.[^\s@]+)",
-                          "phone": r"Phone:\s*(\d{3}[-\.\s]??\d{3}[-\.\s]??\d{4})"}
+                 Example: {"email": r"Email:\\s*([^\\s@]+@[^\\s@]+\\.[^\\s@]+)",
+                          "phone": r"Phone:\\s*(\\d{3}[-\\.\\s]??\\d{3}[-\\.\\s]??\\d{4})"}
         
     Returns:
         Dictionary with field names as keys and extracted values as strings.
@@ -651,15 +651,15 @@ def extract_structured_data(text: str, patterns: Dict[str, str]) -> Dict[str, An
     Examples:
         >>> text = "Name: John Doe\\nEmail: john@example.com\\nAge: 30"
         >>> patterns = {
-        ...     "name": r"Name:\s*(.*?)(?:\\n|$)",
-        ...     "email": r"Email:\s*([^\s@]+@[^\s@]+\.[^\s@]+)",
-        ...     "age": r"Age:\s*(\d+)"
+        ...     "name": r"Name:\\s*(.*?)(?:\\n|$)",
+        ...     "email": r"Email:\\s*([^\\s@]+@[^\\s@]+\\.[^\\s@]+)",
+        ...     "age": r"Age:\\s*(\\d+)"
         ... }
         >>> extract_structured_data(text, patterns)
         {'name': 'John Doe', 'email': 'john@example.com', 'age': '30'}
         
         >>> # Using a pattern without capturing groups
-        >>> extract_structured_data("Status: Active", {"status": r"Status: \w+"})
+        >>> extract_structured_data("Status: Active", {"status": r"Status: \\w+"})
         {'status': 'Status: Active'}
         
         >>> # No matches

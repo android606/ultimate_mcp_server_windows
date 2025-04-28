@@ -149,7 +149,7 @@ class AnthropicProvider(BaseProvider):
         
         Args:
             prompt: Text prompt to send to the model
-            model: Model name to use (e.g., "claude-3-opus-20240229")
+            model: Model name to use (e.g., "claude-3-5-haiku-20241022")
             max_tokens: Maximum tokens to generate
             temperature: Temperature parameter (0.0-1.0)
             **kwargs: Additional model-specific parameters
@@ -300,7 +300,7 @@ class AnthropicProvider(BaseProvider):
             pass
             
         # Otherwise return hard-coded default
-        return "claude-3-opus-20240229"
+        return "claude-3-5-haiku-20241022"
         
     async def check_api_key(self) -> bool:
         """Check if the Anthropic API key is valid.

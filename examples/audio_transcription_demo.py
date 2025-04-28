@@ -180,7 +180,7 @@ async def enhance_transcript_with_llm(raw_transcript: str, console: Console) -> 
             result = await chat_completion(
                 system_prompt=system_prompt,
                 messages=[{"role": "user", "content": user_prompt}],
-                model="claude-3-opus-20240229",
+                model="claude-3-5-haiku-20241022",
                 temperature=0.3,
             )
             

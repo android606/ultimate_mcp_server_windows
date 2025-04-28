@@ -42,7 +42,7 @@ async def create_tournament(
     Args:
         name: Human-readable name for the tournament (e.g., "Essay Refinement Contest", "Python Sorting Challenge").
         prompt: The task prompt provided to all participating LLM models.
-        model_ids: List of model identifiers (e.g., 'openai/gpt-4o', 'anthropic/claude-3-opus') to include.
+        model_ids: List of model identifiers (e.g., 'openai/gpt-4o', 'anthropic/claude-3-5-haiku-20241022') to include.
         rounds: Number of tournament rounds. Each round allows models to refine their previous output (if applicable to the tournament type). Default is 3.
         tournament_type: The type of tournament defining the task and evaluation method. Supported types include:
                          - "code": For evaluating code generation based on correctness and potentially style/efficiency.

@@ -747,8 +747,8 @@ async def demonstrate_strategy_comparison():
     comparison_table.add_column("Cost ($)", style="blue", justify="right")
 
     # Use a slightly smaller model for faster comparison if needed
-    comparison_model = "claude-3-haiku-20240307"
-    comparison_provider = Provider.ANTHROPIC.value
+    comparison_model = "gpt-4.1-mini"
+    comparison_provider = Provider.OPENAI.value
     comparison_domain = TextDomain.BUSINESS
 
     # Compare each strategy
@@ -838,8 +838,8 @@ async def demonstrate_output_formats():
 
     # Use a short excerpt for speed
     text_excerpt = format_text[:2000]
-    base_model = "claude-3-haiku-20240307" # Faster model for formats
-    base_provider = Provider.ANTHROPIC.value
+    base_model = "gpt-4.1-mini" # Faster model for formats
+    base_provider = Provider.OPENAI.value
     base_domain = TextDomain.ACADEMIC
 
     # Extract with each output format
@@ -971,8 +971,8 @@ async def main():
         # --- Run Demonstrations ---
         # Define models to use - maybe select based on availability or speed
         # Using Sonnet as a balance, Haiku for comparisons/formats
-        default_model = "claude-3-5-sonnet-20240620"
-        default_provider = Provider.ANTHROPIC.value # String like "anthropic"
+        default_model = "gpt-4.1-mini"
+        default_provider = Provider.OPENAI.value # String like "anthropic"
 
         # 1. Domain Examples (using appropriate strategies)
         await demonstrate_domain_extraction(TextDomain.BUSINESS, "article.txt", GraphStrategy.STANDARD, model=default_model, provider=default_provider)

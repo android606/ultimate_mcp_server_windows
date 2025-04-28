@@ -104,6 +104,7 @@ dependencies = [
     "hvac", # For HashiVault pw management
     "pandera", # Data validation
     "rapidfuzz",
+    "magika",
 ]
 
 [project.optional-dependencies]

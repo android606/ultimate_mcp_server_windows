@@ -132,6 +132,12 @@ class TaskType(str, Enum):
     UPLOAD = "upload"
     DOCUMENT_PROCESSING = "document_processing"
     DOCUMENT = "document"
+    TEXT_ENHANCEMENT = "text_enhancement"
+    NER = "ner"
+    QUESTION_ANSWERING = "question_answering"
+    QUALITY_ASSESSMENT = "quality_assessment"
+    OCR = "ocr"
+    TEXT_EXTRACTION = "text_extraction"
 
 
 class LogLevel(str, Enum):

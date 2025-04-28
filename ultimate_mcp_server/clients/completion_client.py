@@ -53,7 +53,7 @@ class CompletionClient:
     result = await client.generate_completion(
         prompt="Explain quantum computing",
         provider="anthropic",
-        model="claude-3-opus-20240229",
+        model="claude-3-5-haiku-20241022",
         temperature=0.5,
         max_tokens=1000
     )

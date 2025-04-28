@@ -353,7 +353,7 @@ class CompletionRegistry:
         The default provider is typically configured to handle common arguments that
         appear across multiple tools, such as:
         - Provider names (e.g., "openai", "anthropic", "azure")
-        - Model identifiers (e.g., "gpt-4o", "claude-3-opus")
+        - Model identifiers (e.g., "gpt-4o", "claude-3-5-haiku-20241022")
         - Common formats (e.g., "json", "csv", "markdown")
         - Universal settings (e.g., "temperature", "max_tokens")
         
