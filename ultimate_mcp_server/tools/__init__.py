@@ -82,6 +82,7 @@ from .filesystem import (
     directory_tree,
     edit_file,
     get_file_info,
+    get_unique_filepath,
     list_allowed_directories,
     list_directory,
     move_file,
@@ -189,7 +190,7 @@ __all__ = [
     "search_files",
     "get_file_info",
     "list_allowed_directories",
-    
+    "get_unique_filepath",
     # OCR tools
     "extract_text_from_pdf",
     "process_image_ocr",

@@ -90,7 +90,14 @@ from ultimate_mcp_server.tools.base import (
     with_tool_metrics,
 )
 from ultimate_mcp_server.tools.completion import chat_completion
-from ultimate_mcp_server.tools.filesystem import create_directory, write_file_content
+from ultimate_mcp_server.tools.filesystem import (
+    create_directory,
+    delete_path,
+    get_unique_filepath,
+    read_binary_file,
+    read_file,
+    write_file,
+)
 from ultimate_mcp_server.utils import get_logger
 
 # For loop binding and forked process detection
@@ -181,17 +188,13 @@ def _get_pool():
 # ══════════════════════════════════════════════════════════════════════════════
 # 0.  FILESYSTEM & ENCRYPTION & NEW LOCATOR DB
 # ══════════════════════════════════════════════════════════════════════════════
-_HOME = Path.home() / ".smart_browser"
-try:
-    _HOME.mkdir(parents=True, exist_ok=True)
-    os.chmod(_HOME, 0o700)
-except OSError as e:
-    logger.error(f"Failed to create or set permissions on {_HOME}: {e}")
+_SB_INTERNAL_BASE_PATH_STR: Optional[str] = None # Will hold the absolute path resolved by FileSystemTool
 
-_STATE_FILE = _HOME / "storage_state.enc"
-_LOG_FILE = _HOME / "audit.log"
-_CACHE_DB = _HOME / "locator_cache2.db"
-_READ_JS_CACHE = _HOME / "readability.js"
+_STATE_FILE: Optional[Path] = None
+_LOG_FILE: Optional[Path] = None
+_CACHE_DB: Optional[Path] = None
+_READ_JS_CACHE: Optional[Path] = None
+
 
 # --- Encryption ---
 CIPHER_VERSION = b"SB1"
@@ -1168,29 +1171,59 @@ async def _load_state() -> dict[str, Any] | None:
         _STATE_FILE.unlink(missing_ok=True)
         return None
 
+
 async def _save_state(ctx: BrowserContext):
-    """Saves browser state asynchronously. Encryption runs in executor if key is set."""
+    """
+    Saves browser state asynchronously using the MCP FileSystemTool.
+    Encryption runs in executor if key is set.
+    """
     if not ctx or not ctx.browser:
+        logger.debug("Skipping save state: Invalid context or browser.")
         return
     loop = asyncio.get_running_loop()
+    validated_fpath = None # Keep track for logging
     try:
         state = await ctx.storage_state()
         state_json = json.dumps(state).encode("utf-8")
 
-        # Encryption is now conditional within _enc based on _key()
+        # Encryption is conditional within _enc based on _key()
         data_to_write = await loop.run_in_executor(
             _get_pool(), _enc, state_json
         )
 
-        async with aiofiles.open(_STATE_FILE, "wb") as f:
-            await f.write(data_to_write)
-        await loop.run_in_executor(_get_pool(), os.chmod, _STATE_FILE, 0o600)
-        logger.debug(f"Browser state saved ({'encrypted' if _key() else 'unencrypted'}).")
+        # --- Use FileSystemTool to write ---
+        # Determine path to use (relative or absolute based on FileSystemTool needs)
+        # Assuming FileSystemTool can handle absolute paths and validate them:
+        file_path_to_write = str(_STATE_FILE)
+        validated_fpath = file_path_to_write # Store for logging
+
+        logger.debug(f"Attempting to save state to: {file_path_to_write} using filesystem tool.")
+
+        # Call the filesystem write tool
+        write_result = await write_file(
+            path=file_path_to_write,
+            content=data_to_write, # Pass bytes content
+            # overwrite=True # Explicitly allow overwrite if needed
+        )
+
+        # Check the result from the filesystem tool
+        if not isinstance(write_result, dict) or not write_result.get("success"):
+            error_detail = write_result.get('error', 'Unknown error') if isinstance(write_result, dict) else 'Invalid response'
+            logger.error(f"Failed to save browser state using filesystem tool. Reason: {error_detail}")
+            raise ToolError(f"Failed to save browser state: {error_detail}")
+
+        # Success log now includes path confirmed by tool
+        actual_path = write_result.get("path", file_path_to_write)
+        logger.debug(f"Browser state saved ({'encrypted' if _key() else 'unencrypted'}) to {actual_path} via filesystem tool.")
+        # --- End FileSystemTool usage ---
 
     except PlaywrightException as e:
-        logger.error(f"Failed to get storage state: {e}")
+        logger.error(f"Failed to get storage state from Playwright: {e}")
+    except ToolError as e: # Catch errors from write_file
+         logger.error(f"Filesystem tool error saving state to {validated_fpath}: {e}", exc_info=True)
     except Exception as e: # Includes RuntimeError from _enc if encryption itself fails
-        logger.error(f"Failed to save browser state: {e}", exc_info=True)
+        logger.error(f"Failed to save browser state (path: {validated_fpath}): {e}", exc_info=True)
+
 
 @asynccontextmanager
 async def _tab_context(ctx: BrowserContext):
@@ -1501,48 +1534,116 @@ _READ_JS_WRAPPER = textwrap.dedent("""
 """)
 
 
+
 async def _ensure_readability(page: Page) -> None:
-    """Ensures Mozilla's Readability.js library is injected into the page."""
+    """
+    Ensures Mozilla's Readability.js library is injected into the page,
+    using the MCP FileSystemTool for caching.
+    """
     if await page.evaluate("() => window.__sbReadability !== undefined"):
         return
+
+    # --- Use FileSystemTool for Cache Read/Write ---
+    # Assuming FileSystemTool can handle absolute path _READ_JS_CACHE
+    cache_file_path = str(_READ_JS_CACHE)
+    src: Optional[str] = None
+
     try:
-        src: Optional[str] = None
-        if _READ_JS_CACHE.exists():
-            async with aiofiles.open(_READ_JS_CACHE, "r", encoding="utf-8") as f:
-                src = await f.read()
-        else:
-            logger.info("Fetching Readability.js from CDN...")
-            async with httpx.AsyncClient() as client:
-                cdn_url = "https://cdnjs.cloudflare.com/ajax/libs/readability/0.5.0/Readability.js"
-                response = await client.get(cdn_url, timeout=15.0)
-                response.raise_for_status()
-                src = response.text
-                await _log("readability_js_fetch", url=cdn_url, size=len(src))
-            if src:
-                async with aiofiles.open(_READ_JS_CACHE, "w", encoding="utf-8") as f:
-                    await f.write(src)
-                await asyncio.get_running_loop().run_in_executor(
-                    _get_pool(), os.chmod, _READ_JS_CACHE, 0o644
-                )
+        # Try reading from cache using filesystem tool
+        try:
+            read_result = await read_file(path=cache_file_path)
+            if isinstance(read_result, dict) and read_result.get("success"):
+                 # Extract content - assuming read_file result structure includes 'content' key
+                 # or modifies its own response structure for create_tool_response
+                 # Let's assume create_tool_response was used by read_file and content is list
+                 if isinstance(read_result.get("content"), list) and len(read_result["content"]) > 0:
+                     content_block = read_result["content"][0]
+                     if content_block.get("type") == "text":
+                          src = content_block.get("text")
+                          logger.debug(f"Readability.js loaded from cache: {cache_file_path}")
+                     else:
+                          logger.warning(f"Cache file {cache_file_path} content block type is not 'text'.")
+                 else:
+                      logger.warning(f"Cache file {cache_file_path} read successfully but content format unexpected or empty.")
+            # else: read_file failed, error logged by its decorator, src remains None
+
+        except ToolError as e:
+             # Handle specific "file not found" case gracefully
+             error_code = getattr(e, 'error_code', '')
+             error_details = getattr(e, 'details', {})
+             # Check error code or details if FileSystemTool provides specific not found info
+             is_not_found = (error_code == "PATH_NOT_FOUND" or
+                             (isinstance(error_details, dict) and error_details.get("error_type") == "PATH_NOT_FOUND") or
+                             "does not exist" in str(e).lower() or
+                             "no such file" in str(e).lower())
+
+             if is_not_found:
+                 logger.info(f"Readability.js cache file not found ({cache_file_path}). Fetching from CDN.")
+                 src = None # Explicitly ensure src is None
+             else:
+                 # Log other errors reading cache but proceed to fetch
+                 logger.warning(f"Error reading Readability.js cache file {cache_file_path}: {e}. Will attempt fetch.")
+                 src = None # Explicitly ensure src is None
+        # If src is still None after cache attempt, fetch from CDN
+        if src is None:
+            logger.info("Fetching Readability.js from CDN (cache miss or error)...")
+            try:
+                async with httpx.AsyncClient() as client:
+                    cdn_url = "https://cdnjs.cloudflare.com/ajax/libs/readability/0.5.0/Readability.js"
+                    response = await client.get(cdn_url, timeout=15.0)
+                    response.raise_for_status()
+                    fetched_src = response.text
+                    await _log("readability_js_fetch", url=cdn_url, size=len(fetched_src))
+
+                if fetched_src:
+                    # Write fetched content to cache using filesystem tool
+                    try:
+                        write_cache_result = await write_file(
+                            path=cache_file_path,
+                            content=fetched_src # Pass string content
+                        )
+                        if isinstance(write_cache_result, dict) and write_cache_result.get("success"):
+                            logger.info(f"Saved Readability.js to cache: {cache_file_path}")
+                            src = fetched_src # Use fetched content
+                        else:
+                            error_detail = write_cache_result.get('error', 'Unknown error') if isinstance(write_cache_result, dict) else 'Invalid response'
+                            logger.warning(f"Failed to write Readability.js cache ({cache_file_path}): {error_detail}")
+                            src = fetched_src # Still use fetched content even if cache write fails
+                    except ToolError as write_err:
+                         logger.warning(f"Filesystem tool error writing Readability.js cache ({cache_file_path}): {write_err}")
+                         src = fetched_src # Still use fetched content
+                    except Exception as write_unexpected:
+                         logger.error(f"Unexpected error writing Readability.js cache: {write_unexpected}", exc_info=True)
+                         src = fetched_src # Still use fetched content
+
+                else:
+                    logger.warning("Fetched empty content for Readability.js from CDN.")
+
+            except httpx.RequestError as http_err:
+                 logger.error(f"Failed to fetch Readability.js from CDN: {http_err}")
+            except Exception as fetch_err:
+                 logger.error(f"Unexpected error fetching/caching Readability.js: {fetch_err}", exc_info=True)
+
+        # --- Script Injection Logic ---
         if src:
             wrapped_src = f"window.__sbReadability = (() => {{ {src}; return Readability; }})();"
             try:
                 await page.add_script_tag(content=wrapped_src)
                 logger.debug("Readability.js injected successfully.")
             except PlaywrightException as e:
-                # Check if the error message indicates a CSP violation
+                # ... (keep existing CSP/injection error handling) ...
                 if "Content Security Policy" in str(e):
                     logger.warning(f"Could not inject Readability.js due to CSP on {page.url}. Proceeding without it.")
                 else:
-                    # Log other Playwright errors during script injection
-                    logger.error(f"Failed to inject Readability.js: {e}", exc_info=True) # Log full trace for unexpected errors
+                    logger.error(f"Failed to inject Readability.js: {e}", exc_info=True)
             except Exception as e:
-                # Catch any other unexpected errors
                 logger.error(f"Unexpected error during Readability.js injection: {e}", exc_info=True)
         else:
-            logger.warning("Failed to load Readability.js source.")
-    except Exception as e:
-        logger.error(f"Failed to fetch/inject Readability.js: {e}", exc_info=True)
+            logger.warning("Failed to load or fetch Readability.js source. Proceeding without it.")
+        # --- End Script Injection Logic ---
+
+    except Exception as e: # Catch errors in the outer try block
+        logger.error(f"Unexpected error in _ensure_readability setup: {e}", exc_info=True)
 
 
 async def _dom_fingerprint(page: Page) -> str:
@@ -1628,9 +1729,8 @@ def _shadow_deep_js() -> str:  # Removed args, uses globals now
                 // For form elements, get value or placeholder
                 if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {{
                     if (el.type === 'button' || el.type === 'submit') return el.value || '';
-                    // Don't extract password values for security
                     if (el.type === 'password') return 'Password field';
-                    return el.placeholder || el.name || el.type || '';
+                    return el.placeholder || el.name || el.type || ''; 
                 }}
                 
                 if (el.tagName === 'SELECT') return el.name || '';
@@ -2432,108 +2532,194 @@ async def smart_download(
     target_kwargs: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
-    Clicks an element (found via task_hint) to initiate a download, saves the file,
-    calculates hash, extracts tables, and sets permissions.
+    Clicks an element to initiate download, saves file via Playwright to a unique path
+    determined by FileSystemTool, reads back using FileSystemTool, calculates hash,
+    and extracts tables. Uses FileSystemTool to manage the download directory.
 
     Args:
         page: The Playwright Page object.
         task_hint: Natural language description of the download link/button.
-        dest_dir: Optional destination directory. Defaults to ~/.smart_browser/downloads.
+        dest_dir: Optional destination directory path string (relative or absolute) for FileSystemTool.
         target_kwargs: Optional original target dict for logging/context.
 
     Returns:
         Dictionary with download info (path, hash, size, tables) or error.
     """
-    download_base_dir = Path(dest_dir) if dest_dir else _HOME / "downloads"
-    if not download_base_dir.exists():
-        logger.info(f"Creating download directory: {download_base_dir}")
-        await _run_in_thread(lambda p: p.mkdir(parents=True, exist_ok=True), download_base_dir)
-        await _run_in_thread(os.chmod, download_base_dir, 0o700)
-    elif not os.access(download_base_dir, os.W_OK):
-        raise ToolError(f"Download directory not writable: {download_base_dir}")
+    final_dl_dir_path_str = "Unknown" # Keep track for logging
+    try:
+        # --- Determine and Prepare Download Directory using FileSystemTool ---
+        if dest_dir:
+            download_dir_path_str = str(dest_dir)
+        else:
+            # Default: Use a relative path structure recognizable by FileSystemTool
+            # Example: Assumes 'smart_browser_root' is implicitly mapped or relative to an allowed base
+            default_dl_subdir = "downloads"
+            download_dir_path_str = f"smart_browser_root/{default_dl_subdir}"
+            # --- OR if using absolute paths directly (requires _HOME to be allowed): ---
+            # download_dir_path_str = str(_HOME / default_dl_subdir)
+
+        logger.info(f"Ensuring download directory exists: '{download_dir_path_str}' using filesystem tool.")
+        create_dir_result = await create_directory(path=download_dir_path_str)
+
+        if not isinstance(create_dir_result, dict) or not create_dir_result.get("success"):
+            error_detail = create_dir_result.get('error', 'Unknown') if isinstance(create_dir_result, dict) else 'Invalid response'
+            raise ToolError(f"Failed to prepare download directory '{download_dir_path_str}'. Filesystem tool error: {error_detail}")
+
+        # Use the actual absolute path returned by the tool
+        final_dl_dir_path_str = create_dir_result.get("path")
+        if not final_dl_dir_path_str:
+             logger.warning(f"create_directory did not return a path for '{download_dir_path_str}'. Using input path.")
+             final_dl_dir_path_str = download_dir_path_str # Fallback, less ideal
+
+        final_dl_dir_path = Path(final_dl_dir_path_str) # Convert to Path object for local use
+        logger.info(f"Download directory confirmed/created at: {final_dl_dir_path}")
+
+    except ToolError as e:
+        logger.error(f"Error preparing download directory '{download_dir_path_str}': {e}", exc_info=True)
+        raise ToolError(f"Could not prepare download directory: {str(e)}") from e
+    except Exception as e:
+        logger.error(f"Unexpected error preparing download directory: {e}", exc_info=True)
+        raise ToolError(f"An unexpected error occurred preparing download directory: {str(e)}") from e
+    # --- End Directory Preparation ---
 
     log_target = target_kwargs or {"hint": task_hint}
+    out_path: Optional[Path] = None # Define earlier for clarity
 
     try:
+        # --- Initiate Download ---
         async with page.expect_download(timeout=60000) as dl_info:
-            # Use smart_click with the task_hint
             await smart_click(
                 page, task_hint=task_hint, target_kwargs=target_kwargs, timeout_ms=10000
             )
 
         dl = await dl_info.value
-        suggested_fname = dl.suggested_filename or f"download_{int(time.time())}"
-        # Sanitize filename
-        safe_fname = re.sub(r"[^\w.\- ]", "_", suggested_fname)  # Keep dots
-        safe_fname = re.sub(r"\s+", "_", safe_fname).strip("._-")  # Replace space with underscore
-        out_path = download_base_dir / safe_fname
-        if not safe_fname:  # Fallback if empty
-            out_path = download_base_dir / f"download_{int(time.time())}.dat"
+        suggested_fname = dl.suggested_filename or f"download_{int(time.time())}.dat"
+        safe_fname = re.sub(r"[^\w.\- ]", "_", suggested_fname)
+        safe_fname = re.sub(r"\s+", "_", safe_fname).strip("._-")
+        # --- Construct initial desired path ---
+        initial_desired_path = final_dl_dir_path / (safe_fname or f"download_{int(time.time())}.dat")
 
-        # Handle potential filename conflicts simply by appending number
-        counter = 1
-        original_path = out_path
-        while out_path.exists():
-            out_path = original_path.with_stem(f"{original_path.stem}_{counter}")
-            counter += 1
-            if counter > 100:  # Safety break
-                raise ToolError(f"Too many filename conflicts for {original_path.name}")
+        # --- Get Unique Path using FileSystemTool ---
+        logger.debug(f"Requesting unique path based on: {initial_desired_path}")
+        try:
+            unique_path_result = await get_unique_filepath(path=str(initial_desired_path))
+            if not isinstance(unique_path_result, dict) or not unique_path_result.get("success"):
+                error_detail = unique_path_result.get('error', 'Unknown') if isinstance(unique_path_result, dict) else 'Invalid response'
+                raise ToolError(f"Failed to get unique download path. Filesystem tool error: {error_detail}")
 
+            final_unique_path_str = unique_path_result.get("path")
+            if not final_unique_path_str:
+                 raise ToolError("Filesystem tool get_unique_filepath succeeded but did not return a path.")
+
+            out_path = Path(final_unique_path_str) # Use the unique path for saving
+            logger.info(f"Determined unique download path: {out_path}")
+
+        except ToolError as e:
+            logger.error(f"Error determining unique download path based on '{initial_desired_path}': {e}", exc_info=True)
+            raise ToolError(f"Could not determine unique save path for download: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error getting unique download path: {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred finding a unique save path: {str(e)}") from e
+        # --- End Getting Unique Path ---
+
+        # --- Save Download using Playwright ---
+        logger.info(f"Playwright saving download to unique path: {out_path}")
         await dl.save_as(out_path)
-        await _run_in_thread(os.chmod, out_path, 0o600)
+        logger.info(f"Playwright download save complete: {out_path}")
 
-        file_data = await _read_file_async(out_path)
-        file_size = len(file_data)
+        # --- Read back, analyze (same as before, using out_path) ---
+        file_data: Optional[bytes] = None
+        file_size = -1
+        sha256_hash = None
+        read_back_error = None
+
+        try:
+            read_path_str = str(out_path)
+            read_result = await read_binary_file(path=read_path_str) # Use the filesystem tool
+
+            # ... (rest of the read_back logic is the same as previous answer) ...
+            if isinstance(read_result, dict) and read_result.get("success"):
+                if isinstance(read_result.get("content"), list) and len(read_result["content"]) > 0:
+                     content_block = read_result["content"][0]
+                     # Assume binary tool returns content like: {'type': 'binary', 'bytes': b'...'}
+                     if content_block.get("type") == "binary" and isinstance(content_block.get("bytes"), bytes):
+                          file_data = content_block.get("bytes")
+                          file_size = len(file_data)
+                     elif isinstance(content_block.get("text"), str): # Handle if read_binary_file falls back weirdly
+                          logger.warning(f"read_binary_file returned text content for {read_path_str}")
+                          read_back_error = "Read back tool returned unexpected text format for binary file."
+                     else:
+                          read_back_error = "Filesystem tool did not return expected binary content block format."
+                else:
+                    read_back_error = "Filesystem tool read succeeded but content format unexpected or empty."
+            else:
+                read_back_error = read_result.get('error', 'Filesystem tool failed to read back downloaded file.') if isinstance(read_result, dict) else 'Invalid response from read_binary_file'
+
+        except ToolError as e:
+            read_back_error = f"Filesystem tool error reading back {out_path}: {e}"
+        except Exception as e:
+            read_back_error = f"Unexpected error reading back {out_path}: {e}"
+
+        if read_back_error:
+             logger.error(f"Failed to read back downloaded file {out_path} for analysis. Error: {read_back_error}")
+             # Return partial success but note the failure.
+             info = {
+                 "success": False, # Mark as overall failure if readback fails
+                 "file_path": str(out_path),
+                 "file_name": out_path.name,
+                 "error": f"Download saved, but failed to read back for analysis: {read_back_error}",
+                 "url": dl.url,
+             }
+             await _log("download_success_readback_fail", target=log_target, **info)
+             # Raise ToolError to signal failure more clearly
+             raise ToolError(info["error"], details=info)
+
+
+        # --- Hashing and Table Extraction (same as before) ---
         sha256_hash = await _compute_hash_async(file_data)
-
         tables = []
         if out_path.suffix.lower() in (".pdf", ".xls", ".xlsx", ".csv"):
             try:
                 table_extraction_task = asyncio.create_task(_extract_tables_async(out_path))
-                try:
-                    tables = await asyncio.wait_for(table_extraction_task, timeout=120)
-                except asyncio.TimeoutError:
-                    logger.warning(f"Table extraction timed out for {out_path.name}")
-                    # Cancel the task and wait for it to be properly cleaned up
-                    table_extraction_task.cancel()
-                    await asyncio.gather(table_extraction_task, return_exceptions=True)
+                tables = await asyncio.wait_for(table_extraction_task, timeout=120)
+            except asyncio.TimeoutError:
+                 logger.warning(f"Table extraction timed out for {out_path.name}")
+                 # Cancel properly
+                 if 'table_extraction_task' in locals() and not table_extraction_task.done():
+                     table_extraction_task.cancel()
+                     try: 
+                         await asyncio.wait_for(table_extraction_task, timeout=1.0)
+                     except Exception: 
+                         pass
             except Exception as extract_err:
-                logger.error(f"Table extraction failed: {extract_err}")
+                logger.error(f"Table extraction failed for {out_path.name}: {extract_err}", exc_info=True)
 
         info = {
             "success": True,
-            "file_path": str(out_path),
+            "file_path": str(out_path), # Return the final unique path
             "file_name": out_path.name,
             "sha256": sha256_hash,
             "size_bytes": file_size,
             "url": dl.url,
             "tables_extracted": bool(tables),
-            "tables": tables[:5],  # Limit payload
+            "tables": tables[:5],
         }
         await _log("download_success", target=log_target, **info)
         return info
 
-    except (
-        ToolError,
-        PlaywrightTimeoutError,
-    ) as e:  # Catch locator/click failures from smart_click
-        await _log("download_fail_notfound", target=log_target, error=str(e))
-        # Distinguish between element not found and download timeout?
-        if "Element not found" in str(e):
-            raise ToolError(
-                f"Download failed: Target element not found for hint '{task_hint}'. {e}"
-            ) from e
-        else:
-            # Assume timeout waiting for download event itself
-            await _log("download_fail_timeout", target=log_target, error=str(e))
-            raise ToolError(
-                f"Download failed: Timed out waiting for download event after click. {e}"
-            ) from e
+    # --- Error Handling (mostly same, ensure path context uses out_path if available) ---
+    except (ToolInputError, ToolError) as e:
+        log_event = "download_fail_other"
+        await _log(log_event, target=log_target, error=str(e), path=str(out_path) if out_path else "N/A")
+        raise
+    except PlaywrightTimeoutError as e:
+        await _log("download_fail_timeout", target=log_target, error=str(e), path=str(out_path) if out_path else "N/A")
+        raise ToolError(f"Download operation timed out: {e}") from e
     except PlaywrightException as e:
-        await _log("download_fail_playwright", target=log_target, error=str(e))
+        await _log("download_fail_playwright", target=log_target, error=str(e), path=str(out_path) if out_path else "N/A")
         raise ToolError(f"Download failed due to Playwright error: {e}") from e
     except Exception as e:
-        await _log("download_fail_unexpected", target=log_target, error=str(e))
+        await _log("download_fail_unexpected", target=log_target, error=str(e), path=str(out_path) if out_path else "N/A")
         raise ToolError(f"Unexpected error during download: {e}") from e
 
 
@@ -2708,96 +2894,149 @@ async def crawl_for_pdfs(
     return list(pdf_urls_found)
 
 
-async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
-    """Downloads a file directly using httpx with streaming and async I/O."""
-    output_path = None
+async def _download_file_direct(url: str, dest_dir_str: str, seq: int = 1) -> Dict:
+    """
+    Downloads a file directly using httpx, determines a unique filename via
+    FileSystemTool, writes the content using FileSystemTool, and computes hash.
+
+    Args:
+        url: The URL to download from.
+        dest_dir_str: The validated destination directory path string (from create_directory).
+        seq: Sequence number for default filename generation.
+
+    Returns:
+        Dictionary with download results (success/error, path, size, hash, url).
+    """
+    final_output_path_str = None # Track path for potential deletion on error
+    downloaded_content: Optional[bytes] = None
+
     try:
+        # --- 1. Determine Initial Filename ---
         parsed_url = urlparse(url)
         fname_base = os.path.basename(parsed_url.path) if parsed_url.path else ""
+        initial_filename: str
         if not fname_base or fname_base == "/" or "." not in fname_base:
             dir_slug = _get_dir_slug(url)
-            filename = f"{seq:03d}_{dir_slug}_{_slugify(fname_base or 'download')}"
-            filename += ".pdf" if url.lower().endswith(".pdf") else ".dat"
+            initial_filename = f"{seq:03d}_{dir_slug}_{_slugify(fname_base or 'download')}"
+            initial_filename += ".pdf" if url.lower().endswith(".pdf") else ".dat"
         else:
-            filename = f"{seq:03d}_{_slugify(fname_base)}"
-        output_path = dest_dir / filename
-        output_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure parent exists
-        # Set proper permissions on parent directory
-        await _run_in_thread(os.chmod, output_path.parent, 0o700)
+            initial_filename = f"{seq:03d}_{_slugify(fname_base)}"
 
+        # Initial desired path *string*
+        initial_desired_path = os.path.join(dest_dir_str, initial_filename)
+
+        # --- 2. Download Content and Refine Filename ---
         headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "*/*",
-            "Accept-Encoding": "gzip, deflate, br",
+            "User-Agent": "Mozilla/5.0", "Accept": "*/*", "Accept-Encoding": "gzip, deflate, br"
         }
-        async with httpx.AsyncClient(
-            follow_redirects=True, timeout=120.0, headers=headers
-        ) as client:
+        refined_desired_path = initial_desired_path # Start with initial path
+
+        async with httpx.AsyncClient(follow_redirects=True, timeout=120.0, headers=headers) as client:
             async with client.stream("GET", url) as response:
                 if response.status_code != 200:
                     return {
-                        "url": url,
-                        "error": f"HTTP {response.status_code}",
-                        "status_code": response.status_code,
-                        "success": False,
+                        "url": url, "error": f"HTTP {response.status_code}",
+                        "status_code": response.status_code, "success": False,
+                        "path": initial_desired_path # Report intended path on HTTP error
                     }
 
-                # Process headers inside the stream context manager
-                # Refine filename from headers
+                # Refine filename based on headers *before* getting unique path
                 content_disposition = response.headers.get("content-disposition")
                 if content_disposition:
                     match = re.search(r'filename="?([^"]+)"?', content_disposition)
                     if match:
-                        output_path = dest_dir / f"{seq:03d}_{_slugify(match.group(1))}"
+                         refined_filename = f"{seq:03d}_{_slugify(match.group(1))}"
+                         refined_desired_path = os.path.join(dest_dir_str, refined_filename)
+
                 content_type = response.headers.get("content-type", "").split(";")[0].strip()
-                if content_type == "application/pdf" and not output_path.name.lower().endswith(
-                    ".pdf"
-                ):
-                    output_path = output_path.with_suffix(".pdf")
-                # Handle filename conflicts simply
-                counter = 1
-                original_path = output_path
-                while output_path.exists():
-                    output_path = original_path.with_stem(f"{original_path.stem}_{counter}")
-                    counter += 1
-                    if counter > 100:
-                        raise IOError(f"Too many filename conflicts for {original_path.name}")
+                # Adjust suffix based on refined path
+                current_stem, current_ext = os.path.splitext(refined_desired_path)
+                if content_type == "application/pdf" and current_ext.lower() != ".pdf":
+                    refined_desired_path = current_stem + ".pdf"
 
-                hasher = hashlib.sha256()
-                bytes_written = 0
-                async with aiofiles.open(output_path, "wb") as f:
-                    async for chunk in response.aiter_bytes():
-                        await f.write(chunk)
-                        hasher.update(chunk)
-                        bytes_written += len(chunk)
+                # Download content to memory
+                downloaded_content = await response.aread()
+                bytes_read = len(downloaded_content)
 
+        # --- 3. Get Unique Filepath using FileSystemTool ---
+        logger.debug(f"Requesting unique path based on refined path: {refined_desired_path}")
+        try:
+            unique_path_result = await get_unique_filepath(path=refined_desired_path)
+            if not isinstance(unique_path_result, dict) or not unique_path_result.get("success"):
+                error_detail = unique_path_result.get('error', 'Unknown') if isinstance(unique_path_result, dict) else 'Invalid response'
+                raise ToolError(f"Failed to get unique download path. Filesystem tool error: {error_detail}")
+
+            final_output_path_str = unique_path_result.get("path")
+            if not final_output_path_str:
+                 raise ToolError("Filesystem tool get_unique_filepath succeeded but did not return a path.")
+            logger.info(f"Determined unique download save path: {final_output_path_str}")
+
+        except ToolError as e:
+            logger.error(f"Error determining unique download path based on '{refined_desired_path}': {e}", exc_info=True)
+            raise ToolError(f"Could not determine unique save path for download: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error getting unique download path: {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred finding a unique save path: {str(e)}") from e
+
+        # --- 4. Write Content using FileSystemTool ---
+        try:
+            write_result = await write_file(
+                path=final_output_path_str,
+                content=downloaded_content # Pass downloaded bytes
+            )
+            if not isinstance(write_result, dict) or not write_result.get("success"):
+                error_detail = write_result.get('error', 'Unknown') if isinstance(write_result, dict) else 'Invalid response'
+                raise ToolError(f"Filesystem tool failed to write downloaded file: {error_detail}")
+            # Verify path returned matches if needed
+            # final_output_path_str = write_result.get("path", final_output_path_str)
+
+        except ToolError as e:
+            logger.error(f"Failed to write downloaded file '{final_output_path_str}' using filesystem tool: {e}", exc_info=True)
+            raise ToolError(f"Could not write downloaded file: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error writing downloaded file '{final_output_path_str}': {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred writing the downloaded file: {str(e)}") from e
+
+        # --- 5. Compute Hash (from memory) ---
+        hasher = hashlib.sha256()
+        hasher.update(downloaded_content)
         file_hash = hasher.hexdigest()
-        await _run_in_thread(os.chmod, output_path, 0o600)
+
+        # Remove direct chmod calls
+
         await _log(
-            "download_direct_success",
-            url=url,
-            file=str(output_path),
-            size=bytes_written,
-            sha256=file_hash,
+            "download_direct_success", url=url, file=final_output_path_str,
+            size=bytes_read, sha256=file_hash
         )
+
         return {
-            "url": url,
-            "file": str(output_path),
-            "size": bytes_written,
-            "sha256": file_hash,
-            "success": True,
+            "url": url, "file": final_output_path_str, "size": bytes_read,
+            "sha256": file_hash, "success": True,
         }
+
     except httpx.RequestError as e:
         logger.warning(f"Network error downloading {url}: {e}")
-        return {"url": url, "error": f"Network error: {e}", "success": False}
+        return {"url": url, "error": f"Network error: {e}", "success": False, "path": final_output_path_str}
+    except (ToolError, ToolInputError) as e: # Catch errors from FS tools or validation
+         logger.error(f"Tool error downloading {url} directly: {e}", exc_info=True)
+         # Attempt cleanup if write might have happened before error
+         if final_output_path_str:
+             try:
+                 logger.warning(f"Attempting cleanup of potentially incomplete file: {final_output_path_str}")
+                 await delete_path(final_output_path_str)
+             except Exception as del_e:
+                 logger.error(f"Cleanup failed for {final_output_path_str}: {del_e}")
+         return {"url": url, "error": f"Download failed: {e}", "success": False, "path": final_output_path_str}
     except Exception as e:
-        logger.error(f"Error downloading {url} directly: {e}", exc_info=True)
-        if output_path and output_path.exists():
-            try:
-                output_path.unlink()
-            except OSError:
-                pass
-        return {"url": url, "error": f"Download failed: {e}", "success": False}
+        logger.error(f"Unexpected error downloading {url} directly: {e}", exc_info=True)
+        # Attempt cleanup if write might have happened
+        if final_output_path_str:
+             try:
+                 logger.warning(f"Attempting cleanup of potentially incomplete file: {final_output_path_str}")
+                 await delete_path(final_output_path_str)
+             except Exception as del_e:
+                 logger.error(f"Cleanup failed for {final_output_path_str}: {del_e}")
+        return {"url": url, "error": f"Download failed unexpectedly: {e}", "success": False, "path": final_output_path_str}
 
 
 # --- OSS Documentation Crawler Helpers ---
@@ -2892,7 +3131,7 @@ def _summarize_html_sync(html: str, max_len: int = 10000) -> str:
     try:  # Try Trafilatura
         if trafilatura is not None:
             extracted = trafilatura.extract(
-                html, include_comments=False, include_tables=False, favour_precision=True
+                html, include_comments=False, include_tables=False, favor_precision=True
             )
             if extracted and len(extracted) > 100:
                 text = extracted
@@ -3334,21 +3573,31 @@ async def _plan_macro(
 
     result = await _call_llm(messages, model=model, expect_json=True, temperature=0.0)
 
-    if isinstance(result, dict) and "error" in result:
+    plan_list = None
+    if isinstance(result, list):
+        plan_list = result
+    elif isinstance(result, dict) and "steps" in result and isinstance(result["steps"], list):
+        logger.warning("LLM wrapped plan in 'steps' key. Extracting list.")
+        plan_list = result["steps"]
+
+    # --- Modify subsequent checks to use plan_list ---
+    if isinstance(result, dict) and "error" in result: # Check original result for errors
         raise ToolError(
             f"Macro planner LLM failed: {result['error']}", details=result.get("raw_response")
         )
-    if not isinstance(result, list):
-            raw_response_preview = str(result)[:500] # Get preview safely
-            raise ToolError(
-                f"Macro planner LLM returned unexpected format: {type(result)}. "
-                f"Preview: '{raw_response_preview}...'",
-                details={"raw_response": raw_response_preview}
-            )
-    
-    # Validate plan structure
+
+    # Check the extracted plan_list
+    if plan_list is None: # Covers non-list/non-dict or dict without 'steps'
+        raw_response_preview = str(result)[:500]
+        raise ToolError(
+            f"Macro planner LLM returned unexpected format: {type(result)}. "
+            f"Preview: '{raw_response_preview}...'",
+            details={"raw_response": raw_response_preview}
+        )
+
+    # Validate plan structure using plan_list
     validated_plan = []
-    for i, step in enumerate(result):
+    for i, step in enumerate(plan_list): # Use plan_list here
         if not isinstance(step, dict) or "action" not in step:
             logger.warning(f"Invalid step format in macro plan (step {i + 1}): {step}")
             continue
@@ -3356,13 +3605,16 @@ async def _plan_macro(
         if action not in ALLOWED_ACTIONS:
             logger.warning(f"Invalid action '{action}' in macro plan (step {i + 1}): {step}")
             continue
-        # Add validation for required args per action if needed
         validated_plan.append(step)
 
     if not validated_plan:
-        raise ToolError("Macro planner returned an empty or invalid plan.")
+        # Include original LLM response in error if validation fails
+        raw_response_preview = str(result)[:500]
+        raise ToolError(
+            "Macro planner returned an empty or invalid plan.",
+             details={"raw_response": raw_response_preview}
+        )
     return validated_plan
-
 
 async def run_macro(
     page: Page, task: str, max_rounds: int = 7, model: str = "gpt-4.1-mini"
@@ -3902,126 +4154,170 @@ class SmartBrowserTool(BaseTool):
             logger.info("SmartBrowserTool outside server context. Async init on first use.")
 
     async def _ensure_initialized(self):
-        """Ensure async components and load config into globals."""
-        # Define all relevant globals to modify
+        """
+        Ensure async components are ready, load configuration into global variables,
+        and prepare internal storage directories using the FileSystemTool.
+        This method is idempotent.
+        """
+        # Define all relevant globals that this function modifies or uses
         global _sb_state_key_b64_global, _sb_max_tabs_global, _sb_tab_timeout_global
         global _sb_inactivity_timeout_global, _headless_mode_global, _vnc_enabled_global
         global _vnc_password_global, _proxy_pool_str_global, _proxy_allowed_domains_str_global
         global _vault_allowed_paths_str_global, _max_widgets_global, _max_section_chars_global
         global _dom_fp_limit_global, _llm_model_locator_global, _retry_after_fail_global
         global _seq_cutoff_global, _area_min_global, _high_risk_domains_set_global
-        global _locator_cache_cleanup_task_handle  # Include the task handle global
+        global _locator_cache_cleanup_task_handle
+        global _thread_pool # Include thread pool for potential reconfiguration
+        global _SB_INTERNAL_BASE_PATH_STR, _STATE_FILE, _LOG_FILE, _CACHE_DB, _READ_JS_CACHE
 
         if self._is_initialized:
             return
+
         async with self._init_lock:
             if self._is_initialized:
                 return
 
             logger.info("Performing first-time async initialization of SmartBrowserTool...")
 
-            # --- Load ALL SB config into globals ---
+            # --- Step 1: Load ALL SB config into globals ---
             try:
-                # Use cached config if available
                 if not self._config_cache:
-                    config = get_config()  # Use the central config loader
-                    sb_config: SmartBrowserConfig = config.smart_browser  # Get the specific section
-                    self._config_cache = sb_config  # Cache the config
+                    config = get_config()
+                    sb_config: SmartBrowserConfig = config.smart_browser
+                    self._config_cache = sb_config
                 else:
                     sb_config = self._config_cache
 
-                # Assign loaded config values to global variables, preserving defaults if None
                 _sb_state_key_b64_global = sb_config.sb_state_key_b64 or _sb_state_key_b64_global
                 _sb_max_tabs_global = sb_config.sb_max_tabs or _sb_max_tabs_global
                 _sb_tab_timeout_global = sb_config.sb_tab_timeout or _sb_tab_timeout_global
-                _sb_inactivity_timeout_global = (
-                    sb_config.sb_inactivity_timeout or _sb_inactivity_timeout_global
-                )
-                _headless_mode_global = (
-                    sb_config.headless_mode
-                    if sb_config.headless_mode is not None
-                    else _headless_mode_global
-                )
-                _vnc_enabled_global = (
-                    sb_config.vnc_enabled
-                    if sb_config.vnc_enabled is not None
-                    else _vnc_enabled_global
-                )
+                _sb_inactivity_timeout_global = sb_config.sb_inactivity_timeout or _sb_inactivity_timeout_global
+                _headless_mode_global = sb_config.headless_mode if sb_config.headless_mode is not None else _headless_mode_global
+                _vnc_enabled_global = sb_config.vnc_enabled if sb_config.vnc_enabled is not None else _vnc_enabled_global
                 _vnc_password_global = sb_config.vnc_password or _vnc_password_global
                 _proxy_pool_str_global = sb_config.proxy_pool_str or _proxy_pool_str_global
-                _proxy_allowed_domains_str_global = (
-                    sb_config.proxy_allowed_domains_str or _proxy_allowed_domains_str_global
-                )
-                _vault_allowed_paths_str_global = (
-                    sb_config.vault_allowed_paths_str or _vault_allowed_paths_str_global
-                )
+                _proxy_allowed_domains_str_global = sb_config.proxy_allowed_domains_str or _proxy_allowed_domains_str_global
+                _vault_allowed_paths_str_global = sb_config.vault_allowed_paths_str or _vault_allowed_paths_str_global
                 _max_widgets_global = sb_config.max_widgets or _max_widgets_global
                 _max_section_chars_global = sb_config.max_section_chars or _max_section_chars_global
                 _dom_fp_limit_global = sb_config.dom_fp_limit or _dom_fp_limit_global
                 _llm_model_locator_global = sb_config.llm_model_locator or _llm_model_locator_global
-                _retry_after_fail_global = (
-                    sb_config.retry_after_fail
-                    if sb_config.retry_after_fail is not None
-                    else _retry_after_fail_global
-                )
-                _seq_cutoff_global = (
-                    sb_config.seq_cutoff if sb_config.seq_cutoff is not None else _seq_cutoff_global
-                )
+                _retry_after_fail_global = sb_config.retry_after_fail if sb_config.retry_after_fail is not None else _retry_after_fail_global
+                _seq_cutoff_global = sb_config.seq_cutoff if sb_config.seq_cutoff is not None else _seq_cutoff_global
                 _area_min_global = sb_config.area_min or _area_min_global
-                _high_risk_domains_set_global = (
-                    sb_config.high_risk_domains_set or _high_risk_domains_set_global
-                )
+                _high_risk_domains_set_global = sb_config.high_risk_domains_set or _high_risk_domains_set_global
 
                 logger.info("Smart Browser configuration loaded into global variables.")
-                # Update dependent derived globals AFTER loading primary strings
-                _update_proxy_settings()
-                _update_vault_paths()
 
-                # Also update the thread pool max_workers based on sb_max_tabs
-                global _thread_pool
-                _thread_pool.shutdown(wait=False)
-                _thread_pool = concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(32, _sb_max_tabs_global * 2), thread_name_prefix="sb_worker"
-                )
+                # Update dependent derived globals AFTER loading primary strings
+                _update_proxy_settings() # Assumes this function uses the globals set above
+                _update_vault_paths()  # Assumes this function uses the globals set above
+
+                # Reconfigure thread pool based on potentially updated max_tabs
+                # Check if the pool instance needs changing (e.g., if max_workers differs)
+                # This is a simplified check; a more robust check might compare desired vs current max_workers
+                current_max_workers = getattr(_thread_pool, '_max_workers', min(32, (_cpu_count or 1) * 2 + 4))
+                desired_max_workers = min(32, _sb_max_tabs_global * 2) # Use updated global
+                if current_max_workers != desired_max_workers:
+                    logger.info(f"Reconfiguring thread pool max_workers from {current_max_workers} to {desired_max_workers} based on SB_MAX_TABS.")
+                    _thread_pool.shutdown(wait=True) # Wait for existing tasks
+                    _thread_pool = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=desired_max_workers, thread_name_prefix="sb_worker"
+                    )
 
             except AttributeError as e:
-                logger.error(f"Error accessing config: {e}. Using hardcoded defaults.")
-                # Keep the defaults defined in the global variable declarations
-                # Update derived settings even with defaults
+                logger.error(f"Error accessing expected Smart Browser config attributes: {e}. Using hardcoded defaults.")
+                # Ensure derived settings are updated even with defaults
                 _update_proxy_settings()
                 _update_vault_paths()
             except Exception as e:
                 logger.error(f"Unexpected error loading Smart Browser config: {e}. Using defaults.")
+                # Ensure derived settings are updated even with defaults
                 _update_proxy_settings()
                 _update_vault_paths()
             # --- End Config Loading ---
 
-            await get_browser_context()  # Ensure browser is ready (uses globals now)
+            # --- Step 2: Prepare Internal Storage Directory using FileSystemTool ---
+            try:
+                # Define the *relative* path structure within an allowed base.
+                # Assumes FileSystemTool is configured with '/home/ubuntu/ultimate_mcp_server/storage' as an allowed base.
+                internal_storage_relative_path = "storage/smart_browser_internal"
 
-            # Start inactivity monitor (uses global)
+                logger.info(f"Ensuring internal storage directory exists: '{internal_storage_relative_path}' using filesystem tool.")
+                create_dir_result = await create_directory(path=internal_storage_relative_path)
+
+                if not isinstance(create_dir_result, dict) or not create_dir_result.get("success"):
+                    error_detail = create_dir_result.get('error', 'Unknown') if isinstance(create_dir_result, dict) else 'Invalid response'
+                    raise ToolError(f"Failed to prepare internal storage directory '{internal_storage_relative_path}'. Filesystem tool error: {error_detail}")
+
+                resolved_base_path_str = create_dir_result.get("path")
+                if not resolved_base_path_str:
+                    raise ToolError(f"FileSystemTool create_directory did not return a path for '{internal_storage_relative_path}'.")
+
+                _SB_INTERNAL_BASE_PATH_STR = resolved_base_path_str # Store the validated absolute path string
+                internal_base_path = Path(_SB_INTERNAL_BASE_PATH_STR)
+
+                # Define the absolute paths for internal files using the resolved base
+                _STATE_FILE = internal_base_path / "storage_state.enc"
+                _LOG_FILE = internal_base_path / "audit.log"
+                _CACHE_DB = internal_base_path / "locator_cache2.db"
+                _READ_JS_CACHE = internal_base_path / "readability.js"
+
+                logger.info(f"Smart Browser internal files will use base: {internal_base_path}")
+
+                # Initialize components that depend on these paths NOW that they are defined
+                # Ensure these helper functions exist and use the global path variables correctly
+                _init_last_hash() # Depends on _LOG_FILE
+                _init_locator_cache_db_sync() # Depends on _CACHE_DB
+
+            except ToolError as e:
+                logger.critical(f"CRITICAL: Failed to initialize Smart Browser internal storage: {e}", exc_info=True)
+                self._is_initialized = False # Mark as failed
+                # Consider re-raising a more specific error if the tool cannot function without storage
+                # raise RuntimeError("Smart Browser cannot initialize internal storage via FileSystemTool.") from e
+                return # Stop initialization
+            except Exception as e:
+                logger.critical(f"CRITICAL: Unexpected error initializing Smart Browser internal storage: {e}", exc_info=True)
+                self._is_initialized = False
+                return # Stop initialization
+            # --- End Internal Storage Preparation ---
+
+            # --- Step 3: Initialize Browser Context (uses loaded globals) ---
+            try:
+                await get_browser_context() # Ensure browser/context are ready
+                logger.info("Playwright browser and context initialized successfully.")
+            except Exception as e:
+                logger.critical(f"CRITICAL: Failed to initialize Playwright browser context: {e}", exc_info=True)
+                self._is_initialized = False
+                # Consider cleanup if browser started but context failed? get_browser_context might need internal cleanup logic.
+                return # Stop initialization
+
+            # --- Step 4: Start Background Tasks ---
+            # Start inactivity monitor (uses global timeout value)
             if self._inactivity_monitor_task is None or self._inactivity_monitor_task.done():
-                timeout_sec = _sb_inactivity_timeout_global  # Use global
+                timeout_sec = _sb_inactivity_timeout_global
                 if timeout_sec > 0:
                     logger.info(f"Starting browser inactivity monitor ({timeout_sec}s)...")
                     self._inactivity_monitor_task = asyncio.create_task(
                         self._inactivity_monitor(timeout_sec)
                     )
                 else:
-                    logger.info("Inactivity monitor disabled.")
+                    logger.info("Inactivity monitor disabled (timeout <= 0).")
 
             # Start locator cache cleanup task (uses global handle)
-            if (
-                _locator_cache_cleanup_task_handle is None
-                or _locator_cache_cleanup_task_handle.done()
-            ):
-                cleanup_interval = 24 * 60 * 60  # Daily - Consider making this configurable too?
-                logger.info("Starting periodic locator cache cleanup task...")
+            if (_locator_cache_cleanup_task_handle is None or
+                    _locator_cache_cleanup_task_handle.done()):
+                # Use a configurable interval eventually, default to daily for now
+                cleanup_interval_sec = 24 * 60 * 60 # Daily
+                logger.info(f"Starting periodic locator cache cleanup task (interval: {cleanup_interval_sec}s)...")
                 _locator_cache_cleanup_task_handle = asyncio.create_task(
-                    _locator_cache_cleanup_task(interval_seconds=cleanup_interval)
+                    _locator_cache_cleanup_task(interval_seconds=cleanup_interval_sec)
                 )
+            # --- End Background Tasks ---
 
+            # --- Finalize Initialization ---
             self._is_initialized = True
-            logger.info("SmartBrowserTool async components initialized.")
+            logger.info("SmartBrowserTool async components initialized successfully.")
 
     def _update_activity(self):
         self._last_activity = time.monotonic()
@@ -4156,6 +4452,13 @@ class SmartBrowserTool(BaseTool):
         async with _tab_context(ctx) as page:
             await _log("fill_form_navigate", url=url)
             await page.goto(url, wait_until="networkidle", timeout=60000)
+            try:
+                # Wait for a common form element or the specific input if known
+                await page.wait_for_selector('form, input[type="text"]', state='visible', timeout=5000)
+                logger.debug("Found form elements, proceeding with field filling.")
+            except PlaywrightTimeoutError:
+                logger.warning("Did not find expected form elements quickly. Proceeding anyway.")
+
             for i, field in enumerate(form_fields):
                 hint = field.get("task_hint")
                 target_fallback = field.get("target")
@@ -4270,6 +4573,7 @@ class SmartBrowserTool(BaseTool):
                 )
             return {"success": True, "download": download_info}
 
+
     @tool(name="smart_browser.download_site_pdfs")
     @with_tool_metrics
     @with_error_handling
@@ -4283,111 +4587,287 @@ class SmartBrowserTool(BaseTool):
         max_pages_crawl: int = 500,
         rate_limit_rps: float = 1.0,
     ) -> Dict[str, Any]:
-        """Crawls site, finds PDFs, downloads them directly with rate limiting."""
+        """
+        Crawls site, finds PDFs, downloads them directly using FileSystemTool for path management.
+
+        Args:
+            start_url: The URL to start crawling from.
+            dest_subfolder: Optional subdirectory name for downloads (relative to an allowed base).
+            include_regex: Optional regex to filter PDF URLs.
+            max_depth: Maximum crawl depth.
+            max_pdfs: Maximum number of PDFs to download.
+            max_pages_crawl: Maximum number of pages to visit during crawl.
+            rate_limit_rps: Download rate limit in requests per second.
+
+        Returns:
+            Dictionary with results, including count, destination directory, and individual file results.
+        """
         await self._ensure_initialized()
         self._update_activity()
-        download_base = _HOME / "downloads"
-        if dest_subfolder:
-            safe_subfolder = _slugify(dest_subfolder, 50)
-        else:
-            safe_subfolder = _slugify(urlparse(start_url).netloc, 50) or "pdfs"
-        dest_dir = download_base / safe_subfolder
-        # Create directory directly using thread pool for sync I/O
+        final_dest_dir_str: Optional[str] = None # Track the validated dir path
+
         try:
-            await _run_in_thread(lambda p: p.mkdir(parents=True, exist_ok=True), dest_dir)
-            # Explicitly set permissions AFTER creation
-            await _run_in_thread(os.chmod, dest_dir, 0o700)
-        except OSError as e:
-            logger.error(f"Failed to create or set permissions on download directory {dest_dir}: {e}")
-            raise ToolError(f"Failed to prepare download directory {dest_dir}: {e}") from e
+            # --- Determine and Prepare Download Directory using FileSystemTool ---
+            if dest_subfolder:
+                safe_subfolder = _slugify(dest_subfolder, 50)
+            else:
+                safe_subfolder = _slugify(urlparse(start_url).netloc, 50) or "downloaded_pdfs" # Default folder name
+
+            # Construct relative path for FileSystemTool (assuming a base like 'smart_browser_root' or similar)
+            # Adjust 'smart_browser_root' if your FS tool uses a different base concept
+            download_base_relative = "smart_browser_root/downloads"
+            # --- OR if using absolute path directly (requires _HOME base to be allowed): ---
+            # download_base_relative = str(_HOME / "downloads")
+
+            dest_dir_relative_path = f"{download_base_relative}/{safe_subfolder}"
+
+            logger.info(f"Ensuring download directory exists: '{dest_dir_relative_path}' using filesystem tool.")
+            create_dir_result = await create_directory(path=dest_dir_relative_path)
+
+            if not isinstance(create_dir_result, dict) or not create_dir_result.get("success"):
+                error_detail = create_dir_result.get('error', 'Unknown') if isinstance(create_dir_result, dict) else 'Invalid response'
+                raise ToolError(f"Failed to prepare download directory '{dest_dir_relative_path}'. Filesystem tool error: {error_detail}")
+
+            # Use the actual absolute path returned by the tool for passing to helpers
+            final_dest_dir_str = create_dir_result.get("path")
+            if not final_dest_dir_str:
+                logger.warning(f"create_directory did not return a path for '{dest_dir_relative_path}'. Using input path.")
+                final_dest_dir_str = dest_dir_relative_path # Fallback
+
+            logger.info(f"Download directory confirmed/created at: {final_dest_dir_str}")
+            # Removed direct mkdir/chmod calls
+
+        except ToolError as e:
+            logger.error(f"Error preparing download directory '{dest_dir_relative_path}': {e}", exc_info=True)
+            raise ToolError(f"Could not prepare download directory: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error preparing download directory: {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred preparing download directory: {str(e)}") from e
+        # --- End Directory Preparation ---
 
         logger.info(f"Starting PDF crawl from: {start_url}")
-        pdf_urls = await crawl_for_pdfs(
-            start_url, include_regex, max_depth, max_pdfs, max_pages_crawl, rate_limit_rps=5.0
+        pdf_urls = await crawl_for_pdfs( # crawl_for_pdfs uses httpx, no FS access
+            start_url, include_regex, max_depth, max_pdfs, max_pages_crawl, rate_limit_rps=5.0 # Use faster rate for crawl itself
         )
+
         if not pdf_urls:
-            logger.info("No PDF URLs found.")
-            return {"success": True, "pdf_count": 0, "dest_dir": str(dest_dir), "files": []}
+            logger.info("No PDF URLs found during crawl.")
+            return {"success": True, "pdf_count": 0, "dest_dir": final_dest_dir_str, "files": []}
 
         logger.info(f"Found {len(pdf_urls)} PDFs. Starting downloads (Rate: {rate_limit_rps}/s)...")
-        limiter = RateLimiter(rate_limit_rps)
+        limiter = RateLimiter(rate_limit_rps) # Use specified rate for downloads
 
+        # --- Define Download Task ---
         async def download_task(url, seq):
             await limiter.acquire()
-            return await _download_file_direct(url, dest_dir, seq)
+            # Pass the validated *string* path to the helper
+            return await _download_file_direct(url, final_dest_dir_str, seq)
+        # --- End Download Task ---
 
+        # --- Run Downloads Concurrently ---
         download_tasks = [
             asyncio.create_task(download_task(url, i + 1)) for i, url in enumerate(pdf_urls)
         ]
-        results = await asyncio.gather(*download_tasks)
-        successful = [r for r in results if r.get("success")]
-        await _log(
-            "download_site_pdfs_complete",
-            start_url=start_url,
-            found=len(pdf_urls),
-            successful=len(successful),
-            dest_dir=str(dest_dir),
-        )
-        return {
-            "success": True,
-            "pdf_count": len(successful),
-            "dest_dir": str(dest_dir),
-            "files": results,
+        results = await asyncio.gather(*download_tasks) # Exceptions handled within _download_file_direct
+        # --- End Downloads ---
+
+        successful_downloads = [r for r in results if isinstance(r, dict) and r.get("success")]
+        failed_downloads = [r for r in results if not isinstance(r, dict) or not r.get("success")]
+
+        log_details = {
+            "start_url": start_url, "found": len(pdf_urls),
+            "successful": len(successful_downloads), "failed": len(failed_downloads),
+            "dest_dir": final_dest_dir_str
         }
+        # Optionally add first few errors to log details if needed
+        if failed_downloads:
+            log_details["errors_preview"] = [f"{res.get('url')}: {res.get('error')}" for res in failed_downloads[:3]]
+
+        await _log("download_site_pdfs_complete", **log_details)
+
+        # Return overall success=True, but include individual results
+        return {
+            "success": True, # Indicates the overall orchestration succeeded
+            "pdf_count": len(successful_downloads),
+            "failed_count": len(failed_downloads),
+            "dest_dir": final_dest_dir_str,
+            "files": results, # List containing dicts for each attempted download
+        }
+
 
     @tool(name="smart_browser.collect_documentation")
     @with_tool_metrics
-    @with_error_handling
+    @with_error_handling # This decorator should handle injecting/making filesystem tools available
     async def collect_documentation(
         self, package: str, max_pages: int = 40, rate_limit_rps: float = 2.0
     ) -> Dict[str, Any]:
-        """Finds package docs site, crawls pages, extracts text, saves to file."""
+        """
+        Finds the documentation site for a package, crawls specified pages,
+        extracts readable text content, and saves the combined content to a file
+        within an allowed directory using the MCP FileSystem tools.
+
+        Args:
+            package: The name of the package to find documentation for.
+            max_pages: Maximum number of documentation pages to crawl and extract.
+            rate_limit_rps: Requests per second limit for crawling the docs site.
+
+        Returns:
+            A dictionary containing the success status, package name, number of pages
+            collected, the absolute path to the saved file (if successful),
+            and the root URL found for the documentation.
+        """
         await self._ensure_initialized()
         self._update_activity()
-        docs_root = await _pick_docs_root(package)
-        if not docs_root:
-            raise ToolError(f"Could not find docs site for '{package}'.")
-        pages_content = await crawl_docs_site(
-            docs_root, max_pages=max_pages, rate_limit_rps=rate_limit_rps
-        )
+
+        # 1. Find Documentation Root URL
+        try:
+            docs_root = await _pick_docs_root(package)
+            if not docs_root:
+                # _pick_docs_root already logs extensively, raise ToolError directly
+                raise ToolError(f"Could not find a suitable documentation site for package '{package}'.")
+        except ToolError as e:
+            # Propagate ToolErrors from search/finding phase
+            logger.error(f"Failed to find docs root for '{package}': {e}")
+            raise # Re-raise the original error
+        except Exception as e:
+            # Catch unexpected errors during root finding
+            logger.error(f"Unexpected error finding docs root for '{package}': {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred while searching for the docs root: {str(e)}") from e
+
+        logger.info(f"Found potential docs root: {docs_root}. Starting crawl...")
+
+        # 2. Crawl the Documentation Site
+        try:
+            pages_content = await crawl_docs_site(
+                docs_root, max_pages=max_pages, rate_limit_rps=rate_limit_rps
+            )
+        except ToolInputError as e: # Catch errors like invalid URL from crawl_docs_site
+            raise ToolInputError(f"Invalid documentation root URL '{docs_root}': {e}", param_name="docs_root", provided_value=docs_root) from e
+        except Exception as e: # Catch unexpected crawl errors
+            logger.error(f"Unexpected error crawling docs site {docs_root}: {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred while crawling the documentation site: {str(e)}") from e
+
         if not pages_content:
+            logger.info(f"No readable content collected from '{docs_root}' for package '{package}'.")
             return {
-                "success": True,
+                "success": True, # Succeeded in crawling, but found nothing
                 "package": package,
                 "pages_collected": 0,
                 "file_path": None,
                 "root_url": docs_root,
-                "message": "No content collected.",
+                "message": f"Successfully crawled '{docs_root}', but no readable content pages were collected (or max_pages was 0).",
             }
-        scratch_dir = _HOME / "docs_collected"
-        await create_directory(str(scratch_dir))
-        # Explicitly set permissions
-        await _run_in_thread(os.chmod, scratch_dir, 0o700)
+
+        logger.info(f"Collected content from {len(pages_content)} pages for package '{package}'.")
+
+        # 3. Prepare Output Path and Directory using FileSystemTool
+        # Define a subdirectory within an assumed allowed base path.
+        # This relies on FileSystemTool being configured with a suitable base (e.g., 'browser_demo_outputs').
+        # The exact base directory isn't needed here, only the relative path for the tool.
+        output_subdir_name = "docs_collected"
+        # Construct the relative path for the directory creation tool
+        # Choose a base directory known to be allowed by FileSystemConfig
+        # For demo, let's assume 'browser_demo_outputs' is allowed. If not, adjust this.
+        allowed_base_for_demo = "browser_demo_outputs"
+        output_dir_relative_path = f"{allowed_base_for_demo}/{output_subdir_name}"
+
+        try:
+            # Ensure the output directory exists using the filesystem tool.
+            # The tool should handle resolution relative to its allowed base paths.
+            create_result = await create_directory(path=output_dir_relative_path)
+
+            # Check the result carefully - it should return success status and potentially the resolved path
+            if not isinstance(create_result, dict) or not create_result.get("success"):
+                error_detail = create_result.get('error', 'Unknown') if isinstance(create_result, dict) else 'Invalid response from create_directory'
+                logger.error(f"Filesystem tool failed to create directory '{output_dir_relative_path}'. Reason: {error_detail}")
+                raise ToolError(f"Could not prepare output directory. Filesystem tool failed: {error_detail}")
+
+            created_dir_path = create_result.get("path", output_dir_relative_path) # Get the actual path if returned
+            logger.info(f"Ensured output directory exists via MCP tool: '{output_dir_relative_path}' resolved to '{created_dir_path}'")
+
+        except ToolError as e:
+            # Catch errors specifically from the create_directory tool call
+            logger.error(f"Failed to ensure directory '{output_dir_relative_path}' exists using filesystem tool: {e}", exc_info=True)
+            # Re-raise as a clear ToolError indicating failure to prepare output location
+            raise ToolError(f"Could not prepare output directory '{output_dir_relative_path}': {str(e)}") from e
+        except Exception as e:
+            # Catch any other unexpected errors during directory preparation
+            logger.error(f"Unexpected error preparing output directory '{output_dir_relative_path}': {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred preparing the output directory: {str(e)}") from e
+
+
+        # 4. Prepare File Content
         now = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         safe_pkg = _slugify(package, 40)
         fname = f"{safe_pkg}_docs_{now}.txt"
-        fpath = scratch_dir / fname
+        # Construct the relative path for the file writing tool
+        fpath_relative = f"{output_dir_relative_path}/{fname}"
+
         sep = "\n\n" + ("=" * 80) + "\n\n"
-        combined = f"# Docs for: {package}\n# Root: {docs_root}\n{sep}"
-        combined += sep.join(
-            f"## Page {i + 1}: {url}\n\n{text.strip()}"
-            for i, (url, text) in enumerate(pages_content)
-        )
-        await write_file_content(str(fpath), combined)  # Assumes sets 600 perms
+        combined_content = f"# Docs for: {package}\n# Root: {docs_root}\n{sep}"
+        try:
+            combined_content += sep.join(
+                # Ensure url and text are strings before joining
+                f"## Page {i + 1}: {str(url)}\n\n{str(text).strip()}"
+                for i, (url, text) in enumerate(pages_content)
+            )
+        except Exception as e:
+            logger.error(f"Error combining documentation content for {package}: {e}", exc_info=True)
+            raise ToolError(f"Internal error formatting documentation content: {str(e)}") from e
+
+
+        # 5. Write File using FileSystemTool
+        final_absolute_fpath = None
+        try:
+            # Use the write_file tool (or appropriate name from your filesystem module)
+            write_result = await write_file(
+                path=fpath_relative,
+                content=combined_content,
+                # Add overwrite=True if you want subsequent calls for the same package near the same time to overwrite
+                # overwrite=True
+            )
+            # Check the result carefully
+            if not isinstance(write_result, dict) or not write_result.get("success"):
+                error_detail = write_result.get('error', 'Unknown') if isinstance(write_result, dict) else 'Invalid response from write_file'
+                logger.error(f"Filesystem tool failed to write file '{fpath_relative}'. Reason: {error_detail}")
+                raise ToolError(f"Could not write documentation file. Filesystem tool failed: {error_detail}")
+
+            # --- Get the ACTUAL absolute path returned by the tool ---
+            # This is crucial as the tool resolves the relative path against its base.
+            final_absolute_fpath = write_result.get("path") # Use 'path' key, adjust if tool returns differently
+            if not final_absolute_fpath:
+                logger.warning(f"Filesystem tool write_file did not return the final absolute path for '{fpath_relative}'. Using relative path for logs/return value.")
+                final_absolute_fpath = fpath_relative # Fallback, less ideal
+
+            logger.info(f"Successfully wrote documentation to: {final_absolute_fpath} (requested relative: {fpath_relative})")
+
+        except ToolError as e:
+            # Catch errors specifically from the write_file tool call
+            logger.error(f"Failed to write file '{fpath_relative}' using filesystem tool: {e}", exc_info=True)
+            raise ToolError(f"Could not write documentation file '{fpath_relative}': {str(e)}") from e
+        except Exception as e:
+            # Catch any other unexpected errors during file writing
+            logger.error(f"Unexpected error writing documentation file '{fpath_relative}': {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred writing the documentation file: {str(e)}") from e
+
+        # 6. Log Success and Return Result
         await _log(
             "docs_collected_success",
             package=package,
             root=docs_root,
             pages=len(pages_content),
-            file=str(fpath),
+            file=str(final_absolute_fpath), # Log the actual path
         )
+
         return {
             "success": True,
             "package": package,
             "pages_collected": len(pages_content),
-            "file_path": str(fpath),
+            "file_path": str(final_absolute_fpath), # Return the actual path
             "root_url": docs_root,
+            "message": f"Successfully collected documentation for '{package}' ({len(pages_content)} pages) and saved to '{final_absolute_fpath}'."
         }
+
 
     @tool(name="smart_browser.run_macro")
     @with_tool_metrics
@@ -4447,6 +4927,7 @@ class SmartBrowserTool(BaseTool):
                 "final_page_state": {"error": "Timeout occurred"},
             }
 
+
     @tool(name="smart_browser.autopilot")
     @with_tool_metrics
     @with_error_handling
@@ -4460,12 +4941,48 @@ class SmartBrowserTool(BaseTool):
         """Executes a complex multi-step task using LLM planning and available tools."""
         await self._ensure_initialized()
         self._update_activity()
-        scratch_dir = _HOME / scratch_subdir
-        await create_directory(str(scratch_dir))
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        log_path = scratch_dir / f"autopilot_{run_id}.jsonl"
-        logger.info(f"Autopilot run '{run_id}' started. Task: '{task[:100]}...'. Log: {log_path}")
+        final_scratch_dir_str: Optional[str] = None
+        log_path: Optional[Path] = None # Use Path object for log file handling
 
+        try:
+            # --- Prepare Scratch Directory using FileSystemTool ---
+            # Construct relative path for FileSystemTool
+            # Example: Assumes 'smart_browser_root' is implicitly mapped or relative to an allowed base
+            scratch_base_relative = "smart_browser_root/scratch" # Or another configured allowed path
+            # --- OR if using absolute path directly (requires _HOME base to be allowed): ---
+            # scratch_base_relative = str(_HOME / "scratch")
+
+            scratch_dir_relative_path = f"{scratch_base_relative}/{scratch_subdir}"
+
+            logger.info(f"Ensuring autopilot scratch directory exists: '{scratch_dir_relative_path}' using filesystem tool.")
+            create_dir_result = await create_directory(path=scratch_dir_relative_path)
+
+            if not isinstance(create_dir_result, dict) or not create_dir_result.get("success"):
+                error_detail = create_dir_result.get('error', 'Unknown') if isinstance(create_dir_result, dict) else 'Invalid response'
+                raise ToolError(f"Failed to prepare autopilot scratch directory '{scratch_dir_relative_path}'. Filesystem tool error: {error_detail}")
+
+            final_scratch_dir_str = create_dir_result.get("path")
+            if not final_scratch_dir_str:
+                logger.warning(f"create_directory did not return a path for '{scratch_dir_relative_path}'. Using input path.")
+                final_scratch_dir_str = scratch_dir_relative_path # Fallback
+
+            final_scratch_dir_path = Path(final_scratch_dir_str) # Convert to Path for log path construction
+            logger.info(f"Autopilot scratch directory confirmed/created at: {final_scratch_dir_path}")
+            # --- End Directory Preparation ---
+
+            run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+            log_filename = f"autopilot_{run_id}.jsonl"
+            log_path = final_scratch_dir_path / log_filename # Construct log path using Path obj
+            logger.info(f"Autopilot run '{run_id}' started. Task: '{task[:100]}...'. Log: {log_path}")
+
+        except ToolError as e:
+            logger.error(f"Error preparing autopilot scratch directory '{scratch_dir_relative_path}': {e}", exc_info=True)
+            raise ToolError(f"Could not prepare scratch directory for autopilot run: {str(e)}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error preparing autopilot scratch directory: {e}", exc_info=True)
+            raise ToolError(f"An unexpected error occurred preparing the scratch directory: {str(e)}") from e
+
+        # --- Autopilot Inner Logic ---
         async def autopilot_inner():
             all_results = []
             current_task = task
@@ -4475,95 +4992,70 @@ class SmartBrowserTool(BaseTool):
                 step_num = 0
                 while step_num < max_steps and current_plan:
                     step_num += 1
-                    # Get the step to execute but don't remove it from the plan yet
                     step_to_execute = current_plan[0]
                     tool_name = step_to_execute.get("tool")
                     args = step_to_execute.get("args", {})
                     step_log = {"step": step_num, "tool": tool_name, "args": args, "success": False}
 
+                    # --- Tool Execution Logic (remains largely the same) ---
                     if tool_name not in _AVAILABLE_TOOLS:
                         step_log["error"] = f"Unknown tool '{tool_name}'."
-                        current_plan.pop(0)  # Now remove since we're done with this invalid step
+                        current_plan.pop(0)
                     else:
                         method_name = _AVAILABLE_TOOLS[tool_name][0]
                         try:
                             tool_method = getattr(self, method_name)
-                            await _log(
-                                "autopilot_step_start", step=step_num, tool=tool_name, args=args
-                            )
+                            await _log("autopilot_step_start", step=step_num, tool=tool_name, args=args)
                             self._update_activity()
                             outcome = await tool_method(**args)
                             self._update_activity()
                             step_log["success"] = outcome.get("success", False)
-                            step_log["result"] = outcome
+                            step_log["result"] = outcome # Store full result
 
-                            # Only remove the step after successful execution or when no replanning needed
-                            if step_log["success"] or not outcome.get("success"):
-                                current_plan.pop(0)  # Now it's safe to remove
+                            if step_log["success"] or not outcome.get("success"): # Pop if success OR failure (replanning handles next step)
+                                current_plan.pop(0)
 
                             if not step_log["success"]:
                                 step_log["error"] = outcome.get("error", "Tool failed")
-                                await _log(
-                                    "autopilot_step_fail",
-                                    step=step_num,
-                                    tool=tool_name,
-                                    error=step_log["error"],
-                                )
-                                logger.warning(
-                                    f"Autopilot Step {step_num} ({tool_name}) failed: {step_log['error']}"
-                                )
+                                # ... (keep replanning logic) ...
+                                await _log("autopilot_step_fail", step=step_num, tool=tool_name, error=step_log["error"])
+                                logger.warning(f"Autopilot Step {step_num} ({tool_name}) failed: {step_log['error']}")
                                 logger.info(f"Attempting replan after failed step {step_num}...")
                                 try:
-                                    new_plan_tail = await _plan_autopilot(
-                                        current_task, all_results + [step_log]
-                                    )
-                                    # The failing step is still at position 0, replace it and all following steps
-                                    current_plan = new_plan_tail
-                                    logger.info(
-                                        f"Replanning successful. New plan: {len(current_plan)} steps."
-                                    )
-                                    await _log(
-                                        "autopilot_replan_success", new_steps=len(current_plan)
-                                    )
+                                    new_plan_tail = await _plan_autopilot(current_task, all_results + [step_log])
+                                    current_plan = new_plan_tail # Replace remaining plan
+                                    logger.info(f"Replanning successful. New plan: {len(current_plan)} steps.")
+                                    await _log("autopilot_replan_success", new_steps=len(current_plan))
                                 except Exception as replan_err:
                                     logger.error(f"Replanning failed: {replan_err}")
                                     await _log("autopilot_replan_fail", error=str(replan_err))
-                                    current_plan = []  # Stop execution if replan fails
+                                    current_plan = [] # Stop execution
                             else:
-                                await _log(
-                                    "autopilot_step_success",
-                                    step=step_num,
-                                    tool=tool_name,
-                                    result_summary=str(outcome)[:200],
-                                )
-                        except (
-                            ToolInputError,
-                            ToolError,
-                            ValueError,
-                            TypeError,
-                            AssertionError,
-                        ) as e:  # Catch arg/tool execution errors
+                                await _log("autopilot_step_success", step=step_num, tool=tool_name, result_summary=str(outcome)[:200])
+
+                        except (ToolInputError, ToolError, ValueError, TypeError, AssertionError) as e:
                             step_log["error"] = f"{type(e).__name__} executing '{tool_name}': {e}"
-                            logger.error(
-                                f"Autopilot Step {step_num} failed: {step_log['error']}",
-                                exc_info=True,
-                            )
-                            current_plan = []  # Stop on these errors
-                        except Exception as e:  # Catch unexpected errors
+                            logger.error(f"Autopilot Step {step_num} failed: {step_log['error']}", exc_info=True)
+                            current_plan = [] # Stop
+                        except Exception as e:
                             step_log["error"] = f"Unexpected error executing '{tool_name}': {e}"
-                            logger.critical(
-                                f"Autopilot Step {step_num} failed unexpectedly: {step_log['error']}",
-                                exc_info=True,
-                            )
-                            current_plan = []  # Stop
+                            logger.critical(f"Autopilot Step {step_num} failed unexpectedly: {step_log['error']}", exc_info=True)
+                            current_plan = [] # Stop
+                    # --- End Tool Execution Logic ---
 
                     all_results.append(step_log)
-                    try:  # Log step result async
-                        async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
-                            await log_f.write(json.dumps(step_log) + "\n")
-                    except IOError as log_e:
-                        logger.error(f"Failed to write autopilot log entry: {log_e}")
+                    # --- Append to Log File (Keep direct aiofiles for append) ---
+                    if log_path: # Only write if path was determined
+                        try:
+                            async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
+                                # Ensure result is serializable
+                                log_entry_str = json.dumps(step_log, default=str) + "\n"
+                                await log_f.write(log_entry_str)
+                        except IOError as log_e:
+                            logger.error(f"Failed to write autopilot log entry to {log_path}: {log_e}")
+                    # --- End Log Append ---
 
+                # --- Final logging after loop ---
                 if step_num >= max_steps:
                     logger.warning(f"Autopilot max steps ({max_steps}) reached.")
                     await _log("autopilot_max_steps", task=task, steps=step_num)
@@ -4574,57 +5066,46 @@ class SmartBrowserTool(BaseTool):
                     logger.warning("Autopilot did not execute any steps (empty initial plan?).")
                     await _log("autopilot_plan_end", task=task, steps=0)
 
-                await _run_in_thread(os.chmod, log_path, 0o600)  # Set log permissions
                 overall_success = bool(all_results) and all_results[-1].get("success", False)
                 return {
                     "success": overall_success,
                     "steps_executed": step_num,
-                    "run_log": str(log_path),
-                    "final_results": all_results[-3:],
+                    "run_log": str(log_path) if log_path else None, # Return string path
+                    "final_results": all_results[-3:], # Return summary
                 }
 
             except Exception as autopilot_err:
                 logger.critical(f"Autopilot run failed critically: {autopilot_err}", exc_info=True)
                 await _log("autopilot_critical_error", task=task, error=str(autopilot_err))
-                error_entry = {
-                    "step": 0,
-                    "success": False,
-                    "error": f"Autopilot critical failure: {autopilot_err}",
-                }
-                try:
-                    async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
-                        await log_f.write(json.dumps(error_entry) + "\n")
-                    await _run_in_thread(os.chmod, log_path, 0o600)
-                except Exception:
-                    pass
+                error_entry = {"step": 0, "success": False, "error": f"Autopilot critical failure: {autopilot_err}"}
+                if log_path: # Try logging error to file
+                    try:
+                        async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
+                            await log_f.write(json.dumps(error_entry, default=str) + "\n")
+                    except Exception as final_log_e:
+                        logger.error(f"Failed to write final error to autopilot log {log_path}: {final_log_e}")
                 raise ToolError(f"Autopilot failed: {autopilot_err}") from autopilot_err
 
-        # Add global timeout wrapper
+        # --- Timeout Wrapper ---
         try:
             return await asyncio.wait_for(autopilot_inner(), timeout=timeout_seconds)
         except asyncio.TimeoutError:
             error_msg = f"Autopilot execution timed out after {timeout_seconds}s"
             logger.error(error_msg)
             await _log("autopilot_timeout", task=task, timeout=timeout_seconds)
-            # Try to log the timeout to the log file
-            try:
-                timeout_entry = {
-                    "step": 0,
-                    "success": False,
-                    "error": error_msg,
-                }
-                async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
-                    await log_f.write(json.dumps(timeout_entry) + "\n")
-                await _run_in_thread(os.chmod, log_path, 0o600)
-            except Exception:
-                pass
+            # Try logging timeout error to file
+            if log_path:
+                try:
+                    timeout_entry = {"step": -1, "success": False, "error": error_msg} # Use step -1 for timeout
+                    async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
+                        await log_f.write(json.dumps(timeout_entry, default=str) + "\n")
+                except Exception as timeout_log_e:
+                    logger.error(f"Failed to write timeout error to autopilot log {log_path}: {timeout_log_e}")
             return {
-                "success": False,
-                "error": error_msg,
-                "steps_executed": 0,
-                "run_log": str(log_path),
-                "final_results": [],
+                "success": False, "error": error_msg, "steps_executed": 0, # Or track steps executed before timeout
+                "run_log": str(log_path) if log_path else None, "final_results": []
             }
+
 
     @tool(name="smart_browser.parallel")
     @with_tool_metrics

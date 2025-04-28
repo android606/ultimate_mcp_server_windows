@@ -31,13 +31,13 @@ try:
 
     # --- Important: Set Environment Variables FIRST --- 
     DEMO_TEMP_DIR = tempfile.mkdtemp(prefix="ultimate_fs_demo_")
-    os.environ["GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
+    os.environ["FILESYSTEM__ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
     os.environ["GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES"] = json.dumps([DEMO_TEMP_DIR])
     os.environ["GATEWAY_FORCE_CONFIG_RELOAD"] = "true"
     
     print(f"INFO: Temporarily allowing access to: {DEMO_TEMP_DIR}")
     print("DEBUG: Environment variables set:")
-    print(f"  GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES = {os.environ['GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES']}")
+    print(f"  FILESYSTEM__ALLOWED_DIRECTORIES = {os.environ['FILESYSTEM__ALLOWED_DIRECTORIES']}")
     print(f"  GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES = {os.environ['GATEWAY_FILESYSTEM_ALLOWED_DIRECTORIES']}")
 except Exception as e:
     print(f"Error during initial setup: {e}", file=sys.stderr)

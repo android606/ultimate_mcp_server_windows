@@ -1538,6 +1538,95 @@ async def read_multiple_files(paths: List[str]) -> Dict[str, Any]:
 
 @with_tool_metrics
 @with_error_handling
+async def get_unique_filepath(path: str) -> Dict[str, Any]:
+    """
+    Finds an available (non-existent) filepath based on the requested path.
+
+    If the requested path already doesn't exist, it's returned directly.
+    If it exists, it appends counters like '_1', '_2', etc., to the filename stem
+    until an unused path is found within the same directory.
+
+    Args:
+        path: The desired file path.
+
+    Returns:
+        Dictionary containing the unique, validated, absolute path found.
+
+    Raises:
+        ToolInputError: If the base path is invalid or outside allowed directories.
+        ToolError: If the counter limit is exceeded or filesystem errors occur.
+    """
+    start_time = time.monotonic()
+    MAX_FILENAME_ATTEMPTS = 1000 # Safety limit
+
+    try:
+        # 1. Validate the *input* path first.
+        #    check_exists=None because the *final* path might not exist.
+        #    check_parent_writable=False - we only need read/stat access to check existence.
+        #    The parent directory's writability should be checked by the *calling* function
+        #    (like write_file or smart_download's directory creation) before this.
+        validated_input_path = await validate_path(path, check_exists=None, check_parent_writable=False)
+        logger.debug(f"get_unique_filepath: Validated input path resolves to {validated_input_path}")
+
+        # 2. Check if the initial validated path is already available.
+        if not await aiofiles.os.path.exists(validated_input_path):
+            logger.info(f"Initial path '{validated_input_path}' is available.", emoji_key="file")
+            return {
+                "path": validated_input_path,
+                "attempts": 0,
+                "success": True,
+                "message": f"Path '{validated_input_path}' is already unique."
+            }
+
+        # 3. Path exists, need to find a unique alternative.
+        logger.debug(f"Path '{validated_input_path}' exists, finding unique alternative.")
+        dirname = os.path.dirname(validated_input_path)
+        original_filename = os.path.basename(validated_input_path)
+        stem, suffix = os.path.splitext(original_filename)
+
+        counter = 1
+        while counter <= MAX_FILENAME_ATTEMPTS:
+            # Construct new filename candidate
+            candidate_filename = f"{stem}_{counter}{suffix}"
+            candidate_path = os.path.join(dirname, candidate_filename)
+
+            # Check existence asynchronously
+            if not await aiofiles.os.path.exists(candidate_path):
+                 processing_time = time.monotonic() - start_time
+                 logger.success(
+                     f"Found unique path '{candidate_path}' after {counter} attempts.",
+                     emoji_key="file",
+                     time=processing_time
+                 )
+                 return {
+                     "path": candidate_path,
+                     "attempts": counter,
+                     "success": True,
+                     "message": f"Found unique path '{candidate_path}'."
+                 }
+
+            counter += 1
+
+        # If loop finishes, we exceeded the limit
+        raise ToolError(
+            f"Could not find a unique filename based on '{path}' after {MAX_FILENAME_ATTEMPTS} attempts.",
+            context={"base_path": validated_input_path, "attempts": MAX_FILENAME_ATTEMPTS}
+        )
+
+    except OSError as e:
+        # Catch errors during exists checks
+        logger.error(f"Filesystem error finding unique path based on '{path}': {str(e)}", exc_info=True, emoji_key="error")
+        raise ToolError(f"Filesystem error checking path existence: {str(e)}", context={"path": path, "errno": e.errno}) from e
+    except (ToolInputError, ToolError): # Re-raise specific errors from validate_path or the counter limit
+         raise
+    except Exception as e:
+        # Catch unexpected errors
+        logger.error(f"Unexpected error finding unique path for {path}: {e}", exc_info=True, emoji_key="error")
+        raise ToolError(f"An unexpected error occurred finding a unique path: {str(e)}", context={"path": path}) from e
+
+
+@with_tool_metrics
+@with_error_handling
 async def write_file(path: str, content: str) -> Dict[str, Any]:
     """Write string content to a file asynchronously (UTF-8), creating/overwriting.
 

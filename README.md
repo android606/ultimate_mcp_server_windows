@@ -370,7 +370,7 @@ GATEWAY_CACHE_TTL=86400 # Default Time-To-Live in seconds (24 hours)
 # GATEWAY_GEMINI_DEFAULT_MODEL=gemini-2.0-pro # Customize default model
 
 # --- Tool Specific Config (Examples) ---
-# GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES=["/path/to/safe/dir1","/path/to/safe/dir2"] # For Filesystem tools (JSON array)
+# FILESYSTEM__ALLOWED_DIRECTORIES=["/path/to/safe/dir1","/path/to/safe/dir2"] # For Filesystem tools (JSON array)
 # GATEWAY_AGENT_MEMORY_DB_PATH=unified_agent_memory.db # Path for agent memory database
 # GATEWAY_PROMPT_TEMPLATES_DIR=./prompt_templates # Directory for prompt templates
 ```

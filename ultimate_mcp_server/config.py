@@ -651,7 +651,7 @@ def load_config(
         config_logger.warning(f"Invalid or missing GATEWAY_SERVER_PORT env var: {e}. Using default/file value.")
 
     # --- Load Filesystem Allowed Directories ---
-    allowed_dirs_env_var = "GATEWAY__FILESYSTEM__ALLOWED_DIRECTORIES"
+    allowed_dirs_env_var = "FILESYSTEM__ALLOWED_DIRECTORIES"
     try:
         allowed_dirs_env_value_str = decouple_config.get(allowed_dirs_env_var, default=None)
         if allowed_dirs_env_value_str is not None:
