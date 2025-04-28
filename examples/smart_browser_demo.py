@@ -6,7 +6,6 @@ showcasing browsing, interaction, search, download, macro, and autopilot feature
 
 import asyncio
 import json
-import os
 import sys
 import time
 import traceback
@@ -841,16 +840,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    # Added basic logging setup for demo visibility
-    import logging
-
-    logging.basicConfig(
-        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-    logger.setLevel(
-        os.environ.get("LOG_LEVEL", "INFO").upper()
-    )  # Ensure demo logger respects level
-
     exit_code = asyncio.run(main())
     sys.exit(exit_code)

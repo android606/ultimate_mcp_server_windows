@@ -81,6 +81,7 @@ from ultimate_mcp_server.config import SmartBrowserConfig, get_config
 
 # MCP Server imports (assuming these exist)
 from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.core.providers.base import get_provider, parse_model_string
 from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
 from ultimate_mcp_server.tools.base import (
     BaseTool,
@@ -88,7 +89,7 @@ from ultimate_mcp_server.tools.base import (
     with_error_handling,
     with_tool_metrics,
 )
-from ultimate_mcp_server.tools.completion import generate_completion
+from ultimate_mcp_server.tools.completion import chat_completion
 from ultimate_mcp_server.tools.filesystem import create_directory, write_file_content
 from ultimate_mcp_server.utils import get_logger
 
@@ -101,8 +102,8 @@ def _loop():
 
 
 def _log_lock():
-    return (_loop(), id(asyncio.current_task()))[0]  # lazily fetch
-
+    """Returns the asyncio Lock dedicated to audit logging."""
+    return _audit_log_lock
 
 def _playwright_lock():
     return asyncio.Lock()
@@ -137,7 +138,7 @@ _vault_allowed_paths_str_global: str = "secret/data/,kv/data/"  # Default value
 _max_widgets_global: int = 300  # Default value
 _max_section_chars_global: int = 5000  # Default value
 _dom_fp_limit_global: int = 20000  # Default value
-_llm_model_locator_global: str = "gpt-4o"  # Default value
+_llm_model_locator_global: str = "gpt-4.1-mini"  # Default value
 _retry_after_fail_global: int = 1  # Default value
 _seq_cutoff_global: float = 0.72  # Default value
 _area_min_global: int = 400  # Default value
@@ -151,6 +152,7 @@ _vnc_proc: Optional[subprocess.Popen] = None
 _last_hash: str | None = None
 _js_lib_cached: Set[str] = set()
 _js_lib_lock = asyncio.Lock()
+_audit_log_lock = asyncio.Lock()
 _db_conn_pool_lock = threading.RLock()
 _db_connection: sqlite3.Connection | None = None
 _locator_cache_cleanup_task_handle: Optional[asyncio.Task] = None
@@ -214,10 +216,13 @@ def _key() -> bytes | None:
 
 
 def _enc(buf: bytes) -> bytes:
-    """Encrypt data using AES-GCM with AAD."""
+    """Encrypt data using AES-GCM with AAD if key is set."""
     k = _key()
     if not k:
-        raise RuntimeError("SB_STATE_KEY not set; encryption mandatory.")
+        # If key is not set, return the original buffer (no encryption)
+        logger.debug("SB_STATE_KEY not set. Skipping encryption for state.")
+        return buf
+    # Key is set, proceed with encryption
     try:
         nonce = os.urandom(12)
         encrypted_data = AESGCM(k).encrypt(nonce, buf, AAD_TAG)
@@ -228,10 +233,29 @@ def _enc(buf: bytes) -> bytes:
 
 
 def _dec(buf: bytes) -> bytes | None:
-    """Decrypt data using AES-GCM with AAD, handling versioning."""
+    """Decrypt data using AES-GCM with AAD if key is set and buffer looks encrypted."""
     k = _key()
     if not k:
-        raise RuntimeError("SB_STATE_KEY not set; encryption mandatory.")
+        # If key is not set, assume buffer is unencrypted plaintext
+        logger.debug("SB_STATE_KEY not set. Assuming state is unencrypted.")
+        # Basic check: does it look like JSON? (optional but helpful)
+        try:
+            if buf.strip().startswith(b"{") or buf.strip().startswith(b"["):
+                return buf
+            else:
+                 logger.warning("Unencrypted state file doesn't look like JSON. Ignoring.")
+                 return None
+        except Exception:
+             logger.warning("Error checking unencrypted state file format. Ignoring.")
+             return None
+
+    # Key is set, attempt decryption
+    # Check if it starts with our cipher version header
+    if not buf.startswith(CIPHER_VERSION):
+        logger.warning("State file exists but lacks expected encryption header. Treating as legacy/invalid.")
+        # Decide policy: return None (ignore), or try to parse as JSON? Let's ignore.
+        _STATE_FILE.unlink(missing_ok=True) # Remove potentially corrupt/old file
+        return None
 
     # Ensure buffer is long enough for header, nonce, and some ciphertext
     if len(buf) < len(CIPHER_VERSION) + 12 + 1:
@@ -239,27 +263,23 @@ def _dec(buf: bytes) -> bytes | None:
         return None
 
     # Parse fixed-length components
-    HDR, nonce, ciphertext = (
+    _HDR, nonce, ciphertext = (
         buf[: len(CIPHER_VERSION)],
         buf[len(CIPHER_VERSION) : len(CIPHER_VERSION) + 12],
         buf[len(CIPHER_VERSION) + 12 :],
     )
 
-    if HDR != CIPHER_VERSION:
-        logger.error("State file has unknown/legacy format. Remove old state file.")
-        _STATE_FILE.unlink(missing_ok=True)
-        return None
-
     try:
         return AESGCM(k).decrypt(nonce, ciphertext, AAD_TAG)
-    except InvalidTag as e:
+    except InvalidTag: # Keep specific error handling
         logger.error("Decryption failed: Invalid tag (tampered/wrong key?)")
-        raise RuntimeError("State-file authentication failed") from e
+        # Option: Raise specific error or just return None/delete file
+        _STATE_FILE.unlink(missing_ok=True)
+        raise RuntimeError("State-file authentication failed (InvalidTag)") from None # Re-raise as critical
     except Exception as e:
         logger.error(f"Decryption failed: {e}.", exc_info=True)
         _STATE_FILE.unlink(missing_ok=True)
         return None
-
 
 # --- Enhanced Locator Cache DB ---
 def _get_db_connection() -> sqlite3.Connection:
@@ -1114,20 +1134,27 @@ def _cleanup_vnc():
         finally:
             _vnc_proc = None
 
-
 async def _load_state() -> dict[str, Any] | None:
-    """Loads browser state asynchronously. Decryption runs in executor."""
+    """Loads browser state asynchronously. Decryption runs in executor if needed."""
     if not _STATE_FILE.exists():
         return None
     loop = asyncio.get_running_loop()
     try:
         async with aiofiles.open(_STATE_FILE, "rb") as f:
-            encrypted_data = await f.read()
-        decrypted_data = await loop.run_in_executor(
-            _get_pool(), _dec, encrypted_data
-        )  # _dec uses global key
+            file_data = await f.read()
+
+        # Determine if decryption is needed based on key existence
+        k = _key()
+        if not k:
+            # No key, assume plaintext - _dec handles basic validation
+            decrypted_data = await loop.run_in_executor(_get_pool(), _dec, file_data)
+        else:
+            # Key exists, attempt decryption via _dec
+            decrypted_data = await loop.run_in_executor(_get_pool(), _dec, file_data)
+
         if decrypted_data is None:
-            return None  # Decryption failed
+            logger.warning("Failed to load or decrypt state data.")
+            return None # Decryption/validation failed
         return json.loads(decrypted_data)
     except FileNotFoundError:
         logger.info("Browser state file not found.")
@@ -1136,31 +1163,34 @@ async def _load_state() -> dict[str, Any] | None:
         logger.error(f"Failed to parse browser state JSON: {e}. Removing corrupt file.")
         _STATE_FILE.unlink(missing_ok=True)
         return None
-    except Exception as e:
+    except Exception as e: # Catches errors from _dec like RuntimeError('State-file authentication failed')
         logger.error(f"Failed to load browser state: {e}", exc_info=True)
         _STATE_FILE.unlink(missing_ok=True)
         return None
 
-
 async def _save_state(ctx: BrowserContext):
-    """Saves browser state asynchronously. Encryption runs in executor."""
+    """Saves browser state asynchronously. Encryption runs in executor if key is set."""
     if not ctx or not ctx.browser:
         return
     loop = asyncio.get_running_loop()
     try:
         state = await ctx.storage_state()
         state_json = json.dumps(state).encode("utf-8")
-        encrypted_data = await loop.run_in_executor(
+
+        # Encryption is now conditional within _enc based on _key()
+        data_to_write = await loop.run_in_executor(
             _get_pool(), _enc, state_json
-        )  # _enc uses global key
+        )
+
         async with aiofiles.open(_STATE_FILE, "wb") as f:
-            await f.write(encrypted_data)
+            await f.write(data_to_write)
         await loop.run_in_executor(_get_pool(), os.chmod, _STATE_FILE, 0o600)
+        logger.debug(f"Browser state saved ({'encrypted' if _key() else 'unencrypted'}).")
+
     except PlaywrightException as e:
         logger.error(f"Failed to get storage state: {e}")
-    except Exception as e:
+    except Exception as e: # Includes RuntimeError from _enc if encryption itself fails
         logger.error(f"Failed to save browser state: {e}", exc_info=True)
-
 
 @asynccontextmanager
 async def _tab_context(ctx: BrowserContext):
@@ -1213,9 +1243,12 @@ async def shutdown():
         _locator_cache_cleanup_task_handle.cancel()
         try:
             await asyncio.wait_for(_locator_cache_cleanup_task_handle, timeout=2.0)
-        except Exception:
-            logger.warning("Locator cache cleanup task cancellation timeout/error.")
-        _locator_cache_cleanup_task_handle = None
+        except asyncio.CancelledError:
+            logger.info("Locator cache cleanup task cancelled as expected during shutdown.") # Specific message
+        except Exception as e: # Catch other errors like TimeoutError or custom exceptions
+            logger.warning(f"Locator cache cleanup task cancellation timeout/error: {type(e).__name__}")
+        finally: # Ensure handle is cleared even on error
+            _locator_cache_cleanup_task_handle = None
 
     await tab_pool.cancel_all()  # Cancel tab pool tasks
 
@@ -1493,8 +1526,19 @@ async def _ensure_readability(page: Page) -> None:
                 )
         if src:
             wrapped_src = f"window.__sbReadability = (() => {{ {src}; return Readability; }})();"
-            await page.add_script_tag(content=wrapped_src)
-            logger.debug("Readability.js injected successfully.")
+            try:
+                await page.add_script_tag(content=wrapped_src)
+                logger.debug("Readability.js injected successfully.")
+            except PlaywrightException as e:
+                # Check if the error message indicates a CSP violation
+                if "Content Security Policy" in str(e):
+                    logger.warning(f"Could not inject Readability.js due to CSP on {page.url}. Proceeding without it.")
+                else:
+                    # Log other Playwright errors during script injection
+                    logger.error(f"Failed to inject Readability.js: {e}", exc_info=True) # Log full trace for unexpected errors
+            except Exception as e:
+                # Catch any other unexpected errors
+                logger.error(f"Unexpected error during Readability.js injection: {e}", exc_info=True)
         else:
             logger.warning("Failed to load Readability.js source.")
     except Exception as e:
@@ -1666,7 +1710,7 @@ async def _build_page_map(page: Page) -> Tuple[Dict[str, Any], str]:
 
     try:
         # Get main text
-        html_content = await page.content(timeout=10000)
+        html_content = await page.content()
         if html_content:
             main_txt = await page.evaluate(_READ_JS_WRAPPER, html_content) or ""
             if len(main_txt) < 200:  # Fallback
@@ -1929,9 +1973,9 @@ class EnhancedLocator:
         Gets or refreshes the internal page map and DOM fingerprint.
         Calls the global _build_page_map helper which uses global config values.
         """
-        # Optional: Wait briefly for network/rendering to settle before mapping
+        # Wait briefly for network/rendering to settle before mapping
         await self._maybe_wait_for_idle()
-        await asyncio.sleep(random.uniform(0.05, 0.15))
+        await asyncio.sleep(random.uniform(0.1, 0.25)) # Added small sleep
 
         # Call the global helper function which uses global config internally
         pm, fp = await _build_page_map(self.page)
@@ -2140,15 +2184,17 @@ async def smart_click(
     log_target = target_kwargs or {"hint": task_hint}
     try:
         element = await loc.locate(task_hint=task_hint, timeout=timeout_ms)
+        element_id_for_cache = await element.get_attribute("data-sb-id") # Get ID FIRST
 
-        # Fix 4: Always ensure element is scrolled into view before clicking
+        # Ensure element is scrolled into view before clicking
         await element.scroll_into_view_if_needed()
-
         await _pause(page)
-        await element.click(timeout=max(1000, timeout_ms // 2))  # Timeout for click action itself
 
-        # Fix 3: Cache selector even if element was hidden but interaction succeeded
-        # Get fingerprint for caching after successful click
+        # Perform the click
+        await element.click(timeout=max(1000, timeout_ms // 2)) # Timeout for click action itself
+
+        # Now cache using the ID obtained earlier
+        # Optional: Re-calculate fingerprint *after* click if DOM might change drastically
         fp = await _dom_fingerprint(page)
         key_src = json.dumps(
             {
@@ -2159,10 +2205,11 @@ async def smart_click(
             sort_keys=True,
         )
         cache_key = hashlib.sha256(key_src.encode()).hexdigest()
-        selector_str = f'[data-sb-id="{element.get_attribute("data-sb-id")}"]'
-        await asyncio.get_running_loop().run_in_executor(
-            _get_pool(), _cache_put_sync, cache_key, selector_str, fp
-        )
+        if element_id_for_cache: # Only cache if we got an ID
+            selector_str = f'[data-sb-id="{element_id_for_cache}"]'
+            await asyncio.get_running_loop().run_in_executor(
+                _get_pool(), _cache_put_sync, cache_key, selector_str, fp
+            )
 
         await _log("click_success", target=log_target)
         return True
@@ -2222,9 +2269,14 @@ async def smart_type(
         element = await loc.locate(task_hint=task_hint, timeout=timeout_ms)
 
         # Fix 4: Add scroll into view (also needed for typing)
-        await element.scroll_into_view_if_needed()
+        element = await loc.locate(task_hint=task_hint, timeout=timeout_ms)
+        element_id_for_cache = await element.get_attribute("data-sb-id") # Get ID FIRST
 
+        # Add scroll into view (also needed for typing)
+        await element.scroll_into_view_if_needed()
         await _pause(page)
+
+        # Perform type action
         if clear_before:
             await element.fill("")
         await element.type(resolved_text, delay=random.uniform(30, 80))
@@ -2243,24 +2295,26 @@ async def smart_type(
                 # Retry with click on same element if Enter press fails
                 await smart_click(page, task_hint=task_hint, target_kwargs=target_kwargs)
 
-        # Fix 3: Cache selector even if element was hidden but interaction succeeded
-        # Since we got here, the interaction was successful even if the element might not be visible
-        key_src = json.dumps(
-            {
-                "site": loc.site,
-                "path": urlparse(page.url or "").path or "/",
-                "hint": task_hint.lower(),
-            },
-            sort_keys=True,
-        )
-        cache_key = hashlib.sha256(key_src.encode()).hexdigest()
-        selector_str = f'[data-sb-id="{element.get_attribute("data-sb-id")}"]'
-        await asyncio.get_running_loop().run_in_executor(
-            _get_pool(), _cache_put_sync, cache_key, selector_str, fp
-        )
+            # Now cache using the ID obtained earlier
+            # Optional: Re-calculate fingerprint *after* type/enter
+            fp = await _dom_fingerprint(page)
+            key_src = json.dumps(
+                {
+                    "site": loc.site,
+                    "path": urlparse(page.url or "").path or "/",
+                    "hint": task_hint.lower(),
+                },
+                sort_keys=True,
+            )
+            cache_key = hashlib.sha256(key_src.encode()).hexdigest()
+            if element_id_for_cache: # Only cache if we got an ID
+                selector_str = f'[data-sb-id="{element_id_for_cache}"]'
+                await asyncio.get_running_loop().run_in_executor(
+                    _get_pool(), _cache_put_sync, cache_key, selector_str, fp
+                )
 
-        await _log("type_success", target=log_target, value=log_value, entered=press_enter)
-        return True
+            await _log("type_success", target=log_target, value=log_value, entered=press_enter)
+            return True
     except PlaywrightTimeoutError as e:  # Catch timeout from locate() or type()
         await _log("type_fail_notfound", target=log_target, value=log_value, error=str(e))
         raise ToolError(
@@ -3089,49 +3143,67 @@ def _llm_resilient(max_attempts: int = 3, backoff: float = 1.0):
 @_llm_resilient(max_attempts=3, backoff=1.0)
 async def _call_llm(
     messages: Sequence[Dict[str, str]],
-    model: str = "gpt-4o",  # Default model for general calls
+    model: str = "gpt-4.1-mini",  # Default model for general calls
     expect_json: bool = False,
     temperature: float = 0.1,
     max_tokens: int = 1024,
 ) -> Union[Dict[str, Any], List[Any]]:
-    """Calls the LLM using MCP server's completion tool."""
+    """Calls the LLM using MCP server's chat completion tool."""
     if not messages:
         return {"error": "No messages provided to LLM."}
 
     llm_args = {
-        "provider": Provider.OPENAI.value,
         "model": model,
-        "messages": messages.copy(),  # Create a copy to avoid modifying the original
+        "messages": messages.copy(), # Create a copy to avoid modifying the original
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stop_sequences": None,
+        "additional_params": {},
     }
+    # Determine provider and update model name if prefixed
+    llm_args["provider"] = Provider.OPENAI.value # Default
+    if model:
+        extracted_provider, extracted_model = parse_model_string(model)
+        if extracted_provider:
+            llm_args["provider"] = extracted_provider
+            llm_args["model"] = extracted_model # Use the model name without the prefix
 
-    # Flag to determine if we need to add a JSON instruction
-    use_json_instruction = expect_json
+    use_json_instruction = False # Flag to add manual JSON instruction if native mode not used
 
-    # Check if model supports native JSON mode and use it if so
-    if expect_json and model.startswith("gpt-"):
-        llm_args["response_format"] = {"type": "json_object"}
-        use_json_instruction = False  # Don't add manual instruction when using JSON mode
+    if expect_json:
+        try:
+            # Get the provider instance to check its capabilities
+            provider_instance = await get_provider(llm_args["provider"])
+            supports_native_json = (
+                 (llm_args["provider"] == Provider.OPENAI.value and llm_args["model"].startswith("gpt-")) or
+                 getattr(provider_instance, 'supports_json_response_format', False) # Add a hypothetical capability flag
+            )
+            if supports_native_json:
+                logger.debug(f"Provider {llm_args['provider']} supports native JSON mode. Adding response_format to additional_params.")
+                # Add response_format to *additional_params*, not directly to llm_args
+                llm_args["additional_params"]["response_format"] = {"type": "json_object"}
+                use_json_instruction = False # Don't add manual instruction
+            else:
+                logger.debug(f"Provider {llm_args['provider']} does not natively support JSON mode (or check failed). Will use manual instruction.")
+                use_json_instruction = True # Need manual instruction
+        except ProviderError as e:
+             logger.warning(f"Could not get provider {llm_args['provider']} to check JSON support: {e}. Assuming manual instruction needed.")
+             use_json_instruction = True # Fallback if provider check fails
+        except Exception as e:
+             logger.error(f"Unexpected error checking provider JSON support: {e}. Assuming manual instruction needed.", exc_info=True)
+             use_json_instruction = True
 
-    # If we need a JSON instruction, ensure it's in a final user message
+    # If manual instruction needed, modify the messages list
     if use_json_instruction:
         json_instruction = (
             "\n\nIMPORTANT: Respond ONLY with valid JSON. "
             "Start with `{` or `[` and end with `}` or `]`. "
             "Do not include ```json markers or explanations."
         )
-
-        # Create a new message list with instruction appended to last or as new message
         modified_messages = list(llm_args["messages"])
-
-        # If the last message is a user message, append instruction to it
         if modified_messages and modified_messages[-1]["role"] == "user":
             last_content = modified_messages[-1]["content"]
             modified_messages[-1]["content"] = last_content + json_instruction
         else:
-            # Otherwise, add a new user message with just the instruction
             modified_messages.append(
                 {
                     "role": "user",
@@ -3139,34 +3211,49 @@ async def _call_llm(
                     + json_instruction,
                 }
             )
-
-        llm_args["messages"] = modified_messages
+        llm_args["messages"] = modified_messages # Use the modified list
 
     try:
         start_time = time.monotonic()
-        resp = await generate_completion(**llm_args)
+
+        # Ensure llm_args contains 'messages' key as expected by chat_completion
+        if "messages" not in llm_args:
+             logger.error("_call_llm was invoked without a 'messages' argument.")
+             return {"error": "Internal error: _call_llm requires 'messages'."}
+
+        resp = await chat_completion(**llm_args)
         duration = time.monotonic() - start_time
+
         await _log(
-            "llm_call_complete",
-            model=model,
-            duration_ms=int(duration * 1000),
-            success=resp.get("success", False),
+             "llm_call_complete",
+             model=resp.get("model", model), # Use model from response if available
+             duration_ms=int(duration * 1000),
+             success=resp.get("success", False),
+             cached=resp.get("cached_result", False) # Log if cached
         )
 
         if not resp.get("success"):
             error_msg = resp.get("error", "LLM call failed")
-            return {"error": f"LLM API Error: {error_msg}"}
-        raw_text = resp.get("text", "").strip()
-        if not raw_text:
-            return {"error": "LLM returned empty response."}
-        if not expect_json:
-            return {"text": raw_text}
+            # Attempt to get raw response if available from the error structure
+            raw_resp_detail = resp.get("details", {}).get("raw_response") or resp.get("raw_response")
+            return {"error": f"LLM API Error: {error_msg}", "raw_response": raw_resp_detail}
 
-        # Try parsing directly (especially if JSON mode was used)
+        # Handle response structure from chat_completion
+        assistant_message = resp.get("message", {})
+        content = assistant_message.get("content") # Get content, might be None
+        raw_text = content.strip() if isinstance(content, str) else "" # Only strip if it's a string
+
+        if not raw_text:
+            return {"error": "LLM returned empty response content."}
+        if not expect_json:
+            return {"text": raw_text} # Return simple text if JSON not expected
+
+        # Try parsing JSON (especially if native mode was used or instruction given)
         try:
+            # First, try parsing the raw_text directly
             return json.loads(raw_text)
         except json.JSONDecodeError:
-            # If direct parse fails, try extracting block
+            # If direct parse fails, try extracting block (common fallback)
             json_block = _extract_json_block(raw_text)
             if json_block:
                 try:
@@ -3176,13 +3263,15 @@ async def _call_llm(
                 except json.JSONDecodeError as e:
                     err = f"Could not parse extracted JSON block: {e}. Block: {json_block[:500]}..."
                     return {"error": err, "raw_response": raw_text[:1000]}
-            else:  # No block found or extracted block invalid
+            else: # No block found or extracted block invalid
                 err = "Could not parse JSON from LLM response (no valid block found)."
                 return {"error": err, "raw_response": raw_text[:1000]}
 
     except ProviderError as e:
         logger.error(f"LLM Provider error: {e}")
-        return {"error": f"LLM Provider Error: {e}"}
+        # Extract raw response if available in the exception details
+        raw_resp_detail = getattr(e, 'details', {}).get('raw_response')
+        return {"error": f"LLM Provider Error: {e}", "raw_response": raw_resp_detail}
     except Exception as e:
         logger.error(f"Unexpected error during LLM call: {e}", exc_info=True)
         return {"error": f"LLM call failed unexpectedly: {e}"}
@@ -3195,7 +3284,7 @@ ALLOWED_ACTIONS = {"click", "type", "wait", "download", "extract", "finish", "sc
 
 
 async def _plan_macro(
-    page_state: Dict[str, Any], task: str, model: str = "gpt-4o"
+    page_state: Dict[str, Any], task: str, model: str = "gpt-4.1-mini"
 ) -> List[Dict[str, Any]]:
     """Generates a sequence of browser actions for the macro runner."""
     action_details = """
@@ -3250,11 +3339,13 @@ async def _plan_macro(
             f"Macro planner LLM failed: {result['error']}", details=result.get("raw_response")
         )
     if not isinstance(result, list):
-        raise ToolError(
-            f"Macro planner LLM returned unexpected format: {type(result)}",
-            details=str(result)[:500],
-        )
-
+            raw_response_preview = str(result)[:500] # Get preview safely
+            raise ToolError(
+                f"Macro planner LLM returned unexpected format: {type(result)}. "
+                f"Preview: '{raw_response_preview}...'",
+                details={"raw_response": raw_response_preview}
+            )
+    
     # Validate plan structure
     validated_plan = []
     for i, step in enumerate(result):
@@ -3274,7 +3365,7 @@ async def _plan_macro(
 
 
 async def run_macro(
-    page: Page, task: str, max_rounds: int = 7, model: str = "gpt-4o"
+    page: Page, task: str, max_rounds: int = 7, model: str = "gpt-4.1-mini"
 ) -> List[Dict[str, Any]]:
     """Executes a multi-step task using a plan-act loop."""
     all_step_results = []
@@ -3636,7 +3727,7 @@ async def search_web(
     nonce = random.randint(1000, 9999)
     urls = {
         "bing": f"https://www.bing.com/search?q={qs}&count={max_results}&form=QBLH&rdr=1&r={nonce}",
-        "duckduckgo": f"https://duckduckgo.com/html/?q={qs}&r={nonce}",  # Fixed DuckDuckGo URL
+        "duckduckgo": f"https://html.duckduckgo.com/html/?q={qs}&r={nonce}",  # Fixed DuckDuckGo URL
         "yandex": f"https://yandex.com/search/?text={qs}&lr=10000&r={nonce}",  # lr=10000 for generic region
     }
     selectors = {
@@ -3648,10 +3739,10 @@ async def search_web(
             "alt_link": "a.tilk",
         },
         "duckduckgo": {
-            "item": "div.result",
-            "link": "a.result__a",
-            "title": "a.result__a",
-            "snippet": "a.result__snippet",
+            "item": "div.result",              # Main result container
+            "link": "a.result__a",             # Link and often title
+            "title": "a.result__a",            # Title element (same as link)
+            "snippet": "a.result__snippet",    # Snippet element
         },
         "yandex": {
             "item": "li.serp-item[data-cid]",
@@ -3684,24 +3775,18 @@ async def search_web(
         # Handle meta refresh redirects for DuckDuckGo
         if engine == "duckduckgo":
             try:
-                # Check for meta refresh tag
-                meta_refresh = await page.evaluate("""
-                    () => {
-                        const meta = document.querySelector('meta[http-equiv="refresh"]');
-                        return meta ? meta.getAttribute('content') : null;
-                    }
-                """)
-
+                meta_refresh = await page.query_selector('meta[http-equiv="refresh"]')
                 if meta_refresh:
-                    logger.info("DuckDuckGo meta refresh detected, following redirect...")
-                    # Parse the content attribute which should be like "0;URL=https://..."
-                    match = re.search(r'URL=([^"\'>\s]+)', meta_refresh, re.IGNORECASE)
-                    if match:
-                        redirect_url = match.group(1)
-                        await page.goto(redirect_url, wait_until="domcontentloaded", timeout=30000)
-                        await asyncio.sleep(0.5)  # Brief pause after redirect
-            except Exception as e:
-                logger.warning(f"Error handling DuckDuckGo meta refresh: {e}")
+                    content = await meta_refresh.get_attribute("content")
+                    if content and "url=" in content.lower():
+                        match = re.search(r'url=([^"]+)', content, re.IGNORECASE)
+                        if match:
+                            redirect_url = match.group(1)
+                            logger.info(f"Following meta refresh to: {redirect_url}")
+                            await page.goto(redirect_url, wait_until="domcontentloaded", timeout=20000)
+                            await asyncio.sleep(0.5) # Small pause after redirect
+            except PlaywrightException as e:
+                logger.warning(f"Error checking/following meta refresh: {e}")
 
         try:
             await page.wait_for_selector(sel["item"], state="visible", timeout=10000)
@@ -3732,10 +3817,11 @@ async def search_web(
             except PlaywrightException:
                 pass
 
-        # Extract results using JS evaluation - optimize to reduce text volume
         results = await page.evaluate(
             """
-            (sel, max_results) => {
+            (args) => {
+                const sel = args.sel; // Unpack from single arg
+                const max_results = args.max_results; // Unpack from single arg
                 const items = Array.from(document.querySelectorAll(sel.item));
                 const results = [];
                 for (let i = 0; i < Math.min(items.length, max_results); i++) {
@@ -3745,32 +3831,31 @@ async def search_web(
                         let titleEl = item.querySelector(sel.title) || linkEl; // Fallback title to link text
                         let snippetEl = item.querySelector(sel.snippet);
                         const url = linkEl ? linkEl.href : null;
-                        
+
                         // Get text efficiently, limiting length to reduce payload
                         let title = '';
                         if (titleEl) {
                             title = titleEl.textContent.trim();
                             title = title.substring(0, 300); // Limit title length
                         }
-                        
+
                         let snippet = '';
                         if (snippetEl) {
                             snippet = snippetEl.textContent.trim();
                             snippet = snippet.substring(0, 300); // Limit snippet length
                         }
-                        
+
                         if (url && url.trim() && !url.startsWith('javascript:')) {
-                             title = title.replace(/[\n\r\t]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
-                             snippet = snippet.replace(/[\n\r\t]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
-                             if (title || snippet) { results.push({ url: url.trim(), title, snippet }); }
+                            title = title.replace(/[\\n\\r\\t]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
+                            snippet = snippet.replace(/[\\n\\r\\t]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
+                            if (title || snippet) { results.push({ url: url.trim(), title, snippet }); }
                         }
                     } catch (e) { /* Ignore single item error */ }
                 }
                 return results;
             }
         """,
-            sel,
-            max_results,
+            {"sel": sel, "max_results": max_results}, # Pass as a single dictionary argument
         )
 
         await _log("search_complete", engine=engine, query=query, num_results=len(results))
@@ -3976,8 +4061,9 @@ class SmartBrowserTool(BaseTool):
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
         ctx, _ = await get_browser_context()
-        if ctx.proxy and not _is_domain_allowed_for_proxy(url):
-            proxy_server = ctx.proxy.get("server", "Proxy")
+        # Check global proxy config and allowed domains list
+        if _PROXY_CONFIG_DICT and _PROXY_ALLOWED_DOMAINS_LIST is not None and not _is_domain_allowed_for_proxy(url):
+            proxy_server = _PROXY_CONFIG_DICT.get("server", "Configured Proxy") # Use global config dict
             error_msg = (
                 f"Navigation blocked by PROXY_ALLOWED_DOMAINS for '{url}' via {proxy_server}."
             )
@@ -4206,9 +4292,14 @@ class SmartBrowserTool(BaseTool):
         else:
             safe_subfolder = _slugify(urlparse(start_url).netloc, 50) or "pdfs"
         dest_dir = download_base / safe_subfolder
-        await create_directory(str(dest_dir))  # Assumes creates with 700 perms
-        # Explicitly set permissions to ensure security
-        await _run_in_thread(os.chmod, dest_dir, 0o700)
+        # Create directory directly using thread pool for sync I/O
+        try:
+            await _run_in_thread(lambda p: p.mkdir(parents=True, exist_ok=True), dest_dir)
+            # Explicitly set permissions AFTER creation
+            await _run_in_thread(os.chmod, dest_dir, 0o700)
+        except OSError as e:
+            logger.error(f"Failed to create or set permissions on download directory {dest_dir}: {e}")
+            raise ToolError(f"Failed to prepare download directory {dest_dir}: {e}") from e
 
         logger.info(f"Starting PDF crawl from: {start_url}")
         pdf_urls = await crawl_for_pdfs(
@@ -4305,7 +4396,7 @@ class SmartBrowserTool(BaseTool):
         self,
         url: str,
         task: str,
-        model: str = "gpt-4o",
+        model: str = "gpt-4.1-mini",
         max_rounds: int = 7,
         timeout_seconds: int = 600,
     ) -> Dict[str, Any]:
@@ -4591,7 +4682,10 @@ class SmartBrowserTool(BaseTool):
             self._inactivity_monitor_task.cancel()
             try:
                 await asyncio.wait_for(self._inactivity_monitor_task, timeout=2.0)
-            except Exception:
-                pass  # Ignore errors during cancellation
+            except asyncio.CancelledError:
+                logger.info("Inactivity monitor task cancelled as expected during teardown.")
+            except Exception as e:
+                # Log other potential errors during wait_for
+                logger.warning(f"Error waiting for inactivity monitor task cancellation: {e}")
         # Use the safe shutdown initiator
         await _initiate_shutdown()
