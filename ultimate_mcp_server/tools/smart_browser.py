@@ -64,6 +64,8 @@ import httpx
 from bs4 import BeautifulSoup
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from playwright._impl._errors import Error as PlaywrightException
+from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 
 # Playwright imports
 from playwright.async_api import (
@@ -72,10 +74,8 @@ from playwright.async_api import (
     Frame,
     Locator,
     Page,
-    PlaywrightException,
     async_playwright,
 )
-from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from ultimate_mcp_server.config import SmartBrowserConfig, get_config
 
@@ -1600,7 +1600,7 @@ def _shadow_deep_js() -> str:  # Removed args, uses globals now
                 
                 // Check related labels for inputs
                 if (el.id && el.tagName === 'INPUT') {{
-                    const labels = document.querySelectorAll(`label[for="\${{el.id}}"]`);
+                    const labels = document.querySelectorAll(`label[for="${{el.id}}"]`);
                     if (labels.length > 0) return labels[0].textContent.trim();
                 }}
                 
@@ -3760,8 +3760,8 @@ async def search_web(
                         }
                         
                         if (url && url.trim() && !url.startsWith('javascript:')) {
-                             title = title.replace(/[\n\r\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
-                             snippet = snippet.replace(/[\n\r\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+                             title = title.replace(/[\n\r\t]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
+                             snippet = snippet.replace(/[\n\r\t]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
                              if (title || snippet) { results.push({ url: url.trim(), title, snippet }); }
                         }
                     } catch (e) { /* Ignore single item error */ }
