@@ -2202,13 +2202,16 @@ def start_server(
                 logger.info("Cleaning up Gateway instance...")
                 try:
                     # Give tools a chance to clean up
-                    for tool_name, tool in _gateway_instance.mcp._tools.items():
-                        if hasattr(tool, "async_teardown") and callable(tool.async_teardown):
-                            try:
-                                logger.info(f"Running async_teardown for tool: {tool_name}")
-                                await tool.async_teardown()
-                            except Exception as e:
-                                logger.error(f"Error during teardown of tool {tool_name}: {e}")
+                    if hasattr(_gateway_instance.mcp, '_tools'):
+                        for tool_name, tool in _gateway_instance.mcp._tools.items():
+                            if hasattr(tool, "async_teardown") and callable(tool.async_teardown):
+                                try:
+                                    logger.info(f"Running async_teardown for tool: {tool_name}")
+                                    await tool.async_teardown()
+                                except Exception as e:
+                                    logger.error(f"Error during teardown of tool {tool_name}: {e}")
+                    else:
+                        logger.info("No tools found in mcp instance (missing '_tools' attribute)")
                     
                     # Clear gateway instance
                     logger.info("Global gateway instance cleared.")

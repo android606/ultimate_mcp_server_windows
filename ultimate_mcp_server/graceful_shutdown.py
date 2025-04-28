@@ -83,7 +83,9 @@ async def _handle_shutdown(sig_name):
     
     if _shutdown_in_progress:
         logger.warning(f"Received {sig_name} while shutdown in progress - forcing exit")
-        sys.exit(1)
+        # Use asyncio.get_running_loop().stop() instead of sys.exit for cleaner async shutdown
+        asyncio.get_running_loop().stop()
+        return  # Return here to avoid raising QuietExit multiple times
         
     _shutdown_in_progress = True
     
@@ -99,8 +101,10 @@ async def _handle_shutdown(sig_name):
     except Exception as e:
         logger.error(f"Error during graceful shutdown: {e}")
     finally:
-        # Swallow errors during final exit by raising our custom exception
-        raise QuietExit()
+        # Use a cleaner approach to exit in async context
+        # This will still use our custom excepthook for QuietExit
+        loop = asyncio.get_running_loop()
+        loop.call_soon(lambda: sys.exit(0))
 
 
 def setup_signal_handlers(loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
@@ -123,10 +127,10 @@ def setup_signal_handlers(loop: Optional[asyncio.AbstractEventLoop] = None) -> N
             # Create partial with the signal name for better logging
             handler = partial(_handle_shutdown, sig_name)
             
-            # Add signal handler to event loop
+            # Add signal handler to event loop - handle the task properly
             loop.add_signal_handler(
                 sig_num,
-                lambda h=handler: asyncio.create_task(h())
+                lambda h=handler: _create_shutdown_task(h)
             )
             logger.info(f"Registered {sig_name} handler for graceful shutdown")
         except NotImplementedError:
@@ -134,8 +138,27 @@ def setup_signal_handlers(loop: Optional[asyncio.AbstractEventLoop] = None) -> N
             logger.warning(f"Could not set up {sig_name} handler via asyncio (Windows?)")
             # Fall back to traditional signal handling on Windows
             if sys.platform == 'win32':
-                signal.signal(sig_num, lambda s, f, h=handler: asyncio.create_task(h()))
+                signal.signal(sig_num, lambda s, f, h=handler: _create_shutdown_task(h))
                 logger.info(f"Registered {sig_name} handler via signal module (Windows)")
+
+
+def _create_shutdown_task(coro_func):
+    """Create and register a shutdown task with proper exception handling"""
+    async def _run_and_handle_exceptions():
+        try:
+            await coro_func()
+        except QuietExit:
+            # This is expected during shutdown, handle it gracefully
+            logger.debug("QuietExit raised during shutdown - handling gracefully")
+            # Exit process cleanly via the excepthook
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Unhandled exception in shutdown task: {e}", exc_info=True)
+            sys.exit(1)
+            
+    # Create task and return it
+    task = asyncio.create_task(_run_and_handle_exceptions())
+    return task
 
 
 def handle_quiet_exit():
