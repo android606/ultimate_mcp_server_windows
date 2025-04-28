@@ -92,6 +92,17 @@ from ultimate_mcp_server.tools.completion import generate_completion
 from ultimate_mcp_server.tools.filesystem import create_directory, write_file_content
 from ultimate_mcp_server.utils import get_logger
 
+# For loop binding and forked process detection
+_pid = os.getpid()
+
+def _loop(): 
+    return asyncio.get_running_loop()
+
+def _log_lock():
+    return (_loop(), id(asyncio.current_task()))[0]  # lazily fetch
+
+_playwright_lock = lambda: asyncio.Lock()  # replaced with callable
+
 logger = get_logger("ultimate_mcp_server.tools.smart_browser")
 
 
@@ -123,10 +134,8 @@ _browser: Optional[Browser] = None
 _ctx: Optional[BrowserContext] = None
 _vnc_proc: Optional[subprocess.Popen] = None
 _last_hash: str | None = None
-_log_lock = asyncio.Lock()
 _js_lib_cached: Set[str] = set()
 _js_lib_lock = asyncio.Lock()
-_playwright_lock = asyncio.Lock()
 _db_conn_pool_lock = threading.RLock()
 _db_connection: sqlite3.Connection | None = None
 _locator_cache_cleanup_task_handle: Optional[asyncio.Task] = None
@@ -139,6 +148,14 @@ _cpu_count = os.cpu_count() or 1
 _thread_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=min(32, _cpu_count * 2 + 4), thread_name_prefix="sb_worker"
 )
+
+def _get_pool():
+    global _thread_pool, _pid
+    if _pid != os.getpid():                # child after fork
+        _thread_pool.shutdown(wait=False)
+        _thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=min(32, os.cpu_count()*2+4), thread_name_prefix="sb_worker")
+        _pid = os.getpid()
+    return _thread_pool
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 0.  FILESYSTEM & ENCRYPTION & NEW LOCATOR DB
@@ -181,7 +198,7 @@ def _enc(buf: bytes) -> bytes:
     """Encrypt data using AES-GCM with AAD."""
     k = _key()
     if not k:
-        return buf  # Return plaintext if no valid key
+        raise RuntimeError("SB_STATE_KEY not set; encryption mandatory.")
     try:
         nonce = os.urandom(12)
         encrypted_data = AESGCM(k).encrypt(nonce, buf, AAD_TAG)
@@ -195,22 +212,28 @@ def _dec(buf: bytes) -> bytes | None:
     """Decrypt data using AES-GCM with AAD, handling versioning."""
     k = _key()
     if not k:
-        return buf  # Assume cleartext if no key
-    if not buf.startswith(CIPHER_VERSION):
+        raise RuntimeError("SB_STATE_KEY not set; encryption mandatory.")
+    
+    # Ensure buffer is long enough for header, nonce, and some ciphertext
+    if len(buf) < len(CIPHER_VERSION) + 12 + 1:
+        logger.error("State file too short to be valid encrypted data")
+        return None
+        
+    # Parse fixed-length components
+    HDR, nonce, ciphertext = buf[:len(CIPHER_VERSION)], buf[len(CIPHER_VERSION):len(CIPHER_VERSION)+12], buf[len(CIPHER_VERSION)+12:]
+    
+    if HDR != CIPHER_VERSION:
         logger.error("State file has unknown/legacy format. Remove old state file.")
         _STATE_FILE.unlink(missing_ok=True)
         return None
+    
     try:
-        version_len = len(CIPHER_VERSION)
-        nonce = buf[version_len : version_len + 12]
-        ciphertext = buf[version_len + 12 :]
         return AESGCM(k).decrypt(nonce, ciphertext, AAD_TAG)
-    except InvalidTag:
-        logger.error("Decryption failed: Invalid tag (tampered/wrong key?). Removing state file.")
-        _STATE_FILE.unlink(missing_ok=True)
-        return None
+    except InvalidTag as e:
+        logger.error("Decryption failed: Invalid tag (tampered/wrong key?)")
+        raise RuntimeError("State-file authentication failed") from e
     except Exception as e:
-        logger.error(f"Decryption failed: {e}. Removing state file.", exc_info=True)
+        logger.error(f"Decryption failed: {e}.", exc_info=True)
         _STATE_FILE.unlink(missing_ok=True)
         return None
 
@@ -229,7 +252,7 @@ def _get_db_connection() -> sqlite3.Connection:
                     timeout=10,
                 )
                 _db_connection.execute("PRAGMA journal_mode=WAL")
-                _db_connection.execute("PRAGMA synchronous=NORMAL")
+                _db_connection.execute("PRAGMA synchronous=FULL")
                 _db_connection.execute("PRAGMA busy_timeout = 10000")
                 logger.info(f"Initialized SQLite DB connection to {_CACHE_DB}")
             except sqlite3.Error as e:
@@ -268,16 +291,26 @@ def _init_locator_cache_db_sync():
     try:
         conn = _get_db_connection()
         with closing(conn.cursor()) as cursor:
+            # Create the table with composite primary key (key, dom_fp)
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS selector_cache(
-                    key       TEXT PRIMARY KEY,
+                    key       TEXT,
                     selector  TEXT NOT NULL,
                     dom_fp    TEXT NOT NULL,
                     hits      INTEGER DEFAULT 1,
-                    created_ts INTEGER DEFAULT (strftime('%s', 'now'))
+                    created_ts INTEGER DEFAULT (strftime('%s', 'now')),
+                    last_hit  INTEGER DEFAULT (strftime('%s', 'now')),
+                    PRIMARY KEY (key, dom_fp)
                 );"""
             )
-            # Index on key is implicit due to PRIMARY KEY
+            
+            # Check if we need to add the last_hit column (for existing installations)
+            try:
+                cursor.execute("SELECT last_hit FROM selector_cache LIMIT 1")
+            except sqlite3.OperationalError:
+                logger.info("Adding last_hit column to selector_cache table...")
+                cursor.execute("ALTER TABLE selector_cache ADD COLUMN last_hit INTEGER DEFAULT(strftime('%s','now'))")
+            
             logger.info(f"Enhanced Locator cache DB schema initialized/verified at {_CACHE_DB}")
     except sqlite3.Error as e:
         logger.critical(f"Failed to initialize locator cache DB schema: {e}", exc_info=True)
@@ -292,12 +325,12 @@ def _cache_put_sync(key: str, selector: str, dom_fp: str) -> None:
     try:
         conn = _get_db_connection()
         conn.execute(
-            """INSERT INTO selector_cache(key, selector, dom_fp, created_ts)
-               VALUES (?, ?, ?, strftime('%s', 'now'))
-               ON CONFLICT(key) DO UPDATE SET
+            """INSERT INTO selector_cache(key, selector, dom_fp, created_ts, last_hit)
+               VALUES (?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+               ON CONFLICT(key, dom_fp) DO UPDATE SET
                  hits = hits + 1,
-                 dom_fp = excluded.dom_fp
-               WHERE key = excluded.key;""",
+                 last_hit = strftime('%s', 'now')
+               WHERE key = excluded.key AND dom_fp = excluded.dom_fp;""",
             (key, selector, dom_fp),
         )
     except sqlite3.Error as e:
@@ -326,20 +359,29 @@ def _cache_get_sync(key: str, dom_fp: str) -> Optional[str]:
     try:
         conn = _get_db_connection()
         with closing(conn.cursor()) as cursor:
-            cursor.execute("SELECT selector, dom_fp FROM selector_cache WHERE key=?", (key,))
+            cursor.execute(
+                "SELECT selector FROM selector_cache WHERE key=? AND dom_fp=?", 
+                (key, dom_fp)
+            )
             row = cursor.fetchone()
+            if row:
+                # Update last_hit timestamp for this exact match
+                conn.execute(
+                    "UPDATE selector_cache SET last_hit = strftime('%s', 'now') WHERE key=? AND dom_fp=?",
+                    (key, dom_fp)
+                )
+                return row[0]  # Return the selector
+            
+            # No match with this fingerprint, check if we need to clean up old entries
+            cursor.execute("SELECT 1 FROM selector_cache WHERE key=? LIMIT 1", (key,))
+            if cursor.fetchone():
+                # Key exists but fingerprint mismatch - clean up old versions
+                logger.debug(f"Cache key '{key[:8]}...' found but DOM fingerprint mismatch. Deleting.")
+                _cache_delete_sync(key)
     except sqlite3.Error as e:
         logger.error(f"Failed to read from locator cache (key={key}): {e}")
-        return None
-
-    if row and row[1] == dom_fp:
-        return row[0]  # Match
-    elif row:  # Mismatch, delete stale entry
-        logger.debug(f"Cache key '{key[:8]}...' found but DOM fingerprint mismatch. Deleting.")
-        _cache_delete_sync(key)  # Run delete synchronously
-        return None
-    else:
-        return None  # Not found
+    
+    return None  # Not found or error
 
 
 # --- Locator Cache Cleanup ---
@@ -353,10 +395,11 @@ def _cleanup_locator_cache_db_sync(retention_days: int = 90) -> int:
         conn = _get_db_connection()
         cutoff_time = f"(strftime('%s', 'now', '-{retention_days} days'))"
         logger.info(
-            f"Running locator cache cleanup: Removing entries older than {retention_days} days..."
+            f"Running locator cache cleanup: Removing entries older than {retention_days} days or with hits=0..."
         )
         with closing(conn.cursor()) as cursor:
-            cursor.execute(f"DELETE FROM selector_cache WHERE created_ts < {cutoff_time}")
+            # Delete entries that are either old OR have 0 hits (abandoned entries)
+            cursor.execute(f"DELETE FROM selector_cache WHERE created_ts < {cutoff_time} OR hits = 0")
             deleted_count = cursor.rowcount
             # Optional: Vacuum based on deleted count or fixed interval
             if deleted_count > 500:  # Example threshold
@@ -384,7 +427,7 @@ async def _locator_cache_cleanup_task(interval_seconds: int = 24 * 60 * 60):  # 
             loop = asyncio.get_running_loop()
             # Run the synchronous DB operation in the thread pool
             # Add retention days config later if needed, use default 90 for now
-            result_count = await loop.run_in_executor(_thread_pool, _cleanup_locator_cache_db_sync)
+            result_count = await loop.run_in_executor(_get_pool(), _cleanup_locator_cache_db_sync)
             if result_count < 0:
                 logger.warning("Locator cache cleanup run encountered an error.")
             await asyncio.sleep(interval_seconds)  # Wait for next interval
@@ -400,12 +443,16 @@ async def _locator_cache_cleanup_task(interval_seconds: int = 24 * 60 * 60):  # 
 # 1.  AUDIT LOG (hash-chained)
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Add a salt for the hash chain at module level to prevent identical hashes
+import re  # Make sure this is available
+_salt = os.urandom(16)  # Generate a random salt at module load time
 
 def _sanitize_for_log(obj: Any) -> Any:
     """Sanitize values for JSON logging, preventing injection."""
     if isinstance(obj, str):
         try:
-            encoded = json.dumps(obj)
+            s = re.sub(r'[\x00-\x1f\x7f]', '', obj)  # Remove control characters
+            encoded = json.dumps(s)
             return encoded[1:-1] if len(encoded) >= 2 else ""
         except TypeError:
             return "???"
@@ -418,11 +465,11 @@ def _sanitize_for_log(obj: Any) -> Any:
     else:
         try:
             s = str(obj)
+            s = re.sub(r'[\x00-\x1f\x7f]', '', s)  # Remove control characters
             encoded = json.dumps(s)
             return encoded[1:-1] if len(encoded) >= 2 else ""
         except Exception:
             return "???"
-
 
 _EVENT_EMOJI_MAP = {
     "browser_start": "🚀",
@@ -529,11 +576,11 @@ _EVENT_EMOJI_MAP = {
 
 async def _log(event: str, **details):
     """Append a hash-chained entry to the audit log asynchronously."""
-    global _last_hash
+    global _last_hash, _salt
     ts_iso = datetime.now(timezone.utc).isoformat()
     sanitized_details = _sanitize_for_log(details)
     emoji_key = _EVENT_EMOJI_MAP.get(event, "❓")
-    async with _log_lock:
+    async with _log_lock():
         current_last_hash = _last_hash
         entry = {
             "ts": ts_iso,
@@ -542,13 +589,14 @@ async def _log(event: str, **details):
             "prev": current_last_hash,
             "emoji": emoji_key,
         }
-        payload = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        payload = _salt + json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8")
         h = hashlib.sha256(payload).hexdigest()
         log_entry_line = json.dumps({"hash": h, **entry}, separators=(",", ":")) + "\n"
         try:
             async with aiofiles.open(_LOG_FILE, "a", encoding="utf-8") as f:
                 await f.write(log_entry_line)
                 await f.flush()
+                os.fsync(f.fileno())             # atomic persistence
             _last_hash = h
         except IOError as e:
             logger.error(f"Failed to write to audit log {_LOG_FILE}: {e}")
@@ -560,15 +608,10 @@ def _init_last_hash():
     global _last_hash
     if _LOG_FILE.exists():
         try:
-            with open(_LOG_FILE, "rb") as f:
-                f.seek(-2, os.SEEK_END)
-                while f.read(1) != b"\n":
-                    f.seek(-2, os.SEEK_CUR)
-                    if f.tell() == 0:
-                        break
-                last_line = f.readline().decode("utf-8")
-            if last_line:
-                last_entry = json.loads(last_line)
+            with open(_LOG_FILE, 'rb') as f:
+                data = f.read().splitlines()[-1:]  # safe even for 0/1 lines
+            if data:
+                last_entry = json.loads(data[0].decode("utf-8"))
                 _last_hash = last_entry.get("hash")
                 logger.info(f"Initialized audit log chain from last hash: {_last_hash[:8]}...")
             else:
@@ -838,13 +881,34 @@ def _is_domain_allowed_for_proxy(url: str) -> bool:
         return False  # Deny on error
 
 
+def _run_sync(coro):
+    try: 
+        loop = asyncio.get_running_loop()
+    except RuntimeError: 
+        return asyncio.run(coro)
+    else: 
+        loop.call_soon_threadsafe(asyncio.create_task, coro)
+
+async def _try_close_browser():
+    """Attempt to close the browser gracefully via atexit."""
+    global _browser
+    if _browser and _browser.is_connected():
+        logger.info("Attempting to close browser via atexit handler...")
+        try:
+            await _browser.close()
+            logger.info("Browser closed successfully via atexit.")
+        except Exception as e:
+            logger.error(f"Error closing browser during atexit: {e}")
+        finally:
+            _browser = None
+
 async def get_browser_context(
     use_incognito: bool = False,
     context_args: Optional[Dict[str, Any]] = None,
 ) -> tuple[BrowserContext, Browser]:
     """Get or create a browser context using global config values."""
     global _pw, _browser, _ctx
-    async with _playwright_lock:
+    async with _playwright_lock():
         if not _pw:
             try:
                 _pw = await async_playwright().start()
@@ -870,7 +934,7 @@ async def get_browser_context(
                     ],
                 )
                 logger.info(f"Browser launched (Headless: {is_headless}).")
-                atexit.register(lambda: asyncio.run(_try_close_browser()))
+                atexit.register(lambda: _run_sync(_try_close_browser()))
             except PlaywrightException as e:
                 raise RuntimeError(f"Failed to launch browser: {e}") from e
 
@@ -1030,7 +1094,7 @@ async def _load_state() -> dict[str, Any] | None:
         async with aiofiles.open(_STATE_FILE, "rb") as f:
             encrypted_data = await f.read()
         decrypted_data = await loop.run_in_executor(
-            _thread_pool, _dec, encrypted_data
+            _get_pool(), _dec, encrypted_data
         )  # _dec uses global key
         if decrypted_data is None:
             return None  # Decryption failed
@@ -1057,11 +1121,11 @@ async def _save_state(ctx: BrowserContext):
         state = await ctx.storage_state()
         state_json = json.dumps(state).encode("utf-8")
         encrypted_data = await loop.run_in_executor(
-            _thread_pool, _enc, state_json
+            _get_pool(), _enc, state_json
         )  # _enc uses global key
         async with aiofiles.open(_STATE_FILE, "wb") as f:
             await f.write(encrypted_data)
-        await loop.run_in_executor(_thread_pool, os.chmod, _STATE_FILE, 0o600)
+        await loop.run_in_executor(_get_pool(), os.chmod, _STATE_FILE, 0o600)
     except PlaywrightException as e:
         logger.error(f"Failed to get storage state: {e}")
     except Exception as e:
@@ -1108,20 +1172,6 @@ async def _context_maintenance_loop(ctx: BrowserContext):
             await asyncio.sleep(60)
 
 
-async def _try_close_browser():
-    """Attempt to close the browser gracefully via atexit."""
-    global _browser
-    if _browser and _browser.is_connected():
-        logger.info("Attempting to close browser via atexit handler...")
-        try:
-            await _browser.close()
-            logger.info("Browser closed successfully via atexit.")
-        except Exception as e:
-            logger.error(f"Error closing browser during atexit: {e}")
-        finally:
-            _browser = None
-
-
 async def shutdown():
     """Gracefully shut down Playwright, browser, context, VNC, and thread pool."""
     global _pw, _browser, _ctx, _vnc_proc, _thread_pool, _locator_cache_cleanup_task_handle
@@ -1140,7 +1190,7 @@ async def shutdown():
     await tab_pool.cancel_all()  # Cancel tab pool tasks
 
     # 2. Close Playwright resources under lock
-    async with _playwright_lock:
+    async with _playwright_lock():
         ctx_to_close = _ctx
         _ctx = None
         if ctx_to_close and ctx_to_close.browser:
@@ -1170,7 +1220,7 @@ async def shutdown():
     # 3. Cleanup Sync Resources
     _cleanup_vnc()
     logger.info("Shutting down thread pool...")
-    _thread_pool.shutdown(wait=True)
+    _get_pool().shutdown(wait=True)
     logger.info("Thread pool shut down.")
 
     await _log("browser_shutdown_complete")
@@ -1201,10 +1251,11 @@ def _signal_handler(sig, frame):
             asyncio.run(_initiate_shutdown())
     except RuntimeError as e:
         logger.error(f"Error scheduling shutdown from signal: {e}. Attempting sync.")
-    try:
-        asyncio.run(_initiate_shutdown())
-    except Exception as final_e:
-        logger.critical(f"Sync shutdown attempt failed: {final_e}")
+    # Removed redundant asyncio.run call that could cause problems
+    # try:
+    #     asyncio.run(_initiate_shutdown())
+    # except Exception as final_e:
+    #     logger.critical(f"Sync shutdown attempt failed: {final_e}")
 
 
 try:
@@ -1354,6 +1405,13 @@ async def _pause(page: Page, base_ms_range: tuple[int, int] = (150, 500)):
         element_count = await page.evaluate(
             "() => document.querySelectorAll('a, button, input, select, textarea, [role=button], [role=link], [onclick]').length"
         )
+        # Fix for SPAs (like Google) that return 0 elements due to shadow DOM
+        element_count = max(element_count, 100) if element_count == 0 else element_count
+        
+        # Performance optimization: skip sleep on low-risk sites with few elements
+        if risk == 1.0 and element_count < 50:
+            return
+        
         complexity_factor = min(1.0 + (element_count / 500.0), 1.5)
         adjusted_delay_ms *= complexity_factor
     except PlaywrightException:
@@ -1401,7 +1459,7 @@ async def _ensure_readability(page: Page) -> None:
                 async with aiofiles.open(_READ_JS_CACHE, "w", encoding="utf-8") as f:
                     await f.write(src)
                 await asyncio.get_running_loop().run_in_executor(
-                    _thread_pool, os.chmod, _READ_JS_CACHE, 0o644
+                    _get_pool(), os.chmod, _READ_JS_CACHE, 0o644
                 )
         if src:
             wrapped_src = f"window.__sbReadability = (() => {{ {src}; return Readability; }})();"
@@ -1435,16 +1493,102 @@ def _shadow_deep_js() -> str:  # Removed args, uses globals now
     (prefix) => {{
         const MAX = {_max_widgets_global};
         const MIN_AREA = {_area_min_global};
-        // ... (rest of JS function body remains the same) ...
+        
         const isVis = el => {{
-            // ... (visibility check logic) ...
+            if (!el || !el.getBoundingClientRect) return false;
+            try {{
+                const style = window.getComputedStyle(el);
+                if (style.display === 'none' || style.visibility === 'hidden' || 
+                    style.opacity === '0' || el.hidden || !el.offsetParent) {{
+                    return false;
+                }}
+                
+                const rect = el.getBoundingClientRect();
+                const hasSize = rect.width > 1 && rect.height > 1;
+                const hasArea = rect.width * rect.height >= MIN_AREA;
+                const isOnscreen = rect.bottom > 0 && rect.top < window.innerHeight && 
+                                  rect.right > 0 && rect.left < window.innerWidth;
+                
+                return hasSize && (hasArea || el.tagName === 'A') && isOnscreen;
+            }} catch (e) {{ 
+                console.warn('Error in isVis:', e);
+                return false; 
+            }}
         }};
+        
         const okTagRole = el => {{
-            // ... (tag/role check logic) ...
+            const tag = el.tagName.toLowerCase();
+            const role = (el.getAttribute('role') || '').toLowerCase();
+            
+            const interactiveTags = ['a', 'button', 'input', 'select', 'textarea', 'option',
+                                    'label', 'form', 'fieldset', 'details', 'summary',
+                                    'dialog', 'menu', 'menuitem'];
+            const interactiveRoles = ['button', 'link', 'checkbox', 'radio', 'menuitem', 'tab',
+                                     'switch', 'option', 'searchbox', 'textbox', 'dialog'];
+                                      
+            // Interactive elements are always interesting
+            if (interactiveTags.includes(tag) || interactiveRoles.includes(role)) return true;
+            
+            // Elements with specific attributes indicating interactivity
+            if (el.onclick || el.href || el.getAttribute('tabindex') !== null ||
+                el.getAttribute('contenteditable') === 'true') return true;
+            
+            // Non-empty container elements that have decent size
+            if ((tag === 'div' || tag === 'section' || tag === 'span') && 
+                el.innerText && el.innerText.trim().length > 0) {{
+                const rect = el.getBoundingClientRect();
+                if (rect.width * rect.height >= MIN_AREA) return true;
+            }}
+            
+            // Images with good size are interesting
+            if (tag === 'img' && el.alt) {{
+                const rect = el.getBoundingClientRect();
+                if (rect.width * rect.height >= MIN_AREA) return true;
+            }}
+            
+            return false;
         }};
+        
         const getText = el => {{
-            // ... (text extraction logic) ...
+            try {{
+                // For form elements, get value or placeholder
+                if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {{
+                    if (el.type === 'button' || el.type === 'submit') return el.value || '';
+                    // Don't extract password values for security
+                    if (el.type === 'password') return 'Password field';
+                    return el.placeholder || el.name || el.type || '';
+                }}
+                
+                if (el.tagName === 'SELECT') return el.name || '';
+                
+                // For images, use alt text
+                if (el.tagName === 'IMG') return el.alt || '';
+                
+                // Handle aria labels
+                const ariaLabel = el.getAttribute('aria-label');
+                if (ariaLabel) return ariaLabel;
+                
+                // Check related labels for inputs
+                if (el.id && el.tagName === 'INPUT') {{
+                    const labels = document.querySelectorAll(`label[for="\${{el.id}}"]`);
+                    if (labels.length > 0) return labels[0].textContent.trim();
+                }}
+                
+                // Get text content without descendant script/style text
+                let textContent = '';
+                for (const node of el.childNodes) {{
+                    if (node.nodeType === Node.TEXT_NODE) {{
+                        textContent += node.textContent;
+                    }}
+                }}
+                
+                return textContent.trim() || el.innerText.trim() || '';
+            }} catch (e) {{
+                console.warn('Error in getText:', e);
+                return '';
+            }}
         }};
+        
         const out = [];
         const q = [document.documentElement];
         const visited = new Set();
@@ -1480,11 +1624,15 @@ def _shadow_deep_js() -> str:  # Removed args, uses globals now
 
 async def _build_page_map(page: Page) -> Tuple[Dict[str, Any], str]:
     """Builds a map of the page using global config values."""
+    # Check if page already has a cached map with a valid fingerprint
+    fp = await _dom_fingerprint(page)  # Calculate fingerprint first
+    if hasattr(page, '_sb_page_map') and hasattr(page, '_sb_fp') and page._sb_fp == fp:
+        return page._sb_page_map, fp
+
     await _ensure_readability(page)
     main_txt = ""
     elems: List[Dict[str, Any]] = []
     page_title = "[Error]"
-    fp = hashlib.sha256(b"").hexdigest()  # Default fingerprint
 
     try:
         # Get main text
@@ -1500,7 +1648,7 @@ async def _build_page_map(page: Page) -> Tuple[Dict[str, Any], str]:
                     return soup.get_text(" ", strip=True)
 
                 main_txt = await asyncio.get_running_loop().run_in_executor(
-                    _thread_pool, extract_basic_text, html_content
+                    _get_pool(), extract_basic_text, html_content
                 )
             main_txt = main_txt[:_max_section_chars_global]  # Use global limit
         else:
@@ -1528,15 +1676,18 @@ async def _build_page_map(page: Page) -> Tuple[Dict[str, Any], str]:
         except PlaywrightException:
             pass
 
-        # Calculate fingerprint *after* potential DOM modification (adding data-sb-id)
-        fp = await _dom_fingerprint(page)  # Uses global limit
-
     except PlaywrightException as e:
         logger.error(f"Could not build page map for {page.url}: {e}", exc_info=True)
     except Exception as e:
         logger.error(f"Unexpected error building page map: {e}", exc_info=True)
 
-    return ({"url": page.url, "title": page_title, "main_text": main_txt, "elements": elems}, fp)
+    page_map = {"url": page.url, "title": page_title, "main_text": main_txt, "elements": elems}
+    
+    # Cache the page map and fingerprint on the page object
+    page._sb_page_map = page_map
+    page._sb_fp = fp
+    
+    return (page_map, fp)
 
 
 # Heuristic Matcher
@@ -1571,7 +1722,7 @@ def _heuristic_pick(pm: Dict[str, Any], hint: str, role: Optional[str]) -> Optio
         )
         if not el_id:
             continue
-        if role and role.lower() != el_role.lower():
+        if role and role.lower() != el_role.lower() and not (role.lower() == 'button' and el_tag.lower() == 'button'):
             continue  # Role filter
 
         score = _ratio(h_norm, unicodedata.normalize("NFC", el_text).lower())
@@ -1657,7 +1808,7 @@ async def _llm_pick(pm: Dict[str, Any], task_hint: str, attempt: int) -> Optiona
     )  # Use global model
     if isinstance(res, dict) and "id" in res:
         el_id = res.get("id")
-        if el_id is None or (isinstance(el_id, str) and re.match(r"^(f\d+:)el_\d+$", el_id)):
+        if el_id is None or (isinstance(el_id, str) and re.match(r"^(?:f\d+:)?el_\d+$", el_id)):
             return el_id
         else:
             logger.warning(f"LLM returned invalid ID format: {el_id} for hint '{task_hint}'")
@@ -1676,7 +1827,12 @@ async def _loc_from_id(page: Page, el_id: str) -> Locator:
     # No direct config dependencies
     if not el_id:
         raise ValueError("Element ID cannot be empty")
-    selector = f'[data-sb-id="{el_id}"]'
+    
+    # Properly escape the ID for CSS attribute selector
+    # This handles IDs containing quotes or other special characters
+    escaped_id = el_id.replace('\\', '\\\\').replace('"', '\\"')
+    selector = f'[data-sb-id="{escaped_id}"]'
+    
     if ":" in el_id and el_id.startswith("f"):
         try:
             frame_index = int(el_id.split(":", 1)[0][1:])
@@ -1755,7 +1911,7 @@ class EnhancedLocator:
         """
         loop = asyncio.get_running_loop()
         # _cache_get_sync already handles fingerprint check and deletion of stale entries
-        sel = await loop.run_in_executor(_thread_pool, _cache_get_sync, key, fp)
+        sel = await loop.run_in_executor(_get_pool(), _cache_get_sync, key, fp)
         if sel:
             # Found in cache with matching fingerprint, try to locate and verify visibility
             try:
@@ -1773,7 +1929,7 @@ class EnhancedLocator:
                     f"Cached selector '{sel}' failed visibility/location check. Cache invalid."
                 )
                 # Deletion is now handled within _cache_get_sync on mismatch, but we can delete here too if needed
-                # await loop.run_in_executor(_thread_pool, _cache_delete_sync, key)
+                # await loop.run_in_executor(_get_pool(), _cache_delete_sync, key)
         return None
 
     async def locate(
@@ -1833,12 +1989,14 @@ class EnhancedLocator:
         if heuristic_id:
             try:
                 loc = await _loc_from_id(self.page, heuristic_id)
+                # Ensure element is in view before checking visibility
+                await loc.scroll_into_view_if_needed()
                 # Use a fraction of the total timeout for this tier's check
                 await loc.wait_for(state="visible", timeout=max(1000, timeout // 3))
                 # Success: Cache the found selector ([data-sb-id="..."])
                 selector_str = f'[data-sb-id="{heuristic_id}"]'
                 await loop.run_in_executor(
-                    _thread_pool, _cache_put_sync, cache_key, selector_str, current_dom_fp
+                    _get_pool(), _cache_put_sync, cache_key, selector_str, current_dom_fp
                 )
                 await _log("locator_heuristic_match", selector=heuristic_id, hint=task_hint)
                 return loc
@@ -1875,12 +2033,14 @@ class EnhancedLocator:
             # LLM returned an ID, try to locate and verify visibility
             try:
                 loc = await _loc_from_id(self.page, llm_id)
+                # Ensure element is in view before checking visibility
+                await loc.scroll_into_view_if_needed()
                 remaining_timeout_ms = max(500, timeout - int(elapsed_sec * 1000))
                 await loc.wait_for(state="visible", timeout=remaining_timeout_ms)
                 # Success! Cache the result.
                 selector_str = f'[data-sb-id="{llm_id}"]'
                 await loop.run_in_executor(
-                    _thread_pool, _cache_put_sync, cache_key, selector_str, current_dom_fp
+                    _get_pool(), _cache_put_sync, cache_key, selector_str, current_dom_fp
                 )
                 await _log("locator_llm_pick", selector=llm_id, attempt=att, hint=task_hint)
                 return loc
@@ -1905,6 +2065,8 @@ class EnhancedLocator:
             remaining_timeout_ms = max(500, timeout - int(elapsed_sec * 1000))
             if remaining_timeout_ms <= 0:
                 raise PlaywrightTimeoutError("Timeout reached before text fallback check.")
+            # Ensure element is in view before checking visibility
+            await loc.scroll_into_view_if_needed()
             await loc.wait_for(state="visible", timeout=remaining_timeout_ms)
             await _log("locator_text_fallback", selector=text_selector, hint=task_hint)
             # Don't cache this less reliable method
@@ -1944,8 +2106,26 @@ async def smart_click(
     log_target = target_kwargs or {"hint": task_hint}
     try:
         element = await loc.locate(task_hint=task_hint, timeout=timeout_ms)
+        
+        # Fix 4: Always ensure element is scrolled into view before clicking
+        await element.scroll_into_view_if_needed()
+        
         await _pause(page)
         await element.click(timeout=max(1000, timeout_ms // 2))  # Timeout for click action itself
+        
+        # Fix 3: Cache selector even if element was hidden but interaction succeeded
+        # Get fingerprint for caching after successful click
+        fp = await _dom_fingerprint(page)
+        key_src = json.dumps(
+            {"site": loc.site, "path": urlparse(page.url or "").path or "/", "hint": task_hint.lower()}, 
+            sort_keys=True
+        )
+        cache_key = hashlib.sha256(key_src.encode()).hexdigest()
+        selector_str = f'[data-sb-id="{element.get_attribute("data-sb-id")}"]'
+        await asyncio.get_running_loop().run_in_executor(
+            _get_pool(), _cache_put_sync, cache_key, selector_str, fp
+        )
+        
         await _log("click_success", target=log_target)
         return True
     except PlaywrightTimeoutError as e:  # Catch timeout from locate() or click()
@@ -1993,22 +2173,50 @@ async def smart_type(
     )
 
     if text.startswith("secret:"):
-        secret_path = text[len("secret:") :]
+        secret_path = text[len("secret:"):]
         try:
-            resolved_text = get_secret(text)
+            resolved_text = get_secret(secret_path)
         except (KeyError, ValueError, RuntimeError) as e:
             await _log("type_fail_secret", target=log_target, secret_ref=secret_path, error=str(e))
             raise ToolInputError(f"Failed to resolve secret '{secret_path}': {e}") from e
 
     try:
         element = await loc.locate(task_hint=task_hint, timeout=timeout_ms)
+        
+        # Fix 4: Add scroll into view (also needed for typing)
+        await element.scroll_into_view_if_needed()
+        
         await _pause(page)
         if clear_before:
             await element.fill("")
         await element.type(resolved_text, delay=random.uniform(30, 80))
+        
+        # Get fingerprint for caching even if element might be hidden
+        fp = await _dom_fingerprint(page)
+        
+        # Fix 2: Handle press_enter with retry logic
         if press_enter:
             await _pause(page, (50, 150))
-            await element.press("Enter")
+            try:
+                # Add timeout and noWaitAfter for better press handling
+                await element.press("Enter", timeout=1000, noWaitAfter=True)
+            except PlaywrightException as e:
+                logger.warning(f"Enter key press failed, trying click fallback: {e}")
+                # Retry with click on same element if Enter press fails
+                await smart_click(page, task_hint=task_hint, target_kwargs=target_kwargs)
+                
+        # Fix 3: Cache selector even if element was hidden but interaction succeeded
+        # Since we got here, the interaction was successful even if the element might not be visible
+        key_src = json.dumps(
+            {"site": loc.site, "path": urlparse(page.url or "").path or "/", "hint": task_hint.lower()}, 
+            sort_keys=True
+        )
+        cache_key = hashlib.sha256(key_src.encode()).hexdigest()
+        selector_str = f'[data-sb-id="{element.get_attribute("data-sb-id")}"]'
+        await asyncio.get_running_loop().run_in_executor(
+            _get_pool(), _cache_put_sync, cache_key, selector_str, fp
+        )
+        
         await _log("type_success", target=log_target, value=log_value, entered=press_enter)
         return True
     except PlaywrightTimeoutError as e:  # Catch timeout from locate() or type()
@@ -2035,7 +2243,7 @@ async def smart_type(
 async def _run_in_thread(func, *args):
     """Helper to run synchronous function in the thread pool."""
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_thread_pool, func, *args)
+    return await loop.run_in_executor(_get_pool(), func, *args)
 
 
 async def _compute_hash_async(data: bytes) -> str:
@@ -2111,7 +2319,7 @@ def _extract_tables_sync(path: Path) -> List[Dict]:
 async def _extract_tables_async(path: Path) -> list:
     """Extract tables from document files (PDF, Excel, CSV) using thread pool."""
     try:
-        tables = await _run_in_thread(_extract_tables_sync, path)
+        tables = await asyncio.to_thread(_extract_tables_sync, path)
         if tables:
             await _log("table_extract_success", file=str(path), num_tables=len(tables))
         return tables
@@ -2160,9 +2368,7 @@ async def smart_download(
         dl = await dl_info.value
         suggested_fname = dl.suggested_filename or f"download_{int(time.time())}"
         # Sanitize filename
-        safe_fname = re.sub(
-            r"[^\w\.\- ]", "_", suggested_fname
-        )  # Allow letters, numbers, dot, hyphen, underscore, space
+        safe_fname = re.sub(r"[^\w.\- ]", "_", suggested_fname)  # Keep dots
         safe_fname = re.sub(r"\s+", "_", safe_fname).strip("._-")  # Replace space with underscore
         out_path = download_base_dir / safe_fname
         if not safe_fname:  # Fallback if empty
@@ -2188,9 +2394,13 @@ async def smart_download(
         if out_path.suffix.lower() in (".pdf", ".xls", ".xlsx", ".csv"):
             try:
                 table_extraction_task = asyncio.create_task(_extract_tables_async(out_path))
-                tables = await asyncio.wait_for(table_extraction_task, timeout=120)
-            except asyncio.TimeoutError:
-                logger.warning(f"Table extraction timed out for {out_path.name}")
+                try:
+                    tables = await asyncio.wait_for(table_extraction_task, timeout=120)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Table extraction timed out for {out_path.name}")
+                    # Cancel the task and wait for it to be properly cleaned up
+                    table_extraction_task.cancel()
+                    await asyncio.gather(table_extraction_task, return_exceptions=True)
             except Exception as extract_err:
                 logger.error(f"Table extraction failed: {extract_err}")
 
@@ -2409,6 +2619,8 @@ async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
             filename = f"{seq:03d}_{_slugify(fname_base)}"
         output_path = dest_dir / filename
         output_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure parent exists
+        # Set proper permissions on parent directory
+        await _run_in_thread(os.chmod, output_path.parent, 0o700)
 
         headers = {
             "User-Agent": "Mozilla/5.0",
@@ -2426,6 +2638,8 @@ async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
                         "status_code": response.status_code,
                         "success": False,
                     }
+                
+                # Process headers inside the stream context manager
                 # Refine filename from headers
                 content_disposition = response.headers.get("content-disposition")
                 if content_disposition:
@@ -2453,6 +2667,7 @@ async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
                         await f.write(chunk)
                         hasher.update(chunk)
                         bytes_written += len(chunk)
+        
         file_hash = hasher.hexdigest()
         await _run_in_thread(os.chmod, output_path, 0o600)
         await _log(
@@ -2750,6 +2965,63 @@ def _extract_json_block(text: str) -> Optional[str]:
     return None
 
 
+# First we need to add a new rate-limit aware resilient decorator
+def _llm_resilient(max_attempts: int = 3, backoff: float = 1.0):
+    """Decorator for LLM API calls that handles rate limits with exponential backoff."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        async def inner(*a, **kw):
+            attempt = 0
+            while True:
+                try:
+                    if attempt > 0:
+                        jitter_delay = backoff * (2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
+                        await asyncio.sleep(jitter_delay)
+                    return await fn(*a, **kw)
+                except ProviderError as e:
+                    # Check specifically for rate limit errors
+                    if "429" in str(e) or "rate limit" in str(e).lower() or "too many requests" in str(e).lower():
+                        attempt += 1
+                        func_name = getattr(fn, "__name__", "unknown_func")
+                        if attempt >= max_attempts:
+                            logger.error(f"LLM rate limit: Operation '{func_name}' failed after {max_attempts} attempts: {e}")
+                            raise ToolError(f"LLM rate-limit exceeded after {max_attempts} attempts: {e}") from e
+                        
+                        # Try to extract Retry-After header if available
+                        retry_after = None
+                        try:
+                            # Look for Retry-After value in error message
+                            match = re.search(r'retry[- ]after[: ]+(\d+)', str(e).lower())
+                            if match:
+                                retry_after = int(match.group(1))
+                        except (ValueError, AttributeError):
+                            pass
+                        
+                        delay = retry_after or backoff * (2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
+                        logger.warning(f"LLM rate limit hit. Retrying '{func_name}' after {delay:.2f}s (attempt {attempt}/{max_attempts})")
+                        await asyncio.sleep(delay)
+                    else:
+                        # Re-raise non-rate-limit provider errors
+                        raise
+                except Exception as e:  # Catch unexpected errors
+                    # Only retry if it looks like a transient error
+                    if isinstance(e, (httpx.RequestError, asyncio.TimeoutError)) or "timeout" in str(e).lower():
+                        attempt += 1
+                        func_name = getattr(fn, "__name__", "unknown_func")
+                        if attempt >= max_attempts:
+                            logger.error(f"LLM call: Operation '{func_name}' failed after {max_attempts} attempts: {e}")
+                            raise ToolError(f"LLM call failed after {max_attempts} attempts: {e}") from e
+                        delay = backoff * (2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
+                        logger.warning(f"LLM transient error. Retrying '{func_name}' after {delay:.2f}s (attempt {attempt}/{max_attempts})")
+                        await asyncio.sleep(delay)
+                    else:
+                        # Re-raise non-retryable errors
+                        raise
+        return inner
+    return wrap
+
+
+@_llm_resilient(max_attempts=3, backoff=1.0)
 async def _call_llm(
     messages: Sequence[Dict[str, str]],
     model: str = "gpt-4o",  # Default model for general calls
@@ -2764,29 +3036,43 @@ async def _call_llm(
     llm_args = {
         "provider": Provider.OPENAI.value,
         "model": model,
-        "messages": messages,
+        "messages": messages.copy(),  # Create a copy to avoid modifying the original
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stop_sequences": None,
     }
-    # Add JSON mode hint if provider/model supports it (newer OpenAI models)
-    if expect_json and ("gpt-4" in model or "gpt-3.5" in model):  # Heuristic check
-        llm_args["response_format"] = {"type": "json_object"}
-        # Remove manual JSON instruction if using JSON mode
-    elif expect_json:
-        last_message = messages[-1]
-        if last_message["role"] == "user":
-            json_instruction = (
-                "\n\nIMPORTANT: Respond ONLY with valid JSON. "
-                "Start with `{` or `[` and end with `}` or `]`. "
-                "Do not include ```json markers or explanations."
-            )
-            modified_messages = list(messages[:-1]) + [
-                {"role": "user", "content": last_message["content"] + json_instruction}
-            ]
-            llm_args["messages"] = modified_messages
+    
+    # Flag to determine if we need to add a JSON instruction
+    use_json_instruction = expect_json
+    
+    # Check if model supports native JSON mode and use it if so
+    if expect_json and model.startswith('gpt-'):
+        llm_args['response_format'] = {"type": "json_object"}
+        use_json_instruction = False  # Don't add manual instruction when using JSON mode
+    
+    # If we need a JSON instruction, ensure it's in a final user message
+    if use_json_instruction:
+        json_instruction = (
+            "\n\nIMPORTANT: Respond ONLY with valid JSON. "
+            "Start with `{` or `[` and end with `}` or `]`. "
+            "Do not include ```json markers or explanations."
+        )
+        
+        # Create a new message list with instruction appended to last or as new message
+        modified_messages = list(llm_args["messages"])
+        
+        # If the last message is a user message, append instruction to it
+        if modified_messages and modified_messages[-1]['role'] == 'user':
+            last_content = modified_messages[-1]['content']
+            modified_messages[-1]['content'] = last_content + json_instruction
         else:
-            logger.warning("Cannot add JSON instruction as last LLM message is not 'user'.")
+            # Otherwise, add a new user message with just the instruction
+            modified_messages.append({
+                "role": "user", 
+                "content": "Please provide your response based on my previous messages." + json_instruction
+            })
+        
+        llm_args["messages"] = modified_messages
 
     try:
         start_time = time.monotonic()
@@ -3193,16 +3479,20 @@ async def run_steps(page: Page, steps: Sequence[Dict[str, Any]]) -> List[Dict[st
             elif action == "scroll":
                 direction = step.get("direction")
                 amount = step.get("amount_px")
-                assert direction in ["up", "down", "top", "bottom"], "Invalid scroll direction"
-                if direction == "top":
-                    await page.evaluate("() => window.scrollTo(0, 0)")
-                elif direction == "bottom":
-                    await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-                elif direction == "up":
-                    await page.evaluate("(px) => window.scrollBy(0, -px)", int(amount or 500))
-                elif direction == "down":
-                    await page.evaluate("(px) => window.scrollBy(0, px)", int(amount or 500))
-                step_result["success"] = True
+                if not direction or direction not in ["up", "down", "top", "bottom"]:
+                    step_result["error"] = f"Invalid scroll direction: '{direction}'. Must be one of: up, down, top, bottom"
+                    step_result["success"] = False
+                    logger.warning(f"Scroll step failed: {step_result['error']}")
+                else:
+                    if direction == "top":
+                        await page.evaluate("() => window.scrollTo(0, 0)")
+                    elif direction == "bottom":
+                        await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                    elif direction == "up":
+                        await page.evaluate("(px) => window.scrollBy(0, -px)", int(amount or 500))
+                    elif direction == "down":
+                        await page.evaluate("(px) => window.scrollBy(0, px)", int(amount or 500))
+                    step_result["success"] = True
 
             elif action == "finish":
                 logger.info("Macro execution: 'finish' action.")
@@ -3371,6 +3661,7 @@ class SmartBrowserTool(BaseTool):
         self._inactivity_monitor_task: Optional[asyncio.Task] = None
         self._init_lock = asyncio.Lock()
         self._is_initialized = False
+        self._config_cache = None  # Cache for config to avoid repeated loading
         # Check if running within MCP lifespan context (best effort)
         is_server_context = (
             hasattr(mcp_server, "mcp") and hasattr(mcp_server.mcp, "lifespan")
@@ -3403,9 +3694,14 @@ class SmartBrowserTool(BaseTool):
 
             # --- Load ALL SB config into globals ---
             try:
-                config = get_config()  # Use the central config loader
-                sb_config: SmartBrowserConfig = config.smart_browser  # Get the specific section
-
+                # Use cached config if available
+                if not self._config_cache:
+                    config = get_config()  # Use the central config loader
+                    sb_config: SmartBrowserConfig = config.smart_browser  # Get the specific section
+                    self._config_cache = sb_config  # Cache the config
+                else:
+                    sb_config = self._config_cache
+                
                 # Assign loaded config values to global variables
                 _sb_state_key_b64_global = sb_config.sb_state_key_b64
                 _sb_max_tabs_global = sb_config.sb_max_tabs
@@ -3479,7 +3775,7 @@ class SmartBrowserTool(BaseTool):
         logger.info(f"Inactivity monitor started. Timeout: {timeout_seconds}s.")
         while True:
             await asyncio.sleep(check_interval)
-            async with _playwright_lock:
+            async with _playwright_lock():
                 browser_active = _browser is not None and _browser.is_connected()
             if not browser_active:
                 logger.info("Inactivity monitor: Browser closed. Stopping monitor.")
@@ -3739,6 +4035,8 @@ class SmartBrowserTool(BaseTool):
             safe_subfolder = _slugify(urlparse(start_url).netloc, 50) or "pdfs"
         dest_dir = download_base / safe_subfolder
         await create_directory(str(dest_dir))  # Assumes creates with 700 perms
+        # Explicitly set permissions to ensure security
+        await _run_in_thread(os.chmod, dest_dir, 0o700)
 
         logger.info(f"Starting PDF crawl from: {start_url}")
         pdf_urls = await crawl_for_pdfs(
@@ -3800,6 +4098,8 @@ class SmartBrowserTool(BaseTool):
             }
         scratch_dir = _HOME / "docs_collected"
         await create_directory(str(scratch_dir))
+        # Explicitly set permissions
+        await _run_in_thread(os.chmod, scratch_dir, 0o700)
         now = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         safe_pkg = _slugify(package, 40)
         fname = f"{safe_pkg}_docs_{now}.txt"
@@ -3830,42 +4130,56 @@ class SmartBrowserTool(BaseTool):
     @with_tool_metrics
     @with_error_handling
     async def execute_macro(
-        self, url: str, task: str, model: str = "gpt-4o", max_rounds: int = 7
+        self, url: str, task: str, model: str = "gpt-4o", max_rounds: int = 7, timeout_seconds: int = 600
     ) -> Dict[str, Any]:
         """Navigates to URL and executes a natural language task using LLM planner."""
         await self._ensure_initialized()
         self._update_activity()
-        ctx, _ = await get_browser_context()
-        async with _tab_context(ctx) as page:
-            await _log("macro_navigate", url=url)
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=60000)
-            except PlaywrightException as e:
-                raise ToolError(f"Macro nav failed: {e}") from e
-            results = await run_macro(page, task, max_rounds, model)  # Handles internal logs/errors
-            try:
-                final_state = await get_page_state(page)
-            except Exception as e:
-                final_state = {"error": f"Failed to get final state: {e}"}
-            macro_success = bool(results) and all(
-                s.get("success", False) for s in results if s.get("action") != "error"
-            )
-            # More refined success check: did it finish or just stop without error?
-            finished = any(s.get("action") == "finish" and s.get("success") for s in results)
-            macro_success = macro_success or finished  # Consider it success if it finished cleanly
+        
+        async def run_macro_inner():
+            ctx, _ = await get_browser_context()
+            async with _tab_context(ctx) as page:
+                await _log("macro_navigate", url=url)
+                try:
+                    await page.goto(url, wait_until="networkidle", timeout=60000)
+                except PlaywrightException as e:
+                    raise ToolError(f"Macro nav failed: {e}") from e
+                results = await run_macro(page, task, max_rounds, model)  # Handles internal logs/errors
+                try:
+                    final_state = await get_page_state(page)
+                except Exception as e:
+                    final_state = {"error": f"Failed to get final state: {e}"}
+                macro_success = bool(results) and all(
+                    s.get("success", False) for s in results if s.get("action") != "error"
+                )
+                # More refined success check: did it finish or just stop without error?
+                finished = any(s.get("action") == "finish" and s.get("success") for s in results)
+                macro_success = macro_success or finished  # Consider it success if it finished cleanly
 
+                return {
+                    "success": macro_success,
+                    "task": task,
+                    "steps": results,
+                    "final_page_state": final_state,
+                }
+        
+        try:
+            return await asyncio.wait_for(run_macro_inner(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            await _log("macro_timeout", url=url, task=task, timeout=timeout_seconds)
             return {
-                "success": macro_success,
+                "success": False,
                 "task": task,
-                "steps": results,
-                "final_page_state": final_state,
+                "error": f"Macro execution timed out after {timeout_seconds}s",
+                "steps": [],
+                "final_page_state": {"error": "Timeout occurred"},
             }
 
     @tool(name="smart_browser.autopilot")
     @with_tool_metrics
     @with_error_handling
     async def autopilot(
-        self, task: str, scratch_subdir: str = "autopilot_runs", max_steps: int = 10
+        self, task: str, scratch_subdir: str = "autopilot_runs", max_steps: int = 10, timeout_seconds: int = 1800
     ) -> Dict[str, Any]:
         """Executes a complex multi-step task using LLM planning and available tools."""
         await self._ensure_initialized()
@@ -3875,127 +4189,161 @@ class SmartBrowserTool(BaseTool):
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         log_path = scratch_dir / f"autopilot_{run_id}.jsonl"
         logger.info(f"Autopilot run '{run_id}' started. Task: '{task[:100]}...'. Log: {log_path}")
-        all_results = []
-        current_task = task
+        
+        async def autopilot_inner():
+            all_results = []
+            current_task = task
 
-        try:
-            current_plan = await _plan_autopilot(current_task)
-            step_num = 0
-            while step_num < max_steps and current_plan:
-                step_num += 1
-                step_to_execute = current_plan.pop(0)
-                tool_name = step_to_execute.get("tool")
-                args = step_to_execute.get("args", {})
-                step_log = {"step": step_num, "tool": tool_name, "args": args, "success": False}
-
-                if tool_name not in _AVAILABLE_TOOLS:
-                    step_log["error"] = f"Unknown tool '{tool_name}'."
-                else:
-                    method_name = _AVAILABLE_TOOLS[tool_name][0]
-                    try:
-                        tool_method = getattr(self, method_name)
-                        await _log("autopilot_step_start", step=step_num, tool=tool_name, args=args)
-                        self._update_activity()
-                        outcome = await tool_method(**args)
-                        self._update_activity()
-                        step_log["success"] = outcome.get(
-                            "success", False
-                        )  # Default fail if key missing
-                        step_log["result"] = outcome
-                        if not step_log["success"]:
-                            step_log["error"] = outcome.get("error", "Tool failed")
-                            await _log(
-                                "autopilot_step_fail",
-                                step=step_num,
-                                tool=tool_name,
-                                error=step_log["error"],
-                            )
-                            logger.warning(
-                                f"Autopilot Step {step_num} ({tool_name}) failed: {step_log['error']}"
-                            )
-                            logger.info(f"Attempting replan after failed step {step_num}...")
-                            try:
-                                new_plan_tail = await _plan_autopilot(
-                                    current_task, all_results + [step_log]
-                                )
-                                current_plan = new_plan_tail  # Replace remaining plan
-                                logger.info(
-                                    f"Replanning successful. New plan: {len(current_plan)} steps."
-                                )
-                                await _log("autopilot_replan_success", new_steps=len(current_plan))
-                                # Continue loop with new plan, failure already logged/recorded
-                            except Exception as replan_err:
-                                logger.error(f"Replanning failed: {replan_err}")
-                                await _log("autopilot_replan_fail", error=str(replan_err))
-                                current_plan = []  # Stop execution if replan fails
-                        else:
-                            await _log(
-                                "autopilot_step_success",
-                                step=step_num,
-                                tool=tool_name,
-                                result_summary=str(outcome)[:200],
-                            )
-                    except (
-                        ToolInputError,
-                        ToolError,
-                        ValueError,
-                        TypeError,
-                        AssertionError,
-                    ) as e:  # Catch arg/tool execution errors
-                        step_log["error"] = f"{type(e).__name__} executing '{tool_name}': {e}"
-                        logger.error(
-                            f"Autopilot Step {step_num} failed: {step_log['error']}", exc_info=True
-                        )
-                        current_plan = []  # Stop on these errors
-                    except Exception as e:  # Catch unexpected errors
-                        step_log["error"] = f"Unexpected error executing '{tool_name}': {e}"
-                        logger.critical(
-                            f"Autopilot Step {step_num} failed unexpectedly: {step_log['error']}",
-                            exc_info=True,
-                        )
-                        current_plan = []  # Stop
-
-                all_results.append(step_log)
-                try:  # Log step result async
-                    async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
-                        await log_f.write(json.dumps(step_log) + "\n")
-                except IOError as log_e:
-                    logger.error(f"Failed to write autopilot log entry: {log_e}")
-
-            if step_num >= max_steps:
-                logger.warning(f"Autopilot max steps ({max_steps}) reached.")
-                await _log("autopilot_max_steps", task=task, steps=step_num)
-            elif not current_plan and step_num > 0:
-                logger.info(f"Autopilot plan complete after {step_num} steps.")
-                await _log("autopilot_plan_end", task=task, steps=step_num)
-            elif step_num == 0:
-                logger.warning("Autopilot did not execute any steps (empty initial plan?).")
-                await _log("autopilot_plan_end", task=task, steps=0)
-
-            await _run_in_thread(os.chmod, log_path, 0o600)  # Set log permissions
-            overall_success = bool(all_results) and all_results[-1].get("success", False)
-            return {
-                "success": overall_success,
-                "steps_executed": step_num,
-                "run_log": str(log_path),
-                "final_results": all_results[-3:],
-            }
-
-        except Exception as autopilot_err:
-            logger.critical(f"Autopilot run failed critically: {autopilot_err}", exc_info=True)
-            await _log("autopilot_critical_error", task=task, error=str(autopilot_err))
-            error_entry = {
-                "step": 0,
-                "success": False,
-                "error": f"Autopilot critical failure: {autopilot_err}",
-            }
             try:
+                current_plan = await _plan_autopilot(current_task)
+                step_num = 0
+                while step_num < max_steps and current_plan:
+                    step_num += 1
+                    # Get the step to execute but don't remove it from the plan yet
+                    step_to_execute = current_plan[0]
+                    tool_name = step_to_execute.get("tool")
+                    args = step_to_execute.get("args", {})
+                    step_log = {"step": step_num, "tool": tool_name, "args": args, "success": False}
+
+                    if tool_name not in _AVAILABLE_TOOLS:
+                        step_log["error"] = f"Unknown tool '{tool_name}'."
+                        current_plan.pop(0)  # Now remove since we're done with this invalid step
+                    else:
+                        method_name = _AVAILABLE_TOOLS[tool_name][0]
+                        try:
+                            tool_method = getattr(self, method_name)
+                            await _log("autopilot_step_start", step=step_num, tool=tool_name, args=args)
+                            self._update_activity()
+                            outcome = await tool_method(**args)
+                            self._update_activity()
+                            step_log["success"] = outcome.get("success", False)
+                            step_log["result"] = outcome
+                            
+                            # Only remove the step after successful execution or when no replanning needed
+                            if step_log["success"] or not outcome.get("success"):
+                                current_plan.pop(0)  # Now it's safe to remove
+                            
+                            if not step_log["success"]:
+                                step_log["error"] = outcome.get("error", "Tool failed")
+                                await _log(
+                                    "autopilot_step_fail",
+                                    step=step_num,
+                                    tool=tool_name,
+                                    error=step_log["error"],
+                                )
+                                logger.warning(
+                                    f"Autopilot Step {step_num} ({tool_name}) failed: {step_log['error']}"
+                                )
+                                logger.info(f"Attempting replan after failed step {step_num}...")
+                                try:
+                                    new_plan_tail = await _plan_autopilot(
+                                        current_task, all_results + [step_log]
+                                    )
+                                    # The failing step is still at position 0, replace it and all following steps
+                                    current_plan = new_plan_tail
+                                    logger.info(
+                                        f"Replanning successful. New plan: {len(current_plan)} steps."
+                                    )
+                                    await _log("autopilot_replan_success", new_steps=len(current_plan))
+                                except Exception as replan_err:
+                                    logger.error(f"Replanning failed: {replan_err}")
+                                    await _log("autopilot_replan_fail", error=str(replan_err))
+                                    current_plan = []  # Stop execution if replan fails
+                            else:
+                                await _log(
+                                    "autopilot_step_success",
+                                    step=step_num,
+                                    tool=tool_name,
+                                    result_summary=str(outcome)[:200],
+                                )
+                        except (
+                            ToolInputError,
+                            ToolError,
+                            ValueError,
+                            TypeError,
+                            AssertionError,
+                        ) as e:  # Catch arg/tool execution errors
+                            step_log["error"] = f"{type(e).__name__} executing '{tool_name}': {e}"
+                            logger.error(
+                                f"Autopilot Step {step_num} failed: {step_log['error']}", exc_info=True
+                            )
+                            current_plan = []  # Stop on these errors
+                        except Exception as e:  # Catch unexpected errors
+                            step_log["error"] = f"Unexpected error executing '{tool_name}': {e}"
+                            logger.critical(
+                                f"Autopilot Step {step_num} failed unexpectedly: {step_log['error']}",
+                                exc_info=True,
+                            )
+                            current_plan = []  # Stop
+
+                    all_results.append(step_log)
+                    try:  # Log step result async
+                        async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
+                            await log_f.write(json.dumps(step_log) + "\n")
+                    except IOError as log_e:
+                        logger.error(f"Failed to write autopilot log entry: {log_e}")
+
+                if step_num >= max_steps:
+                    logger.warning(f"Autopilot max steps ({max_steps}) reached.")
+                    await _log("autopilot_max_steps", task=task, steps=step_num)
+                elif not current_plan and step_num > 0:
+                    logger.info(f"Autopilot plan complete after {step_num} steps.")
+                    await _log("autopilot_plan_end", task=task, steps=step_num)
+                elif step_num == 0:
+                    logger.warning("Autopilot did not execute any steps (empty initial plan?).")
+                    await _log("autopilot_plan_end", task=task, steps=0)
+
+                await _run_in_thread(os.chmod, log_path, 0o600)  # Set log permissions
+                overall_success = bool(all_results) and all_results[-1].get("success", False)
+                return {
+                    "success": overall_success,
+                    "steps_executed": step_num,
+                    "run_log": str(log_path),
+                    "final_results": all_results[-3:],
+                }
+
+            except Exception as autopilot_err:
+                logger.critical(f"Autopilot run failed critically: {autopilot_err}", exc_info=True)
+                await _log("autopilot_critical_error", task=task, error=str(autopilot_err))
+                error_entry = {
+                    "step": 0,
+                    "success": False,
+                    "error": f"Autopilot critical failure: {autopilot_err}",
+                }
+                try:
+                    async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
+                        await log_f.write(json.dumps(error_entry) + "\n")
+                    await _run_in_thread(os.chmod, log_path, 0o600)
+                except Exception:
+                    pass
+                raise ToolError(f"Autopilot failed: {autopilot_err}") from autopilot_err
+        
+        # Add global timeout wrapper
+        try:
+            return await asyncio.wait_for(autopilot_inner(), timeout=timeout_seconds)
+        except asyncio.TimeoutError:
+            error_msg = f"Autopilot execution timed out after {timeout_seconds}s"
+            logger.error(error_msg)
+            await _log("autopilot_timeout", task=task, timeout=timeout_seconds)
+            # Try to log the timeout to the log file
+            try:
+                timeout_entry = {
+                    "step": 0,
+                    "success": False,
+                    "error": error_msg,
+                }
                 async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
-                    await log_f.write(json.dumps(error_entry) + "\n")
+                    await log_f.write(json.dumps(timeout_entry) + "\n")
                 await _run_in_thread(os.chmod, log_path, 0o600)
             except Exception:
                 pass
-            raise ToolError(f"Autopilot failed: {autopilot_err}") from autopilot_err
+            return {
+                "success": False,
+                "error": error_msg,
+                "steps_executed": 0,
+                "run_log": str(log_path),
+                "final_results": [],
+            }
 
     @tool(name="smart_browser.parallel")
     @with_tool_metrics
