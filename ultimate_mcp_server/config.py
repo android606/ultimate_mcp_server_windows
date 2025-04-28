@@ -9,7 +9,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 from decouple import Config as DecoupleConfig
@@ -251,6 +251,52 @@ class ToolRegistrationConfig(BaseModel):
     included_tools: List[str] = Field(default_factory=list, description="List of tool names to include (empty means include all)")
     excluded_tools: List[str] = Field(default_factory=list, description="List of tool names to exclude (takes precedence over included_tools)")
 
+class SmartBrowserConfig(BaseModel):
+    """Configuration specific to the Smart Browser tool."""
+    sb_state_key_b64: Optional[str] = Field(None, description="Base64 encoded AES key for state encryption (e.g., 'openssl rand -base64 32')")
+    sb_max_tabs: int = Field(5, description="Max concurrent tabs in the pool")
+    sb_tab_timeout: int = Field(300, description="Timeout for operations within a tab (seconds)")
+    sb_inactivity_timeout: int = Field(600, description="Browser inactivity shutdown timeout (seconds)")
+    headless_mode: bool = Field(True, description="Run browser in headless mode")
+    vnc_enabled: bool = Field(False, description="Enable VNC server for headful mode")
+    vnc_password: Optional[str] = Field(None, description="Password for VNC server (required if vnc_enabled=True)")
+    proxy_pool_str: str = Field("", description="Semicolon-separated list of proxy URLs (e.g., 'http://user:pass@host:port;socks5://host2:port2')")
+    proxy_allowed_domains_str: str = Field("*", description="Comma-separated domains allowed for proxy (e.g., '.google.com,.example.com', '*' for all)")
+    vault_allowed_paths_str: str = Field("secret/data/,kv/data/", description="Comma-separated allowed Vault path prefixes (e.g., 'kv/data/myapp/,secret/data/shared/')")
+
+    # Enhanced Locator Tunables
+    max_widgets: int = Field(300, description="Max interactive elements extracted for page map")
+    max_section_chars: int = Field(5000, description="Max chars for main text summary in page map")
+    dom_fp_limit: int = Field(20000, description="Max chars used for DOM fingerprint calculation")
+    llm_model_locator: str = Field("gpt-4o", description="LLM model used for locator fallback")
+    retry_after_fail: int = Field(1, description="Number of LLM locator retries after initial failure")
+    seq_cutoff: float = Field(0.72, description="SequenceMatcher cutoff for heuristic locator match")
+    area_min: int = Field(400, description="Minimum pixel area (width*height) for elements in page map")
+    high_risk_domains_set: Set[str] = Field( # Use set for direct comparison
+        default_factory=lambda: { # Use factory for mutable default
+            ".google.com", ".facebook.com", ".linkedin.com", ".glassdoor.com",
+            ".instagram.com", ".twitter.com", ".x.com", ".reddit.com", ".amazon.com",
+            ".ebay.com", ".ticketmaster.com", ".cloudflare.com", ".datadome.co",
+            ".perimeterx.net", ".recaptcha.net", ".hcaptcha.com",
+        },
+        description="Set of domains considered high-risk for bot detection (influences jitter timing)",
+    )
+
+    # Validator for high_risk_domains_set (ensures leading dot)
+    @field_validator('high_risk_domains_set', mode='before')
+    @classmethod
+    def normalize_high_risk_domains(cls, v):
+        if isinstance(v, str): # Allow comma-separated string input from env/file
+            domains = {d.strip().lower() for d in v.split(',') if d.strip()}
+        elif isinstance(v, (list, set)):
+            domains = {str(d).strip().lower() for d in v if str(d).strip()}
+        else:
+            raise ValueError("high_risk_domains_set must be a list, set, or comma-separated string")
+
+        # Ensure leading dot for all domains
+        normalized_domains = {d if d.startswith('.') else '.' + d for d in domains}
+        return normalized_domains
+    
 class GatewayConfig(BaseModel): # Inherit from BaseModel now
     """
     Root configuration model for the entire Ultimate MCP Server system.
@@ -302,7 +348,8 @@ class GatewayConfig(BaseModel): # Inherit from BaseModel now
     filesystem: FilesystemConfig = Field(default_factory=FilesystemConfig)
     agent_memory: AgentMemoryConfig = Field(default_factory=AgentMemoryConfig) # Added agent memory
     tool_registration: ToolRegistrationConfig = Field(default_factory=ToolRegistrationConfig) # Added tool registration config
-
+    smart_browser: SmartBrowserConfig = Field(default_factory=SmartBrowserConfig)
+    
     storage_directory: str = Field("./storage", description="Directory for persistent storage")
     log_directory: str = Field("./logs", description="Directory for log files")
     prompt_templates_directory: str = Field("./prompt_templates", description="Directory containing prompt templates") # Added prompt dir
@@ -490,6 +537,14 @@ def load_config(
 
     # 2. Initialize GatewayConfig from Pydantic defaults and file data
     try:
+        # Ensure nested keys exist before validation if loading from potentially incomplete file
+        file_config_data.setdefault('server', {})
+        file_config_data.setdefault('providers', {})
+        file_config_data.setdefault('cache', {})
+        file_config_data.setdefault('filesystem', {})
+        file_config_data.setdefault('agent_memory', {})
+        file_config_data.setdefault('tool_registration', {})
+        file_config_data.setdefault('smart_browser', {})
         loaded_config = GatewayConfig.model_validate(file_config_data)
     except ValidationError as e:
         config_logger.error("Configuration validation failed during file/default loading:")
@@ -646,6 +701,47 @@ def load_config(
     except Exception as e:
          config_logger.warning(f"Could not load cache directory from env: {e}")
 
+    sb_conf = loaded_config.smart_browser # Get the config object
+    try:
+        # State Key (already added previously)
+        sb_conf.sb_state_key_b64 = decouple_config('SB_STATE_KEY', default=sb_conf.sb_state_key_b64)
+        if sb_conf.sb_state_key_b64:
+             config_logger.debug("Loaded SB_STATE_KEY from env/'.env' or file.")
+        else:
+             config_logger.info("Smart Browser state encryption disabled (SB_STATE_KEY not found).")
+
+        # Other SB settings
+        sb_conf.sb_max_tabs = decouple_config('SB_MAX_TABS', default=sb_conf.sb_max_tabs, cast=int)
+        sb_conf.sb_tab_timeout = decouple_config('SB_TAB_TIMEOUT', default=sb_conf.sb_tab_timeout, cast=int)
+        sb_conf.sb_inactivity_timeout = decouple_config('SB_INACTIVITY_TIMEOUT', default=sb_conf.sb_inactivity_timeout, cast=int)
+        sb_conf.headless_mode = decouple_config('SB_HEADLESS_MODE', default=sb_conf.headless_mode, cast=bool) # Use SB_ prefix
+        sb_conf.vnc_enabled = decouple_config('SB_VNC_ENABLED', default=sb_conf.vnc_enabled, cast=bool) # Use SB_ prefix
+        sb_conf.vnc_password = decouple_config('SB_VNC_PASSWORD', default=sb_conf.vnc_password) # Use SB_ prefix
+        sb_conf.proxy_pool_str = decouple_config('SB_PROXY_POOL', default=sb_conf.proxy_pool_str) # Use SB_ prefix
+        sb_conf.proxy_allowed_domains_str = decouple_config('SB_PROXY_ALLOWED_DOMAINS', default=sb_conf.proxy_allowed_domains_str) # Use SB_ prefix
+        sb_conf.vault_allowed_paths_str = decouple_config('SB_VAULT_ALLOWED_PATHS', default=sb_conf.vault_allowed_paths_str) # Use SB_ prefix
+
+        # Locator Tunables
+        sb_conf.max_widgets = decouple_config('SB_MAX_WIDGETS', default=sb_conf.max_widgets, cast=int)
+        sb_conf.max_section_chars = decouple_config('SB_MAX_SECTION_CHARS', default=sb_conf.max_section_chars, cast=int)
+        sb_conf.dom_fp_limit = decouple_config('SB_DOM_FP_LIMIT', default=sb_conf.dom_fp_limit, cast=int)
+        sb_conf.llm_model_locator = decouple_config('SB_LLM_MODEL_LOCATOR', default=sb_conf.llm_model_locator)
+        sb_conf.retry_after_fail = decouple_config('SB_RETRY_AFTER_FAIL', default=sb_conf.retry_after_fail, cast=int)
+        sb_conf.seq_cutoff = decouple_config('SB_SEQ_CUTOFF', default=sb_conf.seq_cutoff, cast=float)
+        sb_conf.area_min = decouple_config('SB_AREA_MIN', default=sb_conf.area_min, cast=int)
+
+        # High Risk Domains (Load as string, validator handles conversion)
+        high_risk_domains_env = decouple_config('SB_HIGH_RISK_DOMAINS', default=None)
+        if high_risk_domains_env is not None:
+             # Let the validator handle parsing and normalization
+             sb_conf.high_risk_domains_set = high_risk_domains_env # Pass the raw string
+
+        config_logger.debug("Loaded Smart Browser settings from env/'.env' or defaults.")
+
+    except (ValueError, UndefinedValueError) as e:
+         config_logger.warning(f"Issue loading Smart Browser settings from env: {e}. Using defaults/file values.")
+    except Exception as e:
+        config_logger.error(f"Unexpected error loading Smart Browser settings: {e}", exc_info=True)
 
     # --- Expand paths ---
     try:

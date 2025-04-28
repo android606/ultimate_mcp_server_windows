@@ -9,23 +9,23 @@ FEATURES
 ✓ 1  Enterprise audit log (hash-chained JSONL in ~/.smart_browser/audit.log)
 ✓ 2  Secret vault / ENV bridge → get_secret("env:FOO") / get_secret("vault:kv/data/foo#bar")
 ✓ 3  Headful toggle + optional VNC remote viewing (HEADLESS=0, VNC=1)
-✓ 4  Proxy rotation from PROXY_POOL for IP diversity
-✓ 5  AES-GCM-encrypted cookie jar with AAD for secure persistence (SB_STATE_KEY=<b64-key>)
+✓ 4  Proxy rotation from PROXY_POOL for IP diversity (PROXY_POOL="...")
+✓ 5  AES-GCM-encrypted cookie jar with AAD (Requires SB_STATE_KEY set programmatically - Disabled by default)
 ✓ 6  Human-like jitter on UI actions with risk-aware timing
 ✓ 7  Resilient "chaos-monkey" retries with idempotent re-play
-✓ 8  Async TAB POOL for parallel scraping with concurrency control (SB_MAX_TABS)
-✓ 9  Pluggable HTML summarizer (trafilatura ▸ readability-lxml ▸ fallback)
+✓ 8  Async TAB POOL for parallel scraping with concurrency control (SB_MAX_TABS=N)
+✓ 9  Pluggable HTML summarizer (trafilatura ▸ readability-lxml ▸ fallback) + Readability.js
 ✓ 10 Download helper with SHA-256 verification and audit logging
 ✓ 11 PDF / Excel auto-table extraction after download (using ThreadPool)
-✓ 12 Smart element locator with multiple fallback strategies
-✓ 13 Adaptive selector learning with per-site SQLite cache
-✓ 14 LLM-powered page state analysis and action recommendation
-✓ 15 Natural-language macro runner (ReAct-style plan → act → reflect loop)
+✓ 12 Enhanced element locator (Cache ▸ Heuristic ▸ LLM) with self-healing cache
+✓ 13 DOM fingerprinting for selector cache validation
+✓ 14 LLM-powered page state analysis and action recommendation / planning
+✓ 15 Natural-language macro runner (ReAct-style plan → act loop)
 ✓ 16 Universal search across multiple engines (Yandex, Bing, DuckDuckGo)
 ✓ 17 Form-filling with secure credential handling
-✓ 18 Element state extraction and DOM mapping
+✓ 18 Element state extraction (including shadow DOM) and DOM mapping
 ✓ 19 Multi-tab parallel URL processing
-✓ 20 Browser lifecycle management with secure shutdown
+✓ 20 Browser lifecycle management with secure shutdown & inactivity monitor
 
 Fully integrated with Ultimate MCP Server's error handling, metrics tracking,
 and tool registration systems for seamless usage within the MCP ecosystem.
@@ -47,176 +47,194 @@ import re
 import signal
 import sqlite3
 import subprocess
-import sys
+import textwrap  # Added
 import threading
 import time
 import unicodedata
 import urllib.parse
-from collections import deque  # Use deque for efficient queue operations
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone  # Use timezone-aware datetime
+from collections import deque
+from contextlib import asynccontextmanager, closing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib.parse import urlparse
 
-import aiofiles  # For async file I/O
+import aiofiles
 import httpx
 from bs4 import BeautifulSoup
-from cryptography.exceptions import InvalidTag  # Import specific exception
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # Playwright imports
 from playwright.async_api import (
     Browser,
     BrowserContext,
+    Frame,
     Locator,
     Page,
-    PlaywrightException,  # More general Playwright exception
+    PlaywrightException,
     async_playwright,
 )
-from playwright.async_api import (
-    TimeoutError as PlaywrightTimeoutError,
-)
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+from ultimate_mcp_server.config import SmartBrowserConfig, get_config
 
 # MCP Server imports (assuming these exist)
-try:
-    from ultimate_mcp_server.constants import Provider
-    from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
-    from ultimate_mcp_server.tools.base import (
-        BaseTool,
-        tool,
-        with_error_handling,
-        with_tool_metrics,
-    )
-    from ultimate_mcp_server.tools.completion import generate_completion
-    from ultimate_mcp_server.tools.filesystem import create_directory, write_file_content
-    from ultimate_mcp_server.utils import get_logger
-except ImportError:
-    # Provide dummy implementations if MCP server is not available
-    # This allows the module to be imported/tested standalone to some extent
-    print(
-        "WARNING: Ultimate MCP Server components not found. Using dummy implementations.",
-        file=sys.stderr,
-    )
-
-    # Dummy logger
-    import logging
-
-    logging.basicConfig(level=logging.INFO)
-    def get_logger(name):
-        return logging.getLogger(name)
-
-    # Dummy exceptions
-    class ToolError(Exception):
-        pass
-
-    class ToolInputError(ToolError):
-        pass
-
-    class ProviderError(Exception):
-        pass
-
-    # Dummy decorators and base class
-    class BaseTool:
-        def __init__(self, mcp_server=None):
-            self.mcp_server = mcp_server
-
-    def tool(name):
-        return lambda func: func
-
-    def with_tool_metrics(func):
-        return func
-
-    def with_error_handling(func):
-        return func
-
-    # Dummy constants and functions
-    class Provider:
-        OPENAI = type("Provider", (), {"value": "openai"})()
-
-    async def generate_completion(**kwargs):
-        return {"success": False, "error": "Dummy LLM response"}
-
-    async def create_directory(path):
-        os.makedirs(path, exist_ok=True)
-
-    async def write_file_content(path, content):
-        async with aiofiles.open(path, "w", encoding="utf-8") as f:
-            await f.write(content)
-
+from ultimate_mcp_server.constants import Provider
+from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
+from ultimate_mcp_server.tools.base import (
+    BaseTool,
+    tool,
+    with_error_handling,
+    with_tool_metrics,
+)
+from ultimate_mcp_server.tools.completion import generate_completion
+from ultimate_mcp_server.tools.filesystem import create_directory, write_file_content
+from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("ultimate_mcp_server.tools.smart_browser")
 
-# Thread pool for CPU-bound tasks (e.g., hashing, potentially some sync I/O fallbacks)
-# Use reasonable defaults, ensure proper shutdown
-_cpu_count = os.cpu_count() or 1  # Ensure cpu_count is at least 1
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Global Variables for Configuration (Populated by _ensure_initialized)
+# ══════════════════════════════════════════════════════════════════════════════
+_sb_state_key_b64_global: Optional[str] = None
+_sb_max_tabs_global: int = 5  # Default value
+_sb_tab_timeout_global: int = 300  # Default value
+_sb_inactivity_timeout_global: int = 600  # Default value
+_headless_mode_global: bool = True  # Default value
+_vnc_enabled_global: bool = False  # Default value
+_vnc_password_global: Optional[str] = None  # Default value
+_proxy_pool_str_global: str = ""  # Default value
+_proxy_allowed_domains_str_global: str = "*"  # Default value
+_vault_allowed_paths_str_global: str = "secret/data/,kv/data/"  # Default value
+_max_widgets_global: int = 300  # Default value
+_max_section_chars_global: int = 5000  # Default value
+_dom_fp_limit_global: int = 20000  # Default value
+_llm_model_locator_global: str = "gpt-4o"  # Default value
+_retry_after_fail_global: int = 1  # Default value
+_seq_cutoff_global: float = 0.72  # Default value
+_area_min_global: int = 400  # Default value
+_high_risk_domains_set_global: Set[str] = set()  # Populated during init
+
+# Global Variables for Internal State
+_pw: Optional[async_playwright] = None
+_browser: Optional[Browser] = None
+_ctx: Optional[BrowserContext] = None
+_vnc_proc: Optional[subprocess.Popen] = None
+_last_hash: str | None = None
+_log_lock = asyncio.Lock()
+_js_lib_cached: Set[str] = set()
+_js_lib_lock = asyncio.Lock()
+_playwright_lock = asyncio.Lock()
+_db_conn_pool_lock = threading.RLock()
+_db_connection: sqlite3.Connection | None = None
+_locator_cache_cleanup_task_handle: Optional[asyncio.Task] = None
+_PROXY_CONFIG_DICT: Optional[Dict[str, Any]] = None  # Parsed proxy config
+_PROXY_ALLOWED_DOMAINS_LIST: Optional[List[str]] = None  # Parsed allowed domains
+_ALLOWED_VAULT_PATHS: Set[str] = set()  # Parsed allowed vault paths
+
+# Thread pool for CPU-bound tasks & sync I/O execution
+_cpu_count = os.cpu_count() or 1
 _thread_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=min(32, _cpu_count * 2 + 4), thread_name_prefix="sb_worker"
 )
 
-# Process pool for heavy CPU tasks like PDF/Excel extraction (avoids GIL issues)
-# Disabled for now, requires careful handling of dependencies and pickling.
-# Using ThreadPool for now, but recommend ProcessPool if Tabula/Pandas become bottlenecks.
-# _process_pool = concurrent.futures.ProcessPoolExecutor(
-#     max_workers=os.cpu_count() or 1
-# )
-
 # ══════════════════════════════════════════════════════════════════════════════
-# 0.  FILESYSTEM & ENCRYPTION & DB
+# 0.  FILESYSTEM & ENCRYPTION & NEW LOCATOR DB
 # ══════════════════════════════════════════════════════════════════════════════
 _HOME = Path.home() / ".smart_browser"
 try:
     _HOME.mkdir(parents=True, exist_ok=True)
-    # Fix: Set restrictive permissions on the main directory
     os.chmod(_HOME, 0o700)
 except OSError as e:
     logger.error(f"Failed to create or set permissions on {_HOME}: {e}")
-    # Fallback or raise critical error depending on requirements
-    # For now, log and continue, but functionality might be impaired.
 
 _STATE_FILE = _HOME / "storage_state.enc"
 _LOG_FILE = _HOME / "audit.log"
-_SELDB_FILE = _HOME / "selectors.db"
-_last_hash: str | None = None
-_log_lock = asyncio.Lock()  # Lock for async audit log writing (protects _last_hash)
+_CACHE_DB = _HOME / "locator_cache2.db"
+_READ_JS_CACHE = _HOME / "readability.js"
 
-# Fix 1: Use threading.RLock for DB connection pool management as it's synchronous.
-# The actual DB operations within async functions will use run_in_executor.
-_db_conn_pool_lock = threading.RLock()
-_db_connection: sqlite3.Connection | None = (
-    None  # Single connection per process for simplicity with check_same_thread=False
-)
-
-# Versioned cipher format - add "SB1" prefix and use AAD
+# --- Encryption ---
 CIPHER_VERSION = b"SB1"
-# Fix CWE-311: Add Associated Authenticated Data (AAD)
 AAD_TAG = b"smart-browser-state-v1"
 
 
+def _key() -> bytes | None:
+    """Get AES-GCM key from the globally set config value."""
+    if not _sb_state_key_b64_global:
+        return None
+    try:
+        decoded = base64.b64decode(_sb_state_key_b64_global)
+        if len(decoded) not in (16, 24, 32):
+            logger.warning(
+                f"Invalid SB State Key length: {len(decoded)} bytes. Need 16, 24, or 32."
+            )
+            return None
+        return decoded
+    except (ValueError, TypeError) as e:
+        logger.warning(f"Invalid base64 SB State Key: {e}")
+        return None
+
+
+def _enc(buf: bytes) -> bytes:
+    """Encrypt data using AES-GCM with AAD."""
+    k = _key()
+    if not k:
+        return buf  # Return plaintext if no valid key
+    try:
+        nonce = os.urandom(12)
+        encrypted_data = AESGCM(k).encrypt(nonce, buf, AAD_TAG)
+        return CIPHER_VERSION + nonce + encrypted_data
+    except Exception as e:
+        logger.error(f"Encryption failed: {e}", exc_info=True)
+        raise RuntimeError(f"Encryption failed: {e}") from e
+
+
+def _dec(buf: bytes) -> bytes | None:
+    """Decrypt data using AES-GCM with AAD, handling versioning."""
+    k = _key()
+    if not k:
+        return buf  # Assume cleartext if no key
+    if not buf.startswith(CIPHER_VERSION):
+        logger.error("State file has unknown/legacy format. Remove old state file.")
+        _STATE_FILE.unlink(missing_ok=True)
+        return None
+    try:
+        version_len = len(CIPHER_VERSION)
+        nonce = buf[version_len : version_len + 12]
+        ciphertext = buf[version_len + 12 :]
+        return AESGCM(k).decrypt(nonce, ciphertext, AAD_TAG)
+    except InvalidTag:
+        logger.error("Decryption failed: Invalid tag (tampered/wrong key?). Removing state file.")
+        _STATE_FILE.unlink(missing_ok=True)
+        return None
+    except Exception as e:
+        logger.error(f"Decryption failed: {e}. Removing state file.", exc_info=True)
+        _STATE_FILE.unlink(missing_ok=True)
+        return None
+
+
+# --- Enhanced Locator Cache DB ---
 def _get_db_connection() -> sqlite3.Connection:
-    """Get or create the single SQLite connection."""
+    """Get or create the single shared SQLite connection."""
     global _db_connection
-    # Use threading lock for thread-safe access to the global connection variable
     with _db_conn_pool_lock:
         if _db_connection is None:
             try:
-                # check_same_thread=False allows access from multiple threads (via run_in_executor)
-                # but requires careful serialization of writes if WAL is not enough.
                 _db_connection = sqlite3.connect(
-                    _SELDB_FILE,
+                    _CACHE_DB,
                     check_same_thread=False,
-                    isolation_level=None,  # Autocommit mode
-                    timeout=10,  # Wait 10 seconds if DB is locked
+                    isolation_level=None,
+                    timeout=10,
                 )
-                # Enable WAL mode for better concurrency
                 _db_connection.execute("PRAGMA journal_mode=WAL")
-                _db_connection.execute("PRAGMA foreign_keys = ON")
-                _db_connection.execute("PRAGMA busy_timeout = 10000")  # Corresponds to timeout=10
-                logger.info(f"Initialized SQLite DB connection to {_SELDB_FILE}")
+                _db_connection.execute("PRAGMA synchronous=NORMAL")
+                _db_connection.execute("PRAGMA busy_timeout = 10000")
+                logger.info(f"Initialized SQLite DB connection to {_CACHE_DB}")
             except sqlite3.Error as e:
                 logger.critical(
-                    f"Failed to connect to or initialize SQLite DB at {_SELDB_FILE}: {e}",
-                    exc_info=True,
+                    f"Failed to connect/init SQLite DB at {_CACHE_DB}: {e}", exc_info=True
                 )
                 raise RuntimeError(f"Failed to initialize database: {e}") from e
         return _db_connection
@@ -228,6 +246,11 @@ def _close_db_connection():
     with _db_conn_pool_lock:
         if _db_connection is not None:
             try:
+                # Explicitly checkpoint WAL file before closing is good practice
+                _db_connection.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except sqlite3.Error as e:
+                logger.warning(f"Error during WAL checkpoint before closing DB: {e}")
+            try:
                 _db_connection.close()
                 logger.info("Closed SQLite DB connection.")
             except sqlite3.Error as e:
@@ -236,255 +259,142 @@ def _close_db_connection():
                 _db_connection = None
 
 
-# Register DB close on exit
 atexit.register(_close_db_connection)
 
 
-# --- Encryption ---
-def _key() -> bytes | None:
-    """Get and validate the AES-GCM key from environment variable."""
-    k = os.getenv("SB_STATE_KEY", "")
-    if not k:
-        return None
-    try:
-        decoded = base64.b64decode(k)
-        # Validate key length for AES-GCM (128, 192, or 256 bits)
-        if len(decoded) not in (16, 24, 32):
-            logger.warning(
-                f"Invalid AES-GCM key length ({len(decoded)} bytes). Must be 16, 24, or 32 bytes after base64 decode. Encryption disabled."
-            )
-            return None
-        return decoded
-    except (ValueError, TypeError) as e:
-        logger.warning(f"Invalid base64 in SB_STATE_KEY: {e}. Encryption disabled.")
-        return None
-
-
-def _enc(buf: bytes) -> bytes:
-    """Encrypt data using AES-GCM with AAD."""
-    k = _key()
-    if not k:
-        # Fix #11: Log if encryption was expected but not possible
-        if os.getenv("SB_STATE_KEY"):
-            logger.warning("Encryption key invalid or missing. Storing state in cleartext.")
-        return buf  # Return plaintext if no valid key
-
-    try:
-        nonce = os.urandom(12)  # GCM standard nonce size
-        encrypted_data = AESGCM(k).encrypt(nonce, buf, AAD_TAG)
-        # Prepend version and nonce
-        return CIPHER_VERSION + nonce + encrypted_data
-    except Exception as e:
-        logger.error(f"Encryption failed: {e}", exc_info=True)
-        # Indicate failure - perhaps raise an error or return original buffer?
-        # For safety, returning original might be unexpected. Raise or return None/Error indicator.
-        # Let's raise to make the failure explicit.
-        raise RuntimeError(f"Encryption failed: {e}") from e
-
-
-def _dec(buf: bytes) -> bytes | None:
-    """Decrypt data using AES-GCM with AAD, handling versioning."""
-    k = _key()
-    if not k:
-        # If no key, assume data is plaintext (or handle as error if encryption is mandatory)
-        logger.warning("No encryption key found. Assuming state file is cleartext.")
-        return buf
-
-    if not buf.startswith(CIPHER_VERSION):
-        logger.warning("State file has an unknown or legacy format. Decryption attempt might fail.")
-        # Attempt legacy decryption (without AAD, assuming 12-byte nonce prefix)
-        # This is risky and might fail. Consider disallowing legacy format.
-        # For now, we'll return None to force re-creation of state.
-        logger.error("Legacy encryption format not supported. Please remove old state file.")
-        _STATE_FILE.unlink(missing_ok=True)
-        return None
-
-    try:
-        version_len = len(CIPHER_VERSION)
-        nonce = buf[version_len : version_len + 12]
-        ciphertext = buf[version_len + 12 :]
-        # Fix CWE-359: Use the correct AAD during decryption
-        return AESGCM(k).decrypt(nonce, ciphertext, AAD_TAG)
-    except InvalidTag:
-        logger.error("Decryption failed: Invalid authentication tag (data tampered or wrong key?).")
-        # Fix #11 / CWE-359: Remove corrupt state file and return None to signal failure
-        _STATE_FILE.unlink(missing_ok=True)
-        return None
-    except Exception as e:
-        logger.error(f"Decryption failed: {e}", exc_info=True)
-        # Fix #11 / CWE-359: Remove corrupt state file and return None
-        _STATE_FILE.unlink(missing_ok=True)
-        return None
-
-
-# --- Selector Cache DB ---
-def _init_db_sync():
-    """Synchronous DB initialization."""
+def _init_locator_cache_db_sync():
+    """Synchronous DB schema initialization for the locator cache."""
     conn = None
     try:
-        # Use the shared connection mechanism
         conn = _get_db_connection()
-        # Use try-finally to ensure cursor is closed
-        cursor = conn.cursor()
-        try:
-            # Use TEXT primary key for flexibility if needed, but separate columns are fine
+        with closing(conn.cursor()) as cursor:
             cursor.execute(
-                """CREATE TABLE IF NOT EXISTS selectors(
-                    site TEXT NOT NULL,
-                    key TEXT NOT NULL,
-                    css TEXT NOT NULL, -- Store empty string if null
-                    xpath TEXT NOT NULL, -- Store empty string if null
-                    score REAL DEFAULT 1.0, -- Use REAL for score
-                    last_used INTEGER DEFAULT (strftime('%s', 'now')), -- Timestamp
-                    PRIMARY KEY(site, key, css, xpath)
-                ) WITHOUT ROWID;"""  # Use WITHOUT ROWID if PK covers all access patterns
+                """CREATE TABLE IF NOT EXISTS selector_cache(
+                    key       TEXT PRIMARY KEY,
+                    selector  TEXT NOT NULL,
+                    dom_fp    TEXT NOT NULL,
+                    hits      INTEGER DEFAULT 1,
+                    created_ts INTEGER DEFAULT (strftime('%s', 'now'))
+                );"""
             )
-            # Consider indexes for faster lookups
-            cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_selectors_site_key ON selectors (site, key, score DESC);"
-            )
-            # Commit is handled by isolation_level=None (autocommit)
-            # conn.commit() # Not needed with autocommit
-            logger.info("Selector DB schema initialized/verified.")
-        finally:
-            cursor.close()
+            # Index on key is implicit due to PRIMARY KEY
+            logger.info(f"Enhanced Locator cache DB schema initialized/verified at {_CACHE_DB}")
     except sqlite3.Error as e:
-        logger.critical(f"Failed to initialize selector DB schema: {e}", exc_info=True)
-        # If DB init fails, the tool might not function correctly. Re-raise.
-        raise RuntimeError(f"Failed to initialize selector database: {e}") from e
-    # Note: Connection is not closed here; it's managed globally.
+        logger.critical(f"Failed to initialize locator cache DB schema: {e}", exc_info=True)
+        raise RuntimeError(f"Failed to initialize locator cache database: {e}") from e
 
 
-_init_db_sync()  # Initialize synchronously at startup
+_init_locator_cache_db_sync()
 
 
-def _sel_key(role: str | None, name: str | None) -> str:
-    """Generate a normalized key for selector caching."""
-    # Normalize Unicode to NFC form
-    norm_role = unicodedata.normalize("NFC", role) if role else ""
-    norm_name = unicodedata.normalize("NFC", name) if name else ""
-    # Limit key length to prevent excessively long keys
-    key = f"{norm_role}::{norm_name}".strip(":")
-    return key[:255]  # Limit key length
-
-
-async def _get_best_selectors(site: str, key: str) -> list[tuple[str | None, str | None]]:
-    """Get the best selectors for a site/key combination (runs DB query in thread pool)."""
-    loop = asyncio.get_running_loop()
-
-    def db_operation():
+def _cache_put_sync(key: str, selector: str, dom_fp: str) -> None:
+    """Synchronous write/update to the locator cache."""
+    try:
         conn = _get_db_connection()
-        cursor = conn.cursor()
-        try:
-            # Fetch css/xpath, update last_used timestamp implicitly? Maybe not needed here.
-            cursor.execute(
-                "SELECT css, xpath FROM selectors WHERE site=? AND key=? ORDER BY score DESC LIMIT 5",
-                (site, key),
-            )
-            rows = cursor.fetchall()
-            # Convert empty strings back to None if needed by caller, though storing '' is fine
-            return [(css if css else None, xpath if xpath else None) for css, xpath in rows]
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error in _get_best_selectors for site={site}, key={key}: {e}")
-            return []
-        finally:
-            cursor.close()
-
-    # Fix #1, #8: Run synchronous DB operation in the thread pool
-    return await loop.run_in_executor(_thread_pool, db_operation)
+        conn.execute(
+            """INSERT INTO selector_cache(key, selector, dom_fp, created_ts)
+               VALUES (?, ?, ?, strftime('%s', 'now'))
+               ON CONFLICT(key) DO UPDATE SET
+                 hits = hits + 1,
+                 dom_fp = excluded.dom_fp
+               WHERE key = excluded.key;""",
+            (key, selector, dom_fp),
+        )
+    except sqlite3.Error as e:
+        logger.error(f"Failed to write to locator cache (key prefix={key[:8]}...): {e}")
 
 
-async def _bump_selector(site: str, key: str, css: str | None, xpath: str | None):
-    """Increment the score for a selector (runs DB update in thread pool)."""
-    # Normalize inputs: store empty strings instead of None in DB
-    css_db = css or ""
-    xpath_db = xpath or ""
-    loop = asyncio.get_running_loop()
-
-    def db_operation():
+def _cache_delete_sync(key: str) -> None:
+    """Synchronously delete an entry from the locator cache by key."""
+    try:
         conn = _get_db_connection()
-        cursor = conn.cursor()
-        try:
-            # Use ON CONFLICT for atomic upsert, update score and last_used time
-            cursor.execute(
-                """INSERT INTO selectors(site, key, css, xpath, score, last_used)
-                   VALUES (?, ?, ?, ?, 1.0, strftime('%s', 'now'))
-                   ON CONFLICT(site, key, css, xpath) DO UPDATE SET
-                     score = score + 1.0,
-                     last_used = strftime('%s', 'now')
-                   WHERE site = excluded.site AND key = excluded.key AND css = excluded.css AND xpath = excluded.xpath;""",
-                (site, key, css_db, xpath_db),
-            )
-            # logger.debug(f"Bumped selector: site={site}, key={key}, css='{css_db}', xpath='{xpath_db}'")
-        except sqlite3.Error as e:
-            # Log error but don't crash the calling operation
-            logger.error(f"SQLite error in _bump_selector for site={site}, key={key}: {e}")
-        finally:
-            cursor.close()
-    await loop.run_in_executor(_thread_pool, db_operation)
+        logger.debug(f"Deleting stale cache entry with key prefix: {key[:8]}...")
+        cursor = conn.execute("DELETE FROM selector_cache WHERE key = ?", (key,))
+        if cursor.rowcount > 0:
+            logger.debug(f"Successfully deleted stale cache entry {key[:8]}...")
+    except sqlite3.Error as e:
+        logger.error(f"Failed to delete stale cache entry (key prefix={key[:8]}...): {e}")
+    except Exception as e:
+        logger.error(
+            f"Unexpected error deleting cache entry (key prefix={key[:8]}...): {e}", exc_info=True
+        )
 
 
-async def _perform_selector_cleanup():
-    """Runs SQL commands to decay scores and remove old/bad selectors."""
-    loop = asyncio.get_running_loop()
-    logger.info("Starting periodic selector cleanup...")
-
-    def db_operation():
+def _cache_get_sync(key: str, dom_fp: str) -> Optional[str]:
+    """Synchronous read from cache, checking fingerprint. Deletes stale entries."""
+    row = None
+    try:
         conn = _get_db_connection()
-        cursor = conn.cursor()
-        deleted_low_score = 0
-        deleted_old = 0
-        decayed_count = 0
-        try:
-            # Decay scores slightly for selectors not used recently (e.g., > 7 days)
-            # Avoid decaying scores that are already very low
-            decay_cutoff_time = "(strftime('%s', 'now', '-7 days'))"
-            cursor.execute(
-                f"""UPDATE selectors
-                   SET score = score * 0.90
-                   WHERE last_used < {decay_cutoff_time} AND score > 0.1"""
-            )
-            decayed_count = cursor.rowcount
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("SELECT selector, dom_fp FROM selector_cache WHERE key=?", (key,))
+            row = cursor.fetchone()
+    except sqlite3.Error as e:
+        logger.error(f"Failed to read from locator cache (key={key}): {e}")
+        return None
 
-            # Delete selectors with very low scores (e.g., < 0.1)
-            cursor.execute("DELETE FROM selectors WHERE score < 0.1")
-            deleted_low_score = cursor.rowcount
-
-            # Delete selectors not used for a long time (e.g., > 90 days)
-            ninety_days_ago = "(strftime('%s', 'now', '-90 days'))"
-            cursor.execute(f"DELETE FROM selectors WHERE last_used < {ninety_days_ago}")
-            deleted_old = cursor.rowcount
-
-            # Optional: Vacuum the database to reclaim space after deletions
-            # cursor.execute("VACUUM;") # Can be slow, use cautiously
-
-            logger.info(f"Selector cleanup finished. Decayed: {decayed_count}, Deleted (low score): {deleted_low_score}, Deleted (old): {deleted_old}")
-            return True
-        except sqlite3.Error as e:
-            logger.error(f"SQLite error during selector cleanup: {e}")
-            return False
-        finally:
-            cursor.close()
-
-    await loop.run_in_executor(_thread_pool, db_operation)
-
-_selector_cleanup_task_handle: Optional[asyncio.Task] = None
+    if row and row[1] == dom_fp:
+        return row[0]  # Match
+    elif row:  # Mismatch, delete stale entry
+        logger.debug(f"Cache key '{key[:8]}...' found but DOM fingerprint mismatch. Deleting.")
+        _cache_delete_sync(key)  # Run delete synchronously
+        return None
+    else:
+        return None  # Not found
 
 
-async def _selector_cleanup_task(interval_seconds: int = 24 * 60 * 60): # Default: Daily
-    """Background task to periodically run selector cleanup."""
-    logger.info(f"Selector cleanup task started. Running every {interval_seconds} seconds.")
+# --- Locator Cache Cleanup ---
+def _cleanup_locator_cache_db_sync(retention_days: int = 90) -> int:
+    """Synchronously removes old entries from the locator cache DB."""
+    deleted_count = 0
+    if retention_days <= 0:
+        logger.info("Locator cache cleanup skipped (retention_days <= 0).")
+        return 0
+    try:
+        conn = _get_db_connection()
+        cutoff_time = f"(strftime('%s', 'now', '-{retention_days} days'))"
+        logger.info(
+            f"Running locator cache cleanup: Removing entries older than {retention_days} days..."
+        )
+        with closing(conn.cursor()) as cursor:
+            cursor.execute(f"DELETE FROM selector_cache WHERE created_ts < {cutoff_time}")
+            deleted_count = cursor.rowcount
+            # Optional: Vacuum based on deleted count or fixed interval
+            if deleted_count > 500:  # Example threshold
+                logger.info(f"Vacuuming locator cache DB after deleting {deleted_count} entries...")
+                cursor.execute("VACUUM;")
+        logger.info(f"Locator cache cleanup finished. Removed {deleted_count} old entries.")
+        return deleted_count
+    except sqlite3.Error as e:
+        logger.error(f"Error during locator cache cleanup: {e}")
+        return -1  # Indicate error
+    except Exception as e:
+        logger.error(f"Unexpected error during locator cache cleanup: {e}", exc_info=True)
+        return -1
+
+
+async def _locator_cache_cleanup_task(interval_seconds: int = 24 * 60 * 60):  # Default: Daily
+    """Background task to periodically run locator cache cleanup."""
+    if interval_seconds <= 0:
+        logger.info("Locator cache cleanup task disabled (interval <= 0).")
+        return
+    logger.info(f"Locator cache cleanup task started. Running every {interval_seconds} seconds.")
+    await asyncio.sleep(interval_seconds)  # Wait before first run
     while True:
         try:
-            await asyncio.sleep(interval_seconds)
-            await _perform_selector_cleanup()
+            loop = asyncio.get_running_loop()
+            # Run the synchronous DB operation in the thread pool
+            # Add retention days config later if needed, use default 90 for now
+            result_count = await loop.run_in_executor(_thread_pool, _cleanup_locator_cache_db_sync)
+            if result_count < 0:
+                logger.warning("Locator cache cleanup run encountered an error.")
+            await asyncio.sleep(interval_seconds)  # Wait for next interval
         except asyncio.CancelledError:
-            logger.info("Selector cleanup task cancelled.")
+            logger.info("Locator cache cleanup task cancelled.")
             break
         except Exception as e:
-            logger.error(f"Error in selector cleanup task loop: {e}", exc_info=True)
-            # Avoid tight loop on error, wait before retrying
-            await asyncio.sleep(60 * 5) # Wait 5 minutes after error
+            logger.error(f"Error in locator cache cleanup task loop: {e}", exc_info=True)
+            await asyncio.sleep(60 * 5)  # Wait 5 minutes after error before retrying
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1.  AUDIT LOG (hash-chained)
@@ -494,33 +404,27 @@ async def _selector_cleanup_task(interval_seconds: int = 24 * 60 * 60): # Defaul
 def _sanitize_for_log(obj: Any) -> Any:
     """Sanitize values for JSON logging, preventing injection."""
     if isinstance(obj, str):
-        # Fix CWE-79: Use JSON encoding to handle quotes, backslashes, control chars
-        # Return the string content without the surrounding quotes added by dumps
         try:
             encoded = json.dumps(obj)
             return encoded[1:-1] if len(encoded) >= 2 else ""
         except TypeError:
-            # Handle potential errors during encoding (e.g., surrogates)
-            return "???"  # Placeholder for unencodable string data
+            return "???"
     elif isinstance(obj, dict):
-        return {str(k): _sanitize_for_log(v) for k, v in obj.items()}  # Ensure keys are strings
+        return {str(k): _sanitize_for_log(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [_sanitize_for_log(item) for item in obj]
-    # Allow safe basic types
     elif isinstance(obj, (int, float, bool, type(None))):
         return obj
-    # Convert other types to string and sanitize
     else:
         try:
             s = str(obj)
             encoded = json.dumps(s)
             return encoded[1:-1] if len(encoded) >= 2 else ""
         except Exception:
-            return "???"  # Placeholder for complex objects
+            return "???"
 
 
 _EVENT_EMOJI_MAP = {
-    # --- Lifecycle ---
     "browser_start": "🚀",
     "browser_shutdown": "🛑",
     "browser_shutdown_complete": "🏁",
@@ -530,12 +434,10 @@ _EVENT_EMOJI_MAP = {
     "browser_close": "🚪",
     "page_open": "📄",
     "page_close": "덮",
-    "page_error": "🔥", # Error specific to a page operation in pool
-    "tab_timeout": "⏱️", # Tab pool operation timeout
-    "tab_cancelled": "🚫", # Tab pool operation cancelled
-    "tab_error": "💥", # Generic error within a tab pool operation
-
-    # --- Navigation & State ---
+    "page_error": "🔥",
+    "tab_timeout": "⏱️",
+    "tab_cancelled": "🚫",
+    "tab_error": "💥",
     "navigate": "➡️",
     "navigate_start": "➡️",
     "navigate_success": "✅",
@@ -544,69 +446,60 @@ _EVENT_EMOJI_MAP = {
     "navigate_wait_selector_ok": "👌",
     "navigate_wait_selector_timeout": "⏳",
     "page_state_extracted": "ℹ️",
-    "browse_fail_proxy_disallowed": "🛡️", # Proxy blocked navigation
-
-    # --- Actions ---
-    "click": "🖱️", # Generic click log (if used)
+    "browse_fail_proxy_disallowed": "🛡️",
+    "click": "🖱️",
     "click_success": "🖱️✅",
     "click_fail_notfound": "🖱️❓",
     "click_fail_playwright": "🖱️❌",
     "click_fail_unexpected": "🖱️💣",
-    "type": "⌨️", # Generic type log (if used)
+    "type": "⌨️",
     "type_success": "⌨️✅",
-    "type_fail_secret": "⌨️🔑", # Secret resolution failure
+    "type_fail_secret": "⌨️🔑",
     "type_fail_notfound": "⌨️❓",
     "type_fail_playwright": "⌨️❌",
     "type_fail_unexpected": "⌨️💣",
-    "scroll": "↕️", # Generic scroll action
-
-    # --- Locators ---
-    "locator_learned_hit": "🧠",
+    "scroll": "↕️",
+    "locator_cache_hit": "⚡",
+    "locator_heuristic_match": "🧠",
+    "locator_llm_pick": "🤖🎯",
+    "locator_fail_all": "❓❓",
+    "locator_text_fallback": "✍️",
     "locator_success": "🎯",
-    "locator_hit": "🎯", # Alias for success?
     "locator_fail": "❓",
-
-    # --- Downloads ---
-    "download": "💾", # Generic download (smart_download result)
-    "download_navigate": "🚚", # Navigate step before download
+    "download": "💾",
+    "download_navigate": "🚚",
     "download_success": "💾✅",
     "download_fail_notfound": "💾❓",
     "download_fail_timeout": "💾⏱️",
     "download_fail_playwright": "💾❌",
     "download_fail_unexpected": "💾💣",
-    "download_pdf_http": "📄💾", # Direct HTTP PDF download log
-    "download_direct_success": "✨💾", # Successful direct HTTP download
-    "download_pdf_error": "📄🔥", # Error during direct HTTP download
-    "download_site_pdfs_complete": "📚✅", # Bulk PDF download finished
-
-    # --- Extraction ---
+    "download_pdf_http": "📄💾",
+    "download_direct_success": "✨💾",
+    "download_pdf_error": "📄🔥",
+    "download_site_pdfs_complete": "📚✅",
     "table_extract_success": "📊✅",
     "table_extract_error": "📊❌",
-    "docs_collected_success": "📖✅", # Documentation collection success
-    "docs_harvest": "📖", # Alias? Keep consistent
-
-    # --- Search ---
-    "search": "🔍", # Generic search result summary
+    "docs_collected_success": "📖✅",
+    "docs_harvest": "📖",
+    "search": "🔍",
     "search_start": "🔍➡️",
     "search_complete": "🔍✅",
     "search_captcha": "🤖",
     "search_no_results_selector": "🤷",
     "search_error_playwright": "🔍❌",
     "search_error_unexpected": "🔍💣",
-
-    # --- Macro / Autopilot ---
-    "macro_plan": "📝", # Generic plan log
+    "macro_plan": "📝",
     "macro_plan_generated": "📝✅",
     "macro_plan_empty": "📝🤷",
     "macro_step_result": "▶️",
     "macro_complete": "🎉",
-    "macro_finish_action": "🏁", # Explicit finish action
-    "macro_error": "💥", # Generic macro error (if used)
+    "macro_finish_action": "🏁",
+    "macro_error": "💥",
     "macro_exceeded_rounds": "🔄",
     "macro_fail_step": "❌",
     "macro_error_tool": "🛠️💥",
     "macro_error_unexpected": "💣💥",
-    "macro_navigate": "🗺️➡️", # Navigate step within a macro/tool
+    "macro_navigate": "🗺️➡️",
     "click_extract_navigate": "🖱️🗺️",
     "click_extract_success": "🖱️✅✨",
     "fill_form_navigate": "✍️🗺️",
@@ -622,59 +515,40 @@ _EVENT_EMOJI_MAP = {
     "autopilot_max_steps": "🚫🔄",
     "autopilot_plan_end": "🏁",
     "autopilot_critical_error": "💥🧑‍✈️",
-
-    # --- Parallel Processing ---
     "parallel_navigate": "🚦➡️",
     "parallel_url_error": "🚦🔥",
     "parallel_process_complete": "🚦🏁",
-
-    # --- System / Misc ---
-    "retry": "⏳", # Waiting for retry
-    "retry_fail": "⚠️", # Retry failed completely
-    "retry_fail_unexpected": "💣⚠️", # Retry failed on unexpected error
-    "retry_unexpected": "⏳💣", # Retry on unexpected error
+    "retry": "⏳",
+    "retry_fail": "⚠️",
+    "retry_fail_unexpected": "💣⚠️",
+    "retry_unexpected": "⏳💣",
     "llm_call_complete": "🤖💬",
-    "db_cleanup_start": "🧹", # If cleanup start is logged
-    "db_cleanup_complete": "🧹✅", # If cleanup end is logged
+    "readability_js_fetch": "📜💾",
 }
+
 
 async def _log(event: str, **details):
     """Append a hash-chained entry to the audit log asynchronously."""
     global _last_hash
-    # Use timezone-aware UTC time
     ts_iso = datetime.now(timezone.utc).isoformat()
-
-    # Sanitize details
     sanitized_details = _sanitize_for_log(details)
-
-    # Map event to emoji key
-    emoji_key = _EVENT_EMOJI_MAP.get(event)  # Use .get for safety
-
-    # Fix #9: Ensure atomicity of reading/updating _last_hash using the async lock
+    emoji_key = _EVENT_EMOJI_MAP.get(event, "❓")
     async with _log_lock:
-        # Read _last_hash within the lock
         current_last_hash = _last_hash
-
         entry = {
             "ts": ts_iso,
             "event": event,
             "details": sanitized_details,
             "prev": current_last_hash,
-            "emoji": emoji_key,  # Using 'emoji' key now
+            "emoji": emoji_key,
         }
-        # Use separators=(',', ':') for compact JSON, ensure keys are sorted for consistent hashing
         payload = json.dumps(entry, sort_keys=True, separators=(",", ":")).encode("utf-8")
         h = hashlib.sha256(payload).hexdigest()
-
         log_entry_line = json.dumps({"hash": h, **entry}, separators=(",", ":")) + "\n"
-
         try:
-            # Fix: Use aiofiles for async file writing
             async with aiofiles.open(_LOG_FILE, "a", encoding="utf-8") as f:
                 await f.write(log_entry_line)
-                await f.flush()  # Ensure it's written to OS buffer
-
-            # Update _last_hash only after successful write+flush
+                await f.flush()
             _last_hash = h
         except IOError as e:
             logger.error(f"Failed to write to audit log {_LOG_FILE}: {e}")
@@ -682,20 +556,17 @@ async def _log(event: str, **details):
             logger.error(f"Unexpected error writing audit log: {e}", exc_info=True)
 
 
-# Initialize _last_hash from existing log file if present (synchronously at startup)
 def _init_last_hash():
     global _last_hash
     if _LOG_FILE.exists():
         try:
-            # Read the last line efficiently
             with open(_LOG_FILE, "rb") as f:
-                f.seek(-2, os.SEEK_END)  # Go to second-to-last byte
-                while f.read(1) != b"\n":  # Find start of last line
+                f.seek(-2, os.SEEK_END)
+                while f.read(1) != b"\n":
                     f.seek(-2, os.SEEK_CUR)
-                    if f.tell() == 0:  # Reached beginning of file
+                    if f.tell() == 0:
                         break
                 last_line = f.readline().decode("utf-8")
-
             if last_line:
                 last_entry = json.loads(last_line)
                 _last_hash = last_entry.get("hash")
@@ -718,10 +589,7 @@ _init_last_hash()
 # 2.  RESILIENT RETRY DECORATOR
 # ══════════════════════════════════════════════════════════════════════════════
 def resilient(max_attempts: int = 3, backoff: float = 0.3):
-    """
-    Decorator for async functions; retries on common transient errors like
-    PlaywrightTimeoutError or network issues.
-    """
+    """Decorator for async functions; retries on common transient errors."""
 
     def wrap(fn):
         @functools.wraps(fn)
@@ -729,32 +597,29 @@ def resilient(max_attempts: int = 3, backoff: float = 0.3):
             attempt = 0
             while True:
                 try:
-                    # Add jitter *before* the attempt for less deterministic timing
                     if attempt > 0:
                         jitter_delay = backoff * (2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
                         await asyncio.sleep(jitter_delay)
-
                     return await fn(*a, **kw)
-                # Catch specific, retryable exceptions
-                except (
+                except (  # Specific, retryable exceptions
                     PlaywrightTimeoutError,
-                    PlaywrightException,
                     httpx.RequestError,
                     asyncio.TimeoutError,
+                    # Some PlaywrightException subtypes might be retryable, but be cautious
+                    # PlaywrightException, # Too broad? Might retry non-transient issues.
                 ) as e:
+                    # Check if the exception is specifically related to connection/network issues if possible
+                    # For now, retry on Timeout and network errors
                     attempt += 1
+                    func_name = getattr(fn, "__name__", "unknown_func")
                     if attempt >= max_attempts:
-                        func_name = getattr(fn, "__name__", "unknown_func")
                         await _log(
                             "retry_fail", func=func_name, attempts=max_attempts, error=str(e)
                         )
                         raise ToolError(
                             f"Operation '{func_name}' failed after {max_attempts} attempts: {e}"
                         ) from e
-
-                    # Calculate delay for next attempt (moved sleep to start of loop)
                     delay = backoff * (2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
-                    func_name = getattr(fn, "__name__", "unknown_func")
                     await _log(
                         "retry",
                         func=func_name,
@@ -763,15 +628,20 @@ def resilient(max_attempts: int = 3, backoff: float = 0.3):
                         sleep=round(delay, 2),
                         error=str(e),
                     )
-                    # Sleep is handled at the start of the next iteration
-
-                # Do not retry on non-transient errors or user interrupts
-                except (ToolError, ValueError, TypeError, KeyError, KeyboardInterrupt):
-                    raise  # Re-raise immediately
+                    # Sleep moved to start of loop
+                except (
+                    ToolError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                    KeyboardInterrupt,
+                    sqlite3.Error,
+                ):  # Non-retryable errors
+                    raise
                 except Exception as e:  # Catch unexpected errors
                     attempt += 1
+                    func_name = getattr(fn, "__name__", "unknown_func")
                     if attempt >= max_attempts:
-                        func_name = getattr(fn, "__name__", "unknown_func")
                         await _log(
                             "retry_fail_unexpected",
                             func=func_name,
@@ -781,9 +651,7 @@ def resilient(max_attempts: int = 3, backoff: float = 0.3):
                         raise ToolError(
                             f"Operation '{func_name}' failed with unexpected error after {max_attempts} attempts: {e}"
                         ) from e
-
                     delay = backoff * (2 ** (attempt - 1)) * random.uniform(0.8, 1.2)
-                    func_name = getattr(fn, "__name__", "unknown_func")
                     await _log(
                         "retry_unexpected",
                         func=func_name,
@@ -792,7 +660,7 @@ def resilient(max_attempts: int = 3, backoff: float = 0.3):
                         sleep=round(delay, 2),
                         error=str(e),
                     )
-                    # Sleep is handled at the start of the next iteration
+                    # Sleep moved to start of loop
 
         return inner
 
@@ -802,27 +670,18 @@ def resilient(max_attempts: int = 3, backoff: float = 0.3):
 # ══════════════════════════════════════════════════════════════════════════════
 # 3.  SECRET VAULT BRIDGE
 # ══════════════════════════════════════════════════════════════════════════════
-_ALLOWED_VAULT_PATHS = set(
-    path.strip().rstrip("/") + "/"
-    for path in os.getenv(  # Ensure trailing slash for prefix matching
-        "VAULT_ALLOWED_PATHS", "secret/data/,kv/data/"
-    ).split(",")
-    if path.strip()
-)
+def _update_vault_paths():
+    """Parse the vault allowed paths string from global config into the global set."""
+    global _ALLOWED_VAULT_PATHS
+    _ALLOWED_VAULT_PATHS = set(
+        path.strip().rstrip("/") + "/"
+        for path in _vault_allowed_paths_str_global.split(",")
+        if path.strip()
+    )
 
 
 def get_secret(path_key: str) -> str:
-    """
-    Retrieve secret from environment or HashiCorp Vault.
-    path_key formats:
-        env:VAR_NAME          → reads from environment (e.g., "env:MY_API_KEY")
-        vault:kv/path/to/secret#key  → reads 'key' from Vault KV v2 secret
-                                        at 'kv/data/path/to/secret'
-        vault:secret/path/to/secret#key → reads 'key' from Vault KV v1 secret
-                                          at 'secret/path/to/secret'
-    Requires VAULT_ADDR and VAULT_TOKEN environment variables for vault access.
-    Requires 'hvac' library installed.
-    """
+    """Retrieves secret from environment or HashiCorp Vault."""
     if path_key.startswith("env:"):
         var = path_key[4:]
         val = os.getenv(var)
@@ -834,128 +693,76 @@ def get_secret(path_key: str) -> str:
         try:
             import hvac
         except ImportError as e:
-            raise RuntimeError(
-                "Python library 'hvac' is required for Vault access but not installed."
-            ) from e
+            raise RuntimeError("'hvac' library required for Vault access.") from e
 
+        # These are still read directly from env for security/bootstrapping
         addr = os.getenv("VAULT_ADDR")
         token = os.getenv("VAULT_TOKEN")
         if not addr or not token:
-            raise RuntimeError(
-                "VAULT_ADDR and VAULT_TOKEN environment variables must be set for Vault access."
-            )
+            raise RuntimeError("VAULT_ADDR/VAULT_TOKEN env vars must be set.")
 
-        # Fix #17: Use distinct variable names for parsing
         full_vault_uri = path_key[len("vault:") :]
-
-        # Fix CWE-502: Basic check to prevent protocol specification in path
         if "://" in full_vault_uri:
-            raise ValueError("Vault path cannot contain '://'. Specify address via VAULT_ADDR.")
-
-        # Separate path and key
+            raise ValueError("Vault path cannot contain '://'.")
         if "#" not in full_vault_uri:
-            raise ValueError(
-                "Vault path must include the secret key separated by '#'. Format: vault:path/to/secret#key"
-            )
+            raise ValueError("Vault path must include '#key'.")
         path_part, key_name = full_vault_uri.split("#", 1)
-        path_part = path_part.strip("/")  # Normalize path
+        path_part = path_part.strip("/")
 
-        # Determine Vault KV version and construct API path
-        # KV v2 mount points often have '/data/' in the logical path users see,
-        # but the API path needs `/data/` inserted after the mount point.
-        # KV v1 paths are direct.
-        # Heuristic: Assume KV v2 if 'data' is in the path segments after the mount? Risky.
-        # Better: Try v2 first, then fall back to v1? Or require explicit v1/v2 marker?
-        # Standard practice is KV v2 uses `/data/` in the API path. Let's assume that.
+        # Ensure the global set is populated (should be by _ensure_initialized)
+        if not _ALLOWED_VAULT_PATHS:
+            _update_vault_paths()
 
-        # Try to split mount point and the rest of the path
-        path_segments = path_part.split("/")
-        if not path_segments:
-            raise ValueError(f"Invalid Vault path format: '{path_part}'")
-
-        mount_point = path_segments[0]
-        secret_sub_path = "/".join(path_segments[1:])
-
-        # Fix CWE-502: Validate the path_part against the allowlist more carefully
-        # Ensure the *intended* secret path (e.g., "kv/data/my/app") starts with an allowed prefix
-        # We check against the user-provided path_part before manipulating it for API calls.
-        path_to_check = path_part + "/"  # Ensure trailing slash for prefix match
-        allowed = any(path_to_check.startswith(prefix) for prefix in _ALLOWED_VAULT_PATHS)
-        if not allowed:
+        path_to_check = path_part + "/"
+        if not any(path_to_check.startswith(prefix) for prefix in _ALLOWED_VAULT_PATHS):
             logger.warning(
-                f"Access denied for Vault path '{path_part}'. Allowed prefixes: {_ALLOWED_VAULT_PATHS}"
+                f"Access denied for Vault path '{path_part}'. Allowed: {_ALLOWED_VAULT_PATHS}"
             )
-            raise ValueError(
-                f"Access to Vault path '{path_part}' is not allowed by VAULT_ALLOWED_PATHS."
-            )
+            raise ValueError(f"Access to Vault path '{path_part}' is not allowed.")
 
         client = hvac.Client(url=addr, token=token)
         if not client.is_authenticated():
-            raise RuntimeError(
-                f"Vault authentication failed for address {addr}. Check VAULT_TOKEN."
-            )
+            raise RuntimeError(f"Vault authentication failed for {addr}.")
 
-        # Try KV v2 read first
-        try:
-            api_path_v2 = f"{mount_point}/data/{secret_sub_path}"  # Standard KV v2 API structure
-            logger.debug(
-                f"Attempting Vault KV v2 read: mount='{mount_point}', path='{secret_sub_path}' (API: {api_path_v2})"
-            )
-            response = client.secrets.kv.v2.read_secret_version(
-                mount_point=mount_point,  # Mount point name
-                path=secret_sub_path,  # Path within the mount
-            )
-            secret_data = response["data"]["data"]
-            if key_name in secret_data:
-                return secret_data[key_name]
-            else:
-                raise KeyError(f"Key '{key_name}' not found in KV v2 secret at '{path_part}'")
+        path_segments = path_part.split("/")
+        if not path_segments:
+            raise ValueError(f"Invalid Vault path format: '{path_part}'")
+        mount_point, secret_sub_path = path_segments[0], "/".join(path_segments[1:])
 
-        except hvac.exceptions.InvalidPath:
-            # If InvalidPath, it might be a KV v1 secret or the path is wrong
-            logger.debug(f"KV v2 path '{path_part}' not found, trying KV v1.")
-            pass  # Fall through to try KV v1
-        except KeyError as e:
-            # If 'data' or 'data' key missing, likely not v2 or unexpected format
-            logger.debug(
-                f"Unexpected KV v2 response structure for '{path_part}': {e}. Trying KV v1."
-            )
-            pass  # Fall through to try KV v1
-        except Exception as e:
-            # Catch other potential hvac errors during v2 read
-            logger.error(f"Error reading Vault KV v2 secret '{path_part}': {e}")
-            raise RuntimeError(f"Failed to read Vault secret: {e}") from e
-
-        # Try KV v1 read as fallback
-        try:
-            api_path_v1 = f"{mount_point}/{secret_sub_path}"  # KV v1 path is direct
-            logger.debug(
-                f"Attempting Vault KV v1 read: mount='{mount_point}', path='{secret_sub_path}' (API: {api_path_v1})"
-            )
-            response = client.secrets.kv.v1.read_secret(
+        # Try KV v2 then KV v1
+        try:  # KV v2
+            resp_v2 = client.secrets.kv.v2.read_secret_version(
                 mount_point=mount_point, path=secret_sub_path
             )
-            secret_data = response["data"]
-            if key_name in secret_data:
-                return secret_data[key_name]
+            data_v2 = resp_v2["data"]["data"]
+            if key_name in data_v2:
+                return data_v2[key_name]
             else:
-                raise KeyError(f"Key '{key_name}' not found in KV v1 secret at '{path_part}'")
-
+                raise KeyError(f"Key '{key_name}' not found in KV v2 secret '{path_part}'")
         except hvac.exceptions.InvalidPath:
-            logger.error(f"Secret path not found in Vault (tried KV v2 and KV v1): '{path_part}'")
-            raise KeyError(
-                f"Secret path '{path_part}' not found in Vault."
-            ) from None  # Chain explicitly
-        except KeyError as e:
-            # Handle cases where 'data' key is missing in v1 response or key_name is missing
-            logger.error(
-                f"Key '{key_name}' not found or unexpected KV v1 response structure for '{path_part}': {e}"
-            )
-            raise KeyError(
-                f"Key '{key_name}' not found at path '{path_part}' (KV v1 attempt)."
-            ) from e
+            pass  # Try v1
+        except (KeyError, TypeError):
+            pass  # Try v1 if structure unexpected
         except Exception as e:
-            logger.error(f"Error reading Vault KV v1 secret '{path_part}': {e}")
+            logger.error(f"Error reading Vault KV v2 '{path_part}': {e}")
+            raise RuntimeError(f"Failed to read Vault secret: {e}") from e
+        try:  # KV v1
+            resp_v1 = client.secrets.kv.v1.read_secret(
+                mount_point=mount_point, path=secret_sub_path
+            )
+            data_v1 = resp_v1["data"]
+            if key_name in data_v1:
+                return data_v1[key_name]
+            else:
+                raise KeyError(f"Key '{key_name}' not found in KV v1 secret '{path_part}'")
+        except hvac.exceptions.InvalidPath:
+            raise KeyError(
+                f"Secret path '{path_part}' not found in Vault (tried KV v2 & v1)."
+            ) from None
+        except KeyError as e:
+            raise KeyError(f"Key '{key_name}' not found at '{path_part}' (KV v1).") from e
+        except Exception as e:
+            logger.error(f"Error reading Vault KV v1 '{path_part}': {e}")
             raise RuntimeError(f"Failed to read Vault secret: {e}") from e
 
     raise ValueError(f"Unknown secret scheme or invalid path: {path_key}")
@@ -964,170 +771,109 @@ def get_secret(path_key: str) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # 4.  PLAYWRIGHT LIFECYCLE (proxy, VNC, cookies)
 # ══════════════════════════════════════════════════════════════════════════════
-_pw: Optional[async_playwright] = None
-_browser: Optional[Browser] = None
-_ctx: Optional[BrowserContext] = None
-_vnc_proc: Optional[subprocess.Popen] = None
-_js_lib_cached: Set[str] = set()  # Track injected JS libraries per context? Maybe global is fine.
-_js_lib_lock = asyncio.Lock()  # Lock for script injection check
-_playwright_lock = asyncio.Lock()  # Lock for playwright/browser/context initialization
+def _update_proxy_settings():
+    """Parse global proxy config strings into usable dict/list."""
+    global _PROXY_CONFIG_DICT, _PROXY_ALLOWED_DOMAINS_LIST
+    # Parse Proxy Pool String
+    _PROXY_CONFIG_DICT = None
+    if _proxy_pool_str_global:
+        proxies = [p.strip() for p in _proxy_pool_str_global.split(";") if p.strip()]
+        if proxies:
+            chosen_proxy = random.choice(proxies)
+            try:
+                parsed = urlparse(chosen_proxy)
+                if (
+                    parsed.scheme
+                    and parsed.netloc
+                    and parsed.scheme in ("http", "https", "socks5", "socks5h")
+                    and "#" not in chosen_proxy
+                ):
+                    proxy_dict: Dict[str, Any] = {"server": f"{parsed.scheme}://{parsed.netloc}"}
+                    if parsed.username:
+                        proxy_dict["username"] = urllib.parse.unquote(parsed.username)
+                    if parsed.password:
+                        proxy_dict["password"] = urllib.parse.unquote(parsed.password)
+                        hostname_port = (
+                            f"{parsed.hostname}:{parsed.port}" if parsed.port else parsed.hostname
+                        )
+                        proxy_dict["server"] = f"{parsed.scheme}://{hostname_port}"
+                    _PROXY_CONFIG_DICT = proxy_dict
+                    logger.info(f"Proxy settings parsed: Using {proxy_dict.get('server')}")
+                else:
+                    logger.warning(f"Invalid proxy URL format/scheme: '{chosen_proxy}'.")
+            except Exception as e:
+                logger.warning(f"Error parsing proxy URL '{chosen_proxy}': {e}")
+    # Parse Allowed Domains String
+    if not _proxy_allowed_domains_str_global or _proxy_allowed_domains_str_global == "*":
+        _PROXY_ALLOWED_DOMAINS_LIST = None
+    else:
+        domains = [
+            d.strip().lower() for d in _proxy_allowed_domains_str_global.split(",") if d.strip()
+        ]
+        _PROXY_ALLOWED_DOMAINS_LIST = [d if d.startswith(".") else "." + d for d in domains]
+        logger.info(f"Proxy allowed domains parsed: {_PROXY_ALLOWED_DOMAINS_LIST}")
 
 
 def _get_proxy_config() -> Optional[Dict[str, Any]]:
-    """Parses PROXY_POOL and returns a Playwright-compatible proxy dict if valid."""
-    pool_str = os.getenv("PROXY_POOL", "")
-    if not pool_str:
-        return None
-
-    proxies = [p.strip() for p in pool_str.split(";") if p.strip()]
-    if not proxies:
-        return None
-
-    chosen_proxy = random.choice(proxies)
-    logger.info(f"Attempting to use proxy: {chosen_proxy}")
-
-    try:
-        parsed = urlparse(chosen_proxy)
-
-        # Basic validation
-        if not parsed.scheme or not parsed.netloc:
-            logger.warning(f"Invalid proxy URL format: '{chosen_proxy}'. Skipping proxy.")
-            return None
-        if parsed.scheme not in ("http", "https", "socks5", "socks5h"):
-            logger.warning(
-                f"Invalid proxy scheme '{parsed.scheme}' in '{chosen_proxy}'. Only http, https, socks5, socks5h supported. Skipping proxy."
-            )
-            return None
-        # Prevent '#' characters which might interfere with parsing or security
-        if "#" in chosen_proxy:
-            logger.warning(
-                f"Proxy URL '{chosen_proxy}' contains invalid character '#'. Skipping proxy."
-            )
-            return None
-
-        # Fix #4: Always return the dictionary format expected by Playwright
-        proxy_dict: Dict[str, Any] = {"server": f"{parsed.scheme}://{parsed.netloc}"}
-
-        # Handle credentials embedded in the URL (e.g., user:pass@host:port)
-        if parsed.username:
-            proxy_dict["username"] = urllib.parse.unquote(parsed.username)
-        if parsed.password:
-            proxy_dict["password"] = urllib.parse.unquote(parsed.password)
-            # Update server URL to remove credentials for the dict key
-            proxy_dict["server"] = (
-                f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
-                if parsed.port
-                else f"{parsed.scheme}://{parsed.hostname}"
-            )
-
-        logger.info(
-            f"Using proxy configuration: {proxy_dict['server']} (auth {'present' if 'username' in proxy_dict else 'not present'})"
-        )
-        return proxy_dict
-
-    except Exception as e:
-        logger.warning(f"Error parsing proxy URL '{chosen_proxy}': {e}. Skipping proxy.")
-        return None
-
-
-def _get_allowed_domains() -> Optional[List[str]]:
-    """Gets list of domains allowed for proxy usage. Returns None if all allowed."""
-    domains_str = os.getenv("PROXY_ALLOWED_DOMAINS", "")
-    if not domains_str or domains_str == "*":
-        return None  # All domains allowed
-    domains = [d.strip().lower() for d in domains_str.split(",") if d.strip()]
-    # Normalize domains (e.g., ensure they start with a dot for subdomain matching)
-    return [d if d.startswith(".") else "." + d for d in domains]
-
-
-_PROXY_ALLOWED_DOMAINS = _get_allowed_domains()  # Cache at startup
+    """Returns the globally cached parsed proxy dictionary."""
+    # Note: Assumes _update_proxy_settings was called during init
+    return _PROXY_CONFIG_DICT
 
 
 def _is_domain_allowed_for_proxy(url: str) -> bool:
-    """Checks if the URL's domain is allowed based on PROXY_ALLOWED_DOMAINS."""
-    if _PROXY_ALLOWED_DOMAINS is None:
-        return True  # All domains allowed
-
+    """Checks if the URL's domain is allowed based on globally cached list."""
+    # Note: Assumes _update_proxy_settings was called during init
+    if _PROXY_ALLOWED_DOMAINS_LIST is None:
+        return True
     try:
         domain = urlparse(url).netloc.lower()
         if not domain:
-            return False  # Cannot determine domain
-
-        # Check if the domain or any of its parent domains match the allowed list
-        # E.g., if ".example.com" is allowed, "sub.example.com" should match.
+            return False
         domain_parts = domain.split(".")
         for i in range(len(domain_parts)):
-            sub_domain = "." + ".".join(domain_parts[i:])
-            if sub_domain in _PROXY_ALLOWED_DOMAINS:
+            if ("." + ".".join(domain_parts[i:])) in _PROXY_ALLOWED_DOMAINS_LIST:
                 return True
         return False
-    except Exception as e:
-        logger.warning(f"Error checking domain allowance for URL '{url}': {e}")
+    except Exception:
         return False  # Deny on error
 
 
 async def get_browser_context(
     use_incognito: bool = False,
-    context_args: Optional[Dict[str, Any]] = None,  # Accept extra args like user_agent
+    context_args: Optional[Dict[str, Any]] = None,
 ) -> tuple[BrowserContext, Browser]:
-    """
-    Get or create a browser context. Ensures Playwright and Browser are initialized.
-    Uses an async lock to prevent race conditions during initialization.
-
-    Args:
-        use_incognito: If True, creates a new incognito context. Otherwise, returns shared context.
-        context_args: Optional dictionary of arguments for Browser.new_context().
-
-    Returns:
-        Tuple of (BrowserContext, Browser)
-    """
+    """Get or create a browser context using global config values."""
     global _pw, _browser, _ctx
-    async with _playwright_lock:  # Lock ensures atomic initialization
-        # Initialize Playwright if needed
+    async with _playwright_lock:
         if not _pw:
             try:
                 _pw = await async_playwright().start()
                 logger.info("Playwright started.")
             except Exception as e:
-                logger.critical(f"Failed to start Playwright: {e}", exc_info=True)
                 raise RuntimeError(f"Failed to start Playwright: {e}") from e
 
-        # Determine headless mode
-        headless_env = os.getenv("HEADLESS", "true")  # Default to headless
-        is_headless = headless_env.lower() not in ("0", "false", "no")
-
-        # Start VNC only if not headless and VNC=1
+        is_headless = _headless_mode_global
         if not is_headless:
-            _start_vnc()  # Start VNC if configured (non-blocking)
+            _start_vnc()  # Uses globals
 
-        # Launch Browser if needed
         if not _browser or not _browser.is_connected():
-            if _browser:  # If disconnected, try closing first
-                try:
-                    await _browser.close()
-                except Exception:
-                    pass  # Ignore errors closing old browser
+            if _browser:
+                await _browser.close()  # Ignore errors
             try:
                 _browser = await _pw.chromium.launch(
                     headless=is_headless,
-                    # Proxy is set per-context
                     args=[
-                        "--no-sandbox",  # Common requirement in Docker/Linux
-                        "--disable-dev-shm-usage",  # Common requirement in Docker
-                        "--disable-gpu",  # Often helps stability in headless
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
                         "--window-size=1280,1024",
-                        # "--enable-features=NetworkService,NetworkServiceInProcess", # May not be needed
-                        # "--dns-prefetch-disable", # Might help with some DNS issues
                     ],
                 )
                 logger.info(f"Browser launched (Headless: {is_headless}).")
-                # Add cleanup hook specifically for the browser
                 atexit.register(lambda: asyncio.run(_try_close_browser()))
             except PlaywrightException as e:
-                logger.critical(f"Failed to launch browser: {e}", exc_info=True)
                 raise RuntimeError(f"Failed to launch browser: {e}") from e
 
-        # Handle context creation / retrieval
         default_args = {
             "viewport": {"width": 1280, "height": 1024},
             "locale": "en-US",
@@ -1137,148 +883,104 @@ async def get_browser_context(
         if context_args:
             default_args.update(context_args)
 
-        # Incognito context: always create new
         if use_incognito:
             try:
-                incognito_ctx = await _browser.new_context(**default_args)
+                incog_ctx = await _browser.new_context(**default_args)
                 await _log("browser_incognito_context", args=default_args)
-                # Add hook for proxy domain checking if proxy is enabled for this context
                 if default_args.get("proxy"):
-                    await _add_proxy_routing_rule(incognito_ctx, default_args["proxy"])
-                return incognito_ctx, _browser
+                    await _add_proxy_routing_rule(incog_ctx, default_args["proxy"])
+                return incog_ctx, _browser
             except PlaywrightException as e:
-                logger.error(f"Failed to create incognito context: {e}", exc_info=True)
                 raise ToolError(f"Failed to create incognito context: {e}") from e
 
-        # Shared context: create if doesn't exist or is closed
-        if not _ctx or not _ctx.browser:  # Check if context is still associated with a browser
-            # Check if context is closed - Playwright might not have a simple is_closed()
-            # Checking .browser is a reasonable proxy.
+        if not _ctx or not _ctx.browser:
+            if _ctx:
+                await _ctx.close()  # Ignore errors
             try:
-                if _ctx:
-                    await _ctx.close()  # Attempt to close old one if exists
-            except Exception:
-                pass
+                loaded_state = await _load_state()  # Uses globals for key
+                proxy_cfg = _get_proxy_config()  # Uses globals
+                final_ctx_args = default_args.copy()
+                final_ctx_args["storage_state"] = loaded_state
+                if proxy_cfg:
+                    final_ctx_args["proxy"] = proxy_cfg
 
-            try:
-                # Load state before creating context
-                loaded_state = await _load_state()  # Now uses async file read
-                proxy_config = _get_proxy_config()  # Get proxy config
-
-                final_context_args = default_args.copy()
-                final_context_args["storage_state"] = loaded_state
-                if proxy_config:
-                    final_context_args["proxy"] = proxy_config
-
-                _ctx = await _browser.new_context(**final_context_args)
-
+                _ctx = await _browser.new_context(**final_ctx_args)
                 await _log(
                     "browser_context_create",
                     headless=is_headless,
-                    proxy=bool(proxy_config),
-                    args=final_context_args,
+                    proxy=bool(proxy_cfg),
+                    args={k: v for k, v in final_ctx_args.items() if k != "storage_state"},
                 )
-
-                # Add proxy domain check hook if proxy is active
-                if proxy_config:
-                    await _add_proxy_routing_rule(_ctx, proxy_config)
-
-                # Start maintenance loop only for the persistent context
+                if proxy_cfg:
+                    await _add_proxy_routing_rule(_ctx, proxy_cfg)
                 asyncio.create_task(_context_maintenance_loop(_ctx))
-
             except PlaywrightException as e:
-                logger.critical(f"Failed to create shared browser context: {e}", exc_info=True)
-                raise RuntimeError(f"Failed to create shared browser context: {e}") from e
+                raise RuntimeError(f"Failed to create shared context: {e}") from e
 
         return _ctx, _browser
 
 
 async def _add_proxy_routing_rule(context: BrowserContext, proxy_config: Dict[str, Any]):
-    """Adds a routing rule to enforce PROXY_ALLOWED_DOMAINS if enabled."""
-    if _PROXY_ALLOWED_DOMAINS is None:
-        return  # No domain restrictions
+    """Adds routing rule to enforce proxy domain restrictions if enabled."""
+    if _PROXY_ALLOWED_DOMAINS_LIST is None:
+        return
 
     async def handle_route(route):
-        request_url = route.request.url
-        if not _is_domain_allowed_for_proxy(request_url):
-            logger.warning(
-                f"Proxy use blocked for disallowed domain: {request_url}. Aborting request."
-            )
+        if not _is_domain_allowed_for_proxy(route.request.url):
+            logger.warning(f"Proxy blocked for disallowed domain: {route.request.url}. Aborting.")
             try:
-                await route.abort("accessdenied")  # Abort the request
+                await route.abort("accessdenied")
             except PlaywrightException as e:
-                logger.error(f"Error aborting route for {request_url}: {e}")
-                # Try to continue without proxy as a fallback? Complex. Abort is safer.
+                logger.error(f"Error aborting route: {e}")
         else:
-            # Continue with the request (using the context's proxy settings)
             try:
                 await route.continue_()
             except PlaywrightException as e:
-                logger.error(f"Error continuing route for {request_url}: {e}")
-                # Attempt to abort if continue fails
-                try:
-                    await route.abort()
-                except Exception:
-                    pass  # Ignore abort error
+                logger.error(f"Error continuing route: {e}")
+            # Try abort as fallback? Risky, continue failure might mean connection issues
+            # try: await route.abort() except Exception: pass
 
     try:
-        # Route all network requests ('**/*')
         await context.route("**/*", handle_route)
-        logger.info("Proxy domain restriction rule added to context.")
+        logger.info("Proxy domain restriction rule added.")
     except PlaywrightException as e:
-        logger.error(f"Failed to add proxy domain routing rule: {e}")
+        logger.error(f"Failed to add proxy routing rule: {e}")
 
 
 def _start_vnc():
-    """Starts X11VNC if VNC=1 and VNC_PASSWORD is set."""
+    """Starts X11VNC if VNC enabled and password set."""
     global _vnc_proc
-    if _vnc_proc or os.getenv("VNC") != "1":
+    if _vnc_proc or not _vnc_enabled_global:
         return
-
-    vnc_password = os.getenv("VNC_PASSWORD")
-    if not vnc_password:
-        logger.warning(
-            "VNC=1 but VNC_PASSWORD env var not set. VNC server not started for security."
-        )
+    vnc_pass = _vnc_password_global
+    if not vnc_pass:  # Warning logged during config load/validation
+        logger.debug("VNC start skipped: Password not set.")
         return
-
-    display = os.getenv("DISPLAY", ":0")  # Default to :0 if not set
-
+    display = os.getenv("DISPLAY", ":0")
     try:
-        # Check if x11vnc command exists
-        if subprocess.run(["which", "x11vnc"], capture_output=True, text=True).returncode != 0:
+        if subprocess.run(["which", "x11vnc"], capture_output=True).returncode != 0:
             logger.warning("x11vnc command not found. Cannot start VNC server.")
             return
-
-        # Prepare command
         cmd = [
             "x11vnc",
             "-display",
             display,
             "-passwd",
-            vnc_password,
-            "-forever",  # Keep running until killed
-            "-localhost",  # Only allow connections from localhost (use SSH tunnel for remote access)
-            "-nopw",  # Disable password prompt on server console
-            "-quiet",  # Reduce logging
-            "-noxdamage",  # May help with some compatibility issues
+            vnc_pass,
+            "-forever",
+            "-localhost",
+            "-nopw",
+            "-quiet",
+            "-noxdamage",
         ]
-
-        # Fix: Use setsid to ensure VNC process is killed properly on termination
         preexec_fn = os.setsid if hasattr(os, "setsid") else None
-
         _vnc_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            preexec_fn=preexec_fn,  # Create new session
+            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, preexec_fn=preexec_fn
         )
         logger.info(f"Password-protected VNC server started on display {display} (localhost only).")
-        # Register cleanup function for VNC process
         atexit.register(_cleanup_vnc)
-
     except FileNotFoundError:
-        logger.warning("x11vnc command not found. Cannot start VNC server.")
+        logger.warning("x11vnc command not found.")
     except Exception as e:
         logger.error(f"Failed to start VNC server: {e}", exc_info=True)
         _vnc_proc = None
@@ -1288,32 +990,31 @@ def _cleanup_vnc():
     """Terminates the VNC server process."""
     global _vnc_proc
     proc = _vnc_proc
-    if proc and proc.poll() is None:  # Check if process exists and is running
+    if proc and proc.poll() is None:
         logger.info("Terminating VNC server process...")
         try:
-            # Send SIGTERM to the process group (due to setsid)
-            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            pgid = os.getpgid(proc.pid) if hasattr(os, "getpgid") else None
+            if pgid and hasattr(os, "killpg"):
+                os.killpg(pgid, signal.SIGTERM)
             else:
-                proc.terminate()  # Fallback for systems without killpg/getpgid
-
-            proc.wait(timeout=5)  # Wait for termination
+                proc.terminate()
+            proc.wait(timeout=5)
             logger.info("VNC server process terminated.")
         except subprocess.TimeoutExpired:
-            logger.warning("VNC server did not terminate gracefully. Sending SIGKILL.")
-            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            logger.warning("VNC server SIGTERM timeout. Sending SIGKILL.")
+            if pgid and hasattr(os, "killpg"):
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    os.killpg(pgid, signal.SIGKILL)
                 except ProcessLookupError:
-                    pass  # Process might have died between checks
+                    pass  # Already dead
             else:
-                proc.kill()  # Fallback kill
+                proc.kill()
             try:
-                proc.wait(timeout=2)  # Wait briefly after kill
+                proc.wait(timeout=2)
             except Exception:
-                pass  # Ignore errors after kill
+                pass
         except ProcessLookupError:
-            logger.info("VNC process already terminated.")  # Process died before we could signal
+            logger.info("VNC process already terminated.")
         except Exception as e:
             logger.error(f"Error during VNC cleanup: {e}")
         finally:
@@ -1321,62 +1022,48 @@ def _cleanup_vnc():
 
 
 async def _load_state() -> dict[str, Any] | None:
-    """Loads browser state from encrypted file asynchronously."""
+    """Loads browser state asynchronously. Decryption runs in executor."""
     if not _STATE_FILE.exists():
         return None
     loop = asyncio.get_running_loop()
     try:
-        # Read file asynchronously
         async with aiofiles.open(_STATE_FILE, "rb") as f:
             encrypted_data = await f.read()
-
-        # Decrypt (synchronous CPU-bound operation, could move to executor if becomes bottleneck)
-        # For typical state sizes, inline decryption is probably fine.
-        decrypted_data = await loop.run_in_executor(_thread_pool, _dec, encrypted_data)
-
-        # Fix #11 / CWE-359: _dec now returns None on failure
+        decrypted_data = await loop.run_in_executor(
+            _thread_pool, _dec, encrypted_data
+        )  # _dec uses global key
         if decrypted_data is None:
-            logger.warning("Failed to decrypt browser state file. Starting with fresh state.")
-            return None  # Signal failure
-
+            return None  # Decryption failed
         return json.loads(decrypted_data)
     except FileNotFoundError:
-        logger.info("Browser state file not found. Starting fresh.")
+        logger.info("Browser state file not found.")
         return None
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse browser state JSON: {e}. State file might be corrupt.")
-        _STATE_FILE.unlink(missing_ok=True)  # Remove corrupt file
+        logger.error(f"Failed to parse browser state JSON: {e}. Removing corrupt file.")
+        _STATE_FILE.unlink(missing_ok=True)
         return None
     except Exception as e:
         logger.error(f"Failed to load browser state: {e}", exc_info=True)
-        # Attempt removal on generic error too, might be corrupt
         _STATE_FILE.unlink(missing_ok=True)
         return None
 
 
 async def _save_state(ctx: BrowserContext):
-    """Saves browser state to encrypted file asynchronously."""
-    if not ctx or not ctx.browser:  # Check if context is valid
-        logger.warning("Attempted to save state for an invalid or closed context.")
+    """Saves browser state asynchronously. Encryption runs in executor."""
+    if not ctx or not ctx.browser:
         return
     loop = asyncio.get_running_loop()
     try:
         state = await ctx.storage_state()
         state_json = json.dumps(state).encode("utf-8")
-
-        # Encrypt (synchronous CPU-bound, move to executor if needed)
-        encrypted_data = await loop.run_in_executor(_thread_pool, _enc, state_json)
-
-        # Write file asynchronously
+        encrypted_data = await loop.run_in_executor(
+            _thread_pool, _enc, state_json
+        )  # _enc uses global key
         async with aiofiles.open(_STATE_FILE, "wb") as f:
             await f.write(encrypted_data)
-
-        # Fix CWE-732: Ensure state file has restricted permissions
         await loop.run_in_executor(_thread_pool, os.chmod, _STATE_FILE, 0o600)
-
-        # logger.debug("Browser state saved successfully.") # Optional debug log
     except PlaywrightException as e:
-        logger.error(f"Failed to get storage state from browser context: {e}")
+        logger.error(f"Failed to get storage state: {e}")
     except Exception as e:
         logger.error(f"Failed to save browser state: {e}", exc_info=True)
 
@@ -1387,11 +1074,9 @@ async def _tab_context(ctx: BrowserContext):
     page = None
     try:
         page = await ctx.new_page()
-        await _log("page_open", context_id=id(ctx))  # Log context ID for correlation
+        await _log("page_open", context_id=id(ctx))
         yield page
     except PlaywrightException as e:
-        logger.error(f"Failed to create new page in context {id(ctx)}: {e}")
-        # Raise a ToolError to indicate failure to the caller
         raise ToolError(f"Failed to create browser page: {e}") from e
     finally:
         if page and not page.is_closed():
@@ -1399,63 +1084,38 @@ async def _tab_context(ctx: BrowserContext):
                 await page.close()
                 await _log("page_close", context_id=id(ctx))
             except PlaywrightException as e:
-                logger.warning(f"Error closing page in context {id(ctx)}: {e}")
+                logger.warning(f"Error closing page {id(ctx)}: {e}")
 
 
 async def _context_maintenance_loop(ctx: BrowserContext):
-    """Periodically saves state and optionally clears cookies for the shared context."""
-    # Interval for saving state (e.g., every 15 minutes)
+    """Periodically saves state for the shared context."""
     save_interval_seconds = 15 * 60
-    clear_enabled = False  # Set to True to enable periodic clearing
-
     logger.info(f"Starting context maintenance loop for context {id(ctx)}.")
-
     while True:
-        # Fix: Check if context is still connected/valid before proceeding
         if not ctx or not ctx.browser:
-            logger.info(f"Context {id(ctx)} appears closed or invalid. Stopping maintenance loop.")
+            logger.info(f"Context {id(ctx)} invalid. Stopping maintenance.")
             break
-        # Alternative check using Playwright's internal connection state if available
-        # try:
-        #     if not ctx._connection.is_connected: # Accessing private attribute is risky
-        #         break
-        # except AttributeError: pass # Ignore if attribute doesn't exist
-
         try:
             await asyncio.sleep(save_interval_seconds)
-
             if not ctx or not ctx.browser:
-                break  # Re-check after sleep
-
-            # Save state
+                break
             await _save_state(ctx)
-            # logger.debug(f"Maintenance: State saved for context {id(ctx)}.") # Optional debug
-
-            # Optional periodic cleanup (careful, might log user out)
-            if clear_enabled:
-                # Perform cleanup actions here if needed, e.g.:
-                # await ctx.clear_cookies() # Be cautious with this
-                # await ctx.clear_permissions()
-                # logger.info(f"Maintenance: Cleared cookies/permissions for context {id(ctx)}.")
-                pass
-
         except asyncio.CancelledError:
-            logger.info(f"Context maintenance loop for {id(ctx)} cancelled.")
+            logger.info(f"Context maintenance loop {id(ctx)} cancelled.")
             break
         except Exception as e:
-            logger.error(f"Error in context maintenance loop for {id(ctx)}: {e}", exc_info=True)
-            # Avoid tight loop on persistent error, wait before retrying
+            logger.error(f"Error in context maintenance loop: {e}", exc_info=True)
             await asyncio.sleep(60)
 
 
 async def _try_close_browser():
-    """Attempt to close the browser gracefully, used by atexit."""
+    """Attempt to close the browser gracefully via atexit."""
     global _browser
     if _browser and _browser.is_connected():
         logger.info("Attempting to close browser via atexit handler...")
         try:
             await _browser.close()
-            logger.info("Browser closed successfully.")
+            logger.info("Browser closed successfully via atexit.")
         except Exception as e:
             logger.error(f"Error closing browser during atexit: {e}")
         finally:
@@ -1463,38 +1123,33 @@ async def _try_close_browser():
 
 
 async def shutdown():
-    """Gracefully shut down Playwright, browser, context, and VNC."""
-    global _pw, _browser, _ctx, _vnc_proc, _thread_pool, _selector_cleanup_task_handle
+    """Gracefully shut down Playwright, browser, context, VNC, and thread pool."""
+    global _pw, _browser, _ctx, _vnc_proc, _thread_pool, _locator_cache_cleanup_task_handle
     logger.info("Initiating graceful shutdown...")
 
-    # 0. Cancel background tasks first
-    cleanup_task = _selector_cleanup_task_handle
-    if cleanup_task and not cleanup_task.done():
-        logger.info("Cancelling selector cleanup task during shutdown...")
-        cleanup_task.cancel()
-        # Don't necessarily await here, let gather handle it below? Or brief await.
+    # 1. Cancel background tasks
+    if _locator_cache_cleanup_task_handle and not _locator_cache_cleanup_task_handle.done():
+        logger.info("Cancelling locator cache cleanup task...")
+        _locator_cache_cleanup_task_handle.cancel()
         try:
-            await asyncio.wait_for(cleanup_task, timeout=2.0)
-        except Exception: 
-            pass # Ignore errors during shutdown cancellation
-        _selector_cleanup_task_handle = None
+            await asyncio.wait_for(_locator_cache_cleanup_task_handle, timeout=2.0)
+        except Exception:
+            logger.warning("Locator cache cleanup task cancellation timeout/error.")
+        _locator_cache_cleanup_task_handle = None
 
-    # 1. Close Tab Pool tasks (if applicable, needs implementation)
-    await tab_pool.cancel_all() # Assuming tab_pool is accessible
+    await tab_pool.cancel_all()  # Cancel tab pool tasks
 
-    # 2. Close shared context and save state
-    async with _playwright_lock:  # Use lock to prevent races with get_browser_context
+    # 2. Close Playwright resources under lock
+    async with _playwright_lock:
         ctx_to_close = _ctx
-        _ctx = None  # Prevent new uses of the shared context
+        _ctx = None
         if ctx_to_close and ctx_to_close.browser:
             try:
                 await _save_state(ctx_to_close)
                 await ctx_to_close.close()
                 await _log("browser_context_close_shared")
             except Exception as e:
-                logger.error(f"Error closing shared browser context: {e}")
-
-        # 3. Close browser
+                logger.error(f"Error closing shared context: {e}")
         browser_to_close = _browser
         _browser = None
         if browser_to_close and browser_to_close.is_connected():
@@ -1503,8 +1158,6 @@ async def shutdown():
                 await _log("browser_close")
             except Exception as e:
                 logger.error(f"Error closing browser: {e}")
-
-        # 4. Stop Playwright
         pw_to_stop = _pw
         _pw = None
         if pw_to_stop:
@@ -1514,21 +1167,16 @@ async def shutdown():
             except Exception as e:
                 logger.error(f"Error stopping Playwright: {e}")
 
-    # 5. Cleanup VNC (synchronous, run outside lock)
+    # 3. Cleanup Sync Resources
     _cleanup_vnc()
-
-    # 6. Shutdown thread pool
     logger.info("Shutting down thread pool...")
     _thread_pool.shutdown(wait=True)
-    # If using ProcessPool:
-    # if _process_pool: _process_pool.shutdown(wait=True)
     logger.info("Thread pool shut down.")
 
     await _log("browser_shutdown_complete")
     logger.info("Graceful shutdown complete.")
 
 
-# Register shutdown hooks
 _shutdown_initiated = False
 _shutdown_lock = asyncio.Lock()
 
@@ -1542,96 +1190,42 @@ async def _initiate_shutdown():
             await shutdown()
 
 
-# Fix #2: Signal handler using call_soon_threadsafe
 def _signal_handler(sig, frame):
+    """Handle termination signals gracefully."""
     logger.info(f"Received signal {sig}. Initiating shutdown...")
     try:
-        # Get the running loop safely
         loop = asyncio.get_event_loop()
-        # Schedule the shutdown coroutine thread-safely
         if loop.is_running():
             loop.call_soon_threadsafe(asyncio.create_task, _initiate_shutdown())
         else:
-            # If loop isn't running, run synchronously (may happen during interpreter shutdown)
-            logger.warning(
-                "Event loop not running during signal handling. Running shutdown synchronously."
-            )
             asyncio.run(_initiate_shutdown())
     except RuntimeError as e:
-        # Fallback if loop cannot be retrieved or task creation fails
-        logger.error(
-            f"Error scheduling shutdown from signal handler: {e}. Attempting synchronous shutdown."
-        )
-        try:
-            asyncio.run(_initiate_shutdown())
-        except Exception as final_e:
-            logger.critical(f"Synchronous shutdown attempt failed: {final_e}")
-    # Give shutdown a brief moment, then exit forcefully if needed
-    # Note: Exiting here might cut off shutdown. Consider if this is desired.
-    # time.sleep(3) # Allow some time for shutdown tasks
-    # sys.exit(0) # Commented out: Allow shutdown to complete fully
+        logger.error(f"Error scheduling shutdown from signal: {e}. Attempting sync.")
+    try:
+        asyncio.run(_initiate_shutdown())
+    except Exception as final_e:
+        logger.critical(f"Sync shutdown attempt failed: {final_e}")
 
 
-# Register signal handlers
 try:
     signal.signal(signal.SIGTERM, _signal_handler)
     signal.signal(signal.SIGINT, _signal_handler)
 except ValueError:
-    logger.warning("Could not register signal handlers (likely not in main thread).")
-
-# Register atexit hook (runs on normal exit)
-# Note: atexit handlers run synchronously and might conflict with async shutdown
-# It's often better to rely on explicit shutdown calls or signal handlers.
-# However, keeping it as a fallback.
-_atexit_shutdown_done = False
-
-
-def _atexit_shutdown_sync():
-    global _atexit_shutdown_done
-    if not _atexit_shutdown_done:
-        _atexit_shutdown_done = True
-        logger.info("atexit hook triggered. Running shutdown.")
-        try:
-            # If loop exists and is running, schedule; otherwise, run sync
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Cannot directly await here. Submit and wait briefly? Risky.
-                logger.warning(
-                    "Cannot reliably run async shutdown from synchronous atexit handler with running loop."
-                )
-                # Best effort: close DB connection synchronously
-                _close_db_connection()
-            else:
-                asyncio.run(_initiate_shutdown())
-        except RuntimeError:  # Loop might be closed
-            _close_db_connection()  # Close DB at least
-        except Exception as e:
-            logger.error(f"Error during atexit shutdown: {e}")
-
-
-# Commenting out atexit for now, relying on signals and explicit cleanup.
-# Re-enable if necessary, but be aware of sync/async issues.
-# atexit.register(_atexit_shutdown_sync)
+    logger.warning("Could not register signal handlers (not main thread?).")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 5.  TAB POOL FOR PARALLELISM
 # ══════════════════════════════════════════════════════════════════════════════
 class TabPool:
-    """Runs async callables needing a Page in parallel, bounded by SB_MAX_TABS."""
+    """Runs async callables needing a Page in parallel, bounded by global config."""
 
     def __init__(self, max_tabs: int | None = None):
-        try:
-            default_max = int(os.getenv("SB_MAX_TABS", "5"))
-        except ValueError:
-            default_max = 5
-            logger.warning(f"Invalid SB_MAX_TABS value. Using default: {default_max}")
-
-        self.max_tabs = max_tabs if max_tabs is not None else default_max
+        # Use global config value, allow override via argument
+        self.max_tabs = max_tabs if max_tabs is not None else _sb_max_tabs_global
         if self.max_tabs <= 0:
-            logger.warning("max_tabs must be positive. Setting to 1.")
+            logger.warning(f"Invalid max_tabs ({self.max_tabs}), defaulting to 1.")
             self.max_tabs = 1
-
         self.sem = asyncio.Semaphore(self.max_tabs)
         self._active_contexts: Set[BrowserContext] = set()
         self._context_lock = asyncio.Lock()
@@ -1639,22 +1233,16 @@ class TabPool:
 
     async def _run(self, fn: Callable[[Page], Awaitable[Any]]) -> Any:
         """Acquires semaphore, creates incognito context+page, runs fn, cleans up."""
-        timeout_seconds_str = os.getenv("SB_TAB_TIMEOUT", "300")  # 5-minute default
-        try:
-            timeout_seconds = int(timeout_seconds_str)
-        except ValueError:
-            timeout_seconds = 300
-            logger.warning(
-                f"Invalid SB_TAB_TIMEOUT value '{timeout_seconds_str}'. Using default 300s."
-            )
-
+        # Use global config value for timeout
+        timeout_seconds = _sb_tab_timeout_global
         incognito_ctx: Optional[BrowserContext] = None
-        task = asyncio.current_task()  # Get current task for tracking/logging
+        task = asyncio.current_task()  # Get task for logging correlation
 
         try:
             # Wrap the core logic in wait_for
             async with self.sem:  # Acquire semaphore before creating resources
                 # Use incognito context for isolation
+                # Pass proxy config from global context if it exists? For now, incognito starts clean.
                 incognito_ctx, _ = await get_browser_context(use_incognito=True)
 
                 # Track the active context for potential cleanup on cancellation
@@ -1665,27 +1253,24 @@ class TabPool:
                 async with _tab_context(incognito_ctx) as page:
                     # Execute the provided function with the page
                     result = await asyncio.wait_for(fn(page), timeout=timeout_seconds)
-                    return result  # Return result on success
+                    return result
 
         except asyncio.TimeoutError:
-            func_name = getattr(fn, "__name__", "anonymous_tab_function")
+            func_name = getattr(fn, "__name__", "anon_tab_fn")
             await _log("tab_timeout", function=func_name, timeout=timeout_seconds, task_id=id(task))
-            # Fix #Tab Leaks: Ensure context is closed even on timeout
-            # The cancellation happens *outside* this block, need cleanup in finally.
-            # We need to return an error indicator.
             return {"error": f"Tab operation timed out after {timeout_seconds}s", "success": False}
         except asyncio.CancelledError:
-            func_name = getattr(fn, "__name__", "anonymous_tab_function")
+            func_name = getattr(fn, "__name__", "anon_tab_fn")
             await _log("tab_cancelled", function=func_name, task_id=id(task))
-            # Propagate cancellation, cleanup happens in finally
-            raise
+            raise  # Propagate cancellation
         except Exception as e:
-            func_name = getattr(fn, "__name__", "anonymous_tab_function")
-            await _log("tab_error", function=func_name, error=str(e), task_id=id(task))
-            # Return error indicator
+            func_name = getattr(fn, "__name__", "anon_tab_fn")
+            await _log(
+                "tab_error", function=func_name, error=str(e), task_id=id(task), exc_info=True
+            )  # Log traceback
             return {"error": f"Tab operation failed: {e}", "success": False}
         finally:
-            # Fix Resource Leak (Tab Leaks): Ensure the incognito context is *always* closed
+            # Ensure the incognito context is *always* closed
             if incognito_ctx:
                 async with self._context_lock:
                     self._active_contexts.discard(incognito_ctx)
@@ -1700,522 +1285,738 @@ class TabPool:
         """Runs multiple functions in parallel using the tab pool."""
         if not fns:
             return []
-
-        # Fix #3: Use asyncio.gather for compatibility with Python < 3.11
         tasks = [asyncio.create_task(self._run(fn)) for fn in fns]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Process results, logging any exceptions returned by gather
         processed_results = []
         for i, res in enumerate(results):
             if isinstance(res, Exception):
-                func_name = getattr(fns[i], "__name__", f"function_{i}")
-                logger.error(
-                    f"Error during TabPool.map for function '{func_name}': {res}", exc_info=res
-                )
-                processed_results.append(
-                    {"error": f"Task execution failed: {res}", "success": False}
-                )
+                func_name = getattr(fns[i], "__name__", f"fn_{i}")
+                logger.error(f"Error in TabPool.map for '{func_name}': {res}", exc_info=res)
+                processed_results.append({"error": f"Task failed: {res}", "success": False})
             else:
                 processed_results.append(res)
-
         return processed_results
 
     async def cancel_all(self):
         """Attempts to close all active contexts managed by the pool."""
+        contexts_to_close: List[BrowserContext] = []
         async with self._context_lock:
-            contexts_to_close = list(self._active_contexts)  # Copy set for iteration
-            self._active_contexts.clear()  # Clear the tracking set
-
+            contexts_to_close = list(self._active_contexts)
+            self._active_contexts.clear()
         if not contexts_to_close:
-            logger.info("TabPool cancel_all: No active contexts to close.")
             return
-
-        logger.info(
-            f"TabPool cancel_all: Attempting to close {len(contexts_to_close)} active contexts."
-        )
+        logger.info(f"TabPool cancel_all: Closing {len(contexts_to_close)} active contexts.")
         close_tasks = [asyncio.create_task(ctx.close()) for ctx in contexts_to_close]
         results = await asyncio.gather(*close_tasks, return_exceptions=True)
-
-        closed_count = 0
-        error_count = 0
-        for i, res in enumerate(results):
-            if isinstance(res, Exception):
-                error_count += 1
-                logger.warning(
-                    f"Error closing context {id(contexts_to_close[i])} during cancel_all: {res}"
-                )
-            else:
-                closed_count += 1
-        logger.info(f"TabPool cancel_all: {closed_count} contexts closed, {error_count} errors.")
+        errors = sum(1 for res in results if isinstance(res, Exception))
+        if errors:
+            logger.warning(f"TabPool cancel_all: {errors} errors closing contexts.")
 
 
-# Global instance (can be replaced if needed)
-tab_pool = TabPool()
+tab_pool = TabPool()  # Instantiate the global instance
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 6.  HUMAN-LIKE JITTER (bot evasion)
 # ══════════════════════════════════════════════════════════════════════════════
-_HIGH_RISK_DOMAINS: Optional[Set[str]] = None
-
-
-def _get_high_risk_domains() -> Set[str]:
-    """Parses and caches high-risk domains from environment."""
-    global _HIGH_RISK_DOMAINS
-    if _HIGH_RISK_DOMAINS is None:
-        domains_str = os.getenv(
-            "HIGH_RISK_DOMAINS",
-            # Common sites known for bot detection
-            ".google.com,.facebook.com,.linkedin.com,.glassdoor.com,"
-            ".instagram.com,.twitter.com,.x.com,.reddit.com,"
-            ".amazon.com,.ebay.com,.ticketmaster.com,.cloudflare.com,"
-            ".datadome.co,.perimeterx.net,.recaptcha.net,.hcaptcha.com",
-        )
-        raw_domains = [d.strip().lower() for d in domains_str.split(",") if d.strip()]
-        # Normalize to ensure leading dot for suffix matching
-        _HIGH_RISK_DOMAINS = {d if d.startswith(".") else "." + d for d in raw_domains}
-        logger.info(f"Initialized high-risk domains for jitter timing: {_HIGH_RISK_DOMAINS}")
-    return _HIGH_RISK_DOMAINS
 
 
 def _risk_factor(url: str) -> float:
-    """Calculates a risk factor based on the URL's domain."""
+    """Calculates risk factor based on URL's domain using global config set."""
+    # Uses _high_risk_domains_set_global
     if not url:
         return 1.0
     try:
-        domain = urlparse(url).netloc.lower()
+        domain = urlparse(url).netloc.lower().replace("www.", "")
         if not domain:
             return 1.0
-
-        high_risk_set = _get_high_risk_domains()
+        # Check if domain itself or parent domain is high risk
         domain_parts = domain.split(".")
         for i in range(len(domain_parts)):
             sub_domain = "." + ".".join(domain_parts[i:])
-            if sub_domain in high_risk_set:
+            if sub_domain in _high_risk_domains_set_global:  # Use global
                 # logger.debug(f"High risk domain detected: {domain} (matched {sub_domain})")
-                return 2.0  # Higher base factor for known sensitive domains
+                return 2.0  # Higher factor
         return 1.0
     except Exception:
-        return 1.0  # Default on parsing error
+        return 1.0  # Default on error
 
 
 async def _pause(page: Page, base_ms_range: tuple[int, int] = (150, 500)):
     """Introduce a short, randomized pause, adjusted by URL risk factor."""
     if not page or page.is_closed():
         return
-
-    risk = _risk_factor(page.url)
+    risk = _risk_factor(page.url)  # Uses global config indirectly
     min_ms, max_ms = base_ms_range
-
-    # Calculate base delay
     base_delay_ms = random.uniform(min_ms, max_ms)
-
-    # Apply risk factor
     adjusted_delay_ms = base_delay_ms * risk
-
-    # Add slight extra jitter based on page complexity heuristic (optional)
-    try:
-        # Count interactive elements visible in viewport? Simpler: element count.
+    try:  # Optional complexity factor based on interactive elements
         element_count = await page.evaluate(
             "() => document.querySelectorAll('a, button, input, select, textarea, [role=button], [role=link], [onclick]').length"
         )
-        complexity_factor = min(1.0 + (element_count / 500.0), 1.5)  # Scale 1.0 to 1.5
+        complexity_factor = min(1.0 + (element_count / 500.0), 1.5)
         adjusted_delay_ms *= complexity_factor
     except PlaywrightException:
-        pass  # Ignore if evaluation fails
-
-    # Ensure delay isn't excessively long (e.g., max 3 seconds)
-    final_delay_ms = min(adjusted_delay_ms, 3000)
-    final_delay_sec = final_delay_ms / 1000.0
-
-    # logger.debug(f"Pausing for {final_delay_sec:.3f}s (Risk: {risk:.1f}, Base: {base_delay_ms:.0f}ms)")
-    await asyncio.sleep(final_delay_sec)
+        pass  # Ignore evaluation errors
+    final_delay_ms = min(adjusted_delay_ms, 3000)  # Max 3 seconds
+    await asyncio.sleep(final_delay_ms / 1000.0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 7.  SMART LOCATOR + ADAPTIVE SELECTOR LEARNING
+# 7. ENHANCED LOCATOR HELPERS (Readability, Page Map, Heuristics)
 # ══════════════════════════════════════════════════════════════════════════════
-class ElementNotFoundError(ToolError):
-    """Custom exception for when SmartLocator fails to find an element."""
 
-    def __init__(self, strategies_tried: List[str], target_info: Dict[str, Any]):
-        self.strategies_tried = strategies_tried
-        self.target_info = target_info
-        super().__init__(
-            f"Element not found using strategies: {', '.join(strategies_tried)}. Target: {target_info}",
-            error_code="element_not_found",
+_READ_JS_WRAPPER = textwrap.dedent("""
+    (html) => {
+        const R = window.__sbReadability;
+        if (!R || !html) return "";
+        try {
+            const doc = new DOMParser().parseFromString(html, "text/html");
+            if (!doc || !doc.body || doc.body.innerHTML.trim() === '') return ""; // Robustness check
+            const art = new R.Readability(doc).parse();
+            return art ? art.textContent : "";
+        } catch (e) { console.warn('Readability parsing failed:', e); return ""; }
+    }
+""")
+
+
+async def _ensure_readability(page: Page) -> None:
+    """Ensures Mozilla's Readability.js library is injected into the page."""
+    if await page.evaluate("() => window.__sbReadability !== undefined"):
+        return
+    try:
+        src: Optional[str] = None
+        if _READ_JS_CACHE.exists():
+            async with aiofiles.open(_READ_JS_CACHE, "r", encoding="utf-8") as f:
+                src = await f.read()
+        else:
+            logger.info("Fetching Readability.js from CDN...")
+            async with httpx.AsyncClient() as client:
+                cdn_url = "https://cdnjs.cloudflare.com/ajax/libs/readability/0.5.0/Readability.js"
+                response = await client.get(cdn_url, timeout=15.0)
+                response.raise_for_status()
+                src = response.text
+                await _log("readability_js_fetch", url=cdn_url, size=len(src))
+            if src:
+                async with aiofiles.open(_READ_JS_CACHE, "w", encoding="utf-8") as f:
+                    await f.write(src)
+                await asyncio.get_running_loop().run_in_executor(
+                    _thread_pool, os.chmod, _READ_JS_CACHE, 0o644
+                )
+        if src:
+            wrapped_src = f"window.__sbReadability = (() => {{ {src}; return Readability; }})();"
+            await page.add_script_tag(content=wrapped_src)
+            logger.debug("Readability.js injected successfully.")
+        else:
+            logger.warning("Failed to load Readability.js source.")
+    except Exception as e:
+        logger.error(f"Failed to fetch/inject Readability.js: {e}", exc_info=True)
+
+
+async def _dom_fingerprint(page: Page) -> str:
+    """Calculates a fingerprint of the page's visible text content using global config."""
+    try:
+        # Use global limit
+        txt = await page.main_frame.evaluate(
+            f"() => document.body.innerText.slice(0, {_dom_fp_limit_global})"
         )
+        txt = (txt or "").strip()
+        # Hashing is fast enough for this size, no need for thread pool
+        return hashlib.sha256(txt.encode("utf-8", "ignore")).hexdigest()
+    except PlaywrightException as e:
+        logger.warning(f"Could not get text for DOM fingerprint: {e}")
+        return hashlib.sha256(b"").hexdigest()  # Empty fingerprint
 
 
-class SmartLocator:
-    def __init__(self, page: Page, timeout_ms: int = 5000):  # Default 5s timeout
-        if not page or page.is_closed():
-            raise ValueError("SmartLocator requires a valid, open Page object.")
-        self.p = page
-        self.t = timeout_ms
+def _shadow_deep_js() -> str:  # Removed args, uses globals now
+    """JS function string to find elements, traversing shadow DOM, using global config."""
+    # Uses _max_widgets_global, _area_min_global
+    return f"""
+    (prefix) => {{
+        const MAX = {_max_widgets_global};
+        const MIN_AREA = {_area_min_global};
+        // ... (rest of JS function body remains the same) ...
+        const isVis = el => {{
+            // ... (visibility check logic) ...
+        }};
+        const okTagRole = el => {{
+            // ... (tag/role check logic) ...
+        }};
+        const getText = el => {{
+            // ... (text extraction logic) ...
+        }};
+        const out = [];
+        const q = [document.documentElement];
+        const visited = new Set();
+        let idx = 0;
+        while (q.length > 0 && out.length < MAX) {{
+            const node = q.shift();
+            if (!node || visited.has(node)) continue;
+            visited.add(node);
+            if (okTagRole(node) && isVis(node)) {{
+                try {{
+                    const r = node.getBoundingClientRect();
+                    const id = `${{prefix || ''}}el_${{idx++}}`;
+                    node.dataset.sbId = id; // Add ID to element
+                    out.push({{
+                        id, tag: node.tagName.toLowerCase(), role: node.getAttribute("role") || "",
+                        text: getText(node),
+                        bbox: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]
+                    }});
+                }} catch (e) {{ console.warn('Error processing element:', node, e); }}
+            }}
+            const children = node.shadowRoot ? node.shadowRoot.children : node.children;
+            if (children) {{
+                for (let i = 0; i < children.length; i++) {{ if (!visited.has(children[i])) q.push(children[i]); }}
+            }}
+            if (node.tagName === 'IFRAME' && node.contentDocument && node.contentDocument.documentElement) {{
+                 if (!visited.has(node.contentDocument.documentElement)) q.push(node.contentDocument.documentElement);
+            }}
+        }}
+        return out;
+    }}
+    """
+
+
+async def _build_page_map(page: Page) -> Tuple[Dict[str, Any], str]:
+    """Builds a map of the page using global config values."""
+    await _ensure_readability(page)
+    main_txt = ""
+    elems: List[Dict[str, Any]] = []
+    page_title = "[Error]"
+    fp = hashlib.sha256(b"").hexdigest()  # Default fingerprint
+
+    try:
+        # Get main text
+        html_content = await page.content(timeout=10000)
+        if html_content:
+            main_txt = await page.evaluate(_READ_JS_WRAPPER, html_content) or ""
+            if len(main_txt) < 200:  # Fallback
+
+                def extract_basic_text(html):
+                    soup = BeautifulSoup(html[:3_000_000], "lxml")
+                    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                        tag.decompose()
+                    return soup.get_text(" ", strip=True)
+
+                main_txt = await asyncio.get_running_loop().run_in_executor(
+                    _thread_pool, extract_basic_text, html_content
+                )
+            main_txt = main_txt[:_max_section_chars_global]  # Use global limit
+        else:
+            logger.warning("Failed to get HTML content for page map.")
+
+        # Extract elements
+        js_func = _shadow_deep_js()  # Uses globals internally
+        all_elems = []
+        frame: Frame
+        for i, frame in enumerate(page.frames):
+            if frame.is_detached():
+                continue
+            try:
+                frame_elems = await asyncio.wait_for(frame.evaluate(js_func, f"f{i}:"), timeout=5.0)
+                all_elems.extend(frame_elems)
+            except PlaywrightTimeoutError:
+                logger.warning(f"Timeout eval elements in frame {i} ({frame.url})")
+            except PlaywrightException as e:
+                logger.warning(f"Error eval elements in frame {i} ({frame.url}): {e}")
+        elems = all_elems[:_max_widgets_global]  # Use global limit
+
+        # Get title
         try:
-            self.site = urlparse(page.url or "").netloc
-            if not self.site:
-                logger.warning("SmartLocator could not determine site from page URL.")
-        except Exception:
-            self.site = ""
-            logger.warning("SmartLocator failed to parse page URL.")
-
-    async def _try_locator(
-        self,
-        locator: Locator,
-        strategy_name: str,
-        key: str,
-        css: Optional[str] = None,
-        xpath: Optional[str] = None,
-    ) -> Optional[Locator]:
-        """Tries to find and validate a locator, bumping score on success."""
-        try:
-            # Check visibility first - more reliable than attached sometimes
-            # Use a shorter timeout for individual checks
-            check_timeout = max(500, self.t / 5)  # e.g., 1 second if main timeout is 5s
-            await locator.wait_for(state="visible", timeout=check_timeout)
-            # Optional: Check if it's the *only* match for more specificity?
-            # count = await locator.count()
-            # if count == 1:
-            if self.site and key:  # Only bump if we have site/key info
-                # If successful, bump the score in the background
-                # Use the original css/xpath values passed in, not generated ones
-                asyncio.create_task(_bump_selector(self.site, key, css, xpath))
-            return locator
-        except PlaywrightTimeoutError:
-            # logger.debug(f"Locator strategy '{strategy_name}' timed out waiting for visible.")
-            return None
+            page_title = await page.title()
         except PlaywrightException:
-            # Fix #5: Catch broader Playwright errors for this strategy
-            # logger.debug(f"Locator strategy '{strategy_name}' failed: {e}")
-            return None
-        except Exception as e:
-            # Catch any other unexpected error
-            logger.warning(
-                f"Unexpected error in locator strategy '{strategy_name}': {e}", exc_info=True
-            )
-            return None
+            pass
 
-    async def _by_learned(self, key: str) -> Optional[Locator]:
-        if not self.site or not key:
-            return None
-        selectors = await _get_best_selectors(self.site, key)
-        for css, xpath in selectors:
-            if css:
-                locator = self.p.locator(css).first
-                found = await self._try_locator(locator, "learned_css", key=key, css=css)
-                if found:
-                    await _log("locator_hit", method="learned_css", key=key, selector=css)
-                    return found
-            if xpath:
-                locator = self.p.locator(f"xpath={xpath}").first
-                found = await self._try_locator(locator, "learned_xpath", key=key, xpath=xpath)
-                if found:
-                    await _log("locator_hit", method="learned_xpath", key=key, selector=xpath)
-                    return found
+        # Calculate fingerprint *after* potential DOM modification (adding data-sb-id)
+        fp = await _dom_fingerprint(page)  # Uses global limit
+
+    except PlaywrightException as e:
+        logger.error(f"Could not build page map for {page.url}: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error building page map: {e}", exc_info=True)
+
+    return ({"url": page.url, "title": page_title, "main_text": main_txt, "elements": elems}, fp)
+
+
+# Heuristic Matcher
+_SM_GLOBAL = difflib.SequenceMatcher(
+    autojunk=False
+)  # Disable autojunk for potentially better short string matching
+
+
+def _ratio(a: str, b: str) -> float:
+    """Calculate similarity ratio between two strings."""
+    if not a or not b:
+        return 0.0
+    _SM_GLOBAL.set_seqs(a, b)
+    return _SM_GLOBAL.ratio()
+
+
+def _heuristic_pick(pm: Dict[str, Any], hint: str, role: Optional[str]) -> Optional[str]:
+    """Finds the best element ID based on text similarity and heuristics using global config."""
+    # Uses _seq_cutoff_global
+    if not hint or not pm or not pm.get("elements"):
         return None
-
-    async def _by_css(self, css: Optional[str], key: str) -> Optional[Locator]:
-        if not css:
-            return None
-        return await self._try_locator(self.p.locator(css).first, "css", key=key, css=css)
-
-    async def _by_xpath(self, xpath: Optional[str], key: str) -> Optional[Locator]:
-        if not xpath:
-            return None
-        return await self._try_locator(
-            self.p.locator(f"xpath={xpath}").first, "xpath", key=key, xpath=xpath
+    h_norm = unicodedata.normalize("NFC", hint).lower()
+    best_id, best_score = None, -1.0
+    for e in pm["elements"]:
+        if not e or not isinstance(e, dict):
+            continue
+        el_id, el_text, el_role, el_tag = (
+            e.get("id"),
+            e.get("text", ""),
+            e.get("role", ""),
+            e.get("tag", ""),
         )
+        if not el_id:
+            continue
+        if role and role.lower() != el_role.lower():
+            continue  # Role filter
 
-    async def _by_role(
-        self, role: Optional[str], name: Optional[str], key: str
-    ) -> Optional[Locator]:
-        if not role:
+        score = _ratio(h_norm, unicodedata.normalize("NFC", el_text).lower())
+        # Heuristic adjustments (same logic as before)
+        if role and role.lower() == el_role.lower():
+            score += 0.1
+        hint_keywords = {
+            "button",
+            "submit",
+            "link",
+            "input",
+            "download",
+            "checkbox",
+            "radio",
+            "tab",
+            "menu",
+        }
+        element_keywords = {el_role.lower(), el_tag.lower()}
+        common_keywords = hint_keywords.intersection(
+            w for w in h_norm.split() if w in hint_keywords
+        )
+        if common_keywords.intersection(element_keywords):
+            score += 0.15
+        if ("label for" in h_norm or "placeholder" in h_norm) and score > 0.6:
+            score += 0.1
+        if len(el_text) < 5 and len(h_norm) > 10:
+            score -= 0.1
+        if el_tag in ("div", "span") and not el_role:
+            score -= 0.05
+
+        if score > best_score:
+            best_id, best_score = el_id, score
+
+    # logger.debug(f"Heuristic pick: Hint='{hint}', Best ID='{best_id}', Score={best_score:.2f} (Cutoff: {_seq_cutoff_global})")
+    return best_id if best_score >= _seq_cutoff_global else None  # Use global cutoff
+
+
+# LLM Picker Helper
+async def _llm_pick(pm: Dict[str, Any], task_hint: str, attempt: int) -> Optional[str]:
+    """Asks the LLM to pick the best element ID based on page map and hint using global config."""
+    # Uses _llm_model_locator_global
+    if not pm or not task_hint:
+        return None
+    elements_summary = [
+        f"id={el.get('id')} tag={el.get('tag')} role={el.get('role', ' ')} text='{el.get('text', ' ')}'"
+        for el in pm.get("elements", [])
+    ]
+    system_prompt = textwrap.dedent("""
+        You are an expert UI element selector. Based on the provided PAGE_MAP (URL, title, main_text, elements_summary)
+        and the user's TASK_HINT, identify the single best element 'id' from the 'elements_summary' list that matches the hint.
+        Focus on interactive elements (buttons, links, inputs) unless the hint clearly indicates otherwise.
+        Consider the element's text, role, tag, and context provided by the main_text.
+
+        Respond ONLY with a valid JSON object containing the chosen element ID, like this example:
+        {"id": "f0:el_17"}
+
+        If no suitable element is found or the choice is ambiguous, respond with:
+        {"id": null}
+
+        Do NOT include explanations, reasoning, or markdown formatting. Just the JSON object.
+    """).strip()
+
+    # User prompt with page context and task
+    user_prompt = textwrap.dedent(f"""
+        PAGE_MAP:
+        url: {pm.get("url", "N/A")}
+        title: {pm.get("title", "N/A")}
+        main_text (summary): "{pm.get("main_text", "")[:1000]}..."
+        elements_summary:
+        {chr(10).join(elements_summary)}
+
+        TASK_HINT: "{task_hint}"
+
+        Attempt: {attempt}
+        Choose the best element 'id' based *only* on the information provided above. Return JSON: {{"id": "..."}} or {{"id": null}}.
+    """).strip()
+    msgs = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    res = await _call_llm(
+        msgs, model=_llm_model_locator_global, expect_json=True, temperature=0.0, max_tokens=100
+    )  # Use global model
+    if isinstance(res, dict) and "id" in res:
+        el_id = res.get("id")
+        if el_id is None or (isinstance(el_id, str) and re.match(r"^(f\d+:)el_\d+$", el_id)):
+            return el_id
+        else:
+            logger.warning(f"LLM returned invalid ID format: {el_id} for hint '{task_hint}'")
             return None
-        # Try exact match first
-        locator_exact = self.p.get_by_role(role, name=name, exact=True).first
-        found = await self._try_locator(locator_exact, f"role_exact_{role}_{name}", key=key)
-        if found:
-            return found
-        # Fallback to non-exact if name provided
-        if name:
-            locator_inexact = self.p.get_by_role(role, name=name, exact=False).first
-            return await self._try_locator(locator_inexact, f"role_inexact_{role}_{name}", key=key)
+    elif isinstance(res, dict) and "error" in res:
+        logger.warning(f"LLM picker failed for hint '{task_hint}': {res['error']}")
+        return None
+    else:
+        logger.warning(f"LLM picker returned unexpected format: {type(res)} for hint '{task_hint}'")
         return None
 
-    async def _by_label(self, name: Optional[str], key: str) -> Optional[Locator]:
-        if not name:
-            return None
-        locator_exact = self.p.get_by_label(name, exact=True).first
-        found = await self._try_locator(locator_exact, f"label_exact_{name}", key=key)
-        if found:
-            return found
-        locator_inexact = self.p.get_by_label(name, exact=False).first
-        return await self._try_locator(locator_inexact, f"label_inexact_{name}", key=key)
 
-    async def _by_text(self, name: Optional[str], key: str) -> Optional[Locator]:
-        if not name:
-            return None
-        locator_exact = self.p.get_by_text(name, exact=True).first
-        found = await self._try_locator(locator_exact, f"text_exact_{name}", key=key)
-        if found:
-            return found
-        locator_inexact = self.p.get_by_text(name, exact=False).first
-        return await self._try_locator(locator_inexact, f"text_inexact_{name}", key=key)
-
-    async def _by_placeholder(self, name: Optional[str], key: str) -> Optional[Locator]:
-        if not name:
-            return None
-        locator = self.p.get_by_placeholder(name).first  # Exact seems common here
-        return await self._try_locator(locator, f"placeholder_{name}", key=key)
-
-    async def _by_alt_text(self, name: Optional[str], key: str) -> Optional[Locator]:
-        if not name:
-            return None
-        locator = self.p.get_by_alt_text(name).first  # Exact seems common here
-        return await self._try_locator(locator, f"alt_text_{name}", key=key)
-
-    async def _fuzzy(self, name: Optional[str], key: str) -> Optional[Locator]:
-        """Find element by fuzzy text matching (use cautiously)."""
-        if not name or len(name) < 3:
-            return None  # Avoid matching on very short strings
-
+# Helper to get Locator from sb-id
+async def _loc_from_id(page: Page, el_id: str) -> Locator:
+    """Gets a Playwright Locator object from a data-sb-id attribute."""
+    # No direct config dependencies
+    if not el_id:
+        raise ValueError("Element ID cannot be empty")
+    selector = f'[data-sb-id="{el_id}"]'
+    if ":" in el_id and el_id.startswith("f"):
         try:
-            # Normalize the input text for comparison
-            name_norm = unicodedata.normalize("NFC", name.lower())
+            frame_index = int(el_id.split(":", 1)[0][1:])
+            if 0 <= frame_index < len(page.frames):
+                return page.frames[frame_index].locator(selector).first
+            else:
+                logger.warning(
+                    f"Frame index {frame_index} out of bounds for ID {el_id}. Falling back."
+                )
+        except (ValueError, IndexError):
+            logger.warning(f"Could not parse frame index from ID {el_id}. Falling back.")
+    return page.locator(selector).first
 
-            # Get text content of potentially relevant elements
-            # Limit the scope to avoid performance hit
-            candidate_elements = await self.p.locator(
-                "a, button, input, label, h1, h2, h3, h4, span, strong, em, p, div[role~=button], div[role~=link]"
-            ).all()
 
-            texts_with_locators = []
-            for el in candidate_elements[:200]:  # Limit number of elements checked
-                try:
-                    # Check visibility quickly
-                    if not await el.is_visible(timeout=100):
-                        continue
-                    # Get text content, normalize, limit length
-                    text = await el.text_content()
-                    if text:
-                        norm_text = unicodedata.normalize("NFC", text.strip().lower()[:128])
-                        if norm_text:
-                            texts_with_locators.append((norm_text, el))
-                except PlaywrightException:
-                    continue  # Ignore errors getting text/visibility for one element
+# ══════════════════════════════════════════════════════════════════════════════
+# 7b. ENHANCED LOCATOR CLASS
+# ══════════════════════════════════════════════════════════════════════════════
+class EnhancedLocator:
+    """
+    Unified locator using cache, heuristics, and LLM fallback with global config.
+    Relies on task hints and page structure analysis rather than explicit selectors.
+    """
 
-            if not texts_with_locators:
-                return None
+    def __init__(self, page: Page):
+        self.page: Page = page
+        self.site: str = "unknown"
+        try:
+            parsed_url = urlparse(page.url or "")
+            # Normalize site name (remove www.) for consistency
+            self.site = parsed_url.netloc.lower().replace("www.", "")
+            if not self.site:
+                self.site = "unknown"  # Fallback if parsing fails
+        except Exception:
+            pass  # Ignore URL parsing errors
 
-            # Use difflib to find the best match
-            candidates = [t[0] for t in texts_with_locators]
-            matches = difflib.get_close_matches(
-                name_norm, candidates, n=1, cutoff=0.6
-            )  # Adjust cutoff as needed
+        # Internal state for page map caching within a single locate call
+        self._pm: Dict[str, Any] | None = None
+        self._pm_fp: str | None = None
+        self._last_idle_check: float = 0.0  # Track last network idle check time
 
-            if not matches:
-                return None
+    async def _maybe_wait_for_idle(self, timeout: float = 1.5):
+        """
+        Waits for network idle state, throttled to avoid excessive waits.
+        Useful before building page map to ensure dynamic content has loaded.
+        """
+        now = time.monotonic()
+        # Only check network idle if more than ~1 second has passed since last check
+        if now - self._last_idle_check > 1.0:
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=int(timeout * 1000))
+                self._last_idle_check = time.monotonic()  # Update time on success
+            except PlaywrightException:
+                # Ignore timeout or other errors, proceed anyway
+                self._last_idle_check = (
+                    time.monotonic()
+                )  # Still update time to prevent immediate re-check
 
-            best_match_text = matches[0]
-            # Find the corresponding locator
-            for text, locator in texts_with_locators:
-                if text == best_match_text:
-                    # Verify the found locator again before returning
-                    return await self._try_locator(locator, f"fuzzy_{name}", key=key)
-            return None  # Should not happen if match found
+    async def _get_page_map(self) -> Tuple[Dict[str, Any], str]:
+        """
+        Gets or refreshes the internal page map and DOM fingerprint.
+        Calls the global _build_page_map helper which uses global config values.
+        """
+        # Optional: Wait briefly for network/rendering to settle before mapping
+        await self._maybe_wait_for_idle()
+        await asyncio.sleep(random.uniform(0.05, 0.15))
 
-        except PlaywrightException as e:
-            logger.debug(f"Fuzzy locator strategy failed for '{name}': {e}")
-            return None
-        except Exception as e:
-            logger.warning(
-                f"Unexpected error in fuzzy locator strategy for '{name}': {e}", exc_info=True
-            )
-            return None
+        # Call the global helper function which uses global config internally
+        pm, fp = await _build_page_map(self.page)
+        self._pm, self._pm_fp = pm, fp  # Cache within the instance for this locate() call
+        return pm, fp
+
+    async def _selector_cached(self, key: str, fp: str) -> Optional[Locator]:
+        """
+        Checks the locator cache for a valid selector matching the key and fingerprint.
+        Runs synchronous DB operations in the thread pool. Deletes stale entries.
+        """
+        loop = asyncio.get_running_loop()
+        # _cache_get_sync already handles fingerprint check and deletion of stale entries
+        sel = await loop.run_in_executor(_thread_pool, _cache_get_sync, key, fp)
+        if sel:
+            # Found in cache with matching fingerprint, try to locate and verify visibility
+            try:
+                # Cache stores the selector string (e.g., '[data-sb-id="..."]')
+                loc = await _loc_from_id(
+                    self.page, sel.split('"')[1]
+                )  # Extract ID for _loc_from_id
+                # Use a very short timeout for cache hit verification
+                await loc.wait_for(state="visible", timeout=500)
+                await _log("locator_cache_hit", selector=sel, key=key[:8])
+                # No need to bump hits here, _cache_put_sync does it on conflict
+                return loc
+            except (PlaywrightException, ValueError):  # Catch locator errors or ID parsing errors
+                logger.debug(
+                    f"Cached selector '{sel}' failed visibility/location check. Cache invalid."
+                )
+                # Deletion is now handled within _cache_get_sync on mismatch, but we can delete here too if needed
+                # await loop.run_in_executor(_thread_pool, _cache_delete_sync, key)
+        return None
 
     async def locate(
         self,
+        task_hint: str,
         *,
-        name: Optional[str] = None,  # Text content, label, placeholder, alt text
-        role: Optional[str] = None,  # ARIA role
-        css: Optional[str] = None,  # CSS selector
-        xpath: Optional[str] = None,  # XPath selector
+        role: Optional[str] = None,  # Optional context for heuristic filtering
+        timeout: int = 5000,  # Overall timeout for finding a visible element
     ) -> Locator:
         """
-        Find an element using multiple strategies, returning the first valid match.
-        Raises ElementNotFoundError if no element is found.
+        Finds a visible element using cache, heuristics, and LLM fallback.
+        Uses globally configured settings for timeouts, models, retries etc.
 
-        Strategies (ordered):
-        1. Learned Selectors (CSS/XPath from cache)
-        2. Explicit CSS / XPath
-        3. ARIA Role (exact then inexact)
-        4. Label (exact then inexact)
-        5. Placeholder Text
-        6. Alt Text (for images)
-        7. Text Content (exact then inexact)
-        8. Fuzzy Text Match (if name provided)
+        Args:
+            task_hint: Natural language description of the element/action.
+            role: Optional role hint for heuristic filtering.
+            timeout: Max milliseconds to wait for element visibility across all tiers.
+
+        Returns:
+            A visible Playwright Locator object.
+
+        Raises:
+            ValueError: If task_hint is empty.
+            PlaywrightTimeoutError: If no suitable element is found and made visible within timeout.
         """
-        key = _sel_key(role, name) if (role or name) else ""
-        target_info = {"name": name, "role": role, "css": css, "xpath": xpath, "key": key}
-        strategies_tried: List[str] = []
+        if not task_hint or not task_hint.strip():
+            raise ValueError("task_hint cannot be empty for EnhancedLocator")
 
-        # Define strategies as functions returning awaitables or None
-        strategy_fns: List[Tuple[str, Callable[[], Awaitable[Optional[Locator]]]]] = []
+        start_time = time.monotonic()
+        timeout_sec = timeout / 1000.0
 
-        # 1. Learned Selectors
-        if key:
-            strategy_fns.append(("Learned", lambda: self._by_learned(key)))
-        # 2. Explicit CSS/XPath
-        if css:
-            strategy_fns.append(("CSS", lambda: self._by_css(css, key)))
-        if xpath:
-            strategy_fns.append(("XPath", lambda: self._by_xpath(xpath, key)))
-        # 3. Role
-        if role:
-            strategy_fns.append(("Role", lambda: self._by_role(role, name, key)))
-        # 4. Label
-        if name:
-            strategy_fns.append(("Label", lambda: self._by_label(name, key)))
-        # 5. Placeholder
-        if name:
-            strategy_fns.append(("Placeholder", lambda: self._by_placeholder(name, key)))
-        # 6. Alt Text
-        if name:
-            strategy_fns.append(("Alt Text", lambda: self._by_alt_text(name, key)))
-        # 7. Text Content
-        if name:
-            strategy_fns.append(("Text", lambda: self._by_text(name, key)))
-        # 8. Fuzzy Match (last resort if name provided)
-        if name:
-            strategy_fns.append(("Fuzzy", lambda: self._fuzzy(name, key)))
+        # Generate cache key based on site, path (no query), and hint
+        path = urlparse(self.page.url or "").path or "/"
+        key_src = json.dumps(
+            {"site": self.site, "path": path, "hint": task_hint.lower()}, sort_keys=True
+        )
+        cache_key = hashlib.sha256(key_src.encode()).hexdigest()
 
-        # Execute strategies sequentially
-        for name, fn in strategy_fns:
-            strategies_tried.append(name)
+        loop = asyncio.get_running_loop()
+
+        # Get initial fingerprint without building full map yet
+        current_dom_fp = await _dom_fingerprint(self.page)
+
+        # Tier 0: Cache Check
+        # _selector_cached handles fingerprint check and potential deletion
+        cached_loc = await self._selector_cached(cache_key, current_dom_fp)
+        if cached_loc:
+            return cached_loc  # Cache hit, return immediately
+
+        # --- Cache miss or stale entry, proceed to active finding ---
+
+        # Tier 1: Heuristic Match (using Page Map)
+        # Get fresh map & fingerprint (only if cache missed)
+        pm, current_dom_fp = await self._get_page_map()
+        # Call global helper which uses global config (_seq_cutoff_global)
+        heuristic_id = _heuristic_pick(pm, task_hint, role)
+        if heuristic_id:
             try:
-                element = await fn()
-                if element:
-                    await _log("locator_success", method=name, target=target_info)
-                    return element  # Return the first successful locator
-            except Exception as e:
-                # Should be caught by _try_locator, but as a safeguard
-                logger.warning(
-                    f"Unexpected error during locator strategy '{name}': {e}", exc_info=True
+                loc = await _loc_from_id(self.page, heuristic_id)
+                # Use a fraction of the total timeout for this tier's check
+                await loc.wait_for(state="visible", timeout=max(1000, timeout // 3))
+                # Success: Cache the found selector ([data-sb-id="..."])
+                selector_str = f'[data-sb-id="{heuristic_id}"]'
+                await loop.run_in_executor(
+                    _thread_pool, _cache_put_sync, cache_key, selector_str, current_dom_fp
+                )
+                await _log("locator_heuristic_match", selector=heuristic_id, hint=task_hint)
+                return loc
+            except (PlaywrightException, ValueError):
+                logger.debug(f"Heuristic pick '{heuristic_id}' failed visibility/location check.")
+                # Don't delete from cache here, it wasn't added yet
+                pass  # Fall through to LLM
+
+        # Tier 2: LLM Pick + Retry
+        # Use the page map already generated if heuristic failed
+        # Loop incorporates global retry count (_retry_after_fail_global)
+        for att in range(1, 2 + _retry_after_fail_global):
+            elapsed_sec = time.monotonic() - start_time
+            if elapsed_sec >= timeout_sec:
+                raise PlaywrightTimeoutError(
+                    f"EnhancedLocator timed out after {elapsed_sec:.1f}s before LLM attempt {att} for hint '{task_hint}'."
                 )
 
-        # Fix #6: If all strategies fail, raise a specific error instead of returning 'body'
-        await _log("locator_fail", tried=strategies_tried, target=target_info)
-        raise ElementNotFoundError(strategies_tried, target_info)
+            # Call global helper which uses global config (_llm_model_locator_global)
+            llm_id = await _llm_pick(pm, task_hint, att)
+
+            if not llm_id:  # LLM returned {"id": null} or failed
+                logger.debug(
+                    f"LLM pick attempt {att} returned no suitable ID for hint '{task_hint}'."
+                )
+                # Only refresh map if we intend to retry LLM
+                if att <= _retry_after_fail_global:
+                    logger.debug("Refreshing page map before LLM retry...")
+                    pm, current_dom_fp = await self._get_page_map()
+                    continue  # Try LLM again with the fresh map
+                else:
+                    break  # Exit loop if LLM gives up and no more retries configured
+
+            # LLM returned an ID, try to locate and verify visibility
+            try:
+                loc = await _loc_from_id(self.page, llm_id)
+                remaining_timeout_ms = max(500, timeout - int(elapsed_sec * 1000))
+                await loc.wait_for(state="visible", timeout=remaining_timeout_ms)
+                # Success! Cache the result.
+                selector_str = f'[data-sb-id="{llm_id}"]'
+                await loop.run_in_executor(
+                    _thread_pool, _cache_put_sync, cache_key, selector_str, current_dom_fp
+                )
+                await _log("locator_llm_pick", selector=llm_id, attempt=att, hint=task_hint)
+                return loc
+            except (
+                PlaywrightException,
+                ValueError,
+            ):  # Timeout or other error finding/parsing LLM ID
+                logger.debug(
+                    f"LLM pick '{llm_id}' (attempt {att}) failed visibility/location check."
+                )
+                # Only refresh map if we intend to retry LLM
+                if att <= _retry_after_fail_global:
+                    logger.debug("Refreshing page map before LLM retry...")
+                    pm, current_dom_fp = await self._get_page_map()
+                # Continue to next LLM attempt or loop exit
+
+        # Tier 3: Fallback (Playwright's text selector) - Less reliable
+        try:
+            text_selector = f'text="{task_hint}"'
+            loc = self.page.locator(text_selector).first
+            elapsed_sec = time.monotonic() - start_time
+            remaining_timeout_ms = max(500, timeout - int(elapsed_sec * 1000))
+            if remaining_timeout_ms <= 0:
+                raise PlaywrightTimeoutError("Timeout reached before text fallback check.")
+            await loc.wait_for(state="visible", timeout=remaining_timeout_ms)
+            await _log("locator_text_fallback", selector=text_selector, hint=task_hint)
+            # Don't cache this less reliable method
+            return loc
+        except PlaywrightException:
+            pass  # Final fallback failed, proceed to final error
+
+        # All Tiers Failed
+        elapsed_sec = time.monotonic() - start_time
+        await _log("locator_fail_all", hint=task_hint[:120], duration_s=round(elapsed_sec, 1))
+        # Raise a clear error indicating failure across all tiers
+        raise PlaywrightTimeoutError(
+            f"EnhancedLocator could not find a suitable visible element for hint: '{task_hint}' within {timeout_sec:.1f}s"
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 8.  SMART ACTIONS WITH RETRY SUPPORT
+# 8.  SMART ACTIONS (Using EnhancedLocator)
 # ══════════════════════════════════════════════════════════════════════════════
 
 
-@resilient(max_attempts=3, backoff=0.5)  # Retry on transient errors
-async def smart_click(page: Page, **target_kwargs) -> bool:
-    """
-    Locates an element using SmartLocator and clicks it with human-like pauses.
+@resilient(max_attempts=3, backoff=0.5)
+async def smart_click(
+    page: Page, task_hint: str, *, target_kwargs: Optional[Dict] = None, timeout_ms: int = 5000
+) -> bool:
+    """Locates an element using EnhancedLocator (via task_hint) and clicks it."""
+    if not task_hint or not task_hint.strip():
+        if target_kwargs and (target_kwargs.get("name") or target_kwargs.get("role")):
+            name = target_kwargs.get("name", "")
+            role = target_kwargs.get("role", "")
+            task_hint = f"Click the {role or 'element'}" + (f" named '{name}'" if name else "")
+            logger.warning(f"smart_click missing task_hint, generated: '{task_hint}'")
+        else:
+            raise ToolInputError("smart_click requires a non-empty 'task_hint'.")
 
-    Args:
-        page: The Playwright Page object.
-        **target_kwargs: Keyword arguments for SmartLocator.locate()
-                         (e.g., name, role, css, xpath).
-
-    Returns:
-        True if click was successful, False otherwise.
-
-    Raises:
-        ElementNotFoundError: If the element cannot be located.
-        ToolError: For other unexpected errors during click.
-    """
-    loc = SmartLocator(page)
-    log_target = {k: v for k, v in target_kwargs.items() if v is not None}
+    loc = EnhancedLocator(page)
+    log_target = target_kwargs or {"hint": task_hint}
     try:
-        element = await loc.locate(**target_kwargs)
-        await _pause(page)  # Pause before interacting
-
-        # Perform the click with built-in checks
-        await element.click(timeout=loc.t)  # Use locator's timeout
-
+        element = await loc.locate(task_hint=task_hint, timeout=timeout_ms)
+        await _pause(page)
+        await element.click(timeout=max(1000, timeout_ms // 2))  # Timeout for click action itself
         await _log("click_success", target=log_target)
         return True
-    except ElementNotFoundError as e:
-        # Element not found is not typically something to retry, re-raise
+    except PlaywrightTimeoutError as e:  # Catch timeout from locate() or click()
         await _log("click_fail_notfound", target=log_target, error=str(e))
-        raise e  # Propagate the specific error
+        raise ToolError(
+            f"Click failed: Element not found or visible for hint '{task_hint}'. {e}",
+            details=log_target,
+        ) from e
     except PlaywrightException as e:
-        # Catch Playwright errors during the click itself (e.g., element obscured)
-        # This might be caught by @resilient for retry if it's a TimeoutError etc.
         await _log("click_fail_playwright", target=log_target, error=str(e))
-        # Let resilient handle retry, or raise if max attempts reached
         raise ToolError(f"Click failed due to Playwright error: {e}", details=log_target) from e
     except Exception as e:
-        # Catch other unexpected errors
         await _log("click_fail_unexpected", target=log_target, error=str(e))
         raise ToolError(f"Unexpected error during click: {e}", details=log_target) from e
 
 
 @resilient(max_attempts=3, backoff=0.5)
 async def smart_type(
-    page: Page, text: str, press_enter: bool = False, clear_before: bool = True, **target_kwargs
+    page: Page,
+    task_hint: str,
+    text: str,
+    *,
+    press_enter: bool = False,
+    clear_before: bool = True,
+    target_kwargs: Optional[Dict] = None,
+    timeout_ms: int = 5000,
 ) -> bool:
-    """
-    Locates an element, types text into it, and optionally presses Enter.
-    Handles secret resolution.
+    """Locates an element using EnhancedLocator (via task_hint), types text, optionally presses Enter."""
+    if not task_hint or not task_hint.strip():
+        if target_kwargs and (target_kwargs.get("name") or target_kwargs.get("role")):
+            name = target_kwargs.get("name", "")
+            role = target_kwargs.get("role", "input")
+            task_hint = f"Type into the {role or 'element'}" + (f" named '{name}'" if name else "")
+            logger.warning(f"smart_type missing task_hint, generated: '{task_hint}'")
+        else:
+            raise ToolInputError("smart_type requires a non-empty 'task_hint'.")
 
-    Args:
-        page: The Playwright Page object.
-        text: The text to type. If starts with "secret:", resolves via get_secret().
-        press_enter: If True, press Enter key after typing.
-        clear_before: If True, clear the input field before typing.
-        **target_kwargs: Keyword arguments for SmartLocator.locate().
-
-    Returns:
-        True if typing was successful, False otherwise.
-
-    Raises:
-        ElementNotFoundError: If the element cannot be located.
-        ToolError: For secret resolution errors or other issues.
-    """
-    loc = SmartLocator(page)
-    log_target = {k: v for k, v in target_kwargs.items() if v is not None}
+    loc = EnhancedLocator(page)
+    log_target = target_kwargs or {"hint": task_hint}
     resolved_text = text
+    log_value = (
+        "***SECRET***"
+        if text.startswith("secret:")
+        else (text[:20] + "..." if len(text) > 23 else text)
+    )
 
     if text.startswith("secret:"):
         secret_path = text[len("secret:") :]
         try:
-            resolved_text = get_secret(text)  # Handles env: and vault:
-            log_value = "***SECRET***"
+            resolved_text = get_secret(text)
         except (KeyError, ValueError, RuntimeError) as e:
             await _log("type_fail_secret", target=log_target, secret_ref=secret_path, error=str(e))
             raise ToolInputError(f"Failed to resolve secret '{secret_path}': {e}") from e
-    else:
-        # Log potentially sensitive text carefully
-        log_value = resolved_text[:20] + "..." if len(resolved_text) > 23 else resolved_text
 
     try:
-        element = await loc.locate(**target_kwargs)
-        await _pause(page)  # Pause before interaction
-
+        element = await loc.locate(task_hint=task_hint, timeout=timeout_ms)
+        await _pause(page)
         if clear_before:
-            await element.fill("")  # Clear the field first
-
-        # Type text with a slight delay between keystrokes for human-like appearance
+            await element.fill("")
         await element.type(resolved_text, delay=random.uniform(30, 80))
-
         if press_enter:
-            await _pause(page, (50, 150))  # Short pause before Enter
+            await _pause(page, (50, 150))
             await element.press("Enter")
-
         await _log("type_success", target=log_target, value=log_value, entered=press_enter)
         return True
-    except ElementNotFoundError as e:
+    except PlaywrightTimeoutError as e:  # Catch timeout from locate() or type()
         await _log("type_fail_notfound", target=log_target, value=log_value, error=str(e))
-        raise e
+        raise ToolError(
+            f"Type failed: Element not found or visible for hint '{task_hint}'. {e}",
+            details=log_target,
+        ) from e
     except PlaywrightException as e:
         await _log("type_fail_playwright", target=log_target, value=log_value, error=str(e))
         raise ToolError(
@@ -2263,7 +2064,6 @@ def _extract_tables_sync(path: Path) -> List[Dict]:
             try:
                 import tabula  # type: ignore
 
-                # Run tabula-java, requires Java runtime
                 dfs = tabula.read_pdf(
                     str(path), pages="all", multiple_tables=True, pandas_options={"dtype": str}
                 )
@@ -2273,17 +2073,13 @@ def _extract_tables_sync(path: Path) -> List[Dict]:
                         for i, df in enumerate(dfs)
                     ]
             except ImportError:
-                logger.warning(
-                    "Python library 'tabula-py' not installed. Cannot extract PDF tables."
-                )
-            except Exception as pdf_err:  # Catch Tabula-specific errors
-                logger.warning(f"Tabula PDF table extraction failed for {path.name}: {pdf_err}")
-
+                logger.debug("tabula-py not installed. Cannot extract PDF tables.")
+            except Exception as pdf_err:
+                logger.warning(f"Tabula PDF extraction failed for {path.name}: {pdf_err}")
         elif ext in (".xls", ".xlsx"):
             try:
                 import pandas as pd  # type: ignore
 
-                # Read all sheets
                 xl = pd.read_excel(str(path), sheet_name=None, dtype=str)
                 results = [
                     {
@@ -2294,12 +2090,9 @@ def _extract_tables_sync(path: Path) -> List[Dict]:
                     for name, df in xl.items()
                 ]
             except ImportError:
-                logger.warning(
-                    "Python library 'pandas' and 'openpyxl'/'xlrd' not installed. Cannot extract Excel tables."
-                )
+                logger.debug("pandas/openpyxl/xlrd not installed. Cannot extract Excel tables.")
             except Exception as excel_err:
-                logger.warning(f"Pandas Excel table extraction failed for {path.name}: {excel_err}")
-
+                logger.warning(f"Pandas Excel extraction failed for {path.name}: {excel_err}")
         elif ext == ".csv":
             try:
                 import pandas as pd  # type: ignore
@@ -2307,136 +2100,131 @@ def _extract_tables_sync(path: Path) -> List[Dict]:
                 df = pd.read_csv(str(path), dtype=str)
                 results = [{"type": "csv_table", "rows": df.to_dict(orient="records")}]
             except ImportError:
-                logger.warning("Python library 'pandas' not installed. Cannot extract CSV tables.")
+                logger.debug("pandas not installed. Cannot extract CSV tables.")
             except Exception as csv_err:
-                logger.warning(f"Pandas CSV table extraction failed for {path.name}: {csv_err}")
-
+                logger.warning(f"Pandas CSV extraction failed for {path.name}: {csv_err}")
     except Exception as outer_err:
-        # Catch errors loading dependencies or unexpected issues
         logger.error(f"Error during table extraction setup for {path.name}: {outer_err}")
-
     return results
 
 
 async def _extract_tables_async(path: Path) -> list:
     """Extract tables from document files (PDF, Excel, CSV) using thread pool."""
     try:
-        # Run the synchronous extraction logic in the thread pool
         tables = await _run_in_thread(_extract_tables_sync, path)
         if tables:
             await _log("table_extract_success", file=str(path), num_tables=len(tables))
         return tables
     except Exception as e:
-        # Log error from the async wrapper/executor itself
         await _log("table_extract_error", file=str(path), error=str(e))
         return []
 
 
-@resilient()  # Retry download initiation on transient errors
+@resilient()
 async def smart_download(
-    page: Page, target: Dict[str, Any], dest_dir: Optional[Union[str, Path]] = None
+    page: Page,
+    task_hint: str,
+    dest_dir: Optional[Union[str, Path]] = None,
+    target_kwargs: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """
-    Clicks a target element to initiate a download, saves the file,
-    calculates its hash, extracts tables if applicable, and sets permissions.
+    Clicks an element (found via task_hint) to initiate a download, saves the file,
+    calculates hash, extracts tables, and sets permissions.
 
     Args:
         page: The Playwright Page object.
-        target: Target element specification for SmartLocator (e.g., name, role, css).
+        task_hint: Natural language description of the download link/button.
         dest_dir: Optional destination directory. Defaults to ~/.smart_browser/downloads.
+        target_kwargs: Optional original target dict for logging/context.
 
     Returns:
         Dictionary with download info (path, hash, size, tables) or error.
     """
-    # Determine destination directory
-    if dest_dir is None:
-        download_base_dir = _HOME / "downloads"
-    else:
-        download_base_dir = Path(dest_dir)
-
-    # Fix CWE-732: Ensure base directory exists and has secure permissions if created
+    download_base_dir = Path(dest_dir) if dest_dir else _HOME / "downloads"
     if not download_base_dir.exists():
         logger.info(f"Creating download directory: {download_base_dir}")
         await _run_in_thread(lambda p: p.mkdir(parents=True, exist_ok=True), download_base_dir)
         await _run_in_thread(os.chmod, download_base_dir, 0o700)
     elif not os.access(download_base_dir, os.W_OK):
-        logger.error(f"Download directory {download_base_dir} is not writable.")
         raise ToolError(f"Download directory not writable: {download_base_dir}")
 
-    log_target = {k: v for k, v in target.items() if v is not None}
+    log_target = target_kwargs or {"hint": task_hint}
 
     try:
-        # Initiate download by clicking the target element
-        async with page.expect_download(
-            timeout=60000
-        ) as dl_info:  # Wait up to 60s for download start
-            await smart_click(page, **target)  # Use smart_click for robust clicking
+        async with page.expect_download(timeout=60000) as dl_info:
+            # Use smart_click with the task_hint
+            await smart_click(
+                page, task_hint=task_hint, target_kwargs=target_kwargs, timeout_ms=10000
+            )
 
-        dl = await dl_info.value  # Get the Download object
-        suggested_fname = dl.suggested_filename or f"downloaded_file_{int(time.time())}"
-        out_path = download_base_dir / suggested_fname
+        dl = await dl_info.value
+        suggested_fname = dl.suggested_filename or f"download_{int(time.time())}"
+        # Sanitize filename
+        safe_fname = re.sub(
+            r"[^\w\.\- ]", "_", suggested_fname
+        )  # Allow letters, numbers, dot, hyphen, underscore, space
+        safe_fname = re.sub(r"\s+", "_", safe_fname).strip("._-")  # Replace space with underscore
+        out_path = download_base_dir / safe_fname
+        if not safe_fname:  # Fallback if empty
+            out_path = download_base_dir / f"download_{int(time.time())}.dat"
 
-        # Save the file (Playwright handles the stream internally)
+        # Handle potential filename conflicts simply by appending number
+        counter = 1
+        original_path = out_path
+        while out_path.exists():
+            out_path = original_path.with_stem(f"{original_path.stem}_{counter}")
+            counter += 1
+            if counter > 100:  # Safety break
+                raise ToolError(f"Too many filename conflicts for {original_path.name}")
+
         await dl.save_as(out_path)
-
-        # Fix CWE-732: Set permissions on the downloaded file (owner read/write)
         await _run_in_thread(os.chmod, out_path, 0o600)
 
-        # Read file content asynchronously for hashing
-        # This might be inefficient for very large files. Consider streaming hash if needed.
-        try:
-            file_data = await _read_file_async(out_path)
-            file_size = len(file_data)
-            sha256_hash = await _compute_hash_async(file_data)  # Hash in thread pool
-        except Exception as read_hash_err:
-            logger.error(f"Error reading or hashing downloaded file {out_path}: {read_hash_err}")
-            # Proceed without hash/size if reading fails, but log the issue
-            file_size = -1
-            sha256_hash = "Error"
+        file_data = await _read_file_async(out_path)
+        file_size = len(file_data)
+        sha256_hash = await _compute_hash_async(file_data)
 
-        # Extract tables in the background (don't block return)
-        # Run extraction in thread pool to avoid blocking event loop
-        table_extraction_task = asyncio.create_task(_extract_tables_async(out_path))
+        tables = []
+        if out_path.suffix.lower() in (".pdf", ".xls", ".xlsx", ".csv"):
+            try:
+                table_extraction_task = asyncio.create_task(_extract_tables_async(out_path))
+                tables = await asyncio.wait_for(table_extraction_task, timeout=120)
+            except asyncio.TimeoutError:
+                logger.warning(f"Table extraction timed out for {out_path.name}")
+            except Exception as extract_err:
+                logger.error(f"Table extraction failed: {extract_err}")
 
-        # Wait for extraction and get results (with a timeout?)
-        # For now, let it run in background and return immediately.
-        # If tables are needed *in the result*, await the task here:
-        try:
-            tables = await asyncio.wait_for(
-                table_extraction_task, timeout=120
-            )  # 2 min timeout for extraction
-        except asyncio.TimeoutError:
-            logger.warning(f"Table extraction timed out for {out_path.name}")
-            tables = []
-        except Exception as extract_err:
-            logger.error(f"Table extraction failed for {out_path.name}: {extract_err}")
-            tables = []
-
-        # Prepare result
         info = {
             "success": True,
             "file_path": str(out_path),
-            "file_name": suggested_fname,
+            "file_name": out_path.name,
             "sha256": sha256_hash,
             "size_bytes": file_size,
-            "url": dl.url,  # URL the download originated from
+            "url": dl.url,
             "tables_extracted": bool(tables),
-            "tables": tables[:5],  # Limit payload size
+            "tables": tables[:5],  # Limit payload
         }
         await _log("download_success", target=log_target, **info)
         return info
 
-    except ElementNotFoundError as e:
+    except (
+        ToolError,
+        PlaywrightTimeoutError,
+    ) as e:  # Catch locator/click failures from smart_click
         await _log("download_fail_notfound", target=log_target, error=str(e))
-        raise ToolError(f"Download failed: Target element not found. {e}") from e
-    except PlaywrightTimeoutError as e:
-        await _log("download_fail_timeout", target=log_target, error=str(e))
-        raise ToolError(
-            f"Download failed: Timed out waiting for download to start or complete. {e}"
-        ) from e
+        # Distinguish between element not found and download timeout?
+        if "Element not found" in str(e):
+            raise ToolError(
+                f"Download failed: Target element not found for hint '{task_hint}'. {e}"
+            ) from e
+        else:
+            # Assume timeout waiting for download event itself
+            await _log("download_fail_timeout", target=log_target, error=str(e))
+            raise ToolError(
+                f"Download failed: Timed out waiting for download event after click. {e}"
+            ) from e
     except PlaywrightException as e:
         await _log("download_fail_playwright", target=log_target, error=str(e))
-        # Let resilient handle retries if applicable
         raise ToolError(f"Download failed due to Playwright error: {e}") from e
     except Exception as e:
         await _log("download_fail_unexpected", target=log_target, error=str(e))
@@ -2444,158 +2232,111 @@ async def smart_download(
 
 
 # --- PDF/Docs Crawler Helpers ---
-_SLUG_RE = re.compile(r"[^a-z0-9\-_]+")  # Allow letters, numbers, hyphen, underscore
+_SLUG_RE = re.compile(r"[^a-z0-9\-_]+")
 
 
 def _slugify(text: str, max_len: int = 60) -> str:
-    """Create a filesystem/URL-friendly slug."""
     if not text:
         return "file"
-    # Normalize Unicode
-    text = unicodedata.normalize("NFC", text).lower()
-    # Replace invalid chars with hyphen
-    slug = _SLUG_RE.sub("-", text).strip("-")
-    # Remove consecutive hyphens
+    slug = unicodedata.normalize("NFC", text).lower()
+    slug = _SLUG_RE.sub("-", slug).strip("-")
     slug = re.sub(r"-{2,}", "-", slug)
-    # Truncate
-    slug = slug[:max_len].strip("-")
-    return slug or "file"  # Fallback if slug becomes empty
+    return slug[:max_len].strip("-") or "file"
 
 
 def _get_dir_slug(url: str) -> str:
-    """Generate a slug from the directory path of a URL."""
     try:
-        path_parts = Path(urlparse(url).path).parts
-        # Use last 2-3 non-empty directory parts, ignore filename part
-        dir_parts = [p for p in path_parts[:-1] if p and p != "/"]
-        if len(dir_parts) >= 2:
-            return f"{_slugify(dir_parts[-2], 20)}-{_slugify(dir_parts[-1], 20)}"
-        elif len(dir_parts) == 1:
-            return _slugify(dir_parts[-1], 40)
+        path_parts = [p for p in Path(urlparse(url).path).parts if p and p != "/"]
+        if len(path_parts) >= 2:
+            return f"{_slugify(path_parts[-2], 20)}-{_slugify(path_parts[-1], 20)}"
+        elif len(path_parts) == 1:
+            return _slugify(path_parts[-1], 40)
         else:
-            # Fallback using netloc if path is shallow
-            netloc_slug = _slugify(urlparse(url).netloc, 40)
-            return netloc_slug or "domain"
+            return _slugify(urlparse(url).netloc, 40) or "domain"
     except Exception:
-        return "path"  # Fallback on error
+        return "path"
 
 
 async def _fetch_html(client: httpx.AsyncClient, url: str) -> Optional[str]:
-    """Fetch HTML content from a URL, handling errors."""
     try:
-        # Use stream=True to check headers before downloading large content
         async with client.stream("GET", url, follow_redirects=True, timeout=20.0) as response:
-            # Raise error for non-2xx responses
             response.raise_for_status()
-            # Check content type
             content_type = response.headers.get("content-type", "").lower()
             if "text/html" not in content_type:
-                logger.debug(f"Skipping non-HTML content at {url} (Type: {content_type})")
                 return None
-            # Check content length (optional, avoid huge pages)
-            content_length = int(response.headers.get("content-length", 0))
-            if content_length > 5 * 1024 * 1024:  # 5 MB limit
-                logger.warning(f"Skipping large HTML page at {url} (Size: {content_length} bytes)")
-                return None
-
-            # Read the content
+            if int(response.headers.get("content-length", 0)) > 5 * 1024 * 1024:
+                return None  # 5MB limit
             html = await response.aread()
-            # Decode carefully, try common encodings
             try:
                 return html.decode("utf-8")
             except UnicodeDecodeError:
                 try:
                     return html.decode("iso-8859-1")
                 except UnicodeDecodeError:
-                    logger.warning(f"Could not decode HTML from {url} using utf-8 or iso-8859-1")
-                    return None  # Give up if decoding fails
-
+                    logger.warning(f"Could not decode HTML from {url}")
+                    return None
     except httpx.HTTPStatusError as e:
-        # Log client/server errors, but don't treat as critical crawl failure
-        if 400 <= e.response.status_code < 500:
-            logger.info(f"Client error fetching {url}: {e.response.status_code}")
-        elif 500 <= e.response.status_code < 600:
-            logger.warning(f"Server error fetching {url}: {e.response.status_code}")
+        if 400 <= e.response.status_code < 600:
+            logger.debug(f"HTTP error fetching {url}: {e.response.status_code}")  # Debug level
         return None
     except httpx.RequestError as e:
         logger.warning(f"Network error fetching {url}: {e}")
         return None
     except Exception as e:
-        logger.error(f"Unexpected error fetching {url}: {e}", exc_info=True)
+        logger.error(f"Unexpected error fetching {url}: {e}")
         return None
 
 
 def _extract_links(base_url: str, html: str) -> Tuple[List[str], List[str]]:
-    """Extract PDF links and same-domain page links from HTML."""
     pdfs: Set[str] = set()
     pages: Set[str] = set()
     try:
         soup = BeautifulSoup(html, "html.parser")
         base_netloc = urlparse(base_url).netloc
-
         for a in soup.find_all("a", href=True):
             href = a["href"]
             if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
                 continue
-
             try:
-                # Resolve relative URLs
                 abs_url = urllib.parse.urljoin(base_url, href)
-                # Clean URL (remove fragment, normalize)
                 parsed_url = urlparse(abs_url)
                 clean_url = parsed_url._replace(fragment="").geturl()
-
-                # Check if it's a PDF link
-                if parsed_url.path.lower().endswith(".pdf"):
+                path_lower = parsed_url.path.lower()
+                if path_lower.endswith(".pdf"):
                     pdfs.add(clean_url)
-                # Check if it's a same-domain HTML page (heuristic)
                 elif parsed_url.netloc == base_netloc and (
-                    parsed_url.path.lower().endswith((".html", ".htm", "/"))
+                    path_lower.endswith((".html", ".htm", "/"))
                     or "." not in Path(parsed_url.path).name
                 ):
-                    # Avoid adding PDFs to the pages list
-                    if not clean_url.lower().endswith(".pdf"):
+                    if not path_lower.endswith(".pdf"):
                         pages.add(clean_url)
-
             except ValueError:
-                logger.debug(f"Could not parse or join URL: base='{base_url}', href='{href}'")
+                pass
             except Exception as link_err:
-                logger.warning(f"Error processing link '{href}' on page {base_url}: {link_err}")
-
+                logger.warning(f"Error processing link '{href}' on {base_url}: {link_err}")
     except Exception as soup_err:
         logger.error(f"Error parsing HTML for links on {base_url}: {soup_err}")
-
     return list(pdfs), list(pages)
 
 
-# Fix #14: Rate limiter logic corrected
 class RateLimiter:
     """Limits async operations to a maximum rate (requests per second)."""
 
     def __init__(self, rate_limit: float = 1.0):
         if rate_limit <= 0:
             raise ValueError("Rate limit must be positive")
-        self.rate_limit = rate_limit
         self.interval = 1.0 / rate_limit
         self.last_request_time = 0
-        self.lock = asyncio.Lock()  # Ensure atomic check-sleep-update
+        self.lock = asyncio.Lock()
 
     async def acquire(self):
-        """Wait if necessary to maintain the rate limit."""
         async with self.lock:
-            now = time.monotonic()  # Use monotonic clock for intervals
+            now = time.monotonic()
             time_since_last = now - self.last_request_time
-
-            # Calculate time needed before next request is allowed
             time_to_wait = self.interval - time_since_last
-
             if time_to_wait > 0:
-                # logger.debug(f"RateLimiter waiting for {time_to_wait:.3f}s")
                 await asyncio.sleep(time_to_wait)
-                # Update 'now' after sleeping
                 now = time.monotonic()
-
-            # Update last request time *after* waiting (or immediately if no wait needed)
             self.last_request_time = now
 
 
@@ -2604,117 +2345,76 @@ async def crawl_for_pdfs(
     include_regex: Optional[str] = None,
     max_depth: int = 2,
     max_pdfs: int = 100,
-    max_pages_crawl: int = 500,  # Limit total pages visited
-    rate_limit_rps: float = 2.0,  # Requests per second
+    max_pages_crawl: int = 500,
+    rate_limit_rps: float = 2.0,
 ) -> List[str]:
-    """
-    Crawls a website starting from start_url to find PDF links using BFS.
-
-    Args:
-        start_url: The URL to begin crawling.
-        include_regex: Optional regex to filter PDF URLs.
-        max_depth: Maximum depth for BFS crawl.
-        max_pdfs: Maximum number of PDF URLs to collect.
-        max_pages_crawl: Safety limit on the total number of pages fetched.
-        rate_limit_rps: Max requests per second for politeness.
-
-    Returns:
-        List of found PDF URLs matching the criteria.
-    """
+    """Crawls a website using BFS to find PDF links."""
     try:
         inc_re = re.compile(include_regex, re.I) if include_regex else None
     except re.error as e:
         raise ToolInputError(f"Invalid include_regex: {e}") from e
-
-    # Use sets for efficient duplicate checking
     seen_urls: Set[str] = set()
     pdf_urls_found: Set[str] = set()
-    # Fix #7: Use deque for efficient BFS queue
     queue: deque[tuple[str, int]] = deque([(start_url, 0)])
     seen_urls.add(start_url)
-
     visit_count = 0
     rate_limiter = RateLimiter(rate_limit_rps)
     base_netloc = urlparse(start_url).netloc
-
     headers = {
         "User-Agent": "Mozilla/5.0 (compatible; SmartBrowserBot/1.0; +http://example.com/bot)"
-    }  # Be a good bot citizen
+    }
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0, headers=headers) as client:
         while queue and len(pdf_urls_found) < max_pdfs and visit_count < max_pages_crawl:
             current_url, current_depth = queue.popleft()
             visit_count += 1
-
-            # Respect rate limits before fetching
             await rate_limiter.acquire()
-
-            logger.debug(f"Crawling [Depth:{current_depth}, Visited:{visit_count}]: {current_url}")
+            # logger.debug(f"Crawling [Depth:{current_depth}, Visited:{visit_count}]: {current_url}")
             html = await _fetch_html(client, current_url)
             if not html:
-                continue  # Skip pages that fail to fetch or are not HTML
-
+                continue
             pdfs, pages = _extract_links(current_url, html)
-
-            # Process found PDFs
             for pdf_url in pdfs:
                 if pdf_url not in pdf_urls_found:
                     if inc_re is None or inc_re.search(pdf_url):
                         pdf_urls_found.add(pdf_url)
                         logger.info(f"PDF found: {pdf_url}")
                         if len(pdf_urls_found) >= max_pdfs:
-                            break  # Stop processing PDFs if limit reached
+                            break
             if len(pdf_urls_found) >= max_pdfs:
-                break  # Stop crawl if PDF limit reached
-
-            # Add new, valid pages to the queue if depth allows
+                break
             if current_depth < max_depth:
                 for page_url in pages:
-                    # Basic filtering: stay on same domain, avoid seen URLs
                     if urlparse(page_url).netloc == base_netloc and page_url not in seen_urls:
                         seen_urls.add(page_url)
                         queue.append((page_url, current_depth + 1))
-
     if visit_count >= max_pages_crawl:
-        logger.warning(f"PDF crawl stopped: Maximum page visit limit ({max_pages_crawl}) reached.")
+        logger.warning(f"PDF crawl stopped: Max pages ({max_pages_crawl}) reached.")
     if len(pdf_urls_found) >= max_pdfs:
-        logger.info(f"PDF crawl stopped: Maximum PDF limit ({max_pdfs}) reached.")
-
+        logger.info(f"PDF crawl stopped: Max PDFs ({max_pdfs}) reached.")
     return list(pdf_urls_found)
 
 
-# Fix #15: _download_file_direct using async I/O and thread pool for hashing
 async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
-    """
-    Downloads a file directly using httpx with streaming and async I/O.
-    Computes hash asynchronously. Returns dict with status.
-    """
+    """Downloads a file directly using httpx with streaming and async I/O."""
     output_path = None
     try:
         parsed_url = urlparse(url)
-        filename_base = os.path.basename(parsed_url.path) if parsed_url.path else ""
-
-        # Generate a slug if filename is empty or generic
-        if not filename_base or filename_base == "/" or "." not in filename_base:
+        fname_base = os.path.basename(parsed_url.path) if parsed_url.path else ""
+        if not fname_base or fname_base == "/" or "." not in fname_base:
             dir_slug = _get_dir_slug(url)
-            filename = f"{seq:03d}_{dir_slug}_{_slugify(filename_base or 'download')}"
-            # Try to guess extension from Content-Type or URL later if needed
-            # For now, assume PDF if URL ends with it, else common binary '.dat'
+            filename = f"{seq:03d}_{dir_slug}_{_slugify(fname_base or 'download')}"
             filename += ".pdf" if url.lower().endswith(".pdf") else ".dat"
         else:
-            # Use suggested filename, potentially prefixing with sequence
-            filename = f"{seq:03d}_{_slugify(filename_base)}"
-
+            filename = f"{seq:03d}_{_slugify(fname_base)}"
         output_path = dest_dir / filename
-        # Ensure parent directory exists (should be handled by caller, but double-check)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.parent.mkdir(parents=True, exist_ok=True)  # Ensure parent exists
 
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "*/*",  # Accept anything
-            "Accept-Encoding": "gzip, deflate, br",  # Allow compression
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "*/*",
+            "Accept-Encoding": "gzip, deflate, br",
         }
-
         async with httpx.AsyncClient(
             follow_redirects=True, timeout=120.0, headers=headers
         ) as client:
@@ -2722,40 +2422,39 @@ async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
                 if response.status_code != 200:
                     return {
                         "url": url,
-                        "error": f"HTTP error {response.status_code}",
+                        "error": f"HTTP {response.status_code}",
                         "status_code": response.status_code,
                         "success": False,
                     }
-
-                # Try to refine filename extension from Content-Disposition or Content-Type
+                # Refine filename from headers
                 content_disposition = response.headers.get("content-disposition")
                 if content_disposition:
                     match = re.search(r'filename="?([^"]+)"?', content_disposition)
                     if match:
                         output_path = dest_dir / f"{seq:03d}_{_slugify(match.group(1))}"
-
                 content_type = response.headers.get("content-type", "").split(";")[0].strip()
                 if content_type == "application/pdf" and not output_path.name.lower().endswith(
                     ".pdf"
                 ):
                     output_path = output_path.with_suffix(".pdf")
-                # Add more content-type to extension mappings if needed
+                # Handle filename conflicts simply
+                counter = 1
+                original_path = output_path
+                while output_path.exists():
+                    output_path = original_path.with_stem(f"{original_path.stem}_{counter}")
+                    counter += 1
+                    if counter > 100:
+                        raise IOError(f"Too many filename conflicts for {original_path.name}")
 
-                # Stream download to file asynchronously
                 hasher = hashlib.sha256()
                 bytes_written = 0
                 async with aiofiles.open(output_path, "wb") as f:
                     async for chunk in response.aiter_bytes():
                         await f.write(chunk)
-                        hasher.update(chunk)  # Hash while writing
+                        hasher.update(chunk)
                         bytes_written += len(chunk)
-
-        # Finalize hash
         file_hash = hasher.hexdigest()
-
-        # Set permissions
         await _run_in_thread(os.chmod, output_path, 0o600)
-
         await _log(
             "download_direct_success",
             url=url,
@@ -2770,13 +2469,11 @@ async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
             "sha256": file_hash,
             "success": True,
         }
-
     except httpx.RequestError as e:
         logger.warning(f"Network error downloading {url}: {e}")
         return {"url": url, "error": f"Network error: {e}", "success": False}
     except Exception as e:
-        logger.error(f"Error downloading file {url} directly: {e}", exc_info=True)
-        # Clean up partially downloaded file if it exists
+        logger.error(f"Error downloading {url} directly: {e}", exc_info=True)
         if output_path and output_path.exists():
             try:
                 output_path.unlink()
@@ -2786,26 +2483,21 @@ async def _download_file_direct(url: str, dest_dir: Path, seq: int = 1) -> Dict:
 
 
 # --- OSS Documentation Crawler Helpers ---
-_DOC_EXTS = (".html", ".htm", "/")  # Allowed extensions/endings for doc pages
+_DOC_EXTS = (".html", ".htm", "/")
 _DOC_STOP_PAT = re.compile(
     r"\.(png|jpg|jpeg|gif|svg|css|js|zip|tgz|gz|whl|exe|dmg|ico|woff|woff2|map|json|xml|txt)$", re.I
-)  # Extensions to ignore
+)
 
 
 def _looks_like_docs_url(url: str) -> bool:
-    """Heuristic check if a URL looks like a documentation page."""
     try:
         url_low = url.lower()
         parsed = urlparse(url_low)
-
-        # Ignore URLs with query parameters that often indicate actions/APIs
         if parsed.query:
             return False
-
-        # Ignore common non-doc paths
         if any(
-            frag in parsed.path
-            for frag in [
+            f in parsed.path
+            for f in [
                 "/api/",
                 "/blog/",
                 "/news/",
@@ -2815,141 +2507,115 @@ def _looks_like_docs_url(url: str) -> bool:
                 "/install/",
                 "/_static/",
                 "/_images/",
+                "/assets/",
+                "/media/",
             ]
         ):
             return False
-
-        # Require common doc indicators or allowed extensions
-        has_doc_indicator = (
+        has_doc = (
             "docs" in url_low
             or "guide" in url_low
             or "tuto" in url_low
             or "ref" in url_low
             or "api" in parsed.path
-        )  # Checking path specifically for api
-        has_allowed_ending = url_low.endswith(_DOC_EXTS)
-
-        # Check against stop pattern
-        is_stopped = bool(_DOC_STOP_PAT.search(parsed.path))
-
-        return (has_doc_indicator or has_allowed_ending) and not is_stopped
+            or "faq" in url_low
+            or "howto" in url_low
+            or "userguide" in url_low
+        )
+        has_end = url_low.endswith(_DOC_EXTS)
+        return (has_doc or has_end) and not bool(_DOC_STOP_PAT.search(parsed.path))
     except Exception:
-        return False  # Error parsing URL
+        return False
 
 
 async def _pick_docs_root(pkg_name: str) -> Optional[str]:
-    """Use web search to find the likely documentation root URL for a package."""
     try:
-        # Use a reliable search engine
-        logger.info(f"Searching for documentation root for package: '{pkg_name}'")
+        logger.info(f"Searching for docs root for package: '{pkg_name}'")
+        # Try DDG first as it's often less noisy
         search_results = await search_web(
             f"{pkg_name} documentation", engine="duckduckgo", max_results=10
         )
-
         if not search_results:
             search_results = await search_web(
                 f"{pkg_name} user guide", engine="bing", max_results=5
             )
-
         for hit in search_results:
             url = hit.get("url")
             if url and _looks_like_docs_url(url):
-                # Often the root is one level up from the first hit
                 parsed = urlparse(url)
-                # Heuristic: If path has multiple segments, try going up one level
                 path_segments = [seg for seg in parsed.path.split("/") if seg]
                 if len(path_segments) > 1:
                     root_url = parsed._replace(
                         path="/".join(path_segments[:-1]) + "/", query="", fragment=""
                     ).geturl()
-                    # Test if this potential root is accessible? Overkill for now.
-                    logger.info(f"Potential docs root (from path): {root_url}")
-                    # Simple check: does it look like docs itself?
                     if _looks_like_docs_url(root_url):
+                        logger.info(f"Found potential docs root: {root_url}")
                         return root_url
-
-                # Otherwise, return the first plausible hit
-                logger.info(f"Potential docs root (first hit): {url}")
-                return url
-
-        # Fallback if no good hits found
-        logger.warning(
-            f"Could not reliably determine documentation root for '{pkg_name}' via search."
-        )
+                logger.info(f"Found potential docs page: {url}")
+                return url  # Return first plausible hit
+        logger.warning(f"Could not reliably find docs root for '{pkg_name}'.")
         return search_results[0]["url"] if search_results else None
-
     except ToolError as e:
-        logger.error(f"Search failed while finding docs root for '{pkg_name}': {e}")
+        logger.error(f"Search failed finding docs root for '{pkg_name}': {e}")
         return None
     except Exception as e:
-        logger.error(f"Unexpected error finding docs root for '{pkg_name}': {e}", exc_info=True)
+        logger.error(f"Unexpected error finding docs root for '{pkg_name}': {e}")
         return None
 
 
-def _summarize_html(html: str, max_len: int = 10000) -> str:
-    """
-    Extract readable text content from HTML using libraries or fallback.
-    Limits memory usage by processing chunks if necessary.
-    """
+def _summarize_html_sync(html: str, max_len: int = 10000) -> str:
+    """Synchronous HTML summarization (runs in thread pool)."""
     if not html:
         return ""
-    # Limit initial HTML size to avoid excessive memory use by parsers
-    MAX_HTML_SIZE = 3 * 1024 * 1024  # 3MB limit
+    MAX_HTML_SIZE = 3 * 1024 * 1024
     if len(html) > MAX_HTML_SIZE:
-        logger.warning(
-            f"HTML content truncated from {len(html)} to {MAX_HTML_SIZE} bytes for summarization."
-        )
         html = html[:MAX_HTML_SIZE]
-
     text = ""
-    # 1. Try Trafilatura (often good for articles/main content)
-    try:
+    try:  # Try Trafilatura
         import trafilatura  # type: ignore
 
-        # Settings to focus on main content, ignore comments/tables
         extracted = trafilatura.extract(
             html, include_comments=False, include_tables=False, favour_precision=True
         )
-        if extracted and len(extracted) > 100:  # Basic check for non-trivial extraction
+        if extracted and len(extracted) > 100:
             text = extracted
-            # logger.debug("Summarized HTML using Trafilatura")
     except ImportError:
-        logger.debug("Trafilatura not installed, skipping.")
+        pass
     except Exception as e:
-        logger.warning(f"Trafilatura extraction failed: {e}")
-
-    # 2. Try Readability-lxml if Trafilatura failed or didn't yield much
-    if not text or len(text) < 200:
+        logger.warning(f"Trafilatura failed: {e}")
+    if not text or len(text) < 200:  # Try Readability-lxml
         try:
             from readability import Document  # type: ignore
 
             doc = Document(html)
             summary_html = doc.summary(html_partial=True)
-            # Extract text from the summarized HTML using BeautifulSoup for robustness
             soup = BeautifulSoup(summary_html, "html.parser")
-            text = soup.get_text(separator=" ", strip=True)
-            # logger.debug("Summarized HTML using Readability")
+            text = soup.get_text(" ", strip=True)
         except ImportError:
-            logger.debug("Readability-lxml not installed, skipping.")
+            pass
         except Exception as e:
-            logger.warning(f"Readability extraction failed: {e}")
-
-    # 3. Fallback: Basic text extraction using BeautifulSoup if others fail
-    if not text or len(text) < 100:
+            logger.warning(f"Readability failed: {e}")
+    if not text or len(text) < 100:  # Fallback: BeautifulSoup
         try:
-            soup = BeautifulSoup(html, "html.parser")
-            # Remove script, style, nav, header, footer elements
-            for element in soup(["script", "style", "nav", "header", "footer", "aside", "form"]):
+            soup = BeautifulSoup(html, "lxml")  # Use lxml parser
+            for element in soup(
+                [
+                    "script",
+                    "style",
+                    "nav",
+                    "header",
+                    "footer",
+                    "aside",
+                    "form",
+                    "figure",
+                    "figcaption",
+                    "noscript",
+                ]
+            ):
                 element.decompose()
-            # Get remaining text
-            text = soup.get_text(separator=" ", strip=True)
-            # logger.debug("Summarized HTML using BeautifulSoup fallback")
+            text = soup.get_text(" ", strip=True)
         except Exception as e:
-            logger.warning(f"BeautifulSoup fallback extraction failed: {e}")
-            # As a last resort, use regex (very basic)
-            text = re.sub(r"<[^>]+>", " ", html)
-
-    # Final cleanup: normalize whitespace and limit length
+            logger.warning(f"BeautifulSoup fallback failed: {e}")
     cleaned_text = re.sub(r"\s+", " ", text).strip()
     return cleaned_text[:max_len]
 
@@ -2961,76 +2627,44 @@ async def _grab_readable(
     await rate_limiter.acquire()
     html = await _fetch_html(client, url)
     if html:
-        # Run summarization in thread pool as it can be CPU intensive
-        summary = await _run_in_thread(_summarize_html, html)
-        return summary
+        return await _run_in_thread(_summarize_html_sync, html)  # Run sync summarizer in thread
     return None
 
 
 async def crawl_docs_site(
     root_url: str, max_pages: int = 40, rate_limit_rps: float = 3.0
 ) -> List[Tuple[str, str]]:
-    """
-    BFS crawl a documentation site within the same domain, collecting readable text.
-
-    Args:
-        root_url: The starting URL for the documentation site.
-        max_pages: Maximum number of pages to successfully fetch and process.
-        rate_limit_rps: Max requests per second for politeness.
-
-    Returns:
-        List of tuples, where each tuple is (url, readable_text).
-    """
+    """BFS crawl a documentation site, collecting readable text."""
     try:
         start_netloc = urlparse(root_url).netloc
-        if not start_netloc:
-            raise ValueError("Invalid root URL, cannot determine domain.")
-    except ValueError as e:
-        raise ToolInputError(f"Invalid root URL for documentation crawl: {root_url} ({e})") from e
-
+        assert start_netloc
+    except (ValueError, AssertionError) as e:
+        raise ToolInputError(f"Invalid root URL: {root_url}") from e
     seen_urls: Set[str] = set()
-    # Fix #7: Use deque
     queue: deque[str] = deque([root_url])
     seen_urls.add(root_url)
     output_pages: List[Tuple[str, str]] = []
-
     visit_count = 0
-    # Fix #7: Add safety limit beyond max_pages
     max_visits = max(max_pages * 5, 200)
     rate_limiter = RateLimiter(rate_limit_rps)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; SmartBrowserDocBot/1.0; +http://example.com/bot)"
-    }
-
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; SmartBrowserDocBot/1.0)"}
     logger.info(f"Starting documentation crawl from: {root_url} (Max pages: {max_pages})")
-
     async with httpx.AsyncClient(follow_redirects=True, timeout=30.0, headers=headers) as client:
         while queue and len(output_pages) < max_pages and visit_count < max_visits:
             current_url = queue.popleft()
             visit_count += 1
-
-            logger.debug(
-                f"Crawling Doc [Collected:{len(output_pages)}, Visited:{visit_count}]: {current_url}"
-            )
-
-            # Get readable text (includes rate limiting and HTML fetching)
+            # logger.debug(f"Crawling Doc [{len(output_pages)}/{visit_count}]: {current_url}")
             readable_text = await _grab_readable(client, current_url, rate_limiter)
-
             if readable_text:
                 output_pages.append((current_url, readable_text))
                 if len(output_pages) >= max_pages:
-                    break  # Stop if we've collected enough pages
-
-                # Extract links only if we got content and need more pages
-                # Re-fetch HTML (or reuse if _grab_readable returned it?) - Re-fetch is simpler
-                await rate_limiter.acquire()  # Rate limit again for link extraction fetch
+                    break
+                await rate_limiter.acquire()  # Rate limit again for link fetch
                 html_for_links = await _fetch_html(client, current_url)
                 if html_for_links:
                     _, page_links = _extract_links(current_url, html_for_links)
-
                     for link_url in page_links:
                         try:
-                            # Validate link: same domain, looks like docs, not seen
                             parsed_link = urlparse(link_url)
                             if (
                                 parsed_link.netloc == start_netloc
@@ -3040,153 +2674,58 @@ async def crawl_docs_site(
                                 seen_urls.add(link_url)
                                 queue.append(link_url)
                         except ValueError:
-                            logger.debug(
-                                f"Skipping invalid link URL found on {current_url}: {link_url}"
-                            )
-
+                            pass
     if visit_count >= max_visits:
-        logger.warning(f"Doc crawl stopped: Maximum visit limit ({max_visits}) reached.")
-    logger.info(f"Documentation crawl finished. Collected {len(output_pages)} pages.")
+        logger.warning(f"Doc crawl stopped: Max visits ({max_visits}) reached.")
+    logger.info(f"Doc crawl finished. Collected {len(output_pages)} pages.")
     return output_pages
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 10. PAGE STATE EXTRACTION WITH HTML SUMMARIZER
+# 10. PAGE STATE EXTRACTION (using EnhancedLocator's Page Map)
 # ══════════════════════════════════════════════════════════════════════════════
-# Fix #Half-baked (_ensure_helper): Simplify - don't rely on external JS unless absolutely necessary.
-# The get_page_state below uses Playwright's evaluate which is generally reliable.
 
 
-async def get_page_state(page: Page, max_elements: int = 150) -> dict[str, Any]:
+async def get_page_state(page: Page, max_elements: Optional[int] = None) -> dict[str, Any]:
     """
-    Extracts the current state of the page, including URL, title, summary,
-    and details about visible interactive elements.
+    Extracts the current state of the page using the page map functionality.
+    The number of elements is controlled by _MAX_WIDGETS.
 
     Args:
         page: The Playwright Page object.
-        max_elements: Maximum number of interactive elements to report.
+        max_elements: (Deprecated/Ignored) Use _MAX_WIDGETS constant instead.
 
     Returns:
-        Dictionary representing the page state.
+        Dictionary representing the page state (URL, title, main_text, elements).
     """
+    if max_elements is not None:
+        logger.warning("get_page_state 'max_elements' arg is deprecated, use _MAX_WIDGETS.")
     if not page or page.is_closed():
-        return {
-            "error": "Page is closed or invalid",
-            "url": "",
-            "title": "",
-            "elements": [],
-            "text_summary": "",
-        }
+        return {"error": "Page closed", "url": "", "title": "", "elements": [], "main_text": ""}
 
+    start_time = time.monotonic()
     try:
-        start_time = time.monotonic()
-        # Get basic info
-        page_url = page.url
-        page_title = await page.title()
-
-        # Get HTML content for summary (might be large)
-        # Consider limiting content size if performance is an issue
-        try:
-            html = await page.content(timeout=10000)  # 10s timeout for content
-            # Summarize in thread pool
-            summary = await _run_in_thread(_summarize_html, html, max_len=5000)
-        except PlaywrightTimeoutError:
-            summary = "[Error: Timed out getting page content]"
-            logger.warning(f"Timed out getting content for page state: {page_url}")
-        except PlaywrightException as e:
-            summary = f"[Error: Could not get page content: {e}]"
-            logger.warning(f"Playwright error getting content for page state: {page_url}: {e}")
-
-        # Extract interactive elements using JavaScript evaluation
-        try:
-            elements = await page.evaluate(f"""() => {{
-                const interactiveSelectors = [
-                    'a[href]', 'button', 'input:not([type="hidden"])',
-                    'textarea', 'select', '[role="button"]', '[role="link"]',
-                    '[role="checkbox"]', '[role="radio"]', '[role="tab"]',
-                    '[role="menuitem"]', '[role="option"]', '[onclick]'
-                ];
-                // Function to check if element is reasonably visible in viewport
-                const isVisible = elem => {{
-                    if (!elem) return false;
-                    const style = window.getComputedStyle(elem);
-                    if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity) < 0.1) {{
-                        return false;
-                    }}
-                    const rect = elem.getBoundingClientRect();
-                    const windowHeight = window.innerHeight || document.documentElement.clientHeight;
-                    const windowWidth = window.innerWidth || document.documentElement.clientWidth;
-                    // Check if element has size and is within viewport bounds (allowing partial visibility)
-                    const vertInView = (rect.top <= windowHeight) && ((rect.top + rect.height) >= 0);
-                    const horzInView = (rect.left <= windowWidth) && ((rect.left + rect.width) >= 0);
-                    return rect.width > 0 && rect.height > 0 && vertInView && horzInView;
-                }};
-
-                let collectedElements = [];
-                let elementIdCounter = 0;
-                const uniqueElements = new Set(); // Track elements to avoid duplicates
-
-                document.querySelectorAll(interactiveSelectors.join(', ')).forEach(el => {{
-                    if (collectedElements.length >= {max_elements}) return;
-                    // Skip if not visible or already added
-                    if (!isVisible(el) || uniqueElements.has(el)) return;
-
-                    const getText = (elem) => {{
-                        let text = (elem.innerText || elem.value || elem.getAttribute('aria-label') || elem.getAttribute('title') || '');
-                        return text.trim().replace(/\s+/g, ' ').slice(0, 150); // Normalize whitespace and limit length
-                    }};
-
-                    const elementData = {{
-                        // id: `sb_el_${{elementIdCounter++}}`, // Simple counter ID
-                        tag: el.tagName.toLowerCase(),
-                        type: el.type ? el.type.toLowerCase() : null, // Input type
-                        role: el.getAttribute('role'),
-                        text: getText(el),
-                        name: el.name || null, // Input name attribute
-                        href: el.href ? el.href.slice(0, 300) : null, // Limit href length
-                        placeholder: el.placeholder || null,
-                    }};
-
-                    // Add element data if it has some identifying info (text, name, role, etc.)
-                    if (elementData.text || elementData.role || elementData.name || elementData.placeholder || elementData.tag === 'a' || elementData.tag === 'button') {{
-                        collectedElements.push(elementData);
-                        uniqueElements.add(el); // Mark as added
-                    }}
-                }});
-                return collectedElements;
-            }}""")
-        except PlaywrightException as e:
-            logger.warning(
-                f"Could not evaluate script to get interactive elements on {page_url}: {e}"
-            )
-            elements = [{"error": "Failed to extract elements"}]
-
-        end_time = time.monotonic()
+        # Use the core page map builder
+        page_map, _ = await _build_page_map(page)  # Fingerprint not needed here
+        duration = time.monotonic() - start_time
         await _log(
             "page_state_extracted",
-            url=page_url,
-            duration_ms=int((end_time - start_time) * 1000),
-            num_elements=len(elements),
+            url=page_map.get("url"),
+            duration_ms=int(duration * 1000),
+            num_elements=len(page_map.get("elements", [])),
         )
-
-        return {"url": page_url, "title": page_title, "elements": elements, "text_summary": summary}
-
-    except PlaywrightException as e:
-        logger.error(f"Error getting page state for {page.url}: {e}", exc_info=True)
-        # Return minimal state on error
-        return {
-            "url": page.url or "unknown",
-            "title": "[Error getting title]",
-            "elements": [{"error": f"Failed to get page state: {e}"}],
-            "text_summary": "[Error getting summary]",
-        }
+        # Return the map directly, keys are already aligned (url, title, main_text, elements)
+        return page_map
     except Exception as e:
-        logger.error(f"Unexpected error getting page state for {page.url}: {e}", exc_info=True)
+        duration = time.monotonic() - start_time
+        logger.error(f"Error getting page state for {page.url}: {e}", exc_info=True)
+        await _log("page_error", url=page.url, error=str(e), duration_ms=int(duration * 1000))
         return {
+            "error": f"Failed to get page state: {e}",
             "url": page.url or "unknown",
-            "title": "[Error getting title]",
-            "elements": [{"error": f"Unexpected error getting page state: {e}"}],
-            "text_summary": "[Error getting summary]",
+            "title": "[Error]",
+            "elements": [],
+            "main_text": "",
         }
 
 
@@ -3197,75 +2736,56 @@ async def get_page_state(page: Page, max_elements: int = 150) -> dict[str, Any]:
 
 def _extract_json_block(text: str) -> Optional[str]:
     """Tries to extract the first valid JSON object or array block from text."""
-    # Regex to find JSON blocks: look for {..} or [..] possibly nested
-    # This regex is simple and might fail on complex cases (e.g., strings containing brackets)
-    # A more robust parser might be needed for complex LLM outputs.
-    matches = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
-    if matches:
-        block = matches.group(0)
-        # Basic validation: check if it starts/ends correctly
-        if (block.startswith("{") and block.endswith("}")) or (
-            block.startswith("[") and block.endswith("]")
-        ):
+    # Try to find ```json ... ``` block first
+    match_markdown = re.search(r"```json\s*(\{.*\}|\[.*\])\s*```", text, re.DOTALL)
+    if match_markdown:
+        return match_markdown.group(1).strip()
+    # Fallback to finding first {..} or [..]
+    match_bare = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
+    if match_bare:
+        block = match_bare.group(0)
+        # Quick check for balanced brackets/braces (doesn't guarantee validity)
+        if block.count("{") == block.count("}") and block.count("[") == block.count("]"):
             return block
     return None
 
 
 async def _call_llm(
     messages: Sequence[Dict[str, str]],
-    model: str = "gpt-4o",  # Consider making model configurable
+    model: str = "gpt-4o",  # Default model for general calls
     expect_json: bool = False,
     temperature: float = 0.1,
     max_tokens: int = 1024,
-) -> Union[Dict[str, Any], List[Any]]:  # Return type can be dict or list for JSON
-    """
-    Calls the LLM using the MCP server's completion tool.
-    Handles message formatting and JSON parsing/validation if requested.
-
-    Args:
-        messages: List of message dictionaries (e.g., [{"role": "system", "content": "..."}, ...]).
-        model: The LLM model to use.
-        expect_json: If True, attempts to parse the response as JSON.
-        temperature: Sampling temperature for the LLM.
-        max_tokens: Maximum tokens for the LLM response.
-
-    Returns:
-        - If expect_json is True: The parsed JSON object/list, or a dict with an "error" key.
-        - If expect_json is False: A dict {"text": response_text} or {"error": ...}.
-    """
+) -> Union[Dict[str, Any], List[Any]]:
+    """Calls the LLM using MCP server's completion tool."""
     if not messages:
         return {"error": "No messages provided to LLM."}
 
-    # Fix #12: Use the full message list. Assume generate_completion handles it.
-    # If generate_completion only takes a string prompt, we need to format messages here.
-    # Assuming generate_completion supports the `messages` structure:
     llm_args = {
-        "provider": Provider.OPENAI.value,  # Assuming OpenAI, make configurable if needed
+        "provider": Provider.OPENAI.value,
         "model": model,
-        "messages": messages,  # Pass the list directly
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stop_sequences": None,  # Add stop sequences if needed
+        "stop_sequences": None,
     }
-
-    # Add specific JSON instruction if needed
-    if expect_json:
-        # Append or modify the last user message to include JSON instructions
+    # Add JSON mode hint if provider/model supports it (newer OpenAI models)
+    if expect_json and ("gpt-4" in model or "gpt-3.5" in model):  # Heuristic check
+        llm_args["response_format"] = {"type": "json_object"}
+        # Remove manual JSON instruction if using JSON mode
+    elif expect_json:
         last_message = messages[-1]
         if last_message["role"] == "user":
             json_instruction = (
-                "\n\nIMPORTANT: Your response MUST be valid JSON. "
-                "Output ONLY the JSON object or array, starting with `{` or `[` and ending with `}` or `]`. "
-                "Do not include any introductory text, explanations, or markdown formatting like ```json."
+                "\n\nIMPORTANT: Respond ONLY with valid JSON. "
+                "Start with `{` or `[` and end with `}` or `]`. "
+                "Do not include ```json markers or explanations."
             )
-            # Create a new list to avoid modifying the original
-            modified_messages = list(messages[:-1])
-            modified_messages.append(
+            modified_messages = list(messages[:-1]) + [
                 {"role": "user", "content": last_message["content"] + json_instruction}
-            )
+            ]
             llm_args["messages"] = modified_messages
         else:
-            # Cannot easily add instruction if last message isn't user. Log warning.
             logger.warning("Cannot add JSON instruction as last LLM message is not 'user'.")
 
     try:
@@ -3280,146 +2800,92 @@ async def _call_llm(
         )
 
         if not resp.get("success"):
-            error_msg = resp.get("error", "LLM call failed with no specific error message.")
-            logger.error(f"LLM call failed: {error_msg}")
+            error_msg = resp.get("error", "LLM call failed")
             return {"error": f"LLM API Error: {error_msg}"}
-
         raw_text = resp.get("text", "").strip()
         if not raw_text:
-            return {"error": "LLM returned an empty response."}
-
+            return {"error": "LLM returned empty response."}
         if not expect_json:
             return {"text": raw_text}
 
-        # Fix #Quick-win #7: Strict JSON parsing
-        # 1. Try parsing the whole response directly
+        # Try parsing directly (especially if JSON mode was used)
         try:
-            parsed_json = json.loads(raw_text)
-            # Optional: Validate structure if needed (e.g., ensure it's a list of objects)
-            return parsed_json
+            return json.loads(raw_text)
         except json.JSONDecodeError:
-            logger.debug("Direct JSON parsing failed. Trying to extract JSON block.")
-            # 2. Try extracting the first {...} or [...] block
+            # If direct parse fails, try extracting block
             json_block = _extract_json_block(raw_text)
             if json_block:
                 try:
-                    parsed_json = json.loads(json_block)
-                    logger.warning(
-                        "LLM response contained non-JSON content. Extracted JSON block successfully."
-                    )
-                    return parsed_json
+                    parsed = json.loads(json_block)
+                    logger.warning("LLM response had extra text; extracted JSON block.")
+                    return parsed
                 except json.JSONDecodeError as e:
-                    logger.error(
-                        f"Failed to parse extracted JSON block: {e}. Raw block: {json_block[:500]}..."
-                    )
-                    return {
-                        "error": f"Could not parse JSON from LLM response (invalid JSON block extracted). Error: {e}",
-                        "raw_response": raw_text[:1000],
-                    }
-            else:
-                # 3. If no block found or parsing fails, return error
-                logger.error(
-                    f"Could not find or parse JSON in LLM response. Raw response: {raw_text[:1000]}..."
-                )
-                return {
-                    "error": "Could not parse JSON from LLM response (no valid JSON block found).",
-                    "raw_response": raw_text[:1000],
-                }
+                    err = f"Could not parse extracted JSON block: {e}. Block: {json_block[:500]}..."
+                    return {"error": err, "raw_response": raw_text[:1000]}
+            else:  # No block found or extracted block invalid
+                err = "Could not parse JSON from LLM response (no valid block found)."
+                return {"error": err, "raw_response": raw_text[:1000]}
 
     except ProviderError as e:
-        logger.error(f"LLM Provider error: {e}", exc_info=True)
+        logger.error(f"LLM Provider error: {e}")
         return {"error": f"LLM Provider Error: {e}"}
     except Exception as e:
         logger.error(f"Unexpected error during LLM call: {e}", exc_info=True)
         return {"error": f"LLM call failed unexpectedly: {e}"}
 
 
-async def ask_llm(page: Page, user_instruction: str, model: str = "gpt-4o") -> Dict[str, Any]:
-    """Gets page state and asks LLM for the next action based on user instruction."""
-    try:
-        state = await get_page_state(page)
-        if "error" in state:  # Handle case where page state extraction failed
-            return {"error": f"Could not get page state: {state['error']}"}
-
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an intelligent web automation assistant. Based on the current page state "
-                    "(URL, title, summary, interactive elements) and the user's task, determine the single "
-                    "next action to perform. Respond ONLY with a valid JSON object describing the action. "
-                    f"Allowed actions are: {', '.join(sorted(ALLOWED_ACTIONS))}."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"CURRENT PAGE STATE:\n"
-                    f"URL: {state.get('url')}\n"
-                    f"Title: {state.get('title')}\n"
-                    f"Summary: {state.get('text_summary', 'N/A')}\n"
-                    f"Interactive Elements:\n{json.dumps(state.get('elements', []), indent=2)}\n\n"
-                    f"USER TASK:\n{user_instruction}\n\n"
-                    "Respond ONLY with the JSON for the next single action (e.g., "
-                    '{"action": "click", "target": {"name": "Login Button"}} or '
-                    '{"action": "type", "target": {"role": "textbox", "name": "username"}, "text": "user@example.com"} or '
-                    '{"action": "finish"}).'
-                ),
-            },
-        ]
-        # Expect a single JSON object representing the action
-        return await _call_llm(
-            messages, model=model, expect_json=True, temperature=0.0
-        )  # Low temp for deterministic action
-    except Exception as e:
-        logger.error(f"Error in ask_llm: {e}", exc_info=True)
-        return {"error": f"Failed to get LLM action suggestion: {e}"}
-
-
 # ══════════════════════════════════════════════════════════════════════════════
-# 12. NATURAL-LANGUAGE MACRO RUNNER
+# 12. NATURAL-LANGUAGE MACRO RUNNER / AUTOPILOT PLANNER
 # ══════════════════════════════════════════════════════════════════════════════
 ALLOWED_ACTIONS = {"click", "type", "wait", "download", "extract", "finish", "scroll"}
 
 
-async def _plan(
+async def _plan_macro(
     page_state: Dict[str, Any], task: str, model: str = "gpt-4o"
 ) -> List[Dict[str, Any]]:
-    """Generates a sequence of browser actions based on page state and task."""
-
+    """Generates a sequence of browser actions for the macro runner."""
     action_details = """
-    - "click": requires "target" (dict for SmartLocator: name, role, css, xpath).
-    - "type": requires "target" (dict for SmartLocator) and "text" (string). Optional: "enter": bool (default false), "clear_before": bool (default true).
-    - "wait": requires "ms" (integer milliseconds to wait).
-    - "download": requires "target" (dict for SmartLocator to click). Optional: "dest" (string destination directory).
-    - "extract": requires "selector" (CSS selector string). Returns text content of matching elements.
-    - "scroll": requires "direction" ("up", "down", "bottom", "top"). Optional: "amount_px": int (for up/down).
-    - "finish": takes no arguments, indicates the task is complete.
+    Allowed actions and their arguments:
+    - "click": requires "task_hint" (natural language description of element).
+    - "type": requires "task_hint" (element description), "text" (string to type). Optional: "enter": bool, "clear_before": bool.
+    - "wait": requires "ms" (integer milliseconds).
+    - "download": requires "task_hint" (download link/button description). Optional: "dest" (string destination directory).
+    - "extract": requires "selector" (CSS selector string). Returns text of matching elements.
+    - "scroll": requires "direction" ("up", "down", "bottom", "top"). Optional: "amount_px": int.
+    - "finish": takes no arguments. Signals task completion.
     """
-    # Fix #Half-baked (download action params): Added 'dest' to description.
+    # Extract compact elements summary for prompt
+    elements_summary = [
+        f"id={el.get('id')} tag={el.get('tag')} role={el.get('role', ' ')} text='{el.get('text', ' ')}'"
+        for el in page_state.get("elements", [])
+    ]
 
     messages = [
         {
             "role": "system",
-            "content": (
-                "You are a meticulous web automation planner. Based on the user's task and the current page state "
-                "(URL, title, summary, interactive elements), create a plan as a JSON list of action steps. "
-                f"Use ONLY the allowed actions: {sorted(ALLOWED_ACTIONS)}. Follow the required arguments for each action.\n"
-                f"ACTION DETAILS:\n{action_details}\n"
-                "Your response MUST be ONLY the JSON list of steps, starting with `[` and ending with `]`."
-            ),
+            "content": textwrap.dedent(f"""
+                You are a web automation planner. Based on the user's TASK and the current PAGE_STATE
+                (URL, title, summary, elements), create a plan as a JSON list of action steps.
+                Use ONLY the allowed actions: {sorted(ALLOWED_ACTIONS)}. Provide arguments as needed.
+                Use 'task_hint' for 'click', 'type', and 'download' actions.
+                Your response MUST be ONLY the JSON list of steps `[...]`.
+                ACTION DETAILS:\n{action_details}
+            """).strip(),
         },
         {
             "role": "user",
-            "content": (
-                f"CURRENT PAGE STATE:\n"
-                f"URL: {page_state.get('url')}\n"
-                f"Title: {page_state.get('title')}\n"
-                f"Summary: {page_state.get('text_summary', 'N/A')}\n"
-                f"Interactive Elements:\n{json.dumps(page_state.get('elements', []), indent=2)}\n\n"
-                f"USER TASK:\n{task}\n\n"
-                "Generate the JSON list of steps to accomplish the task."
-            ),
+            "content": textwrap.dedent(f"""
+                CURRENT PAGE STATE:
+                URL: {page_state.get("url")}
+                Title: {page_state.get("title")}
+                Summary: {page_state.get("main_text", "N/A")[:1000]}...
+                Elements Summary:
+                {chr(10).join(elements_summary)}
+
+                USER TASK: {task}
+
+                Generate the JSON list of steps. Use 'task_hint' based on element text/role/context.
+            """).strip(),
         },
     ]
 
@@ -3427,89 +2893,63 @@ async def _plan(
 
     if isinstance(result, dict) and "error" in result:
         raise ToolError(
-            f"Planner LLM failed: {result['error']}", details=result.get("raw_response")
+            f"Macro planner LLM failed: {result['error']}", details=result.get("raw_response")
         )
     if not isinstance(result, list):
         raise ToolError(
-            f"Planner LLM returned unexpected format (expected list): {type(result)}",
+            f"Macro planner LLM returned unexpected format: {type(result)}",
             details=str(result)[:500],
         )
 
-    # Validate plan structure and actions
+    # Validate plan structure
     validated_plan = []
     for i, step in enumerate(result):
         if not isinstance(step, dict) or "action" not in step:
-            logger.warning(f"Invalid step format in plan (step {i + 1}): {step}")
-            continue  # Skip invalid step format
+            logger.warning(f"Invalid step format in macro plan (step {i + 1}): {step}")
+            continue
         action = step.get("action")
         if action not in ALLOWED_ACTIONS:
-            logger.warning(f"Invalid action '{action}' in plan (step {i + 1}): {step}")
-            continue  # Skip invalid action
+            logger.warning(f"Invalid action '{action}' in macro plan (step {i + 1}): {step}")
+            continue
+        # Add validation for required args per action if needed
         validated_plan.append(step)
 
     if not validated_plan:
-        raise ToolError("Planner LLM returned an empty or invalid plan.")
-
+        raise ToolError("Macro planner returned an empty or invalid plan.")
     return validated_plan
 
 
 async def run_macro(
     page: Page, task: str, max_rounds: int = 7, model: str = "gpt-4o"
 ) -> List[Dict[str, Any]]:
-    """
-    Executes a multi-step task described in natural language using a plan-act loop.
-
-    Args:
-        page: The Playwright Page object.
-        task: Natural language description of the task.
-        max_rounds: Maximum number of plan-execute rounds.
-        model: LLM model for planning.
-
-    Returns:
-        List of dictionaries, each representing the result of an executed step.
-    """
+    """Executes a multi-step task using a plan-act loop."""
     all_step_results = []
     current_task = task
-
     for i in range(max_rounds):
         round_num = i + 1
-        logger.info(
-            f"Macro Execution Round {round_num}/{max_rounds} | Task: {current_task[:100]}..."
-        )
+        logger.info(f"Macro Round {round_num}/{max_rounds} | Task: {current_task[:100]}...")
         try:
             state = await get_page_state(page)
             if "error" in state:
-                raise ToolError(f"Failed to get page state for planning: {state['error']}")
-
-            plan = await _plan(state, current_task, model)
+                raise ToolError(f"Failed to get page state: {state['error']}")
+            plan = await _plan_macro(state, current_task, model)
             await _log("macro_plan_generated", round=round_num, task=current_task, steps=plan)
-
             if not plan:
-                logger.warning(
-                    f"Macro round {round_num}: Planner returned empty plan. Assuming finish."
-                )
-                await _log("macro_plan_empty", round=round_num, task=current_task)
-                break  # Exit loop if plan is empty
-
-            # Execute the planned steps
-            step_results = await run_steps(page, plan)
+                logger.warning(f"Macro round {round_num}: Empty plan.")
+                await _log("macro_plan_empty", round=round_num)
+                break
+            step_results = await run_steps(page, plan)  # run_steps handles internal errors/logging
             all_step_results.extend(step_results)
-
-            # Check if 'finish' action was executed or if last step failed critically
             finished = any(s.get("action") == "finish" and s.get("success") for s in step_results)
             last_step_failed = (
                 step_results
                 and not step_results[-1].get("success")
-                and step_results[-1].get("action") != "wait"
-            )
-
+                and step_results[-1].get("action") not in ("wait", "finish", "extract")
+            )  # Don't stop on non-critical failures
             if finished:
                 await _log("macro_finish_action", round=round_num)
-                logger.info(
-                    f"Macro finished successfully in round {round_num} via 'finish' action."
-                )
+                logger.info(f"Macro finished via 'finish' action in round {round_num}.")
                 return all_step_results
-
             if last_step_failed:
                 error_info = step_results[-1].get("error", "Unknown error")
                 failed_action = step_results[-1].get("action", "unknown")
@@ -3519,106 +2959,78 @@ async def run_macro(
                 logger.warning(
                     f"Macro stopped in round {round_num} due to failed step: {failed_action} - {error_info}"
                 )
-                # Consider adding reflection/re-planning here based on failure
-                # For now, stop execution on failure
-                return all_step_results
-
-            # Optional: Add reflection step here - analyze results and update task if needed
-            # current_task = await _reflect(task, state, plan, step_results)
-
+                return all_step_results  # Stop on critical failure
         except ToolError as e:
             await _log("macro_error_tool", round=round_num, task=current_task, error=str(e))
             logger.error(f"Macro round {round_num} failed with ToolError: {e}")
             all_step_results.append(
                 {"action": "error", "success": False, "error": f"ToolError: {e}"}
             )
-            return all_step_results  # Stop on tool errors
+            return all_step_results
         except Exception as e:
             await _log("macro_error_unexpected", round=round_num, task=current_task, error=str(e))
-            logger.error(
-                f"Macro round {round_num} failed with unexpected error: {e}", exc_info=True
-            )
+            logger.error(f"Macro round {round_num} failed unexpectedly: {e}", exc_info=True)
             all_step_results.append(
                 {"action": "error", "success": False, "error": f"Unexpected Error: {e}"}
             )
-            return all_step_results  # Stop on unexpected errors
-
-    # If loop completes without finishing
+            return all_step_results
     await _log("macro_exceeded_rounds", max_rounds=max_rounds, task=task)
-    logger.warning(
-        f"Macro exceeded max rounds ({max_rounds}) without 'finish' action for task: {task}"
-    )
+    logger.warning(f"Macro exceeded max rounds ({max_rounds}) for task: {task}")
     return all_step_results
 
 
-# --- Autopilot Planner ---
-# Note: Tool references MUST match the method names in SmartBrowserTool
-_AVAILABLE_TOOLS = {
-    # tool_name_for_llm : (SmartBrowserTool_method_name, brief_arg_schema_for_llm)
+# Autopilot Planner
+_AVAILABLE_TOOLS = {  # Maps LLM tool name to (ToolClass method name, brief args schema)
     "search_web": (
         "search",
-        {"query": "str", "engine": "str (default yandex)", "max_results": "int (default 10)"},
+        {"query": "str", "engine": "str (bing|duckduckgo|yandex)", "max_results": "int"},
     ),
-    "browse_page": (
-        "browse_url",
-        {
-            "url": "str",
-            "wait_for_selector": "Optional[str]",
-            "wait_for_navigation": "bool (default True)",
-        },
-    ),
+    "browse_page": ("browse_url", {"url": "str", "wait_for_selector": "Optional[str]"}),
     "click_element": (
         "click_and_extract",
-        {
-            "url": "str",
-            "target": "dict (SmartLocator: name, role, css, xpath)",
-            "wait_ms": "int (default 1000)",
-        },
-    ),
+        {"url": "str", "task_hint": "str", "wait_ms": "int"},
+    ),  # Uses task_hint
     "fill_form": (
         "fill_form",
         {
             "url": "str",
-            "form_fields": "[{'target': dict, 'text': str, 'enter': bool?}]",
-            "submit_button": "Optional[dict]",
+            "form_fields": "[{'task_hint': str, 'text': str, 'enter': bool?}]",
+            "submit_hint": "Optional[str]",
         },
-    ),
+    ),  # Uses task_hint
     "download_file_via_click": (
         "download_file",
-        {"url": "str", "target": "dict (SmartLocator)", "dest_dir": "Optional[str]"},
-    ),
-    "run_page_macro": (
-        "execute_macro",
-        {"url": "str", "task": "str (natural language)", "max_rounds": "int (default 5)"},
-    ),
+        {"url": "str", "task_hint": "str", "dest_dir": "Optional[str]"},
+    ),  # Uses task_hint
+    "run_page_macro": ("execute_macro", {"url": "str", "task": "str", "max_rounds": "int"}),
     "download_all_pdfs_from_site": (
         "download_site_pdfs",
         {
             "start_url": "str",
-            "dest_subfolder": "str (default site_pdfs)",
+            "dest_subfolder": "Optional[str]",
             "include_regex": "Optional[str]",
-            "max_depth": "int (default 2)",
-            "max_pdfs": "int (default 100)",
+            "max_depth": "int",
+            "max_pdfs": "int",
         },
     ),
     "collect_project_documentation": (
         "collect_documentation",
-        {"package": "str (name of library/project)", "max_pages": "int (default 40)"},
+        {"package": "str", "max_pages": "int"},
     ),
     "process_urls_in_parallel": (
         "parallel_process",
-        {"urls": "[str]", "max_tabs": "Optional[int]"},
-    ),
+        {"urls": "[str]", "action": "str ('get_state')"},
+    ),  # Only get_state for now
 }
 
-_PLANNER_SYS = (
-    "You are an AI orchestrator. Your goal is to create a plan to fulfill the user's TASK "
-    "by selecting appropriate tools from the available list and specifying their arguments. "
-    "The plan should be a JSON list of steps, where each step calls one tool.\n"
-    "Analyze the TASK and any PRIOR RESULTS to decide the sequence of tool calls.\n"
-    "Your response MUST be ONLY the JSON list of tool call objects, starting with `[` and ending with `]`.\n"
-    "Do not include explanations or markdown."
-)
+_PLANNER_SYS = textwrap.dedent("""
+    You are an AI orchestrator. Your goal is to create a plan to fulfill the user's TASK
+    by selecting appropriate tools from the available list and specifying their arguments.
+    The plan should be a JSON list of steps, where each step calls one tool.
+    Analyze the TASK and any PRIOR RESULTS to decide the sequence of tool calls.
+    Your response MUST be ONLY the JSON list of tool call objects `[...]`.
+    Do not include explanations or markdown. Use 'task_hint' where specified.
+""").strip()
 
 
 async def _plan_autopilot(
@@ -3626,68 +3038,37 @@ async def _plan_autopilot(
 ) -> List[Dict[str, Any]]:
     """Generates a multi-step plan using available tools for the autopilot feature."""
     tools_desc = {name: schema for name, (_, schema) in _AVAILABLE_TOOLS.items()}
-
-    prior_results_summary = "None"
+    prior_summary = "None"
     if prior_results:
-        # Summarize results to avoid huge prompts
         summaries = []
-        for i, res in enumerate(
-            prior_results[-3:], start=max(0, len(prior_results) - 3) + 1
-        ):  # Show last 3 results
-            tool = res.get("tool", "unknown")
+        for i, res in enumerate(prior_results[-3:], start=max(0, len(prior_results) - 3) + 1):
+            tool = res.get("tool", "?")
             success = res.get("success", False)
-            outcome = (
-                "[Success]" if success else f"[Failed: {res.get('error', 'Unknown error')[:100]}]"
-            )
-            # Include key result snippets if available
-            result_data = res.get("result", {})
-            snippet = ""
-            if isinstance(result_data, dict):
-                if (
-                    "results" in result_data
-                    and isinstance(result_data["results"], list)
-                    and result_data["results"]
-                ):
-                    snippet = f" (Found {len(result_data['results'])} items, e.g., {str(result_data['results'][0])[:100]}...)"
-                elif "download" in result_data:
-                    snippet = f" (Downloaded: {result_data['download'].get('file_name', 'N/A')})"
-                elif "page_state" in result_data:
-                    snippet = f" (Page: {result_data['page_state'].get('title', 'N/A')[:50]}...)"
-                elif "file" in result_data:
-                    snippet = f" (File: {Path(result_data['file']).name})"
-
-            summaries.append(f"Step {i}: Tool={tool} -> {outcome}{snippet}")
-        prior_results_summary = "\n".join(summaries)
+            outcome = "[OK]" if success else "[FAIL]"
+            details = str(res.get("result", res.get("error", "")))[:150]
+            summaries.append(f"Step {i}: {tool} -> {outcome} ({details}...)")
+        prior_summary = "\n".join(summaries)
 
     user_prompt = (
         f"AVAILABLE TOOLS:\n{json.dumps(tools_desc, indent=2)}\n\n"
-        f"PRIOR RESULTS SUMMARY:\n{prior_results_summary}\n\n"
+        f"PRIOR RESULTS SUMMARY:\n{prior_summary}\n\n"
         f"USER TASK:\n{task}\n\n"
         "Generate the JSON plan (list of steps) to complete the task. "
-        'Each step should be: {"tool": "<tool_name>", "args": {<arguments_dict>}}. '
-        "Respond ONLY with the JSON list."
+        'Each step: {"tool": "<name>", "args": {<args_dict>}}. Respond ONLY with JSON list.'
     )
 
     messages = [
         {"role": "system", "content": _PLANNER_SYS},
         {"role": "user", "content": user_prompt},
     ]
-
-    response = await _call_llm(
-        messages, expect_json=True, temperature=0.0, max_tokens=2048
-    )  # Allow longer plans
+    response = await _call_llm(messages, expect_json=True, temperature=0.0, max_tokens=2048)
 
     if isinstance(response, dict) and "error" in response:
-        raise ToolError(
-            f"Autopilot planner failed: {response['error']}", details=response.get("raw_response")
-        )
+        raise ToolError(f"Autopilot planner failed: {response['error']}")
     if not isinstance(response, list):
-        raise ToolError(
-            f"Autopilot planner returned unexpected format (expected list): {type(response)}",
-            details=str(response)[:500],
-        )
+        raise ToolError(f"Autopilot planner returned non-list: {type(response)}")
 
-    # Basic validation of the plan structure
+    # Validate plan structure
     validated_plan = []
     for i, step in enumerate(response):
         if (
@@ -3698,15 +3079,15 @@ async def _plan_autopilot(
         ):
             logger.warning(f"Invalid step format in Autopilot plan (step {i + 1}): {step}")
             continue
-        tool_name = step.get("tool")
-        if tool_name not in _AVAILABLE_TOOLS:
-            logger.warning(f"Unknown tool '{tool_name}' in Autopilot plan (step {i + 1}): {step}")
+        if step.get("tool") not in _AVAILABLE_TOOLS:
+            logger.warning(
+                f"Unknown tool '{step.get('tool')}' in Autopilot plan (step {i + 1}): {step}"
+            )
             continue
         validated_plan.append(step)
 
     if not validated_plan:
         raise ToolError("Autopilot planner returned an empty or invalid plan.")
-
     return validated_plan
 
 
@@ -3718,130 +3099,129 @@ async def run_steps(page: Page, steps: Sequence[Dict[str, Any]]) -> List[Dict[st
     results = []
     for step in steps:
         action = step.get("action")
-        # Copy step data to store results, ensuring args are preserved
         step_result = step.copy()
         step_result["success"] = False  # Default to failure
+        start_time = time.monotonic()
 
         if not action:
-            step_result["error"] = "Step missing 'action' field."
+            step_result["error"] = "Missing 'action'."
             results.append(step_result)
-            continue  # Skip invalid step
+            continue
 
-        start_time = time.monotonic()
         try:
             if action == "click":
-                target = step.get("target")
-                if not target or not isinstance(target, dict):
-                    raise ToolInputError("Missing 'target' dict for click action")
-                await smart_click(page, **target)
+                hint = step.get("task_hint")
+                target_fallback = step.get("target")  # Keep target for fallback hint generation
+                if not hint:
+                    if target_fallback and (
+                        target_fallback.get("name") or target_fallback.get("role")
+                    ):
+                        name = target_fallback.get("name", "")
+                        role = target_fallback.get("role", "")
+                        hint = f"Click the {role or 'element'}" + (
+                            f" named '{name}'" if name else ""
+                        )
+                    else:
+                        raise ToolInputError("Click step needs 'task_hint' or 'target'.")
+                await smart_click(page, task_hint=hint, target_kwargs=target_fallback)
                 step_result["success"] = True
 
             elif action == "type":
-                target = step.get("target")
+                hint = step.get("task_hint")
+                target_fallback = step.get("target")
                 text = step.get("text")
-                if not target or not isinstance(target, dict):
-                    raise ToolInputError("Missing 'target' dict for type action")
+                if not hint:
+                    if target_fallback and (
+                        target_fallback.get("name") or target_fallback.get("role")
+                    ):
+                        name = target_fallback.get("name", "")
+                        role = target_fallback.get("role", "input")
+                        hint = f"Type into the {role or 'element'}" + (
+                            f" named '{name}'" if name else ""
+                        )
+                    else:
+                        raise ToolInputError("Type step needs 'task_hint' or 'target'.")
                 if text is None:
                     raise ToolInputError("Missing 'text' for type action")
                 await smart_type(
                     page,
-                    text,
+                    task_hint=hint,
+                    text=text,
                     press_enter=step.get("enter", False),
                     clear_before=step.get("clear_before", True),
-                    **target,
+                    target_kwargs=target_fallback,
                 )
                 step_result["success"] = True
 
             elif action == "wait":
                 ms = step.get("ms")
-                if ms is None:
-                    raise ToolInputError("Missing 'ms' for wait action")
+                assert ms is not None, "Missing 'ms' for wait"
                 await page.wait_for_timeout(int(ms))
-                step_result["success"] = True  # Wait itself doesn't fail easily
+                step_result["success"] = True
 
             elif action == "download":
-                target = step.get("target")
-                if not target or not isinstance(target, dict):
-                    raise ToolInputError("Missing 'target' dict for download action")
-                # Use smart_download, result is already a dict
-                download_outcome = await smart_download(page, target, step.get("dest"))
-                step_result["result"] = download_outcome  # Store download info
-                step_result["success"] = download_outcome.get(
-                    "success", False
-                )  # Reflect download success
+                hint = step.get("task_hint")
+                target_fallback = step.get("target")
+                if not hint:
+                    if target_fallback and (
+                        target_fallback.get("name") or target_fallback.get("role")
+                    ):
+                        name = target_fallback.get("name", "")
+                        role = target_fallback.get("role", "")
+                        hint = (
+                            "Download link/button"
+                            + (f" named '{name}'" if name else "")
+                            + (f" with role '{role}'" if role else "")
+                        )
+                    else:
+                        raise ToolInputError("Download step needs 'task_hint' or 'target'.")
+                download_outcome = await smart_download(
+                    page, task_hint=hint, dest_dir=step.get("dest"), target_kwargs=target_fallback
+                )
+                step_result["result"] = download_outcome
+                step_result["success"] = download_outcome.get("success", False)
 
             elif action == "extract":
                 selector = step.get("selector")
-                if not selector:
-                    raise ToolInputError("Missing 'selector' for extract action")
-                # Use page.eval_on_selector_all for robustness
-                extracted_texts = await page.eval_on_selector_all(
+                assert selector, "Missing 'selector' for extract"
+                extracted = await page.eval_on_selector_all(
                     selector, "(elements => elements.map(el => el.innerText || el.textContent))"
                 )
-                step_result["result"] = [t.strip() for t in extracted_texts if t]
-                step_result["success"] = (
-                    True  # Extraction itself succeeds even if no elements found
-                )
+                step_result["result"] = [t.strip() for t in extracted if t and t.strip()]
+                step_result["success"] = True  # Success even if no elements found
 
             elif action == "scroll":
                 direction = step.get("direction")
-                amount_px = step.get("amount_px")
-                if direction not in ["up", "down", "top", "bottom"]:
-                    raise ToolInputError("Invalid scroll direction")
+                amount = step.get("amount_px")
+                assert direction in ["up", "down", "top", "bottom"], "Invalid scroll direction"
                 if direction == "top":
                     await page.evaluate("() => window.scrollTo(0, 0)")
                 elif direction == "bottom":
                     await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
                 elif direction == "up":
-                    px = int(amount_px) if amount_px is not None else 500  # Default scroll amount
-                    await page.evaluate("(px) => window.scrollBy(0, -px)", px)
+                    await page.evaluate("(px) => window.scrollBy(0, -px)", int(amount or 500))
                 elif direction == "down":
-                    px = int(amount_px) if amount_px is not None else 500  # Default scroll amount
-                    await page.evaluate("(px) => window.scrollBy(0, px)", px)
+                    await page.evaluate("(px) => window.scrollBy(0, px)", int(amount or 500))
                 step_result["success"] = True
 
             elif action == "finish":
-                logger.info("Macro execution: 'finish' action encountered.")
+                logger.info("Macro execution: 'finish' action.")
                 step_result["success"] = True
-                # No break here, let run_macro handle finish signal
 
             else:
-                raise ValueError(f"Unknown action '{action}' in macro step.")
+                raise ValueError(f"Unknown action '{action}'")
 
             step_result["duration_ms"] = int((time.monotonic() - start_time) * 1000)
 
-        # Fix #6: Catch ElementNotFoundError specifically
-        except ElementNotFoundError as e:
-            step_result["error"] = f"Element not found for action '{action}': {e}"
+        except (PlaywrightTimeoutError, ToolError, ValueError, AssertionError, Exception) as e:
+            err_type = type(e).__name__
+            step_result["error"] = f"{err_type} during action '{action}': {e}"
             logger.warning(f"Step failed: {step_result['error']}")
-            # Do not break here, let the macro decide based on failure
-
-        # Catch other ToolErrors (e.g., Input, Secret resolution)
-        except ToolError as e:
-            step_result["error"] = f"ToolError during action '{action}': {e}"
-            logger.warning(f"Step failed: {step_result['error']}")
-            # Do not break here
-
-        # Catch Playwright errors (e.g., click intercepted, navigation timeout)
-        except PlaywrightException as e:
-            step_result["error"] = f"Playwright error during action '{action}': {e}"
-            logger.warning(f"Step failed: {step_result['error']}")
-            # Do not break here
-
-        # Catch unexpected errors
-        except Exception as e:
-            step_result["error"] = f"Unexpected error during action '{action}': {e}"
-            logger.error(f"Step failed unexpectedly: {step_result['error']}", exc_info=True)
-            # Maybe break on unexpected errors? For now, record and continue if possible.
+            # Let run_macro decide whether to stop based on step_result["success"] = False
 
         finally:
-            # Always log the step outcome
             await _log("macro_step_result", **step_result)
             results.append(step_result)
-            # If finish action was successful, add result and return immediately
-            # Let the caller (run_macro) handle the finish state.
-            # if action == "finish" and step_result["success"]:
-            #     break
 
     return results
 
@@ -3849,200 +3229,121 @@ async def run_steps(page: Page, steps: Sequence[Dict[str, Any]]) -> List[Dict[st
 # ══════════════════════════════════════════════════════════════════════════════
 # 14. UNIVERSAL SEARCH
 # ══════════════════════════════════════════════════════════════════════════════
-@resilient(max_attempts=2, backoff=1.0)  # Retry search once on transient errors
+@resilient(max_attempts=2, backoff=1.0)
 async def search_web(
     query: str, engine: str = "bing", max_results: int = 10
 ) -> List[Dict[str, str]]:
-    """
-    Performs web search using Playwright against Bing, DuckDuckGo (HTML), or Yandex.
-
-    Args:
-        query: The search query string.
-        engine: 'bing', 'duckduckgo', or 'yandex'.
-        max_results: Maximum number of results desired.
-
-    Returns:
-        List of result dictionaries, each with 'url', 'title', 'snippet'.
-    """
+    """Performs web search using Playwright against Bing, DuckDuckGo (HTML), or Yandex."""
     engine = engine.lower()
     if engine not in ("bing", "duckduckgo", "yandex"):
-        raise ToolInputError(
-            f"Invalid search engine: {engine}. Use 'bing', 'duckduckgo', or 'yandex'."
-        )
-
-    # Simple query sanitization
-    safe_query = re.sub(r"[^\w\s\-\.]", "", query).strip()  # Remove potentially harmful chars
-    if not safe_query:
-        raise ToolInputError("Search query is empty or invalid.")
+        raise ToolInputError("Invalid engine. Use 'bing', 'duckduckgo', or 'yandex'.")
+    safe_query = re.sub(r"[^\w\s\-\.]", "", query).strip()
+    assert safe_query, "Search query invalid."
     qs = urllib.parse.quote_plus(safe_query)
-
-    # Use timestamp/random element to slightly vary URL
     nonce = random.randint(1000, 9999)
-
     urls = {
-        "bing": f"https://www.bing.com/search?q={qs}&count={max_results}&form=QBLH&rdr=1&r={nonce}",  # Added form/rdr/r params
-        "duckduckgo": f"https://html.duckduckgo.com/html/?q={qs}&r={nonce}",  # HTML version is simpler/more stable
-        "yandex": f"https://yandex.com/search/?text={qs}&lr=10000&r={nonce}",  # Added location region (generic)
+        "bing": f"https://www.bing.com/search?q={qs}&count={max_results}&form=QBLH&rdr=1&r={nonce}",
+        "duckduckgo": f"https://html.duckduckgo.com/html/?q={qs}&r={nonce}",
+        "yandex": f"https://yandex.com/search/?text={qs}&lr=10000&r={nonce}",  # lr=10000 for generic region
     }
-    search_url = urls[engine]
-
-    # Selectors adjusted for robustness
     selectors = {
-        "bing": {  # Bing structure changes often
-            "result_item": "li.b_algo",
-            "link": "h2 > a",  # Primary link within title
-            "title": "h2 > a",  # Title text usually within link
-            "snippet": ".b_caption p",  # Snippet within caption block
-            "backup_link": "a.tilk",  # Alternative link if h2>a fails
+        "bing": {
+            "item": "li.b_algo",
+            "link": "h2 > a",
+            "title": "h2 > a",
+            "snippet": ".b_caption p",
+            "alt_link": "a.tilk",
         },
-        "duckduckgo": {  # DDG HTML version
-            "result_item": "div.result",
+        "duckduckgo": {
+            "item": "div.result",
             "link": "a.result__a",
             "title": "a.result__a",
             "snippet": "a.result__snippet",
         },
         "yandex": {
-            "result_item": "li.serp-item[data-cid]",  # Items with content ID
-            "link": "a.Link.Link_theme_outer.Path-Item",  # More specific link selector
-            "title": "a.Link.Link_theme_outer.Path-Item",  # Title is often the link text
-            # Snippet requires careful selection, might be complex
-            "snippet": "div.OrganicTextContentSpan",  # Or explore other text containers
+            "item": "li.serp-item[data-cid]",
+            "link": "a.Link_theme_outer",
+            "title": "a.Link_theme_outer",
+            "snippet": "div.OrganicTextContentSpan",
         },
     }
     sel = selectors[engine]
-
-    # Unique user agents per engine
-    user_agents = {
-        "bing": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.51",  # Edge UA
-        "duckduckgo": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",  # Safari UA
-        "yandex": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",  # Chrome Linux UA
+    user_agents = {  # Different UAs per engine might help
+        "bing": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36 Edg/114.0.1823.51",
+        "duckduckgo": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
+        "yandex": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
     }
     ua = user_agents[engine]
-
-    # Fix #13: Pass user agent to the context
-    # Use a dedicated incognito context for each search for isolation
-    context_args = {"user_agent": ua, "locale": "en-US"}
-    ctx, _ = await get_browser_context(use_incognito=True, context_args=context_args)
+    ctx, _ = await get_browser_context(
+        use_incognito=True, context_args={"user_agent": ua, "locale": "en-US"}
+    )
     page = None
     try:
         page = await ctx.new_page()
-        # No need for set_extra_http_headers if UA is set on context
-
-        await _log("search_start", engine=engine, query=query, url=search_url)
-        await page.goto(
-            search_url, wait_until="domcontentloaded", timeout=30000
-        )  # Wait for DOM, not full network idle
-
-        # Wait for results to appear (use a selector common to all engines?)
-        # Wait for the main result item selector
+        await _log("search_start", engine=engine, query=query, url=urls[engine])
+        await page.goto(urls[engine], wait_until="domcontentloaded", timeout=30000)
         try:
-            await page.wait_for_selector(sel["result_item"], state="visible", timeout=10000)
+            await page.wait_for_selector(sel["item"], state="visible", timeout=10000)
         except PlaywrightTimeoutError as e:
-            logger.warning(
-                f"Timed out waiting for results selector '{sel['result_item']}' on {engine} for query: {query}"
+            captcha_found = await page.evaluate(
+                "() => document.body.innerText.toLowerCase().includes('captcha') || document.querySelector('iframe[title*=captcha]')"
             )
-            # Check for CAPTCHA before giving up
-            captcha_found = await page.evaluate("""
-                () => document.body.innerText.toLowerCase().includes('captcha') ||
-                      document.querySelector('img[src*="captcha"]') !== null ||
-                      document.querySelector('iframe[title*="captcha"]') !== null
-            """)
             if captcha_found:
                 await _log("search_captcha", engine=engine, query=query)
-                raise ToolError(
-                    f"Search failed: {engine} presented a CAPTCHA.", error_code="captcha_detected"
-                ) from e
-            # Otherwise, assume no results or page load issue
+                raise ToolError(f"{engine} CAPTCHA.", error_code="captcha_detected") from e
             await _log(
-                "search_no_results_selector",
-                engine=engine,
-                query=query,
-                selector=sel["result_item"],
+                "search_no_results_selector", engine=engine, query=query, selector=sel["item"]
             )
-            return []  # Return empty list if results selector doesn't appear
-
-        # Add a small random pause after load
+            return []
         await asyncio.sleep(random.uniform(0.5, 1.5))
-
-        # Try to dismiss cookie/consent banners aggressively
+        # Try dismissing common consent banners
         consent_selectors = [
             'button:has-text("Accept")',
             'button:has-text("Agree")',
-            'button:has-text("Allow")',
             'button:has-text("Consent")',
             'button[id*="consent"]',
-            'button[class*="consent"]',
-            'button:has-text("I understand")',
-            'button:has-text("Got it")',
         ]
         for btn_sel in consent_selectors:
             try:
-                # Use wait_for with short timeout to avoid hanging
-                button = page.locator(btn_sel).first
-                await button.wait_for(state="visible", timeout=500)
-                await button.click(delay=random.uniform(50, 100), timeout=1000)
-                logger.info(f"Dismissed potential consent banner with selector: {btn_sel}")
-                await asyncio.sleep(0.5)  # Wait briefly after click
-                break  # Assume one banner is enough
-            except (PlaywrightTimeoutError, PlaywrightException):
-                pass  # Ignore if selector not found or click fails
+                await page.locator(btn_sel).first.click(timeout=1000)
+                await asyncio.sleep(0.3)
+                break
+            except PlaywrightException:
+                pass
 
-        # Extract results using page.evaluate for efficiency
+        # Extract results using JS evaluation
         results = await page.evaluate(
-            f"""
-            (sel, max_results) => {{
-                const items = Array.from(document.querySelectorAll(sel.result_item));
+            """
+            (sel, max_results) => {
+                const items = Array.from(document.querySelectorAll(sel.item));
                 const results = [];
-                for (let i = 0; i < Math.min(items.length, max_results); i++) {{
+                for (let i = 0; i < Math.min(items.length, max_results); i++) {
                     const item = items[i];
-                    try {{
-                        let linkEl = item.querySelector(sel.link);
-                        // Fallback link selector for Bing
-                        if (!linkEl && sel.backup_link) {{
-                            linkEl = item.querySelector(sel.backup_link);
-                        }}
-
-                        let titleEl = item.querySelector(sel.title);
+                    try {
+                        let linkEl = item.querySelector(sel.link) || (sel.alt_link ? item.querySelector(sel.alt_link) : null);
+                        let titleEl = item.querySelector(sel.title) || linkEl; // Fallback title to link text
                         let snippetEl = item.querySelector(sel.snippet);
-
                         const url = linkEl ? linkEl.href : null;
-                        let title = titleEl ? titleEl.innerText : (linkEl ? linkEl.innerText : '');
+                        let title = titleEl ? titleEl.innerText : '';
                         let snippet = snippetEl ? snippetEl.innerText : '';
-
-                        // Clean data
-                        if (url && url.trim() && !url.startsWith('javascript:')) {{
-                             // Simple title cleaning
-                             title = title.replace(/[\n\r\t]+/g, ' ').replace(/\s{(2,)}/g, ' ').trim();
-                             // Simple snippet cleaning
-                             snippet = snippet.replace(/[\n\r\t]+/g, ' ').replace(/\s{(2,)}/g, ' ').trim();
-
-                             // Ensure some useful info exists
-                             if (title || snippet) {{
-                                 results.push({{
-                                     url: url.trim(),
-                                     title: title,
-                                     snippet: snippet
-                                 }});
-                             }}
-                        }}
-                    }} catch (e) {{
-                        // Ignore errors processing a single item
-                        console.warn("Error processing search result item:", e);
-                    }}
-                }}
+                        if (url && url.trim() && !url.startsWith('javascript:')) {
+                             title = title.replace(/[\n\r\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+                             snippet = snippet.replace(/[\n\r\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+                             if (title || snippet) { results.push({ url: url.trim(), title, snippet }); }
+                        }
+                    } catch (e) { /* Ignore single item error */ }
+                }
                 return results;
-            }}
+            }
         """,
-            selectors[engine],
+            sel,
             max_results,
-        )  # Pass selectors and max_results
+        )
 
         await _log("search_complete", engine=engine, query=query, num_results=len(results))
         return results
-
     except PlaywrightException as e:
         await _log("search_error_playwright", engine=engine, query=query, error=str(e))
-        # Let resilient handle retry if applicable
         raise ToolError(f"Playwright error during search: {e}") from e
     except Exception as e:
         await _log("search_error_unexpected", engine=engine, query=query, error=str(e))
@@ -4058,131 +3359,139 @@ async def search_web(
 # 15.  TOOL CLASS FOR MCP SERVER INTEGRATION
 # ══════════════════════════════════════════════════════════════════════════════
 class SmartBrowserTool(BaseTool):
-    """
-    Advanced web automation tool using Playwright.
-
-    Integrates browser control, smart element finding, LLM-based planning,
-    search, download, and parallel processing capabilities within the MCP server framework.
-    Includes features like audit logging, encrypted state, proxy rotation, and resilience.
-    """
+    """Advanced web automation tool using Playwright and Enhanced Locator."""
 
     tool_name = "smart_browser"
-    description = "Performs advanced web automation tasks like browsing, interaction, search, download, and running complex macros."
+    description = "Performs advanced web automation: browse, click, type, search, download, run macros, collect docs."
 
     def __init__(self, mcp_server):
-        """Initialize the tool, setting up async components and inactivity monitor."""
         super().__init__(mcp_server)
-        self.tab_pool = TabPool()  # Use the shared instance for now
-        self._last_activity = time.monotonic()  # Use monotonic clock
+        self.tab_pool = tab_pool  # Use global instance
+        self._last_activity = time.monotonic()
         self._inactivity_monitor_task: Optional[asyncio.Task] = None
-        self._selector_cleanup_task_handle: Optional[asyncio.Task] = None
         self._init_lock = asyncio.Lock()
         self._is_initialized = False
-
-        # Fix #Half-baked (MCP Lifespan Check): Check nested attribute correctly
-        is_server_context = False
-        if hasattr(mcp_server, "mcp") and mcp_server.mcp:
-            is_server_context = hasattr(mcp_server.mcp, "lifespan")
-        elif hasattr(mcp_server, "lifespan"):  # Check top-level attribute as fallback
-            is_server_context = True
-
-        # Defer async initialization until first use or explicit setup
-        # This avoids issues if initialized without a running event loop.
+        # Check if running within MCP lifespan context (best effort)
+        is_server_context = (
+            hasattr(mcp_server, "mcp") and hasattr(mcp_server.mcp, "lifespan")
+            if hasattr(mcp_server, "mcp")
+            else hasattr(mcp_server, "lifespan")
+        )
         if is_server_context:
-            logger.info(
-                "SmartBrowserTool detected server context. Async components will init via lifespan or first use."
-            )
-            # Assume server will call an `async_setup` method if needed during lifespan.
+            logger.info("SmartBrowserTool in server context. Async init via lifespan/first use.")
         else:
-            logger.info(
-                "SmartBrowserTool initialized outside server context. Async components will init on first use."
-            )
-            # If not in server context, we might want to init immediately if a loop exists
-            # self._schedule_async_init() # Optional: attempt immediate init if loop available
+            logger.info("SmartBrowserTool outside server context. Async init on first use.")
 
     async def _ensure_initialized(self):
-        """Ensure async components like browser and monitor are started."""
-        global _selector_cleanup_task_handle # Use global handle defined earlier
+        """Ensure async components and load config into globals."""
+        # Define all relevant globals to modify
+        global _sb_state_key_b64_global, _sb_max_tabs_global, _sb_tab_timeout_global
+        global _sb_inactivity_timeout_global, _headless_mode_global, _vnc_enabled_global
+        global _vnc_password_global, _proxy_pool_str_global, _proxy_allowed_domains_str_global
+        global _vault_allowed_paths_str_global, _max_widgets_global, _max_section_chars_global
+        global _dom_fp_limit_global, _llm_model_locator_global, _retry_after_fail_global
+        global _seq_cutoff_global, _area_min_global, _high_risk_domains_set_global
+        global _locator_cache_cleanup_task_handle  # Include the task handle global
+
         if self._is_initialized:
             return
         async with self._init_lock:
-            if self._is_initialized:  # Double-check after acquiring lock
+            if self._is_initialized:
                 return
 
-            logger.info(
-                "Performing first-time initialization of SmartBrowserTool async components..."
-            )
-            # Ensure browser context exists (this handles Playwright/browser launch)
-            await get_browser_context()
+            logger.info("Performing first-time async initialization of SmartBrowserTool...")
 
-            # Start inactivity monitor if not already running
+            # --- Load ALL SB config into globals ---
+            try:
+                config = get_config()  # Use the central config loader
+                sb_config: SmartBrowserConfig = config.smart_browser  # Get the specific section
+
+                # Assign loaded config values to global variables
+                _sb_state_key_b64_global = sb_config.sb_state_key_b64
+                _sb_max_tabs_global = sb_config.sb_max_tabs
+                _sb_tab_timeout_global = sb_config.sb_tab_timeout
+                _sb_inactivity_timeout_global = sb_config.sb_inactivity_timeout
+                _headless_mode_global = sb_config.headless_mode
+                _vnc_enabled_global = sb_config.vnc_enabled
+                _vnc_password_global = sb_config.vnc_password
+                _proxy_pool_str_global = sb_config.proxy_pool_str
+                _proxy_allowed_domains_str_global = sb_config.proxy_allowed_domains_str
+                _vault_allowed_paths_str_global = sb_config.vault_allowed_paths_str
+                _max_widgets_global = sb_config.max_widgets
+                _max_section_chars_global = sb_config.max_section_chars
+                _dom_fp_limit_global = sb_config.dom_fp_limit
+                _llm_model_locator_global = sb_config.llm_model_locator
+                _retry_after_fail_global = sb_config.retry_after_fail
+                _seq_cutoff_global = sb_config.seq_cutoff
+                _area_min_global = sb_config.area_min
+                _high_risk_domains_set_global = sb_config.high_risk_domains_set
+
+                logger.info("Smart Browser configuration loaded into global variables.")
+                # Update dependent derived globals AFTER loading primary strings
+                _update_proxy_settings()
+                _update_vault_paths()
+
+            except AttributeError as e:
+                logger.error(f"Error accessing config: {e}. Using hardcoded defaults.")
+                # Keep the defaults defined in the global variable declarations
+                # Update derived settings even with defaults
+                _update_proxy_settings()
+                _update_vault_paths()
+            except Exception as e:
+                logger.error(f"Unexpected error loading Smart Browser config: {e}. Using defaults.")
+                _update_proxy_settings()
+                _update_vault_paths()
+            # --- End Config Loading ---
+
+            await get_browser_context()  # Ensure browser is ready (uses globals now)
+
+            # Start inactivity monitor (uses global)
             if self._inactivity_monitor_task is None or self._inactivity_monitor_task.done():
-                logger.info("Starting browser inactivity monitor...")
-                timeout_str = os.getenv("SB_INACTIVITY_TIMEOUT", "600")  # 10 minutes default
-                try:
-                    timeout_sec = int(timeout_str)
-                    if timeout_sec > 0:
-                        self._inactivity_monitor_task = asyncio.create_task(
-                            self._inactivity_monitor(timeout_sec)
-                        )
-                    else:
-                        logger.info("Inactivity monitor disabled (timeout <= 0).")
-                except ValueError:
-                    logger.warning(
-                        f"Invalid SB_INACTIVITY_TIMEOUT value '{timeout_str}'. Monitor disabled."
+                timeout_sec = _sb_inactivity_timeout_global  # Use global
+                if timeout_sec > 0:
+                    logger.info(f"Starting browser inactivity monitor ({timeout_sec}s)...")
+                    self._inactivity_monitor_task = asyncio.create_task(
+                        self._inactivity_monitor(timeout_sec)
                     )
+                else:
+                    logger.info("Inactivity monitor disabled.")
 
-            # Start selector cleanup task if not already running
-            if _selector_cleanup_task_handle is None or _selector_cleanup_task_handle.done(): # <<< MODIFIED Check global
-                logger.info("Starting periodic selector cleanup task...")
-                _selector_cleanup_task_handle = asyncio.create_task(_selector_cleanup_task()) # <<< MODIFIED Assign to glo
-                
+            # Start locator cache cleanup task (uses global handle)
+            if (
+                _locator_cache_cleanup_task_handle is None
+                or _locator_cache_cleanup_task_handle.done()
+            ):
+                cleanup_interval = 24 * 60 * 60  # Daily - Consider making this configurable too?
+                logger.info("Starting periodic locator cache cleanup task...")
+                _locator_cache_cleanup_task_handle = asyncio.create_task(
+                    _locator_cache_cleanup_task(interval_seconds=cleanup_interval)
+                )
+
             self._is_initialized = True
-            logger.info("SmartBrowserTool async components initialized successfully.")
+            logger.info("SmartBrowserTool async components initialized.")
 
     def _update_activity(self):
-        """Updates the last activity timestamp."""
         self._last_activity = time.monotonic()
 
     async def _inactivity_monitor(self, timeout_seconds: int):
-        """Monitors browser inactivity and triggers shutdown if idle for too long."""
-        check_interval = 60  # Check every minute
-        logger.info(
-            f"Inactivity monitor started. Timeout: {timeout_seconds}s. Check interval: {check_interval}s."
-        )
-
+        """Monitors browser inactivity and triggers shutdown."""
+        check_interval = 60
+        logger.info(f"Inactivity monitor started. Timeout: {timeout_seconds}s.")
         while True:
             await asyncio.sleep(check_interval)
-            # Check if browser/context still exist before calculating idle time
-            # Use the lock to safely access global state
             async with _playwright_lock:
-                browser_exists = _browser is not None and _browser.is_connected()
-                context_exists = _ctx is not None and _ctx.browser is not None
-
-            if not browser_exists and not context_exists:
-                logger.info(
-                    "Inactivity monitor: Browser/Context no longer active. Stopping monitor."
-                )
+                browser_active = _browser is not None and _browser.is_connected()
+            if not browser_active:
+                logger.info("Inactivity monitor: Browser closed. Stopping monitor.")
                 break
-
             idle_time = time.monotonic() - self._last_activity
-            # logger.debug(f"Inactivity check: Idle for {idle_time:.1f}s")
-
             if idle_time > timeout_seconds:
-                logger.info(
-                    f"Browser inactive for {idle_time:.1f}s (threshold: {timeout_seconds}s). Initiating shutdown."
-                )
-                # Use the safe shutdown initiator
+                logger.info(f"Browser inactive for {idle_time:.1f}s. Initiating shutdown.")
                 try:
                     await _initiate_shutdown()
                 except Exception as e:
-                    logger.error(
-                        f"Error during automatic shutdown triggered by inactivity: {e}",
-                        exc_info=True,
-                    )
-            
-            # Exit the monitor loop once shutdown is triggered
-            break
+                    logger.error(f"Error during auto-shutdown: {e}", exc_info=True)
+                break  # Exit monitor after triggering shutdown
         logger.info("Inactivity monitor stopped.")
 
     @tool(name="smart_browser.browse")
@@ -4191,31 +3500,19 @@ class SmartBrowserTool(BaseTool):
     async def browse_url(
         self, url: str, wait_for_selector: Optional[str] = None, wait_for_navigation: bool = True
     ) -> Dict[str, Any]:
-        """
-        Navigates to a URL, waits for load, and returns the page state.
-
-        Args:
-            url: The URL to browse (will prepend https:// if missing).
-            wait_for_selector: Optional CSS selector to wait for after navigation.
-            wait_for_navigation: If True (default), wait for 'networkidle' state, else 'domcontentloaded'.
-
-        Returns:
-            Dictionary containing 'success' (bool) and 'page_state' (dict).
-        """
+        """Navigates to a URL, waits for load, and returns the page state."""
         await self._ensure_initialized()
         self._update_activity()
-
         if not isinstance(url, str) or not url.strip():
             raise ToolInputError("URL cannot be empty.")
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-
-        ctx, _ = await get_browser_context()  # Use shared context by default
-
-        # Fix #10: Check proxy allowlist if proxy is active for this context
+        ctx, _ = await get_browser_context()
         if ctx.proxy and not _is_domain_allowed_for_proxy(url):
-            proxy_server = ctx.proxy.get("server", "Unknown Proxy")
-            error_msg = f"Navigation blocked: Domain for URL '{url}' is not in PROXY_ALLOWED_DOMAINS for proxy '{proxy_server}'."
+            proxy_server = ctx.proxy.get("server", "Proxy")
+            error_msg = (
+                f"Navigation blocked by PROXY_ALLOWED_DOMAINS for '{url}' via {proxy_server}."
+            )
             await _log("browse_fail_proxy_disallowed", url=url, proxy=proxy_server)
             raise ToolError(error_msg, error_code="proxy_domain_disallowed")
 
@@ -4223,31 +3520,25 @@ class SmartBrowserTool(BaseTool):
             await _log("navigate_start", url=url)
             try:
                 wait_until_state = "networkidle" if wait_for_navigation else "domcontentloaded"
-                await page.goto(
-                    url, wait_until=wait_until_state, timeout=60000
-                )  # 60s navigation timeout
-
+                await page.goto(url, wait_until=wait_until_state, timeout=60000)
                 if wait_for_selector:
                     try:
                         await page.wait_for_selector(
                             wait_for_selector, state="visible", timeout=15000
-                        )  # 15s wait
+                        )
                         await _log("navigate_wait_selector_ok", selector=wait_for_selector)
                     except PlaywrightTimeoutError:
-                        await _log("navigate_wait_selector_timeout", selector=wait_for_selector)
-                        # Don't fail the whole browse, just log the timeout
                         logger.warning(
-                            f"Timed out waiting for selector '{wait_for_selector}' after navigation to {url}"
+                            f"Timeout waiting for selector '{wait_for_selector}' at {url}"
                         )
-
-                await _pause(page, (50, 200))  # Short pause after load
-                state = await get_page_state(page)
+                        await _log("navigate_wait_selector_timeout", selector=wait_for_selector)
+                await _pause(page, (50, 200))
+                state = await get_page_state(page)  # Uses new page map state
                 await _log("navigate_success", url=url, title=state.get("title"))
                 return {"success": True, "page_state": state}
-
             except PlaywrightException as e:
                 await _log("navigate_fail_playwright", url=url, error=str(e))
-                raise ToolError(f"Navigation or page load failed for {url}: {e}") from e
+                raise ToolError(f"Navigation failed for {url}: {e}") from e
             except Exception as e:
                 await _log("navigate_fail_unexpected", url=url, error=str(e))
                 raise ToolError(f"Unexpected error browsing {url}: {e}") from e
@@ -4256,64 +3547,39 @@ class SmartBrowserTool(BaseTool):
     @with_tool_metrics
     @with_error_handling
     async def click_and_extract(
-        self, url: str, target: Dict[str, Any], wait_ms: int = 1000
+        self,
+        url: str,
+        target: Optional[Dict[str, Any]] = None,
+        task_hint: Optional[str] = None,
+        wait_ms: int = 1000,
     ) -> Dict[str, Any]:
-        """
-        Navigates to a URL, clicks a target element, waits, and returns the new page state.
-
-        Args:
-            url: The URL to navigate to first.
-            target: Target element specification for SmartLocator (e.g., name, role, css).
-            wait_ms: Milliseconds to wait after the click (default 1000).
-
-        Returns:
-            Dictionary containing 'success' (bool) and 'page_state' (dict).
-        """
+        """Navigates, clicks (using hint or target), waits, returns page state."""
         await self._ensure_initialized()
         self._update_activity()
+        if not task_hint:
+            if target and (target.get("name") or target.get("role")):
+                name = target.get("name", "")
+                role = target.get("role", "")
+                task_hint = f"Click the {role or 'element'}" + (f" named '{name}'" if name else "")
+            else:
+                raise ToolInputError("Requires 'task_hint' or 'target' dict.")
 
-        if not isinstance(target, dict) or not target:
-            raise ToolInputError("Missing or invalid 'target' dictionary for click action.")
-
-        # First, browse to the URL
-        browse_result = await self.browse_url(url=url, wait_for_navigation=True)
-        if not browse_result.get("success"):
-            # If initial navigation fails, bubble up the error
-            raise ToolError(
-                f"Failed to load initial URL {url} before clicking.",
-                details=browse_result.get("page_state"),
-            )
-
-        # Now perform the click on the current page (assuming browse_url leaves page open in context?)
-        # This assumes browse_url uses the shared context, which it does.
-        # We need the page object though. Let's re-implement slightly:
         ctx, _ = await get_browser_context()
         async with _tab_context(ctx) as page:
-            # Navigate
             await _log("click_extract_navigate", url=url)
             await page.goto(url, wait_until="networkidle", timeout=60000)
-
-            # Click the target
-            await smart_click(page, **target)  # smart_click handles logging/errors
-
-            # Wait after click
+            await smart_click(
+                page, task_hint=task_hint, target_kwargs=target, timeout_ms=10000
+            )  # smart_click handles errors/logging
             if wait_ms > 0:
                 await page.wait_for_timeout(wait_ms)
-
-            # Wait for potential navigation/update after click
             try:
-                await page.wait_for_load_state(
-                    "networkidle", timeout=10000
-                )  # Wait up to 10s for idle
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except PlaywrightTimeoutError:
-                logger.debug("Network did not become idle after click+wait. Proceeding anyway.")
-                pass  # Ignore timeout, page might be dynamically updating
-
-            # Get final page state
+                logger.debug("Network idle wait timeout after click.")
             await _pause(page, (50, 200))
             final_state = await get_page_state(page)
-            await _log("click_extract_success", url=url, target=target)
-
+            await _log("click_extract_success", url=url, hint=task_hint)
             return {"success": True, "page_state": final_state}
 
     @tool(name="smart_browser.fill_form")
@@ -4323,109 +3589,90 @@ class SmartBrowserTool(BaseTool):
         self,
         url: str,
         form_fields: List[Dict[str, Any]],
+        submit_hint: Optional[str] = None,
         submit_target: Optional[Dict[str, Any]] = None,
         wait_after_submit_ms: int = 2000,
     ) -> Dict[str, Any]:
-        """
-        Navigates to a URL, fills form fields, optionally clicks a submit button,
-        and returns the final page state.
-
-        Args:
-            url: The URL containing the form.
-            form_fields: List of field dicts. Each needs 'target' (for SmartLocator)
-                         and 'text' (value to type). Can also include 'enter': bool, 'clear_before': bool.
-            submit_target: Optional SmartLocator target dict for the submit button.
-            wait_after_submit_ms: Milliseconds to wait after submitting (default 2000).
-
-        Returns:
-             Dictionary containing 'success' (bool) and 'page_state' (dict).
-        """
+        """Navigates, fills form fields (using hints), optionally submits, returns page state."""
         await self._ensure_initialized()
         self._update_activity()
-
         if not form_fields or not isinstance(form_fields, list):
             raise ToolInputError("'form_fields' must be a non-empty list.")
-
         ctx, _ = await get_browser_context()
         async with _tab_context(ctx) as page:
-            # Navigate
             await _log("fill_form_navigate", url=url)
             await page.goto(url, wait_until="networkidle", timeout=60000)
-
-            # Fill fields sequentially
             for i, field in enumerate(form_fields):
-                if not isinstance(field, dict) or "target" not in field or "text" not in field:
-                    raise ToolInputError(
-                        f"Invalid form_field at index {i}: {field}. Requires 'target' and 'text'."
-                    )
-
-                target = field["target"]
-                text = field["text"]
-                await _log("fill_form_field", index=i, target=target)
-                # smart_type handles logging of success/failure/secrets internally
+                hint = field.get("task_hint")
+                target_fallback = field.get("target")
+                text = field.get("text")
+                if not hint:
+                    if target_fallback and (
+                        target_fallback.get("name") or target_fallback.get("role")
+                    ):
+                        name = target_fallback.get("name", "")
+                        role = target_fallback.get("role", "input")
+                        hint = f"Input field for {name or role}"
+                    else:
+                        raise ToolInputError(f"Field {i} needs 'task_hint' or 'target'.")
+                if text is None:
+                    raise ToolInputError(f"Field {i} missing 'text'.")
+                await _log("fill_form_field", index=i, hint=hint)
                 await smart_type(
                     page,
-                    text,
+                    task_hint=hint,
+                    text=text,
                     press_enter=field.get("enter", False),
                     clear_before=field.get("clear_before", True),
-                    **target,
+                    target_kwargs=target_fallback,
+                    timeout_ms=5000,
                 )
-                await _pause(page, (50, 150))  # Small pause between fields
+                await _pause(page, (50, 150))
 
-            # Click submit button if provided
-            if submit_target:
-                await _log("fill_form_submit", target=submit_target)
-                await smart_click(page, **submit_target)
-                # Wait for navigation/update after submit
+            if submit_hint or submit_target:
+                final_submit_hint = submit_hint
+                if not final_submit_hint:
+                    if submit_target and (submit_target.get("name") or submit_target.get("role")):
+                        name = submit_target.get("name", "")
+                        role = submit_target.get("role", "button")
+                        final_submit_hint = f"Submit button {name or role}"
+                    else:
+                        raise ToolInputError(
+                            "Submit action needs 'submit_hint' or 'submit_target'."
+                        )
+                await _log("fill_form_submit", hint=final_submit_hint)
+                await smart_click(
+                    page, task_hint=final_submit_hint, target_kwargs=submit_target, timeout_ms=10000
+                )
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=15000)  # Wait up to 15s
+                    await page.wait_for_load_state("networkidle", timeout=15000)
                 except PlaywrightTimeoutError:
-                    logger.debug(
-                        "Network did not become idle after form submit. Proceeding anyway."
-                    )
+                    logger.debug("Network idle wait timeout after submit.")
                 if wait_after_submit_ms > 0:
                     await page.wait_for_timeout(wait_after_submit_ms)
 
-            # Get final page state
             await _pause(page, (100, 300))
             final_state = await get_page_state(page)
             await _log(
                 "fill_form_success",
                 url=url,
                 num_fields=len(form_fields),
-                submitted=bool(submit_target),
+                submitted=bool(submit_hint or submit_target),
             )
-
             return {"success": True, "page_state": final_state}
 
     @tool(name="smart_browser.search")
     @with_tool_metrics
     @with_error_handling
     async def search(
-        self,
-        query: str,
-        engine: str = "bing",  # Default to Bing, often more stable
-        max_results: int = 10,
+        self, query: str, engine: str = "bing", max_results: int = 10
     ) -> Dict[str, Any]:
-        """
-        Performs a web search using the specified engine and returns results.
-
-        Args:
-            query: The search query.
-            engine: Search engine: 'bing', 'duckduckgo', or 'yandex'.
-            max_results: Maximum number of results to return (default 10).
-
-        Returns:
-            Dictionary with 'success', 'query', 'engine', 'results' (list), 'result_count'.
-        """
+        """Performs a web search and returns results."""
         await self._ensure_initialized()
         self._update_activity()
-
         if max_results <= 0:
             max_results = 10
-
         results = await search_web(query, engine=engine, max_results=max_results)
-
         return {
             "success": True,
             "query": query,
@@ -4438,49 +3685,36 @@ class SmartBrowserTool(BaseTool):
     @with_tool_metrics
     @with_error_handling
     async def download_file(
-        self, url: str, target: Dict[str, Any], dest_dir: Optional[str] = None
+        self,
+        url: str,
+        target: Optional[Dict[str, Any]] = None,
+        task_hint: Optional[str] = None,
+        dest_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Navigates to a URL, clicks a target element to trigger a download,
-        saves the file, and returns info (path, hash, size, tables).
-
-        Args:
-            url: URL to navigate to first.
-            target: Target element specification for SmartLocator to click.
-            dest_dir: Optional destination directory (defaults to ~/.smart_browser/downloads).
-
-        Returns:
-            Dictionary containing 'success' (bool) and 'download' info dict.
-        """
+        """Navigates, clicks (using hint or target) to download, saves file, returns info."""
         await self._ensure_initialized()
         self._update_activity()
-
-        if not isinstance(target, dict) or not target:
-            raise ToolInputError("Missing or invalid 'target' dictionary for download action.")
+        if not task_hint:
+            if target and (target.get("name") or target.get("role")):
+                name = target.get("name", "")
+                role = target.get("role", "")
+                task_hint = f"Download link/button {name or role}"
+            else:
+                raise ToolInputError("Requires 'task_hint' or 'target' dict.")
 
         ctx, _ = await get_browser_context()
         async with _tab_context(ctx) as page:
-            # Navigate
             await _log("download_navigate", url=url)
             await page.goto(url, wait_until="networkidle", timeout=60000)
-
-            # Initiate download via click
             download_info = await smart_download(
-                page, target, dest_dir
-            )  # Handles logging and errors
-
-            # smart_download now returns the full info dict including success status
+                page, task_hint=task_hint, dest_dir=dest_dir, target_kwargs=target
+            )
             if not download_info.get("success"):
-                # If download failed, bubble up the error stored in the result
                 raise ToolError(
-                    f"Download failed: {download_info.get('error', 'Unknown reason')}",
+                    f"Download failed: {download_info.get('error', 'Unknown')}",
                     details=download_info,
                 )
-
-            return {
-                "success": True,
-                "download": download_info,  # Return the detailed info from smart_download
-            }
+            return {"success": True, "download": download_info}
 
     @tool(name="smart_browser.download_site_pdfs")
     @with_tool_metrics
@@ -4488,144 +3722,74 @@ class SmartBrowserTool(BaseTool):
     async def download_site_pdfs(
         self,
         start_url: str,
-        dest_subfolder: Optional[str] = None,  # Optional subfolder name
+        dest_subfolder: Optional[str] = None,
         include_regex: Optional[str] = None,
         max_depth: int = 2,
         max_pdfs: int = 100,
         max_pages_crawl: int = 500,
-        rate_limit_rps: float = 1.0,  # Slower default rate for bulk downloads
+        rate_limit_rps: float = 1.0,
     ) -> Dict[str, Any]:
-        """
-        Crawls a site starting from *start_url* to find PDF links (optionally filtered
-        by *include_regex* within *max_depth*). Downloads found PDFs (up to *max_pdfs*)
-        using direct HTTP requests (no browser interaction needed for downloads) with
-        rate limiting. Saves files under ~/.smart_browser/downloads/<dest_subfolder>/
-        (subfolder defaults to slug of start_url domain).
-
-        Args:
-            start_url: URL to start crawling (can be domain or specific page).
-            dest_subfolder: Optional name for subfolder within downloads directory.
-            include_regex: Regex to filter PDF URLs.
-            max_depth: Max crawl depth.
-            max_pdfs: Max PDFs to download.
-            max_pages_crawl: Safety limit on pages visited during crawl phase.
-            rate_limit_rps: Download rate limit in requests/second.
-
-        Returns:
-            Dict with 'success', 'pdf_count', 'dest_dir', and 'files' list (each item
-            is a dict with 'url', 'file', 'size', 'sha256', 'success', 'error'?).
-        """
-        await self._ensure_initialized()  # Ensure paths/logging are ready
-        self._update_activity()  # Mark activity
-
-        # Determine destination directory
+        """Crawls site, finds PDFs, downloads them directly with rate limiting."""
+        await self._ensure_initialized()
+        self._update_activity()
         download_base = _HOME / "downloads"
         if dest_subfolder:
-            # Sanitize subfolder name
-            safe_subfolder = _slugify(dest_subfolder, max_len=50)
+            safe_subfolder = _slugify(dest_subfolder, 50)
         else:
-            # Default to slug of start URL domain
-            try:
-                safe_subfolder = _slugify(urlparse(start_url).netloc, max_len=50) or "pdfs"
-            except ValueError:
-                safe_subfolder = "pdfs"
+            safe_subfolder = _slugify(urlparse(start_url).netloc, 50) or "pdfs"
         dest_dir = download_base / safe_subfolder
+        await create_directory(str(dest_dir))  # Assumes creates with 700 perms
 
-        # Create directory asynchronously with permissions check
-        await create_directory(str(dest_dir))  # Assumes create_directory handles permissions
-        # Double check permissions if needed: os.chmod(dest_dir, 0o700) via run_in_thread
-
-        # 1. Find PDF URLs
         logger.info(f"Starting PDF crawl from: {start_url}")
-        pdf_urls_to_download = await crawl_for_pdfs(
-            start_url,
-            include_regex,
-            max_depth,
-            max_pdfs,
-            max_pages_crawl,
-            rate_limit_rps=5.0,  # Faster crawl rate
+        pdf_urls = await crawl_for_pdfs(
+            start_url, include_regex, max_depth, max_pdfs, max_pages_crawl, rate_limit_rps=5.0
         )
-        if not pdf_urls_to_download:
-            logger.info("No PDF URLs found or matched during crawl.")
+        if not pdf_urls:
+            logger.info("No PDF URLs found.")
             return {"success": True, "pdf_count": 0, "dest_dir": str(dest_dir), "files": []}
 
-        logger.info(
-            f"Found {len(pdf_urls_to_download)} PDF URLs to download. Starting downloads..."
-        )
+        logger.info(f"Found {len(pdf_urls)} PDFs. Starting downloads (Rate: {rate_limit_rps}/s)...")
+        limiter = RateLimiter(rate_limit_rps)
 
-        # 2. Download PDFs directly using httpx and rate limiting
-        limiter = RateLimiter(rate_limit_rps)  # Apply download rate limit
-        download_tasks = []
-        for i, pdf_url in enumerate(pdf_urls_to_download):
-            # Create task: acquire limiter then call download function
-            async def download_task(url, seq):
-                await limiter.acquire()
-                return await _download_file_direct(url, dest_dir, seq)
+        async def download_task(url, seq):
+            await limiter.acquire()
+            return await _download_file_direct(url, dest_dir, seq)
 
-            download_tasks.append(asyncio.create_task(download_task(pdf_url, i + 1)))
-
-        # Execute downloads concurrently
-        download_results = await asyncio.gather(*download_tasks)
-
-        successful_downloads = [res for res in download_results if res.get("success")]
-        failed_downloads = [res for res in download_results if not res.get("success")]
-
+        download_tasks = [
+            asyncio.create_task(download_task(url, i + 1)) for i, url in enumerate(pdf_urls)
+        ]
+        results = await asyncio.gather(*download_tasks)
+        successful = [r for r in results if r.get("success")]
         await _log(
             "download_site_pdfs_complete",
             start_url=start_url,
-            total_found=len(pdf_urls_to_download),
-            successful=len(successful_downloads),
-            failed=len(failed_downloads),
+            found=len(pdf_urls),
+            successful=len(successful),
             dest_dir=str(dest_dir),
         )
-
         return {
-            "success": True,  # Overall operation succeeded, check individual file results
-            "pdf_count": len(successful_downloads),
+            "success": True,
+            "pdf_count": len(successful),
             "dest_dir": str(dest_dir),
-            "files": download_results,  # Return results for all attempted downloads
+            "files": results,
         }
 
     @tool(name="smart_browser.collect_documentation")
     @with_tool_metrics
     @with_error_handling
     async def collect_documentation(
-        self,
-        package: str,  # Name of the package/library
-        max_pages: int = 40,
-        rate_limit_rps: float = 2.0,  # Rate limit for fetching doc pages
+        self, package: str, max_pages: int = 40, rate_limit_rps: float = 2.0
     ) -> Dict[str, Any]:
-        """
-        Searches for the documentation site of an open-source package, crawls it,
-        extracts readable text from pages, and saves the combined text to a file.
-
-        Args:
-            package: The name of the package/library (e.g., "requests", "langchain").
-            max_pages: Maximum number of documentation pages to fetch and process.
-            rate_limit_rps: Max requests per second for crawling the doc site.
-
-        Returns:
-            Dict with 'success', 'package', 'pages_collected', 'file_path', 'root_url'.
-        """
+        """Finds package docs site, crawls pages, extracts text, saves to file."""
         await self._ensure_initialized()
         self._update_activity()
-
-        # 1. Find documentation root URL
         docs_root = await _pick_docs_root(package)
         if not docs_root:
-            raise ToolError(
-                f"Could not automatically find a documentation site for '{package}'. Please provide a specific start URL."
-            )
-
-        # 2. Crawl the site and extract text
+            raise ToolError(f"Could not find docs site for '{package}'.")
         pages_content = await crawl_docs_site(
             docs_root, max_pages=max_pages, rate_limit_rps=rate_limit_rps
         )
         if not pages_content:
-            # Don't treat as error, just no content found
-            logger.warning(
-                f"Documentation crawl for '{package}' starting at {docs_root} yielded 0 pages with text."
-            )
             return {
                 "success": True,
                 "package": package,
@@ -4634,38 +3798,26 @@ class SmartBrowserTool(BaseTool):
                 "root_url": docs_root,
                 "message": "No content collected.",
             }
-
-        # 3. Combine content and save to file
-        # Create directory with permissions handling
         scratch_dir = _HOME / "docs_collected"
-        await create_directory(str(scratch_dir))  # Assumes 700 permissions if created
-        # Fallback needed if create_directory fails or isn't robust
-
-        # Create filename
-        now_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        safe_pkg_name = _slugify(package, max_len=40)
-        fname = f"{safe_pkg_name}_docs_{now_str}.txt"
+        await create_directory(str(scratch_dir))
+        now = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        safe_pkg = _slugify(package, 40)
+        fname = f"{safe_pkg}_docs_{now}.txt"
         fpath = scratch_dir / fname
-
-        # Build combined content with separators
-        combined_content = f"# Documentation for: {package}\n# Source Root: {docs_root}\n\n"
-        page_separator = "\n\n" + ("=" * 80) + "\n\n"  # Clear separator
-        for i, (url, text) in enumerate(pages_content):
-            combined_content += f"## Page {i + 1}: {url}\n\n{text.strip()}{page_separator}"
-
-        # Write asynchronously
-        await write_file_content(str(fpath), combined_content)
-        # Set permissions on file
-        await _run_in_thread(os.chmod, fpath, 0o600)
-
+        sep = "\n\n" + ("=" * 80) + "\n\n"
+        combined = f"# Docs for: {package}\n# Root: {docs_root}\n{sep}"
+        combined += sep.join(
+            f"## Page {i + 1}: {url}\n\n{text.strip()}"
+            for i, (url, text) in enumerate(pages_content)
+        )
+        await write_file_content(str(fpath), combined)  # Assumes sets 600 perms
         await _log(
             "docs_collected_success",
             package=package,
-            root_url=docs_root,
+            root=docs_root,
             pages=len(pages_content),
             file=str(fpath),
         )
-
         return {
             "success": True,
             "package": package,
@@ -4680,49 +3832,27 @@ class SmartBrowserTool(BaseTool):
     async def execute_macro(
         self, url: str, task: str, model: str = "gpt-4o", max_rounds: int = 7
     ) -> Dict[str, Any]:
-        """
-        Navigates to a URL and executes a natural language task using an LLM planner.
-
-        Args:
-            url: The starting URL.
-            task: Natural language description of the task to perform.
-            model: LLM model to use for planning (default gpt-4o).
-            max_rounds: Maximum number of planning/execution rounds (default 7).
-
-        Returns:
-            Dictionary with 'success', 'task', 'steps' (list of results), 'final_page_state'.
-        """
+        """Navigates to URL and executes a natural language task using LLM planner."""
         await self._ensure_initialized()
         self._update_activity()
-
         ctx, _ = await get_browser_context()
         async with _tab_context(ctx) as page:
-            # Navigate to start URL first
             await _log("macro_navigate", url=url)
             try:
                 await page.goto(url, wait_until="networkidle", timeout=60000)
-            except PlaywrightException as nav_err:
-                raise ToolError(
-                    f"Macro failed: Could not navigate to initial URL {url}: {nav_err}"
-                ) from nav_err
-
-            # Run the macro using the plan-act loop
-            results = await run_macro(
-                page, task, max_rounds, model
-            )  # Handles internal logging/errors
-
-            # Get final page state, regardless of macro success/failure
+            except PlaywrightException as e:
+                raise ToolError(f"Macro nav failed: {e}") from e
+            results = await run_macro(page, task, max_rounds, model)  # Handles internal logs/errors
             try:
                 final_state = await get_page_state(page)
-            except Exception as state_err:
-                logger.error(f"Failed to get final page state after macro execution: {state_err}")
-                final_state = {"error": f"Failed to get final page state: {state_err}"}
-
-            # Determine overall success based on results (e.g., no errors, finish action hit)
-            macro_success = True
-            if not results or any(step.get("action") == "error" for step in results):
-                macro_success = False
-            # Check if last non-finish step failed? More nuanced check might be needed.
+            except Exception as e:
+                final_state = {"error": f"Failed to get final state: {e}"}
+            macro_success = bool(results) and all(
+                s.get("success", False) for s in results if s.get("action") != "error"
+            )
+            # More refined success check: did it finish or just stop without error?
+            finished = any(s.get("action") == "finish" and s.get("success") for s in results)
+            macro_success = macro_success or finished  # Consider it success if it finished cleanly
 
             return {
                 "success": macro_success,
@@ -4735,116 +3865,69 @@ class SmartBrowserTool(BaseTool):
     @with_tool_metrics
     @with_error_handling
     async def autopilot(
-        self,
-        task: str,
-        scratch_subdir: str = "autopilot_runs",
-        max_steps: int = 15,  # Reduced default max steps
+        self, task: str, scratch_subdir: str = "autopilot_runs", max_steps: int = 10
     ) -> Dict[str, Any]:
-        """
-        Executes an arbitrary multi-step task using LLM planning and available tools.
-        Logs results to a file and handles replanning on failure.
-
-        Args:
-            task: Natural language description of the overall task.
-            scratch_subdir: Subdirectory within ~/.smart_browser to store run logs.
-            max_steps: Maximum number of tool execution steps allowed.
-
-        Returns:
-            Dict with 'success', 'steps_executed', 'run_log' path, 'final_results' list.
-        """
+        """Executes a complex multi-step task using LLM planning and available tools."""
         await self._ensure_initialized()
         self._update_activity()
-
-        # Setup logging directory and file
         scratch_dir = _HOME / scratch_subdir
         await create_directory(str(scratch_dir))
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         log_path = scratch_dir / f"autopilot_{run_id}.jsonl"
-        await _run_in_thread(os.chmod, scratch_dir, 0o700)  # Ensure dir perms
-
-        logger.info(f"Autopilot run started. Task: '{task[:100]}...'. Log: {log_path}")
+        logger.info(f"Autopilot run '{run_id}' started. Task: '{task[:100]}...'. Log: {log_path}")
         all_results = []
         current_task = task
 
         try:
-            # Initial plan generation
             current_plan = await _plan_autopilot(current_task)
-
-            # Execute plan step-by-step
             step_num = 0
             while step_num < max_steps and current_plan:
                 step_num += 1
-                step_to_execute = current_plan.pop(0)  # Get next step
+                step_to_execute = current_plan.pop(0)
                 tool_name = step_to_execute.get("tool")
                 args = step_to_execute.get("args", {})
-
-                step_log_entry = {
-                    "step": step_num,
-                    "tool": tool_name,
-                    "args": args,
-                    "success": False,  # Default
-                }
+                step_log = {"step": step_num, "tool": tool_name, "args": args, "success": False}
 
                 if tool_name not in _AVAILABLE_TOOLS:
-                    error_msg = f"Unknown tool '{tool_name}' requested in plan."
-                    logger.error(error_msg)
-                    step_log_entry["error"] = error_msg
+                    step_log["error"] = f"Unknown tool '{tool_name}'."
                 else:
                     method_name = _AVAILABLE_TOOLS[tool_name][0]
                     try:
-                        # Get the actual method from self
                         tool_method = getattr(self, method_name)
-
                         await _log("autopilot_step_start", step=step_num, tool=tool_name, args=args)
-                        self._update_activity()  # Update activity before long-running tool call
-                        # Execute the tool method
+                        self._update_activity()
                         outcome = await tool_method(**args)
-                        self._update_activity()  # Update activity after tool call
-
-                        # Record outcome
-                        step_log_entry["success"] = outcome.get(
-                            "success", True
-                        )  # Assume success if key missing? Maybe False. Let's assume False.
-                        step_log_entry["success"] = outcome.get(
+                        self._update_activity()
+                        step_log["success"] = outcome.get(
                             "success", False
-                        )  # Default to False if key missing
-                        step_log_entry["result"] = outcome  # Store full result
-
-                        if not step_log_entry["success"]:
-                            step_log_entry["error"] = outcome.get(
-                                "error", "Tool failed without specific error message."
-                            )
+                        )  # Default fail if key missing
+                        step_log["result"] = outcome
+                        if not step_log["success"]:
+                            step_log["error"] = outcome.get("error", "Tool failed")
                             await _log(
                                 "autopilot_step_fail",
                                 step=step_num,
                                 tool=tool_name,
-                                error=step_log_entry["error"],
+                                error=step_log["error"],
                             )
                             logger.warning(
-                                f"Autopilot Step {step_num} ({tool_name}) failed: {step_log_entry['error']}"
+                                f"Autopilot Step {step_num} ({tool_name}) failed: {step_log['error']}"
                             )
-                            # Fix #16: Replanning logic
-                            logger.info(f"Attempting to replan after failed step {step_num}...")
+                            logger.info(f"Attempting replan after failed step {step_num}...")
                             try:
-                                # Pass current task and *all* prior results for context
                                 new_plan_tail = await _plan_autopilot(
-                                    current_task, all_results + [step_log_entry]
+                                    current_task, all_results + [step_log]
                                 )
-                                # Replace the rest of the plan queue
-                                current_plan = new_plan_tail
+                                current_plan = new_plan_tail  # Replace remaining plan
                                 logger.info(
-                                    f"Replanning successful. New plan has {len(current_plan)} steps."
+                                    f"Replanning successful. New plan: {len(current_plan)} steps."
                                 )
                                 await _log("autopilot_replan_success", new_steps=len(current_plan))
-                                # Continue to next iteration with the new plan
-                                continue  # Skip appending the failed step result here? No, append failure, loop continues with new plan.
+                                # Continue loop with new plan, failure already logged/recorded
                             except Exception as replan_err:
-                                logger.error(
-                                    f"Replanning failed after step {step_num} failure: {replan_err}"
-                                )
+                                logger.error(f"Replanning failed: {replan_err}")
                                 await _log("autopilot_replan_fail", error=str(replan_err))
-                                # Stop execution if replanning fails
-                                current_plan = []  # Clear plan to stop loop
+                                current_plan = []  # Stop execution if replan fails
                         else:
                             await _log(
                                 "autopilot_step_success",
@@ -4852,71 +3935,55 @@ class SmartBrowserTool(BaseTool):
                                 tool=tool_name,
                                 result_summary=str(outcome)[:200],
                             )
-
-                    except ToolInputError as tie:
-                        step_log_entry["error"] = f"Invalid arguments for tool '{tool_name}': {tie}"
+                    except (
+                        ToolInputError,
+                        ToolError,
+                        ValueError,
+                        TypeError,
+                        AssertionError,
+                    ) as e:  # Catch arg/tool execution errors
+                        step_log["error"] = f"{type(e).__name__} executing '{tool_name}': {e}"
                         logger.error(
-                            f"Autopilot Step {step_num} failed: {step_log_entry['error']}",
-                            exc_info=True,
+                            f"Autopilot Step {step_num} failed: {step_log['error']}", exc_info=True
                         )
-                        current_plan = []  # Stop on bad input errors
-                    except ToolError as te:
-                        step_log_entry["error"] = f"Tool execution error for '{tool_name}': {te}"
-                        logger.error(
-                            f"Autopilot Step {step_num} failed: {step_log_entry['error']}",
-                            exc_info=True,
-                        )
-                        # Allow potential replanning for tool errors
-                    except Exception as e:
-                        step_log_entry["error"] = (
-                            f"Unexpected error executing tool '{tool_name}': {e}"
-                        )
+                        current_plan = []  # Stop on these errors
+                    except Exception as e:  # Catch unexpected errors
+                        step_log["error"] = f"Unexpected error executing '{tool_name}': {e}"
                         logger.critical(
-                            f"Autopilot Step {step_num} failed unexpectedly: {step_log_entry['error']}",
+                            f"Autopilot Step {step_num} failed unexpectedly: {step_log['error']}",
                             exc_info=True,
                         )
-                        current_plan = []  # Stop on unexpected errors
+                        current_plan = []  # Stop
 
-                # Append result of this step to overall results
-                all_results.append(step_log_entry)
-
-                # Asynchronously write log entry to file
-                try:
+                all_results.append(step_log)
+                try:  # Log step result async
                     async with aiofiles.open(log_path, "a", encoding="utf-8") as log_f:
-                        await log_f.write(json.dumps(step_log_entry) + "\n")
-                        await log_f.flush()
+                        await log_f.write(json.dumps(step_log) + "\n")
                 except IOError as log_e:
-                    logger.error(f"Failed to write autopilot log entry to {log_path}: {log_e}")
+                    logger.error(f"Failed to write autopilot log entry: {log_e}")
 
-            # End of loop (max steps reached or plan empty)
             if step_num >= max_steps:
-                logger.warning(f"Autopilot run stopped: Maximum step limit ({max_steps}) reached.")
+                logger.warning(f"Autopilot max steps ({max_steps}) reached.")
                 await _log("autopilot_max_steps", task=task, steps=step_num)
-            elif not current_plan:
-                logger.info(
-                    f"Autopilot run finished: Plan completed or stopped after {step_num} steps."
-                )
+            elif not current_plan and step_num > 0:
+                logger.info(f"Autopilot plan complete after {step_num} steps.")
                 await _log("autopilot_plan_end", task=task, steps=step_num)
+            elif step_num == 0:
+                logger.warning("Autopilot did not execute any steps (empty initial plan?).")
+                await _log("autopilot_plan_end", task=task, steps=0)
 
-            # Set file permissions after closing
-            await _run_in_thread(os.chmod, log_path, 0o600)
-
-            overall_success = all_results and all_results[-1].get(
-                "success", False
-            )  # Simplistic: success if last step succeeded
-
+            await _run_in_thread(os.chmod, log_path, 0o600)  # Set log permissions
+            overall_success = bool(all_results) and all_results[-1].get("success", False)
             return {
                 "success": overall_success,
                 "steps_executed": step_num,
                 "run_log": str(log_path),
-                "final_results": all_results[-min(len(all_results), 3) :],  # Return last 3 results
+                "final_results": all_results[-3:],
             }
 
         except Exception as autopilot_err:
-            # Catch errors during initial planning or unexpected loop issues
             logger.critical(f"Autopilot run failed critically: {autopilot_err}", exc_info=True)
             await _log("autopilot_critical_error", task=task, error=str(autopilot_err))
-            # Write error to log file if possible
             error_entry = {
                 "step": 0,
                 "success": False,
@@ -4927,109 +3994,66 @@ class SmartBrowserTool(BaseTool):
                     await log_f.write(json.dumps(error_entry) + "\n")
                 await _run_in_thread(os.chmod, log_path, 0o600)
             except Exception:
-                pass  # Ignore errors writing final error log
-
+                pass
             raise ToolError(f"Autopilot failed: {autopilot_err}") from autopilot_err
 
     @tool(name="smart_browser.parallel")
     @with_tool_metrics
     @with_error_handling
     async def parallel_process(
-        self,
-        urls: List[str],
-        action: str = "get_state",  # Action per URL: 'get_state', 'screenshot', etc.
-        max_tabs: Optional[int] = None,  # Use pool's default if None
+        self, urls: List[str], action: str = "get_state", max_tabs: Optional[int] = None
     ) -> Dict[str, Any]:
-        """
-        Processes multiple URLs in parallel using the tab pool.
-        Currently supports 'get_state' action for each URL.
-
-        Args:
-            urls: List of URLs to process.
-            action: Action to perform on each URL (currently 'get_state').
-            max_tabs: Override the default max tabs for this specific operation.
-
-        Returns:
-            Dictionary with 'success', 'results' (list of outcomes per URL), 'processed_count'.
-        """
+        """Processes multiple URLs in parallel using the tab pool (currently only 'get_state')."""
         await self._ensure_initialized()
         self._update_activity()
-
         if not urls or not isinstance(urls, list):
-            raise ToolInputError("Must provide a list of URLs.")
+            raise ToolInputError("Requires a list of URLs.")
         if action != "get_state":
-            raise ToolInputError(
-                f"Unsupported parallel action: '{action}'. Currently only 'get_state' is supported."
-            )
-
-        # Use a temporary pool if max_tabs is specified, else the shared one
+            raise ToolInputError("Only 'get_state' action supported currently.")
         pool = TabPool(max_tabs=max_tabs) if max_tabs is not None else self.tab_pool
 
-        # Define the task function for each URL
-        async def process_single_url(page: Page, *, url_to_process: str) -> Dict[str, Any]:
-            """Task to navigate and get state for one URL."""
+        async def process_url(page: Page, *, url: str) -> Dict[str, Any]:
             try:
-                # Prepend https:// if scheme is missing
-                if not url_to_process.startswith(("http://", "https://")):
-                    url_to_process = f"https://{url_to_process}"
-
-                await _log("parallel_navigate", url=url_to_process)
-                await page.goto(
-                    url_to_process, wait_until="networkidle", timeout=45000
-                )  # 45s timeout per page
+                full_url = url if url.startswith(("http://", "https://")) else f"https://{url}"
+                await _log("parallel_navigate", url=full_url)
+                await page.goto(full_url, wait_until="networkidle", timeout=45000)
                 state = await get_page_state(page)
-                return {"url": url_to_process, "success": True, "page_state": state}
+                return {"url": full_url, "success": True, "page_state": state}
             except PlaywrightException as e:
-                await _log("parallel_url_error", url=url_to_process, error=str(e))
-                return {"url": url_to_process, "success": False, "error": f"Playwright error: {e}"}
+                await _log("parallel_url_error", url=full_url, error=str(e))
+                return {"url": url, "success": False, "error": f"Playwright error: {e}"}
             except Exception as e:
-                await _log("parallel_url_error", url=url_to_process, error=str(e))
-                return {"url": url_to_process, "success": False, "error": f"Unexpected error: {e}"}
+                await _log("parallel_url_error", url=full_url, error=str(e))
+                return {"url": url, "success": False, "error": f"Unexpected error: {e}"}
 
-        # Create partial functions to pass URL correctly
-        tasks_to_run = [functools.partial(process_single_url, url_to_process=url) for url in urls]
-
-        # Run tasks using the pool's map function
-        results = await pool.map(tasks_to_run)
-
+        tasks = [functools.partial(process_url, url=u) for u in urls]
+        results = await pool.map(tasks)
         successful_count = sum(1 for r in results if r.get("success"))
         await _log(
-            "parallel_process_complete",
-            total_urls=len(urls),
-            successful=successful_count,
-            action=action,
+            "parallel_process_complete", total=len(urls), successful=successful_count, action=action
         )
-
         return {
-            "success": True,  # The parallel operation itself succeeded
+            "success": True,
             "results": results,
             "processed_count": len(results),
             "successful_count": successful_count,
         }
 
-    # --- Lifecycle Methods for Server Integration ---
+    # --- Lifecycle Methods ---
     async def async_setup(self):
-        """Called by MCP server during startup (if using lifespan)."""
-        logger.info("SmartBrowserTool async_setup called.")
+        """Called by MCP server during startup."""
+        logger.info("SmartBrowserTool async_setup.")
         await self._ensure_initialized()
 
     async def async_teardown(self):
-        """Called by MCP server during shutdown (if using lifespan)."""
-        global _selector_cleanup_task_handle # Use global handle
-        logger.info("SmartBrowserTool async_teardown called.")
-
-        # Cancel the selector cleanup task
-        cleanup_task = _selector_cleanup_task_handle # <<< MODIFIED Read global
-        if cleanup_task and not cleanup_task.done():
-            logger.info("Cancelling selector cleanup task...")
-            cleanup_task.cancel()
+        """Called by MCP server during shutdown."""
+        logger.info("SmartBrowserTool async_teardown.")
+        # Cancel inactivity monitor first
+        if self._inactivity_monitor_task and not self._inactivity_monitor_task.done():
+            self._inactivity_monitor_task.cancel()
             try:
-                await asyncio.wait_for(cleanup_task, timeout=5.0) # Wait briefly for cancellation
-            except (asyncio.CancelledError, asyncio.TimeoutError):
-                logger.warning("Selector cleanup task did not finish cancelling gracefully.")
-            except Exception as e:
-                 logger.error(f"Error awaiting selector cleanup task cancellation: {e}")
-            _selector_cleanup_task_handle = None # Clear handle
-
-        # Use the safe shutdown initiator for browser etc.
+                await asyncio.wait_for(self._inactivity_monitor_task, timeout=2.0)
+            except Exception:
+                pass  # Ignore errors during cancellation
+        # Use the safe shutdown initiator
         await _initiate_shutdown()
