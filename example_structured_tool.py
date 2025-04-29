@@ -9,7 +9,6 @@ that implements all the best practices for LLM usability:
 - Detailed documentation with examples
 - Structured outputs with consistent formats
 """
-import asyncio
 import time
 import uuid
 from typing import Any, Dict, Optional

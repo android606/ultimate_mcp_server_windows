@@ -26,6 +26,13 @@ from ultimate_mcp_server.graceful_shutdown import (
     register_shutdown_handler,
     setup_signal_handlers,
 )
+from ultimate_mcp_server.tools.smart_browser import (
+    _ensure_initialized as smart_browser_ensure_initialized,
+)
+from ultimate_mcp_server.tools.smart_browser import (
+    shutdown as smart_browser_shutdown,
+)
+from ultimate_mcp_server.tools.sql_databases import initialize_sql_tools, shutdown_sql_tools
 
 # --- Import the trigger function directly instead of the whole module---
 from ultimate_mcp_server.utils import get_logger
@@ -374,16 +381,21 @@ class Gateway:
         # Initialize providers
         await self._initialize_providers()
 
-        # --- Initialize SmartBrowserTool browser if the tool is registered ---
         try:
-            # Access the SmartBrowserTool browser initialization directly
-            from ultimate_mcp_server.tools.smart_browser import _ctx
-            # Initialize the browser in the current async context
-            self.logger.info("Pre-initializing browser for SmartBrowserTool...")
-            await _ctx()
-            self.logger.info("Browser for SmartBrowserTool successfully pre-initialized")
+            await initialize_sql_tools()
+            self.logger.info("SQL tools state initialized.")
         except Exception as e:
-            self.logger.warning(f"Could not pre-initialize SmartBrowserTool browser: {e}")
+            self.logger.error(f"Failed to initialize SQL tools state: {e}", exc_info=True)
+
+        # --- OPTIONAL: Pre-initialize SmartBrowser ---
+        try:
+            self.logger.info("Pre-initializing Smart Browser components...")
+            # Call the imported initialization function
+            await smart_browser_ensure_initialized()
+            self.logger.info("Smart Browser successfully pre-initialized.")
+        except Exception as e:
+            # Log warning but don't stop server startup if pre-init fails
+            self.logger.warning(f"Could not pre-initialize Smart Browser: {e}", exc_info=True)
         # ---------------------------------------------------------------------
 
         # --- Trigger Dynamic Docstring Generation ---
@@ -424,6 +436,21 @@ class Gateway:
             logger.info("Dynamic docstring generation/loading complete.")
             yield context
         finally:
+            try:
+                # --- Shutdown SQL Tools State ---
+                await shutdown_sql_tools()
+                self.logger.info("SQL tools state shut down.")
+            except Exception as e:
+                self.logger.error(f"Failed to shut down SQL tools state: {e}", exc_info=True)
+        
+            # 2. Shutdown Smart Browser explicitly
+            try:
+                self.logger.info("Initiating explicit Smart Browser shutdown...")
+                await smart_browser_shutdown() # Call the imported function
+                self.logger.info("Smart Browser shutdown completed successfully.")
+            except Exception as e:
+                logger.error(f"Error during explicit Smart Browser shutdown: {e}", exc_info=True)
+                        
             # --- Clear the global instance on shutdown --- 
             ultimate_mcp_server.core._gateway_instance = None
             self.logger.info("Global gateway instance cleared.")
@@ -761,23 +788,30 @@ first and be prepared to adapt to available providers.
 
         # Define our base toolset - use function names not module names
         base_toolset = [
+
             # Completion tools
             "generate_completion", 
-            # "stream_completion", # Not that useful for MCP
             "chat_completion", 
             "multi_completion",
+            # "stream_completion", # Not that useful for MCP
             
             # Provider tools
             "get_provider_status", 
             "list_models",
             
             # Filesystem tools
-            "read_file", 
-            "write_file", 
-            "edit_file", 
-            "list_directory", 
-            "directory_tree", 
+            "read_file",
+            "read_multiple_files",
+            "write_file",
+            "edit_file",
+            "create_directory",
+            "list_directory",
+            "directory_tree",
+            "move_file",
             "search_files",
+            "get_file_info",
+            "list_allowed_directories",
+            "get_unique_filepath",
             
             # Optimization tools
             "estimate_cost", 
@@ -790,13 +824,41 @@ first and be prepared to adapt to available providers.
             "run_sed", 
             "run_jq",
             
-            # Meta tools
-            "get_tool_info", 
-            "get_llm_instructions", 
-            "get_tool_recommendations",
-            
             # Search tools
-            "marqo_fused_search"
+            "marqo_fused_search",
+            
+            # SmartBrowser class methods
+            "search",
+            "download",
+            "download_site_pdfs",
+            "collect_documentation",
+            "run_macro",
+            "autopilot",
+
+            # SQL class methods
+            "manage_database",
+            "execute_sql",
+            "explore_database",
+            "access_audit_log",
+            
+            # Document processing class methods
+            "convert_document",
+            "chunk_document",
+            "clean_and_format_text_as_markdown",
+            "batch_format_texts",
+            "optimize_markdown_formatting",
+            "generate_qa_pairs",
+            "summarize_document",
+            "ocr_image",
+            "enhance_ocr_text",
+            "analyze_pdf_structure",
+            "extract_tables",
+            "process_document_batch",
+            
+            # Python sandbox class methods
+            "execute_python",
+            "repl_python"
+
         ]
         
         # Conditionally register tools based on load_all flag
@@ -817,6 +879,31 @@ first and be prepared to adapt to available providers.
                 cfg.tool_registration.included_tools = base_toolset
                 self.logger.info(f"Registering base toolset: {', '.join(base_toolset)}")
                 register_all_tools(self.mcp)
+        
+        # After tools are registered, save the tool names to a file for the tools estimator script
+        try:
+            import json
+
+            from ultimate_mcp_server.tools import STANDALONE_TOOL_FUNCTIONS
+            
+            # Get tools from STANDALONE_TOOL_FUNCTIONS plus class-based tools
+            all_tool_names = []
+            
+            # Add standalone tool function names
+            for tool_func in STANDALONE_TOOL_FUNCTIONS:
+                if hasattr(tool_func, "__name__"):
+                    all_tool_names.append(tool_func.__name__)
+            
+            # Add echo tool
+            all_tool_names.append("echo")
+            
+            # Write to file
+            with open("tools_list.json", "w") as f:
+                json.dump(all_tool_names, f, indent=2)
+                
+            self.logger.info(f"Wrote {len(all_tool_names)} tool names to tools_list.json for context estimator")
+        except Exception as e:
+            self.logger.warning(f"Failed to write tool names to file: {str(e)}")
 
     def _register_resources(self):
         """
@@ -2122,7 +2209,7 @@ def start_server(
         print("Tool Loading: ALL available tools", file=sys.stderr)
     else:
         print("Tool Loading: Base Toolset Only", file=sys.stderr)
-        base_toolset = ["completion", "filesystem", "optimization", "provider", "local_text", "meta", "search"]
+        base_toolset = ["completion", "filesystem", "optimization", "provider", "local_text", "search"]
         print(f"  (Includes: {', '.join(base_toolset)})", file=sys.stderr)
 
     # Log tool filtering info if enabled
@@ -2146,9 +2233,17 @@ def start_server(
             # Wait a bit for the server to start up
             time.sleep(5)
             try:
+                # Ensure tools_list.json exists
+                if not os.path.exists("tools_list.json"):
+                    print("\n--- Tool Context Window Analysis ---", file=sys.stderr)
+                    print("Error: tools_list.json not found. Tool registration may have failed.", file=sys.stderr)
+                    print("The tool context estimator will run with limited functionality.", file=sys.stderr)
+                    print("-" * 40, file=sys.stderr)
+                
                 # Run the tool context estimator script with the --quiet flag
+                # Use python -m instead of direct script execution to avoid import issues
                 result = subprocess.run(
-                    ["python", "mcp_tool_context_estimator.py", "--quiet"],
+                    ["python", "-m", "mcp_tool_context_estimator", "--quiet"],
                     capture_output=True,
                     text=True
                 )
@@ -2157,8 +2252,16 @@ def start_server(
                     print("\n--- Tool Context Window Analysis ---", file=sys.stderr)
                     print(result.stdout, file=sys.stderr)
                     print("-" * 40, file=sys.stderr)
+                # Check if there was an error
+                if result.returncode != 0:
+                    print("\n--- Tool Context Estimator Error ---", file=sys.stderr)
+                    print("Failed to run mcp_tool_context_estimator.py - likely due to an error.", file=sys.stderr)
+                    print("Error output:", file=sys.stderr)
+                    print(result.stderr, file=sys.stderr)
+                    print("-" * 40, file=sys.stderr)
             except Exception as e:
-                print(f"Error running tool context estimator: {str(e)}", file=sys.stderr)
+                print(f"\nError running tool context estimator: {str(e)}", file=sys.stderr)
+                print("Check if mcp_tool_context_estimator.py exists and is executable.", file=sys.stderr)
         
         # Start the tool context estimator in a separate thread
         if os.path.exists("mcp_tool_context_estimator.py"):
@@ -2196,31 +2299,63 @@ def start_server(
         handle_quiet_exit()
         
         # Create a shutdown handler for gateway cleanup
-        async def cleanup_gateway():
+        async def cleanup_resources():
+            """Performs cleanup for various components during shutdown."""
             global _gateway_instance
-            if _gateway_instance:
-                logger.info("Cleaning up Gateway instance...")
+            gateway = _gateway_instance # Capture instance at time of call
+
+            if gateway:
+                logger.info("Cleaning up Gateway instance and associated resources...")
                 try:
-                    # Give tools a chance to clean up
-                    if hasattr(_gateway_instance.mcp, '_tools'):
-                        for tool_name, tool in _gateway_instance.mcp._tools.items():
-                            if hasattr(tool, "async_teardown") and callable(tool.async_teardown):
-                                try:
-                                    logger.info(f"Running async_teardown for tool: {tool_name}")
-                                    await tool.async_teardown()
-                                except Exception as e:
-                                    logger.error(f"Error during teardown of tool {tool_name}: {e}")
-                    else:
-                        logger.info("No tools found in mcp instance (missing '_tools' attribute)")
-                    
-                    # Clear gateway instance
+                    # 1. Shutdown SQL Tools (if initialized)
+                    try:
+                        await shutdown_sql_tools()
+                        logger.info("SQL tools state shut down successfully.")
+                    except Exception as e:
+                        logger.error(f"Error shutting down SQL tools state: {e}", exc_info=True)
+
+                    # 2. Shutdown Smart Browser explicitly
+                    try:
+                        logger.info("Initiating explicit Smart Browser shutdown...")
+                        await smart_browser_shutdown() # Call the imported function
+                        logger.info("Smart Browser shutdown completed successfully.")
+                    except Exception as e:
+                        logger.error(f"Error during explicit Smart Browser shutdown: {e}", exc_info=True)
+
+                    # 3. Teardown for *other* class-based tools (if any registered)
+                    logger.debug("Checking for other class-based tools with async_teardown...")
+                    if hasattr(gateway.mcp, '_tools'):
+                        processed_instances = set() # Avoid calling teardown multiple times for same instance
+                        for _tool_name, tool_callable in gateway.mcp._tools.items():
+                            # Check if it's a bound method and get the instance
+                            instance = getattr(tool_callable, "__self__", None)
+                            if instance and id(instance) not in processed_instances:
+                                processed_instances.add(id(instance))
+                                # Check if the instance has the teardown method
+                                if hasattr(instance, "async_teardown") and callable(instance.async_teardown):
+                                    # Check if it's NOT related to smart_browser module to avoid double cleanup
+                                    # (This relies on the type string, might need adjustment if class still exists)
+                                    instance_type_str = str(type(instance))
+                                    if "smart_browser" not in instance_type_str.lower(): # Check lowercase for safety
+                                        try:
+                                            tool_class_name = type(instance).__name__
+                                            logger.info(f"Running async_teardown for tool instance: {tool_class_name}")
+                                            await instance.async_teardown()
+                                        except Exception as e:
+                                            logger.error(f"Error during teardown of tool {tool_class_name}: {e}", exc_info=True)
+
+                    # 4. Clear global gateway instance *last*
+                    _gateway_instance = None # Clear reference
                     logger.info("Global gateway instance cleared.")
-                    print("Shutting down Ultimate MCP Server", file=sys.stderr)
+                    print("Shutting down Ultimate MCP Server", file=sys.stderr) # Final message to console
+
                 except Exception as e:
-                    logger.error(f"Error during gateway cleanup: {e}")
-        
+                    logger.error(f"Error during overall gateway cleanup: {e}", exc_info=True)
+            else:
+                logger.info("Shutdown cleanup: Gateway instance already cleared.")
+                
         # Register our shutdown handler
-        register_shutdown_handler(cleanup_gateway)
+        register_shutdown_handler(cleanup_resources)
         
         # Define a custom Uvicorn server configuration with our signal handling
         class GracefulUvicornServer(uvicorn.Server):
@@ -2249,7 +2384,24 @@ def start_server(
         )
         server = GracefulUvicornServer(config=config)
         server.run()
-    else:
-        # Run in stdio mode (direct process communication)
-        print("Running in stdio mode for direct process communication", file=sys.stderr)
-        _gateway_instance.mcp.run()
+    else: # stdio mode
+        # --- Stdio Mode Execution ---
+        logger.info("Running in stdio mode...")
+        # Setup signal handling for the current event loop in stdio mode
+        try:
+             loop = asyncio.get_event_loop()
+             setup_signal_handlers(loop)
+             register_shutdown_handler(cleanup_resources)
+             register_shutdown_handler(redirect_stderr_during_shutdown)
+        except RuntimeError:
+             logger.warning("Could not get event loop for stdio signal handler setup. Graceful shutdown might be affected.")
+
+        # Configure custom excepthook for clean exits on unhandled exceptions
+        handle_quiet_exit()
+
+        # Run the FastMCP stdio loop
+        _gateway_instance.mcp.run() # Blocks here
+        # --- End Stdio Mode ---
+
+    # --- Post-Server Exit ---
+    logger.info("Server loop exited.")

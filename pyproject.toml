@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling", "torch"]
+requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
@@ -26,97 +26,93 @@ classifiers = [
 
 dependencies = [
     # Core MCP and LLM providers
-    "mcp",
-    "anthropic",
-    "openai",
-    "google-genai",
+    "mcp>=0",
+    "anthropic>=0",
+    "openai>=0",
+    "google-genai>=0",
 
     # Async utilities
-    "httpx",
-    "aiofiles",
-    "asyncio",
+    "httpx>=0",
+    "aiofiles>=0",
 
     # Data processing
-    "pydantic",
-    "tenacity",  # For retry logic
+    "pydantic>=0",
+    "tenacity>=0",  # For retry logic
 
     # Caching and persistence
-    "diskcache", # Persistent disk cache
-    "msgpack",   # Efficient serialization
+    "diskcache>=0", # Persistent disk cache
+    "msgpack>=0",   # Efficient serialization
 
     # Vector database for semantic caching
-    "numpy",
-    "sentence-transformers",  # For embeddings
-    "chromadb",              # Vector DB
+    "numpy>=0",
+    "sentence-transformers>=0",  # For embeddings
+    "chromadb>=0",              # Vector DB
     
     # Analytics and monitoring
-    "prometheus-client",
-    "pandas",
-    "rich",    # Console output formatting
+    "prometheus-client>=0",
+    "pandas>=0",
+    "rich>=0",    # Console output formatting
     
     # Templating for prompt management
-    "jinja2",
+    "jinja2>=0",
     
     # Multi-modal support
-    "pillow",  # Image processing
+    "pillow>=0",  # Image processing
     
     # Utilities
-    "python-slugify",  # For URL-friendly strings
-    "colorama",        # Terminal colors
-    "tqdm",           # Progress bars
-    "tiktoken",       # Token counting
-    "python-decouple", # .env management
-    "pydantic-settings",
-    "jsonschema",
-    "matplotlib",
-    "marqo", # Added for Marqo search tool
-    "pytest-playwright", # For web browser automation
-    "sqlalchemy", # For SQL database interactions
-    "aiosqlite", # Async SQLite database access
-    "pyvis", # Graph visualization
-    "python-docx", # MS Word DOCX support
-    "opencv-python", # For OCR tools
-    "pillow", # For OCR
-    "pytesseract", # For OCR
-    "pdf2image", # For OCR
-    "PyPDF2", # PDF conversion
-    "pdfplumber", # For OCR
-    "python-docx", # For word file conversion
-    "fitz", # For OCR
-    "pymupdf", # For OCR
-    "beautifulsoup4", # Dealing with HTML
-    "xmldiff", # for redlines
-    "lxml", # XML parser
-    "faster-whisper", # Audio transcripts
-    "html2text",
-    "readability-lxml",
-    "markdownify",
-    "trafilatura",
-    "markdown",
-    "jsonschema",
-    "jsonpatch",
-    "jsonpointer",    
-    "pygments",
-    "typer",  # For CLI interface
-    "docling", # For document conversion
-    "aiohttp",
-    "boto3", # For AWS secrets management
-    "hvac", # For HashiVault pw management
-    "pandera", # Data validation
-    "rapidfuzz",
-    "magika",
+    "python-slugify>=0",  # For URL-friendly strings
+    "colorama>=0",        # Terminal colors
+    "tqdm>=0",           # Progress bars
+    "tiktoken>=0",       # Token counting
+    "python-decouple>=0", # .env management
+    "pydantic-settings>=0",
+    "jsonschema>=0",
+    "matplotlib>=0",
+    "marqo>=0", # Added for Marqo search tool
+    "pytest-playwright>=0", # For web browser automation
+    "sqlalchemy>=0", # For SQL database interactions
+    "aiosqlite>=0", # Async SQLite database access
+    "pyvis>=0", # Graph visualization
+    "python-docx>=0", # MS Word DOCX support
+    "opencv-python>=0", # For OCR tools
+    "pytesseract>=0", # For OCR
+    "pdf2image>=0", # For OCR
+    "PyPDF2>=0", # PDF conversion
+    "pdfplumber>=0", # For OCR
+    "fitz>=0", # For OCR
+    "pymupdf>=0", # For OCR
+    "beautifulsoup4>=0", # Dealing with HTML
+    "xmldiff>=0", # for redlines
+    "lxml>=0", # XML parser
+    "faster-whisper>=0", # Audio transcripts
+    "html2text>=0",
+    "readability-lxml>=0",
+    "markdownify>=0",
+    "trafilatura>=0",
+    "markdown>=0",
+    "jsonpatch>=0",
+    "jsonpointer>=0",    
+    "pygments>=0",
+    "typer>=0",  # For CLI interface
+    "docling>=0", # For document conversion
+    "aiohttp>=0",
+    "boto3>=0", # For AWS secrets management
+    "hvac>=0", # For HashiVault pw management
+    "pandera>=0", # Data validation
+    "rapidfuzz>=0",
+    "magika>=0",
+    "tabula>=0",
+
 ]
 
 [project.optional-dependencies]
-# Advanced AI model libraries
 advanced = [
-    # PyTorch nightly builds for Python 3.13 compatibility
-    "torch>=2.3.0.dev20240101",             # PyTorch for transformers
-    "torchvision>=0.18.0.dev20240101",
-    "torchaudio>=2.3.0.dev20240101",
-    # Other dependencies that require PyTorch
-    "transformers",     # For Hugging Face models
-    "accelerate",       # For optimized model inference
+  "torch==2.8.0.dev20250428+cu126",
+  "torchvision==0.22.0.dev20250428+cu126",
+  "torchaudio==2.6.0.dev20250428+cu126",
+  "pytorch-triton==3.3.0+git96316ce5",
+  "transformers>=0",
+  "accelerate>=0",
 ]
 
 #excel_automation = [
@@ -126,26 +122,44 @@ advanced = [
 
 # Development and testing
 dev = [
-    "pytest",
-    "pytest-asyncio",
-    "pytest-cov",
-    "isort",
-    "mypy",
-    "ruff",
-    "types-aiofiles",
-    "pre-commit",
+    "pytest>=0",
+    "pytest-asyncio>=0",
+    "pytest-cov>=0",
+    "isort>=0",
+    "mypy>=0",
+    "ruff>=0",
+    "types-aiofiles>=0",
+    "pre-commit>=0",
 ]
 
 # Documentation
 docs = [
-    "mkdocs",
-    "mkdocs-material",
-    "mkdocstrings",
-    "mkdocstrings-python",
+    "mkdocs>=0",
+    "mkdocs-material>=0",
+    "mkdocstrings>=0",
+    "mkdocstrings-python>=0",
 ]
 
 # All extras
 all = ["ultimate_mcp_server[advanced,dev,docs]"]
+
+[[tool.uv.index]]
+name = "pypi"
+url  = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "torch-nightly-cu126"
+url  = "https://download.pytorch.org/whl/nightly/cu126"
+explicit = true               # only packages you pin may come from here
+
+[tool.uv.sources]
+torch       = { index = "torch-nightly-cu126" }
+torchvision = { index = "torch-nightly-cu126" }
+torchaudio  = { index = "torch-nightly-cu126" }
+pytorch-triton = { index = "torch-nightly-cu126" }
+
+[tool.uv.pip]
+prerelease = "allow"
 
 [project.urls]
 Homepage = "https://github.com/Dicklesworthstone/ultimate_mcp_server"
@@ -207,16 +221,3 @@ target-version = "py313"
 [tool.ruff.lint]
 select = ["E", "F", "B", "I", "Q"]
 ignore = ["E203", "E501", "Q000"]
-
-[tool.uv]
-index-url = "https://pypi.org/simple"
-extra-index-url = ["https://download.pytorch.org/whl/nightly/cu126"]
-
-[tool.uv.dependency-overrides.torch]
-url = "https://download.pytorch.org/whl/nightly/cu126"
-
-[tool.uv.dependency-overrides.torchvision]
-url = "https://download.pytorch.org/whl/nightly/cu126"
-
-[tool.uv.dependency-overrides.torchaudio]
-url = "https://download.pytorch.org/whl/nightly/cu126"

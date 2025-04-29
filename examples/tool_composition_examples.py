@@ -14,7 +14,9 @@ from typing import Any, Dict, List, Optional
 from error_handling import non_empty_string, validate_inputs, with_error_handling
 from tool_annotations import QUERY_TOOL, READONLY_TOOL
 from ultimate_mcp_server.exceptions import ToolExecutionError, ToolInputError
-from ultimate_mcp_server.tools.document import summarize_document
+from ultimate_mcp_server.tools.document_conversion_and_processing import (
+    summarize_document_standalone,
+)
 from ultimate_mcp_server.tools.filesystem import delete_file, read_file, write_file
 from ultimate_mcp_server.tools.use_local_text_tools import run_sed
 from ultimate_mcp_server.utils import get_logger
@@ -158,7 +160,7 @@ class DocumentProcessingExample:
             logger.info(f"Analyzing chunk {chunk_id} with summarize_document...")
             try:
                 # Use a concise summary for chunk analysis
-                summary_result = await summarize_document(
+                summary_result = await summarize_document_standalone(
                     document=chunk,
                     summary_format="key_points", # Use key points for chunk analysis
                     max_length=100 # Keep chunk summaries relatively short

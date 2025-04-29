@@ -65,10 +65,28 @@ from .cognitive_and_agent_memory import (
 
 # Import base decorators/classes that might be used by other tool modules
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
+from .document_conversion_and_processing import (
+    analyze_pdf_structure,
+    batch_format_texts,
+    canonicalise_entities,
+    chunk_document,
+    clean_and_format_text_as_markdown,
+    convert_document,
+    detect_content_type,
+    enhance_ocr_text,
+    extract_entities,
+    extract_metrics,
+    extract_tables,
+    flag_risks,
+    generate_qa_pairs,
+    identify_sections,
+    ocr_image,
+    optimize_markdown_formatting,
+    process_document_batch,
+    summarize_document,
+)
 
 # from .docstring_refiner import refine_tool_documentation
-from .document_conversion_and_processing import DocumentProcessingTool
-
 # from .entity_relation_graph import extract_entity_graph
 from .extraction import (
     extract_code_from_response,
@@ -91,21 +109,8 @@ from .filesystem import (
     search_files,
     write_file,
 )
-from .html_to_markdown import (
-    batch_format_texts,
-    clean_and_format_text_as_markdown,
-    detect_content_type,
-    optimize_markdown_formatting,
-)
 from .marqo_fused_search import marqo_fused_search
 from .meta_api_tool import register_api_meta_tools
-from .ocr_tools import (
-    analyze_pdf_structure,
-    batch_process_documents,
-    enhance_ocr_text,
-    extract_text_from_pdf,
-    process_image_ocr,
-)
 
 # from .optimization import (
 #     compare_models,
@@ -114,7 +119,10 @@ from .ocr_tools import (
 #     recommend_model,
 # )
 from .provider import get_provider_status, list_models
-from .python_js_sandbox import PythonSandboxTool
+from .python_sandbox import (
+    execute_python,
+    repl_python,
+)
 from .rag import (
     add_documents,
     create_knowledge_base,
@@ -124,8 +132,15 @@ from .rag import (
     retrieve_context,
 )
 from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
-from .smart_browser import SmartBrowserTool
-from .sql_databases import SQLTool
+from .smart_browser import (
+    autopilot,
+    collect_documentation,
+    download,
+    download_site_pdfs,
+    run_macro,
+    search,
+)
+from .sql_databases import access_audit_log, execute_sql, explore_database, manage_database
 from .text_classification import text_classification
 from .text_redline_tools import (
     compare_documents_redline,
@@ -191,18 +206,44 @@ __all__ = [
     "get_file_info",
     "list_allowed_directories",
     "get_unique_filepath",
-    # OCR tools
-    "extract_text_from_pdf",
-    "process_image_ocr",
-    "enhance_ocr_text",
-    "analyze_pdf_structure",
-    "batch_process_documents",
+
+    # SQL databases tools
+    "manage_database",
+    "execute_sql",
+    "explore_database",
+    "access_audit_log",
+
+    # Python sandbox tools
+    "execute_python",
+    "repl_python",
+
+     # Smart Browser Standalone Functions
+    "search",
+    "download",
+    "download_site_pdfs",
+    "collect_documentation",
+    "run_macro",
+    "autopilot",
     
-    # HTML to Markdown tools
+    # Document conversion and processing tools
+    "convert_document",
+    "chunk_document",
     "clean_and_format_text_as_markdown",
     "detect_content_type",
     "batch_format_texts",
     "optimize_markdown_formatting",
+    "identify_sections",
+    "extract_entities",
+    "generate_qa_pairs",
+    "summarize_document",
+    "extract_metrics",
+    "flag_risks",
+    "canonicalise_entities",
+    "ocr_image",
+    "enhance_ocr_text",
+    "analyze_pdf_structure",
+    "extract_tables",
+    "process_document_batch",
 
     # Text Redline tools
     "compare_documents_redline",
@@ -276,6 +317,7 @@ __all__ = [
     "generate_workflow_report",
     "visualize_reasoning_chain",
     "visualize_memory_network",
+
 ]
 
 logger = get_logger("ultimate_mcp_server.tools")
@@ -365,59 +407,11 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
     
 
     # --- Register Class-Based Tools ---
-    # Register SmartBrowserTool
-    if (not filter_enabled or 
-        "smart_browser" in included_tools or 
-        (not included_tools and "smart_browser" not in excluded_tools)):
-        try:
-            SmartBrowserTool(mcp_server)  # Instantiate without assignment
-            # The @tool decorated methods will be registered when the class is instantiated
-            logger.info("Registered SmartBrowserTool class tools", emoji_key="⚙️")
-            standalone_count += 1  # Count the class as one registration for simplicity
-        except Exception as e:
-            logger.error(f"Failed to register SmartBrowserTool: {e}", exc_info=True)
 
-    # Register PythonJS Sandbox Tool
+    # Register Meta API Tool
     if (not filter_enabled or 
-        "python_js_sandbox" in included_tools or 
-        (not included_tools and "python_js_sandbox" not in excluded_tools)):
-        try:
-            PythonSandboxTool(mcp_server)  # Instantiate without assignment
-            # The @tool decorated methods will be registered when the class is instantiated
-            logger.info("Registered PythonJS Sandbox Tool class tools", emoji_key="⚙️")
-            standalone_count += 1  # Count the class as one registration for simplicity
-        except Exception as e:
-            logger.error(f"Failed to register PythonJS Sandbox Tool: {e}", exc_info=True)
-
-    # Register SQL Tool
-    if (not filter_enabled or 
-        "sql_tool" in included_tools or 
-        (not included_tools and "sql_tool" not in excluded_tools)):
-        try:
-            SQLTool(mcp_server)  # Instantiate without assignment
-            # The @tool decorated methods will be registered when the class is instantiated
-            logger.info("Registered SQL Tool class tools", emoji_key="⚙️")
-            standalone_count += 1  # Count the class as one registration for simplicity
-        except Exception as e:
-            logger.error(f"Failed to register SQL Tool: {e}", exc_info=True)
-    
-    # Register Document Processing Tool
-    if (not filter_enabled or 
-        "document_processing" in included_tools or 
-        (not included_tools and "document_processing" not in excluded_tools)):
-        try:
-            DocumentProcessingTool(mcp_server)  # Instantiate without assignment   
-            logger.info("Registered Document Processing Tool class tools", emoji_key="⚙️")
-            standalone_count += 1  # Count the class as one registration for simplicity
-        except Exception as e:
-            logger.error(f"Failed to register Document Processing Tool: {e}", exc_info=True)
-    
-
-    # Special handling for meta_api_tool which is a module rather than a function
-    # Only register if it passes the filtering criteria
-    if (not filter_enabled or 
-        "register_api_meta_tools" in included_tools or 
-        (not included_tools and "register_api_meta_tools" not in excluded_tools)):
+        "meta_api_tool" in included_tools or 
+        (not included_tools and "meta_api_tool" not in excluded_tools)):
         try:
             from ultimate_mcp_server.tools.meta_api_tool import register_api_meta_tools
             register_api_meta_tools(mcp_server)
@@ -428,11 +422,10 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Failed to register Meta API tools: {e}", exc_info=True)
     
-    # Special handling for excel_spreadsheet_automation which is a module rather than a function
-    # Only register if it passes the filtering criteria AND Excel is available on Windows
+    # Register Excel Spreadsheet Automation Tool
     if (not filter_enabled or 
-        "register_excel_spreadsheet_tools" in included_tools or 
-        (not included_tools and "register_excel_spreadsheet_tools" not in excluded_tools)):
+        "excel_spreadsheet_automation" in included_tools or 
+        (not included_tools and "excel_spreadsheet_automation" not in excluded_tools)):
         try:
             from ultimate_mcp_server.tools.excel_spreadsheet_automation import (
                 WINDOWS_EXCEL_AVAILABLE,
@@ -446,12 +439,12 @@ def register_all_tools(mcp_server) -> Dict[str, Any]:
                 # Automatically exclude Excel tools if not available
                 logger.warning("Excel automation tools are only available on Windows with Excel installed. These tools will not be registered.")
                 # If not already explicitly excluded, add to excluded_tools
-                if "register_excel_spreadsheet_tools" not in excluded_tools:
+                if "excel_spreadsheet_automation" not in excluded_tools:
                     if not cfg.tool_registration.filter_enabled:
                         cfg.tool_registration.filter_enabled = True
                     if not hasattr(cfg.tool_registration, "excluded_tools"):
                         cfg.tool_registration.excluded_tools = []
-                    cfg.tool_registration.excluded_tools.append("register_excel_spreadsheet_tools")
+                    cfg.tool_registration.excluded_tools.append("excel_spreadsheet_automation")
         except ImportError:
             logger.warning("Excel spreadsheet tools not found (ultimate_mcp_server.tools.excel_spreadsheet_automation)")
         except Exception as e:

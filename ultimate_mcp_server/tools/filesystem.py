@@ -1627,15 +1627,15 @@ async def get_unique_filepath(path: str) -> Dict[str, Any]:
 
 @with_tool_metrics
 @with_error_handling
-async def write_file(path: str, content: str) -> Dict[str, Any]:
-    """Write string content to a file asynchronously (UTF-8), creating/overwriting.
+async def write_file(path: str, content: Union[str, bytes]) -> Dict[str, Any]:
+    """Write content to a file asynchronously (UTF-8 or binary), creating/overwriting.
 
     Ensures the path is valid, within allowed directories, and that the parent
     directory exists and is writable. Fails if the target path exists and is a directory.
 
     Args:
         path: Path to the file to write.
-        content: Text content (string) to write.
+        content: Content to write (string for text UTF-8, bytes for binary).
 
     Returns:
         A dictionary confirming success and providing file details (path, size).
@@ -1643,8 +1643,8 @@ async def write_file(path: str, content: str) -> Dict[str, Any]:
     start_time = time.monotonic()
 
     # Validate content type explicitly at the start.
-    if not isinstance(content, str):
-         raise ToolInputError("Content to write must be a string.", param_name="content", provided_value=type(content))
+    if not isinstance(content, (str, bytes)):
+         raise ToolInputError("Content to write must be a string or bytes.", param_name="content", provided_value=type(content))
 
     # Validate path: doesn't need to exist necessarily (check_exists=None), but parent must exist and be writable.
     validated_path = await validate_path(path, check_exists=None, check_parent_writable=True)
@@ -1656,11 +1656,6 @@ async def write_file(path: str, content: str) -> Dict[str, Any]:
             f"Cannot write file: Path '{path}' (resolved to '{validated_path}') exists and is a directory.",
             param_name="path", provided_value=path
         )
-
-    # NOTE: Modification protection is currently NOT applied here.
-    # A simple heuristic could be added if needed, e.g., based on file size or if overwriting
-    # an existing file with significantly different characteristics, but the primary protection
-    # is focused on bulk deletion via delete_path.
 
     # write_file_content handles actual writing and parent dir creation
     await write_file_content(validated_path, content) # Can raise ToolError

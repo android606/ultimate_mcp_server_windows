@@ -480,8 +480,6 @@ async def chat_completion(
         ) from e
 
 
-# Note: Multi-completion might benefit from retry/error handling too, 
-# but it's complex due to multiple parallel requests. Added caching.
 @with_cache(ttl=7 * 24 * 60 * 60) # Cache results for 7 days
 @with_tool_metrics
 @with_error_handling # Error handling should be used

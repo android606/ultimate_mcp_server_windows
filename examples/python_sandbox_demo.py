@@ -23,7 +23,7 @@ from rich.traceback import install as install_rich_traceback
 
 from ultimate_mcp_server.core.server import Gateway
 from ultimate_mcp_server.exceptions import ToolError
-from ultimate_mcp_server.tools.python_js_sandbox import PythonSandboxTool
+from ultimate_mcp_server.tools.python_sandbox import PythonSandboxTool
 from ultimate_mcp_server.utils import get_logger
 
 # Initialize Rich console and logger

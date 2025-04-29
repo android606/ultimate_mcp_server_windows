@@ -43,7 +43,9 @@ from ultimate_mcp_server.tools.base import (  # noqa: E402
     with_tool_metrics,
 )
 from ultimate_mcp_server.tools.completion import generate_completion  # noqa: E402
-from ultimate_mcp_server.tools.document_conversion_and_processing import chunk_document  # noqa: E402
+from ultimate_mcp_server.tools.document_conversion_and_processing import (  # noqa: E402
+    chunk_document_standalone,
+    )
 from ultimate_mcp_server.utils import get_logger  # noqa: E402
 
 logger = get_logger("ultimate_mcp_server.tools.entity_graph")
@@ -1327,7 +1329,7 @@ async def _perform_chunked_extraction(
 
     try:
         # Use semantic chunking if possible, fall back to simple
-        chunks = await chunk_document(
+        chunks = await chunk_document_standalone(
             document=text,
             chunk_size=effective_chunk_size,
             chunk_overlap=int(effective_chunk_size * 0.1), # 10% overlap

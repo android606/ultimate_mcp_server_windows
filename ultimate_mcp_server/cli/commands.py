@@ -62,6 +62,9 @@ def run_server(
                        the Base Toolset (completion, filesystem, optimization, provider, 
                        local_text, meta, search).
     """
+    # Set up graceful shutdown handling
+    handle_quiet_exit()
+    
     # Get the current config
     cfg = get_config()
     
