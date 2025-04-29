@@ -134,11 +134,15 @@ from .rag import (
 from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
 from .smart_browser import (
     autopilot,
+    browse,
+    click,
     collect_documentation,
     download,
     download_site_pdfs,
+    parallel,
     run_macro,
     search,
+    type_text,
 )
 from .sql_databases import access_audit_log, execute_sql, explore_database, manage_database
 from .text_classification import text_classification
@@ -218,10 +222,14 @@ __all__ = [
     "repl_python",
 
      # Smart Browser Standalone Functions
+    "click",
+    "browse",
+    "type_text",
     "search",
     "download",
     "download_site_pdfs",
     "collect_documentation",
+    "parallel",
     "run_macro",
     "autopilot",
     

@@ -101,8 +101,7 @@ dependencies = [
     "pandera>=0", # Data validation
     "rapidfuzz>=0",
     "magika>=0",
-    "tabula>=0",
-
+    "tabula-py>=0",
 ]
 
 [project.optional-dependencies]

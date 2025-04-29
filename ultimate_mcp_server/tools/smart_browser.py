@@ -2056,9 +2056,13 @@ async def _ensure_readability(page: Page) -> None:  # Uses global _READ_JS_CACHE
     if _READ_JS_CACHE:
         try:
             logger.debug(f"Attempting to load Readability.js from cache: {cache_file_path}")
-            # Use STANDALONE read_file tool
             read_result = await read_file(path=cache_file_path)
-
+            if isinstance(read_result, dict) and not read_result.get("success"):
+                error_msg = read_result.get("error", "Unknown read error")
+                error_code = read_result.get("error_code", "")
+                logger.warning(
+                    f"Failed to read Readability.js cache {cache_file_path}: {error_msg} (Code: {error_code}). Full response: {read_result}. Will attempt fetch." # Log full dict
+                )
             if isinstance(read_result, dict) and read_result.get("success"):
                 content_list = read_result.get("content", [])
                 if isinstance(content_list, list) and content_list:
@@ -2442,7 +2446,7 @@ def _shadow_deep_js() -> str:  # Uses globals _max_widgets_global, _area_min_glo
 
 async def _build_page_map(
     page: Page,
-) -> Tuple[Dict[str, Any], str]:  # Uses globals _max_section_chars_global, _max_widgets_global
+) -> Tuple[Dict[str, Any], str]:  # Uses globals _max_section_chars_global, _max_widgets_global, _log
     """Builds a structured representation (map) of the current page content and elements."""
     # Calculate fingerprint first to check cache
     fp = await _dom_fingerprint(page)
@@ -2527,23 +2531,29 @@ async def _build_page_map(
                     frame.evaluate(js_func, frame_prefix), timeout=5.0
                 )
                 all_extracted_elems.extend(frame_elems)
-                logger.debug(
-                    f"Extracted {len(frame_elems)} elements from frame {i} ({frame_url_short})."
-                )
+                # Log extraction count per frame *only if* elements were found
+                if frame_elems:
+                    logger.debug(
+                        f"Extracted {len(frame_elems)} elements from frame {i} ({frame_url_short})."
+                    )
             except PlaywrightTimeoutError:
                 logger.warning(f"Timeout evaluating elements in frame {i} ({frame_url_short})")
             except PlaywrightException as e:
+                # Be more specific about error logging - avoid logging full exception in normal operation unless debug level
                 logger.warning(
-                    f"Playwright error evaluating elements in frame {i} ({frame_url_short}): {e}"
+                    f"Playwright error evaluating elements in frame {i} ({frame_url_short}): {type(e).__name__}"
                 )
+                logger.debug(f"Full PlaywrightException in frame {i}: {e}", exc_info=False) # Log full exception only at debug
             except Exception as e:
                 logger.error(
                     f"Unexpected error evaluating elements in frame {i} ({frame_url_short}): {e}",
-                    exc_info=True,
+                    exc_info=True, # Log full traceback for unexpected errors
                 )
 
         # Limit the total number of elements stored
         elems = all_extracted_elems[:_max_widgets_global]
+        logger.debug(f"Total elements extracted: {len(all_extracted_elems)}, stored (limited): {len(elems)}") # Log total and limited count
+
 
         # 3. Get Page Title
         try:
@@ -2559,6 +2569,8 @@ async def _build_page_map(
         )
     except Exception as e:
         logger.error(f"Unexpected error building page map for {page.url}: {e}", exc_info=True)
+
+    # Removed the specific logging block that depended on URL_BOOKSTORE
 
     # Assemble the final page map dictionary
     page_map = {
@@ -2936,9 +2948,7 @@ class EnhancedLocator:  # Keep class, but it's used INTERNALLY by standalone fun
 
     async def locate(
         self, task_hint: str, *, role: Optional[str] = None, timeout: int = 5000
-    ) -> (
-        Locator
-    ):  # Uses globals _retry_after_fail_global, _log, _get_pool, _cache_put_sync, _llm_pick
+    ) -> Locator:  # Uses globals _retry_after_fail_global, _log, _get_pool, _cache_put_sync, _llm_pick
         """Finds the best Locator for a task hint using cache, heuristics, and LLM."""
         if not task_hint or not task_hint.strip():
             raise ValueError("locate requires a non-empty 'task_hint'")
@@ -2956,48 +2966,61 @@ class EnhancedLocator:  # Keep class, but it's used INTERNALLY by standalone fun
             "site": self.site,
             "path": path,
             "hint": task_hint.lower(),  # Normalize hint for key
+            "role": role.lower() if role else None, # Include role in cache key
         }
         key_src = json.dumps(key_data, sort_keys=True)
-        key_src_bytes = key_src.encode()
+        key_src_bytes = key_src.encode("utf-8") # Specify encoding
         cache_key = hashlib.sha256(key_src_bytes).hexdigest()
+        key_preview = cache_key[:8] # For logging
 
         # 2. Check Cache with Current DOM Fingerprint
+        logger.debug(f"EnhancedLocator: Checking cache for hint='{task_hint}', role='{role}', key={key_preview}...")
         current_dom_fp = await _dom_fingerprint(self.page)
+        logger.debug(f"EnhancedLocator: Current DOM FP: {current_dom_fp[:12]}...")
         cached_loc = await self._selector_cached(cache_key, current_dom_fp)
         if cached_loc:
-            logger.info(f"Locator found in cache for hint: '{task_hint}'")
+            logger.info(f"EnhancedLocator: Cache HIT for hint='{task_hint}', key={key_preview}")
             return cached_loc
+        else:
+            logger.debug(f"EnhancedLocator: Cache MISS for hint='{task_hint}', key={key_preview}")
+
 
         # 3. Cache Miss: Get Page Map and Try Heuristics
-        logger.debug(f"Cache miss for '{task_hint}'. Trying heuristics...")
-        pm, current_dom_fp = await self._get_page_map()  # Get map (updates fingerprint)
+        logger.debug(f"EnhancedLocator: Cache miss for '{task_hint}'. Trying heuristics...")
+        pm, current_dom_fp = await self._get_page_map()  # Get map (updates fingerprint if changed)
+        logger.debug(f"EnhancedLocator: Page map obtained for '{task_hint}'. FP: {current_dom_fp[:8]}. PM Keys: {pm.keys() if pm else 'None'}")
+        logger.debug(f"EnhancedLocator: Heuristic Check: Trying _heuristic_pick for hint='{task_hint}', role='{role}'")
         heuristic_id = _heuristic_pick(pm, task_hint, role)
+        logger.debug(f"EnhancedLocator: Heuristic pick result ID: '{heuristic_id}'") # Log result ID
 
-        if heuristic_id:
+        if heuristic_id: # <<< CORRECTED VARIABLE NAME HERE
             try:
                 # Validate heuristic pick and get Locator
+                logger.debug(f"EnhancedLocator: Validating heuristic pick ID '{heuristic_id}'...")
                 loc = await _loc_from_id(self.page, heuristic_id)
                 await loc.scroll_into_view_if_needed(timeout=2000)  # Scroll with timeout
                 # Wait slightly longer for heuristic match to be visible
                 wait_timeout = max(1000, timeout // 3)
+                logger.debug(f"EnhancedLocator: Waiting for heuristic element '{heuristic_id}' visibility ({wait_timeout}ms)...")
                 await loc.wait_for(state="visible", timeout=wait_timeout)
+                logger.debug(f"EnhancedLocator: Heuristic element '{heuristic_id}' is visible.")
 
                 # Cache the successful heuristic result
                 selector_str = f'[data-sb-id="{heuristic_id}"]'
                 await loop.run_in_executor(
                     pool, _cache_put_sync, cache_key, selector_str, current_dom_fp
                 )
-                await _log("locator_heuristic_match", selector=heuristic_id, hint=task_hint)
+                await _log("locator_heuristic_match", selector=heuristic_id, hint=task_hint, role=role)
                 logger.info(
-                    f"Locator found via heuristic for hint: '{task_hint}' -> ID: {heuristic_id}"
+                    f"EnhancedLocator: Locator found via heuristic for hint: '{task_hint}' -> ID: {heuristic_id}"
                 )
                 return loc
             except (PlaywrightException, ValueError) as e:
-                logger.debug(f"Heuristic pick '{heuristic_id}' failed validation. Error: {e}")
+                logger.debug(f"EnhancedLocator: Heuristic pick '{heuristic_id}' failed validation. Error: {e}")
                 # Continue to LLM fallback
 
         # 4. Heuristic Failed: Try LLM Picker (with retries)
-        logger.debug(f"Heuristic failed for '{task_hint}'. Trying LLM picker...")
+        logger.debug(f"EnhancedLocator: Heuristic failed for '{task_hint}'. Trying LLM picker...")
         # Number of LLM attempts = 1 initial + configured retries
         num_llm_attempts = 1 + _retry_after_fail_global
         for att in range(1, num_llm_attempts + 1):
@@ -3007,14 +3030,15 @@ class EnhancedLocator:  # Keep class, but it's used INTERNALLY by standalone fun
                     f"EnhancedLocator timed out after {elapsed_sec:.1f}s before completing LLM attempts for '{task_hint}'."
                 )
 
-            logger.debug(f"LLM pick attempt {att}/{num_llm_attempts} for '{task_hint}'...")
+            logger.debug(f"EnhancedLocator: LLM pick attempt {att}/{num_llm_attempts} for '{task_hint}'...")
             llm_id = await _llm_pick(pm, task_hint, att)
+            logger.debug(f"EnhancedLocator: LLM pick result (Attempt {att}) for '{task_hint}': ID='{llm_id}'") # Log LLM result ID
 
             if not llm_id:
-                logger.debug(f"LLM pick attempt {att} returned no ID for '{task_hint}'.")
+                logger.debug(f"EnhancedLocator: LLM pick attempt {att} returned no ID for '{task_hint}'.")
                 # If more attempts remain, refresh map and retry
                 if att < num_llm_attempts:
-                    logger.debug("Refreshing page map before LLM retry...")
+                    logger.debug("EnhancedLocator: Refreshing page map before LLM retry...")
                     pm, current_dom_fp = await self._get_page_map()
                     continue
                 else:
@@ -3023,37 +3047,50 @@ class EnhancedLocator:  # Keep class, but it's used INTERNALLY by standalone fun
 
             # LLM returned an ID, try to validate it
             try:
+                logger.debug(f"EnhancedLocator: Validating LLM pick ID '{llm_id}' (Attempt {att})...")
                 loc = await _loc_from_id(self.page, llm_id)
+                # Log outer HTML for debugging LLM picks
+                try:
+                    loc_llm_outer_html = await loc.evaluate("element => element.outerHTML", timeout=500)
+                    logger.debug(f"EnhancedLocator: LLM picked element outerHTML: {loc_llm_outer_html[:200]}...")
+                except Exception as eval_err:
+                     logger.debug(f"EnhancedLocator: Error getting outerHTML for LLM pick {llm_id}: {eval_err}")
+
                 await loc.scroll_into_view_if_needed(timeout=2000)
                 # Calculate remaining timeout for wait_for
                 elapsed_now_sec = time.monotonic() - start_time
                 remaining_timeout_ms = max(500, timeout - int(elapsed_now_sec * 1000))
+                logger.debug(f"EnhancedLocator: Waiting for LLM element '{llm_id}' visibility ({remaining_timeout_ms}ms)...")
                 await loc.wait_for(state="visible", timeout=remaining_timeout_ms)
+                logger.debug(f"EnhancedLocator: LLM element '{llm_id}' is visible.")
 
                 # Cache the successful LLM result
                 selector_str = f'[data-sb-id="{llm_id}"]'
                 await loop.run_in_executor(
                     pool, _cache_put_sync, cache_key, selector_str, current_dom_fp
                 )
-                await _log("locator_llm_pick", selector=llm_id, attempt=att, hint=task_hint)
+                await _log("locator_llm_pick", selector=llm_id, attempt=att, hint=task_hint, role=role)
                 logger.info(
-                    f"Locator found via LLM (Attempt {att}) for hint: '{task_hint}' -> ID: {llm_id}"
+                    f"EnhancedLocator: Locator found via LLM (Attempt {att}) for hint: '{task_hint}' -> ID: {llm_id}"
                 )
                 return loc
             except (PlaywrightException, ValueError) as e:
-                logger.debug(f"LLM pick '{llm_id}' (attempt {att}) failed validation. Error: {e}")
+                logger.debug(f"EnhancedLocator: LLM pick '{llm_id}' (attempt {att}) failed validation. Error: {e}")
                 # If more attempts remain, refresh map and retry
                 if att < num_llm_attempts:
-                    logger.debug("Refreshing page map before LLM retry...")
+                    logger.debug("EnhancedLocator: Refreshing page map before LLM retry...")
                     pm, current_dom_fp = await self._get_page_map()
                     # Continue to next LLM attempt loop iteration
                 # Else (last attempt failed), loop will end and proceed to text fallback
 
         # 5. LLM Failed: Try Simple Text Fallback
-        logger.debug(f"LLM picks failed for '{task_hint}'. Trying text selector fallback...")
+        logger.debug(f"EnhancedLocator: LLM picks failed for '{task_hint}'. Trying text selector fallback...")
         try:
-            # Escape hint for text selector? Playwright usually handles this, but be aware.
-            text_selector = f'text="{task_hint}"'
+            # Escape hint for text selector? Playwright usually handles this.
+            # Ensure quotes within the hint are handled if needed, but Playwright's text= syntax is generally robust.
+            # Example: If task_hint might contain quotes: text_selector = f'text={json.dumps(task_hint)}'
+            text_selector = f'text="{task_hint}"' # Keep simple version for now
+            logger.debug(f"EnhancedLocator: Using text selector: {text_selector}")
             loc = self.page.locator(text_selector).first
 
             elapsed_sec_fb = time.monotonic() - start_time
@@ -3067,21 +3104,26 @@ class EnhancedLocator:  # Keep class, but it's used INTERNALLY by standalone fun
             await loc.scroll_into_view_if_needed(
                 timeout=remaining_timeout_ms_fb // 2
             )  # Use portion of remaining time
+            logger.debug(f"EnhancedLocator: Waiting for text fallback element visibility ({remaining_timeout_ms_fb}ms)...")
             await loc.wait_for(state="visible", timeout=remaining_timeout_ms_fb)
-            await _log("locator_text_fallback", selector=text_selector, hint=task_hint)
-            logger.info(f"Locator found via text fallback for hint: '{task_hint}'")
+            logger.debug("EnhancedLocator: Text fallback element is visible.")
+            await _log("locator_text_fallback", selector=text_selector, hint=task_hint, role=role)
+            logger.info(f"EnhancedLocator: Locator found via text fallback for hint: '{task_hint}'")
             return loc
-        except PlaywrightException as text_fallback_err:
-            logger.debug(f"Text selector fallback failed for '{task_hint}': {text_fallback_err}")
+        except PlaywrightTimeoutError as text_fallback_err: # Catch TimeoutError specifically from wait_for
+            logger.debug(f"EnhancedLocator: Text selector fallback failed (timeout) for '{task_hint}': {text_fallback_err}")
+            pass # Proceed to final failure
+        except PlaywrightException as text_fallback_err: # Catch other Playwright errors (e.g., invalid selector)
+            logger.debug(f"EnhancedLocator: Text selector fallback failed (Playwright error) for '{task_hint}': {text_fallback_err}")
             pass  # Proceed to final failure
 
         # 6. All Methods Failed
         final_elapsed_sec = time.monotonic() - start_time
         log_hint = task_hint[:120]  # Truncate long hints for logging
         log_duration = round(final_elapsed_sec, 1)
-        await _log("locator_fail_all", hint=log_hint, duration_s=log_duration)
-        raise PlaywrightTimeoutError(
-            f"EnhancedLocator failed to find element for hint: '{task_hint}' within {timeout_sec:.1f}s using all methods."
+        await _log("locator_fail_all", hint=log_hint, duration_s=log_duration, role=role)
+        raise PlaywrightTimeoutError( # Raise TimeoutError as it's the most common failure mode here
+            f"EnhancedLocator failed to find element for hint: '{task_hint}' within {timeout_sec:.1f}s using all methods (cache, heuristic, LLM, text fallback)."
         )
 
 
@@ -3310,6 +3352,427 @@ async def smart_type(
         await _log("type_fail_unexpected", target=log_target, value=log_value, error=str(e))
         raise ToolError(f"Unexpected error during type: {e}", details=log_target) from e
 
+
+
+@with_tool_metrics
+@with_error_handling
+async def browse(
+    url: str, wait_for_selector: Optional[str] = None, wait_for_navigation: bool = True
+) -> Dict[str, Any]:
+    """
+    Navigates to a URL using a dedicated browser tab, waits for load state
+    (and optionally a selector), then extracts and returns the page state.
+
+    Args:
+        url: The URL to navigate to (scheme will be added if missing).
+        wait_for_selector: Optional CSS selector to wait for after navigation.
+        wait_for_navigation: Whether to wait for 'networkidle' (True) or
+                             'domcontentloaded' (False).
+
+    Returns:
+        A dictionary containing success status and the final page state.
+    """
+    await _ensure_initialized()
+    _update_activity()
+
+    # --- Input Validation ---
+    if not isinstance(url, str) or not url.strip():
+        raise ToolInputError("URL cannot be empty.")
+    # Add scheme if missing
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+        logger.debug(f"Prepended 'https://' to URL: {url}")
+
+    # --- Proxy Check ---
+    proxy_cfg = _get_proxy_config()
+    if proxy_cfg and _PROXY_ALLOWED_DOMAINS_LIST is not None:
+        if not _is_domain_allowed_for_proxy(url):
+            proxy_server = proxy_cfg.get("server", "Configured Proxy")
+            error_msg = (
+                f"Navigation blocked by proxy domain rules for '{url}' via {proxy_server}."
+            )
+            await _log("browse_fail_proxy_disallowed", url=url, proxy=proxy_server)
+            raise ToolError(error_msg, error_code="proxy_domain_disallowed")
+
+    # --- Execution ---
+    ctx, _ = await get_browser_context()  # Get shared context
+    async with _tab_context(ctx) as page:  # Use temp page from shared context
+        await _log("navigate_start", url=url)
+        try:
+            # Determine wait state based on argument
+            wait_until_state = "networkidle" if wait_for_navigation else "domcontentloaded"
+            nav_timeout = 60000  # 60 seconds
+            await page.goto(url, wait_until=wait_until_state, timeout=nav_timeout)
+
+            # Optionally wait for a specific selector
+            if wait_for_selector:
+                selector_timeout = 15000  # 15 seconds
+                try:
+                    await page.wait_for_selector(
+                        wait_for_selector, state="visible", timeout=selector_timeout
+                    )
+                    await _log("navigate_wait_selector_ok", url=url, selector=wait_for_selector)
+                except PlaywrightTimeoutError:
+                    # Log timeout but proceed, might still be usable
+                    logger.warning(
+                        f"Timeout waiting for selector '{wait_for_selector}' at {url} after navigation."
+                    )
+                    await _log(
+                        "navigate_wait_selector_timeout", url=url, selector=wait_for_selector
+                    )
+
+            # Pause and get final state
+            await _pause(page, (50, 200))
+            state = await get_page_state(page)  # Use helper to get structured state
+            await _log("navigate_success", url=url, title=state.get("title"))
+
+            # Return success and page state
+            return {"success": True, "page_state": state}
+
+        except PlaywrightException as e:
+            # Handle Playwright-specific navigation errors
+            await _log("navigate_fail_playwright", url=url, error=str(e))
+            # Decorator will wrap this in ToolError
+            raise ToolError(f"Navigation failed for {url}: {e}") from e
+        except Exception as e:
+            # Handle unexpected errors during navigation/state extraction
+            await _log("navigate_fail_unexpected", url=url, error=str(e))
+            # Decorator will wrap this in ToolError
+            raise ToolError(f"Unexpected error browsing {url}: {e}") from e
+
+
+@with_tool_metrics
+@with_error_handling
+async def click(
+    url: str,
+    target: Optional[Dict[str, Any]] = None,
+    task_hint: Optional[str] = None,
+    wait_ms: int = 1000,
+) -> Dict[str, Any]:
+    """
+    Navigates to a URL, clicks an element identified by task_hint or target,
+    waits, and returns the resulting page state.
+
+    Args:
+        url: The URL to navigate to first.
+        target: Optional dictionary (like Plan-Step target) used to generate hint if task_hint missing.
+        task_hint: Natural language description of the element to click.
+        wait_ms: Milliseconds to wait after the click action completes.
+
+    Returns:
+        A dictionary containing success status and the final page state after the click.
+    """
+    await _ensure_initialized()
+    _update_activity()
+
+    # --- Input Validation: Determine task_hint ---
+    effective_task_hint = task_hint
+    if not effective_task_hint:
+        if target and (target.get("name") or target.get("role")):
+            name = target.get("name", "")
+            role = target.get("role", "")
+            role_part = role or "element"
+            name_part = f" named '{name}'" if name else ""
+            effective_task_hint = f"Click the {role_part}{name_part}"
+            logger.debug(f"click tool generated task_hint: '{effective_task_hint}'")
+        else:
+            raise ToolInputError(
+                "click tool requires 'task_hint', or 'target' dict with 'name' or 'role'."
+            )
+
+    # --- Execution ---
+    ctx, _ = await get_browser_context()
+    async with _tab_context(ctx) as page:
+        await _log("click_extract_navigate", url=url, hint=effective_task_hint)
+        # Navigate to the page
+        try:
+            nav_timeout = 60000
+            await page.goto(url, wait_until="networkidle", timeout=nav_timeout)
+        except PlaywrightException as e:
+            raise ToolError(f"Navigation to '{url}' failed before click attempt: {e}") from e
+
+        # Perform the click using the smart helper
+        # smart_click handles EnhancedLocator, interaction, logging, and errors
+        await smart_click(
+            page,
+            task_hint=effective_task_hint,
+            target_kwargs=target,  # Pass target for logging inside smart_click
+            timeout_ms=10000,  # Timeout for locating the element
+        )
+
+        # Wait after click if specified
+        if wait_ms > 0:
+            await page.wait_for_timeout(wait_ms)
+
+        # Wait for network to potentially settle after click (best effort)
+        try:
+            idle_timeout = 10000
+            await page.wait_for_load_state("networkidle", timeout=idle_timeout)
+        except PlaywrightTimeoutError:
+            logger.debug("Network idle wait timeout after click action.")
+
+        # Pause and get final state
+        await _pause(page, (50, 200))
+        final_state = await get_page_state(page)
+        await _log("click_extract_success", url=page.url, hint=effective_task_hint)
+
+        # Return success and the state after the click
+        return {"success": True, "page_state": final_state}
+
+
+@with_tool_metrics
+@with_error_handling
+async def type_text(
+    url: str,
+    fields: List[Dict[str, Any]],
+    submit_hint: Optional[str] = None,
+    submit_target: Optional[Dict[str, Any]] = None,
+    wait_after_submit_ms: int = 2000,
+) -> Dict[str, Any]:
+    """
+    Navigates to a URL, fills specified form fields using task hints,
+    optionally clicks a submit element, waits, and returns the final page state.
+
+    Args:
+        url: The URL containing the form.
+        fields: A list of dictionaries, each specifying a field to type into.
+                Required keys per dict: 'task_hint' (or 'target') and 'text'.
+                Optional keys: 'enter' (bool), 'clear_before' (bool).
+        submit_hint: Optional natural language description of the submit element.
+        submit_target: Optional target dictionary for the submit element.
+        wait_after_submit_ms: Milliseconds to wait after submission.
+
+    Returns:
+        A dictionary containing success status and the final page state.
+    """
+    await _ensure_initialized()
+    _update_activity()
+
+    # --- Input Validation ---
+    if not fields or not isinstance(fields, list):
+        raise ToolInputError("'fields' must be a non-empty list of dictionaries.")
+    if submit_hint and submit_target:
+        logger.warning("Both submit_hint and submit_target provided; submit_hint will be used.")
+    elif not submit_hint and not submit_target:
+        logger.debug("No submit_hint or submit_target provided; form will not be submitted.")
+
+    # --- Execution ---
+    ctx, _ = await get_browser_context()
+    async with _tab_context(ctx) as page:
+        await _log("fill_form_navigate", url=url)
+        # Navigate to the form page
+        try:
+            nav_timeout = 60000
+            await page.goto(url, wait_until="networkidle", timeout=nav_timeout)
+        except PlaywrightException as e:
+            raise ToolError(f"Navigation to '{url}' failed before filling form: {e}") from e
+
+        # Wait briefly for form elements to likely appear (best effort)
+        try:
+            form_wait_timeout = 5000
+            await page.wait_for_selector(
+                'form, input, textarea, select', state='visible', timeout=form_wait_timeout
+            )
+            logger.debug("Form elements found, proceeding with field filling.")
+        except PlaywrightTimeoutError:
+            logger.warning("Did not quickly find typical form elements. Proceeding anyway.")
+
+        # Loop through fields and type text
+        for i, field in enumerate(fields):
+            if not isinstance(field, dict):
+                raise ToolInputError(f"Item at index {i} in 'fields' is not a dictionary.")
+
+            # Determine hint for the field
+            field_hint = field.get("task_hint")
+            field_target = field.get("target")
+            if not field_hint:
+                if field_target and (field_target.get("name") or field_target.get("role")):
+                    name = field_target.get("name", "")
+                    role = field_target.get("role", "input")
+                    field_hint = f"{role or 'Input field'} '{name}'" if name else f"{role or 'Input field'}"
+                else:
+                    raise ToolInputError(
+                        f"Field at index {i} requires 'task_hint' or 'target' with name/role."
+                    )
+
+            # Get text to type
+            text_to_type = field.get("text")
+            if text_to_type is None:  # Allow empty string, but not None
+                raise ToolInputError(f"Field at index {i} ('{field_hint}') missing required 'text'.")
+
+            # Log the action for this field
+            await _log("fill_form_field", index=i, hint=field_hint)
+
+            # Use smart_type helper for the actual typing
+            await smart_type(
+                page,
+                task_hint=field_hint,
+                text=text_to_type,
+                press_enter=field.get("enter", False),
+                clear_before=field.get("clear_before", True),
+                target_kwargs=field_target,  # Pass target for logging inside smart_type
+                timeout_ms=5000,
+            )
+            await _pause(page, (50, 150))  # Short pause between fields
+
+        # Handle optional submission
+        final_submit_hint = submit_hint
+        if not final_submit_hint and submit_target:  # Generate hint from target if needed
+            if submit_target.get("name") or submit_target.get("role"):
+                name = submit_target.get("name", "")
+                role = submit_target.get("role", "button")
+                final_submit_hint = f"Submit {role or 'button'}" + (f" '{name}'" if name else "")
+            else:
+                logger.warning(
+                    "submit_target provided but lacks 'name' or 'role'; cannot generate hint. Skipping submit."
+                )
+                final_submit_hint = None  # Ensure submit doesn't happen
+
+        if final_submit_hint:
+            await _log("fill_form_submit", hint=final_submit_hint)
+            # Use smart_click helper for submission
+            await smart_click(
+                page,
+                task_hint=final_submit_hint,
+                target_kwargs=submit_target,
+                timeout_ms=10000,
+            )
+            # Wait after submission
+            try:
+                submit_idle_timeout = 15000
+                await page.wait_for_load_state("networkidle", timeout=submit_idle_timeout)
+            except PlaywrightTimeoutError:
+                logger.debug("Network idle wait timeout after form submission.")
+            if wait_after_submit_ms > 0:
+                await page.wait_for_timeout(wait_after_submit_ms)
+
+        # Get final page state
+        await _pause(page, (100, 300))
+        final_state = await get_page_state(page)
+        await _log(
+            "fill_form_success",
+            url=page.url,
+            num_fields=len(fields),
+            submitted=bool(final_submit_hint),
+        )
+
+        return {"success": True, "page_state": final_state}
+
+
+@with_tool_metrics
+@with_error_handling
+async def parallel(
+    urls: List[str], action: str = "get_state", max_tabs: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Processes multiple URLs in parallel using isolated browser tabs via TabPool.
+    Currently only supports the 'get_state' action for each URL.
+
+    Args:
+        urls: A list of URLs to process.
+        action: The action to perform on each URL (currently only 'get_state').
+        max_tabs: Optional override for the maximum number of concurrent tabs.
+                  If None, uses the globally configured limit.
+
+    Returns:
+        A dictionary containing success status, a list of results for each URL,
+        and counts of processed and successful URLs.
+    """
+    await _ensure_initialized()
+    _update_activity()
+
+    # --- Input Validation ---
+    if not urls or not isinstance(urls, list):
+        raise ToolInputError("'urls' must be a non-empty list.")
+    if not all(isinstance(u, str) and u.strip() for u in urls):
+        raise ToolInputError("All items in 'urls' list must be non-empty strings.")
+    if action != "get_state":
+        raise ToolInputError(f"Unsupported action '{action}'. Currently only 'get_state' is allowed.")
+    if max_tabs is not None and not isinstance(max_tabs, int) or (isinstance(max_tabs, int) and max_tabs <= 0):
+        raise ToolInputError("'max_tabs' override must be a positive integer if provided.")
+
+    # --- Setup Tab Pool ---
+    # Use global pool unless max_tabs override is provided
+    pool_to_use = tab_pool
+    if max_tabs is not None:
+        logger.info(f"Using temporary TabPool with max_tabs override: {max_tabs}")
+        pool_to_use = TabPool(max_tabs=max_tabs)
+
+    # --- Define Per-URL Processing Function ---
+    # This function runs inside the TabPool's managed page context
+    async def process_url_action(page: Page, *, url_to_process: str) -> Dict[str, Any]:
+        # Ensure URL has scheme
+        full_url = (
+            url_to_process
+            if url_to_process.startswith(("http://", "https://"))
+            else f"https://{url_to_process}"
+        )
+        result = {"url": url_to_process, "success": False}  # Default result structure
+
+        try:
+            await _log("parallel_navigate", url=full_url, action=action)
+            # Navigate to the URL
+            nav_timeout = 45000  # Shorter timeout for parallel tasks
+            await page.goto(full_url, wait_until="networkidle", timeout=nav_timeout)
+
+            # Perform the specified action
+            if action == "get_state":
+                page_state = await get_page_state(page)
+                result["success"] = True
+                result["page_state"] = page_state
+            # Add other actions here if needed in the future
+            # elif action == "some_other_action":
+            #     # ... perform other action ...
+            #     result["success"] = True
+            #     result["details"] = ...
+
+            return result
+
+        except PlaywrightException as e:
+            error_msg = f"Playwright error processing {full_url}: {e}"
+            logger.warning(error_msg)
+            await _log("parallel_url_error", url=full_url, action=action, error=str(e))
+            result["error"] = error_msg
+            return result
+        except Exception as e:
+            error_msg = f"Unexpected error processing {full_url}: {e}"
+            logger.error(error_msg, exc_info=True) # Log traceback for unexpected
+            await _log("parallel_url_error", url=full_url, action=action, error=str(e))
+            result["error"] = error_msg
+            return result
+
+    # --- Create Tasks for TabPool ---
+    # Use functools.partial to pass the specific URL to each task instance
+    tasks_to_run = []
+    for u in urls:
+        # Create a partial function that captures the url_to_process kwarg
+        task_func = functools.partial(process_url_action, url_to_process=u)
+        tasks_to_run.append(task_func)
+
+    # --- Run Tasks Concurrently using TabPool ---
+    logger.info(f"Starting parallel processing of {len(urls)} URLs with action '{action}'...")
+    # pool.map handles concurrency, semaphore, context/page creation/cleanup
+    results = await pool_to_use.map(tasks_to_run)
+    logger.info("Parallel processing complete.")
+
+    # --- Process Results ---
+    successful_count = sum(1 for r in results if isinstance(r, dict) and r.get("success"))
+    processed_count = len(results)
+    await _log(
+        "parallel_process_complete",
+        total=len(urls),
+        processed=processed_count,
+        successful=successful_count,
+        action=action,
+    )
+
+    # --- Return Final Summary ---
+    return {
+        "success": True,  # Indicates the overall parallel orchestration completed
+        "results": results,  # List containing result dict for each URL
+        "processed_count": processed_count,
+        "successful_count": successful_count,
+    }
 
 # --- Download Helpers ---
 async def _run_in_thread(func, *args):  # Keep as is
@@ -4284,141 +4747,292 @@ _DOC_STOP_PAT = re.compile(
 
 
 def _looks_like_docs_url(url: str) -> bool:
-    """Heuristically checks if a URL looks like a documentation page."""
+    """
+    Heuristically checks if a URL looks like a documentation page.
+
+    Args:
+        url: The URL string to check.
+
+    Returns:
+        True if the URL appears to be a documentation page, False otherwise.
+    """
+    if not url or not isinstance(url, str):
+        return False
+
     try:
         url_low = url.lower()
-        parsed = urlparse(url_low)
+        parsed = urllib.parse.urlparse(url_low)
 
-        # Penalize URLs with query strings (often dynamic/non-doc pages)
+        # 1. Penalize URLs with query strings (often dynamic/non-doc pages)
         if parsed.query:
             return False
 
-        # Penalize common non-doc paths explicitly
+        # 2. Penalize common non-doc paths explicitly
         common_non_doc_paths = [
-            "/api/",
+            # Common application paths
+            "/api/", # Sometimes docs, but often API endpoints themselves
             "/blog/",
             "/news/",
             "/community/",
             "/forum/",
+            "/support/",
+            "/contact/",
+            "/about/",
+            "/pricing/",
+            "/login/",
+            "/register/",
+            "/signup/",
+            "/signin/",
+            "/account/",
+            "/profile/",
+            "/cart/",
+            "/checkout/",
+            # Common asset/download paths
             "/download/",
             "/install/",
             "/_static/",
             "/_images/",
             "/assets/",
             "/media/",
-            "/static/",  # Added /static/
+            "/static/",
+            "/vendor/",
+            "/node_modules/",
+            # Specific framework/site paths unlikely to be main docs
+            "/wp-content/",
+            "/wp-admin/",
+            "/sites/default/files/",
         ]
-        for non_doc_path in common_non_doc_paths:
-            if non_doc_path in parsed.path:
-                return False
+        # Use a generator expression for slightly better efficiency
+        if any(non_doc_path in parsed.path for non_doc_path in common_non_doc_paths):
+            return False
 
-        # Check for keywords indicating documentation
-        has_doc_keyword = (
-            "docs" in url_low
-            or "guide" in url_low
-            or "tuto" in url_low  # tutorial
-            or "ref" in url_low  # reference
-            or "api" in parsed.path  # Often API references are under /api/ but sometimes elsewhere
-            or "faq" in url_low
-            or "howto" in url_low
-            or "userguide" in url_low
-            or "develop" in url_low  # developer docs
-            or "example" in url_low
-        )
+        # 3. Check for keywords indicating documentation in URL or path
+        doc_keywords = [
+            "docs", "doc", "documentation", "guide", "manual", "tutorial", "tuto",
+            "reference", "ref", "api", "faq", "howto", "userguide", "develop",
+            "example", "usage", "getting-started", "quickstart",
+        ]
+        # Check in netloc (e.g., docs.example.com) and path
+        has_doc_keyword = any(keyword in parsed.netloc or keyword in parsed.path for keyword in doc_keywords)
 
-        # Check if URL ends with typical HTML extension or directory slash
+        # 4. Check if URL ends with typical HTML extension or directory slash
         ends_with_doc_ext = url_low.endswith(_DOC_EXTS)
 
-        # Check if URL path contains a file extension we want to stop at
+        # 5. Check if URL is hosted on a common documentation platform
+        common_doc_hosts = [
+            "readthedocs.io",
+            "netlify.app",
+            "vercel.app",
+            "github.io",
+            "gitlab.io",
+            "pages.dev", # Cloudflare Pages
+            "gitbook.io",
+            "docusaurus.io", # Often custom domains, but sometimes subdomains
+        ]
+        is_common_host = any(host in parsed.netloc for host in common_doc_hosts)
+
+        # 6. Check if URL path contains a file extension we want to stop at
         path_has_stop_ext = bool(_DOC_STOP_PAT.search(parsed.path))
 
-        # Rule: (Has doc keyword OR Ends like HTML/Dir) AND does NOT have a stop extension
-        is_likely_doc = (has_doc_keyword or ends_with_doc_ext) and not path_has_stop_ext
+        # Combine checks:
+        # - MUST NOT have a stop extension
+        # - MUST satisfy one of the positive indicators:
+        #   - Contains a documentation keyword
+        #   - Ends like an HTML page or directory
+        #   - Is hosted on a common documentation platform
+        is_likely_doc = (
+            not path_has_stop_ext and
+            (has_doc_keyword or ends_with_doc_ext or is_common_host)
+        )
+
+        # Log decision process if debugging needed
+        # logger.debug(f"URL Check: {url_low} -> StopExt:{path_has_stop_ext}, Keyword:{has_doc_keyword}, DocExt:{ends_with_doc_ext}, CommonHost:{is_common_host} => LikelyDoc:{is_likely_doc}")
+
         return is_likely_doc
 
-    except Exception:
-        # Error parsing URL, assume not a docs URL
+    except ValueError: # Handle potential errors from urlparse
+        logger.warning(f"Error parsing URL for documentation check: {url}", exc_info=True)
+        return False
+    except Exception as e: # Catch any other unexpected errors
+        logger.error(f"Unexpected error in _looks_like_docs_url for {url}: {e}", exc_info=True)
         return False
 
 
 async def _pick_docs_root(pkg_name: str) -> Optional[str]:
-    """Attempts to find the root documentation URL for a package using web search."""
+    """
+    Attempts to find the root documentation URL for a package using web search.
+
+    Uses multiple search queries and engines, then applies heuristics (_looks_like_docs_url)
+    to find the most likely documentation root URL.
+
+    Args:
+        pkg_name: The name of the package to find documentation for.
+
+    Returns:
+        The most likely documentation root URL as a string, or None if not found.
+
+    Raises:
+        ToolInputError: If the package name is invalid.
+        ToolError: If the web search fails critically or no suitable URL is found.
+    """
+    if not pkg_name or not isinstance(pkg_name, str):
+        raise ToolInputError("Package name must be a non-empty string.")
+
     try:
         logger.info(f"Searching for documentation root for package: '{pkg_name}'")
-        # Try a precise search query first
-        query1 = f'"{pkg_name}" documentation website'
-        search_results1 = await search_web(query1, engine="duckduckgo", max_results=5)
 
-        # Try a broader query if the first yields nothing likely
-        query2 = f"{pkg_name} user guide"
-        search_results2 = []
-        if not any(_looks_like_docs_url(hit.get("url", "")) for hit in search_results1):
-            logger.debug(
-                f"Precise query '{query1}' yielded no likely docs. Trying broader query '{query2}'..."
-            )
-            search_results2 = await search_web(query2, engine="bing", max_results=5)
+        # --- Prepare search queries and engines ---
+        queries = [
+            f'"{pkg_name}" official documentation website', # More precise
+            f"{pkg_name} documentation",
+            f"{pkg_name} python library docs", # Specific to python
+            f"{pkg_name} user guide",
+            f"how to use {pkg_name}",
+        ]
+        # Cycle engines to mitigate potential blocks/bias or differing results
+        engines = ["duckduckgo", "bing"]
+        all_search_hits: List[Dict[str, Any]] = []
+        MAX_RESULTS_PER_QUERY = 3 # Get fewer results per query, but run more queries
 
-        # Combine results, prioritizing first query
-        all_results = search_results1 + search_results2
+        # --- Run searches ---
+        for i, query in enumerate(queries):
+            engine = engines[i % len(engines)]
+            logger.debug(f"Trying search query [{i+1}/{len(queries)}]: '{query}' on {engine}")
+            try:
+                await asyncio.sleep(0.2) # Small delay between searches
+                # Assuming search_web returns a list of dicts directly now
+                search_res_list = await search_web(
+                    query, engine=engine, max_results=MAX_RESULTS_PER_QUERY
+                )
+                if isinstance(search_res_list, list):
+                    all_search_hits.extend(search_res_list)
+                else:
+                    # Log if search_web returns unexpected format (it shouldn't based on its definition)
+                    logger.warning(f"Search query '{query}' on {engine} returned unexpected format: {type(search_res_list)}. Expected list.")
 
-        # Iterate through results and find the first likely docs URL
-        for hit in all_results:
+            except ToolError as search_err:
+                # Log specific tool errors from search_web but continue trying other queries
+                logger.warning(f"Web search query '{query}' failed on {engine}: {search_err}")
+            except Exception as e:
+                # Log unexpected errors during a specific search call but continue
+                logger.error(f"Unexpected error during web search for query '{query}': {e}", exc_info=True)
+
+        # Check if any results were gathered at all
+        if not all_search_hits:
+            raise ToolError(f"Web search yielded no results for documentation queries related to '{pkg_name}'.")
+
+        # --- Evaluate results ---
+        logger.debug(f"Evaluating {len(all_search_hits)} potential documentation URLs for '{pkg_name}'.")
+        best_candidate: Optional[str] = None
+        candidate_urls_considered: Set[str] = set()
+
+        for i, hit in enumerate(all_search_hits): # Add index for logging
             url = hit.get("url")
-            if url and _looks_like_docs_url(url):
-                logger.info(f"Found potential documentation page via search: {url}")
-                # Try to find a reasonable root from this page
+            title = hit.get("title", "N/A") # Get title for context
+            logger.debug(f"  Hit [{i+1}/{len(all_search_hits)}]: URL='{url}', Title='{title}'") # Log the hit being processed
+
+            if not url:
+                logger.debug("    -> Skipping hit (no URL)")
+                continue
+
+            # Basic URL cleaning: normalize scheme, netloc, path; remove fragment
+            try:
+                parsed_hit = urllib.parse.urlparse(url)
+                # Remove www. prefix for easier comparison
+                cleaned_netloc = parsed_hit.netloc.lower().replace("www.", "")
+                # Reconstruct URL without fragment, using cleaned netloc
+                cleaned_url = parsed_hit._replace(fragment="", netloc=cleaned_netloc).geturl()
+
+                # Ensure URL is not already processed (avoids redundant checks)
+                if cleaned_url in candidate_urls_considered:
+                    logger.debug(f"    -> Skipping hit (already considered: {cleaned_url})")
+                    continue
+                candidate_urls_considered.add(cleaned_url)
+
+            except ValueError:
+                # Handle potential errors during URL parsing
+                logger.warning(f"    -> Skipping hit (invalid URL): {url}")
+                continue
+
+            # Apply the heuristic check (_looks_like_docs_url assumes it's defined elsewhere)
+            is_likely = _looks_like_docs_url(cleaned_url)
+            logger.debug(f"    -> Heuristic check for '{cleaned_url}': {is_likely}") # Log heuristic result
+
+            if is_likely:
+                logger.info(f"Found likely documentation page via search: {cleaned_url} (Original: {url})")
+                # Simple strategy: take the *first* likely candidate found.
+                best_candidate = cleaned_url
+                break # Stop after finding the first likely candidate
+
+        # --- Fallback if heuristic finds nothing ---
+        if not best_candidate and all_search_hits:
+            # Fallback: Take the first result URL, clean it, and hope for the best.
+            first_url_original = all_search_hits[0].get("url")
+            if first_url_original:
                 try:
-                    parsed = urlparse(url)
-                    # Split path, remove empty segments
-                    path_segments = [seg for seg in parsed.path.split("/") if seg]
-                    # If path has multiple segments, try going up one level
-                    if len(path_segments) > 1:
-                        parent_path = "/".join(path_segments[:-1])
-                        # Ensure trailing slash for root URL
-                        root_candidate = parsed._replace(
-                            path=f"/{parent_path}/", query="", fragment=""
-                        ).geturl()
-                        # Check if the parent path still looks like docs (simple check)
-                        if _looks_like_docs_url(root_candidate):
-                            logger.info(f"Derived potential docs root: {root_candidate}")
-                            return root_candidate
-                        else:
-                            # Parent doesn't look like docs, stick with original URL
-                            logger.info(
-                                f"Parent path '{parent_path}' didn't seem like docs root. Using original URL: {url}"
-                            )
-                            return url
-                    else:
-                        # Only one path segment or root, use the found URL as is
-                        return url
-                except Exception as parse_err:
-                    logger.warning(
-                        f"Error parsing/deriving root from found URL {url}: {parse_err}. Using original."
-                    )
-                    return url  # Fallback to the URL found
+                    parsed_first = urllib.parse.urlparse(first_url_original)
+                    # Perform the same cleaning as above for consistency
+                    cleaned_first_netloc = parsed_first.netloc.lower().replace("www.", "")
+                    cleaned_first_url = parsed_first._replace(fragment="", netloc=cleaned_first_netloc).geturl()
+                    logger.warning(f"_looks_like_docs_url heuristic failed. Falling back to first search result: {cleaned_first_url}")
+                    best_candidate = cleaned_first_url
+                except ValueError:
+                    logger.error(f"Could not parse fallback first URL: {first_url_original}")
+                    # best_candidate remains None, error will be raised below
 
-        # If no likely docs URL found in search results
-        logger.warning(
-            f"Could not reliably find documentation root for '{pkg_name}' via web search."
-        )
-        # Fallback: return the first result URL if any results exist
-        if all_results:
-            first_url = all_results[0].get("url")
-            if first_url:
-                logger.warning(f"Falling back to first search result: {first_url}")
-                return first_url
+        # --- Final Check and Root Derivation ---
+        if not best_candidate:
+            logger.error(f"Could not find any suitable documentation URL for '{pkg_name}' after evaluating {len(candidate_urls_considered)} candidates.")
+            # Optionally log considered URLs if helpful for debugging
+            # logger.debug(f"Considered URLs: {candidate_urls_considered}")
+            raise ToolError(f"Could not automatically find a likely documentation site for package '{pkg_name}'. Web search did not yield a suitable URL.")
 
-        return None  # No results found at all
+        # Try to derive a more "root" URL from the best candidate found
+        final_root_url: str
+        try:
+            parsed_candidate = urllib.parse.urlparse(best_candidate)
+            path_segments = [seg for seg in parsed_candidate.path.split("/") if seg]
 
-    except ToolError as e:
-        logger.error(f"Web search failed while finding docs root for '{pkg_name}': {e}")
-        return None
+            # If the path has multiple segments, try going up one level
+            # Only do this if the parent path still looks like documentation
+            if len(path_segments) > 1:
+                parent_path = "/".join(path_segments[:-1])
+                # Ensure trailing slash for derived root URL, clear query/fragment
+                root_derived = parsed_candidate._replace(path=f"/{parent_path}/", query="", fragment="").geturl()
+
+                # Check if the derived parent path still looks like docs
+                if _looks_like_docs_url(root_derived):
+                    logger.info(f"Derived potential docs root by going up one level: {root_derived}")
+                    final_root_url = root_derived
+                else:
+                    # Parent doesn't look like docs, stick with the cleaned candidate URL
+                    final_root_url = parsed_candidate._replace(query="", fragment="").geturl()
+                    logger.info(f"Parent path '{parent_path}/' didn't seem like docs root. Using original candidate (cleaned): {final_root_url}")
+            else:
+                # Only one path segment or root path, use the cleaned candidate URL as is
+                final_root_url = parsed_candidate._replace(query="", fragment="").geturl()
+                logger.info(f"Candidate URL is shallow or root. Using cleaned candidate as root: {final_root_url}")
+
+        except Exception as parse_err:
+            # Handle errors during parsing or root derivation
+            logger.warning(f"Error parsing/deriving root from best candidate URL {best_candidate}: {parse_err}. Using candidate as is (cleaned).")
+            # Fallback: Clean the best candidate URL (remove query/fragment) and return it
+            try:
+                parsed_fallback = urllib.parse.urlparse(best_candidate)
+                final_root_url = parsed_fallback._replace(query="", fragment="").geturl()
+            except ValueError:
+                 # Should not happen if best_candidate was parseable before, but handle defensively
+                 logger.error(f"Failed to parse even the fallback candidate {best_candidate}. Returning original candidate.")
+                 final_root_url = best_candidate # Last resort
+
+        return final_root_url
+
+    # Note: ToolError is raised explicitly above if no candidate found or web search fails.
+    # This catch block handles unexpected errors during the process.
     except Exception as e:
-        logger.error(
-            f"Unexpected error finding documentation root for '{pkg_name}': {e}", exc_info=True
-        )
-        return None
-
+        logger.error(f"Unexpected error finding documentation root for '{pkg_name}': {e}", exc_info=True)
+        # Raise a generic ToolError indicating the failure cause
+        raise ToolError(f"An unexpected error occurred while finding documentation for '{pkg_name}': {str(e)}") from e
 
 # Import optional libraries for summarization, handle missing imports
 try:
@@ -5058,12 +5672,18 @@ async def _plan_macro(
         You will be given the current page state (URL, Title, main text content, and a list of interactive elements with their IDs, tags, roles, and text).
         You will also be given the user's task.
         Based on the page state and task, generate a JSON list of action steps.
-        Use the available actions described below. For actions requiring a target (`click`, `type`, `download`), provide a `task_hint` that clearly describes the target element based on its text, role, or purpose (e.g., "Submit button", "Username input field", "Download PDF link"). Use the element list to find appropriate targets.
+        
+        EACH step in the list MUST be a JSON object containing an "action" key specifying the action name (e.g., "click", "type").
+        Other keys in the object should be the required arguments for that action (e.g., "task_hint", "text", "ms", "selector", "direction").
 
         {action_details}
 
-        Generate ONLY the JSON list of steps. Do not include explanations or markdown formatting.
+        Generate ONLY the JSON list of steps following this structure: `[ {{"action": "action_name", "arg1": "value1", ...}}, ... ]`.
+
+        DO NOT include explanations or markdown formatting!
+        
         If the task seems impossible or cannot be mapped to the available actions/elements, return an empty list `[]`.
+        
         If the task is already complete based on the current state (e.g., "find the price" and price is visible), you can return a `finish` step or an empty list.
     """).strip()
 
@@ -5090,40 +5710,54 @@ async def _plan_macro(
     ]
     result = await _call_llm(
         messages,
-        model=model,  # Use specified or default model
+        model=model,
         expect_json=True,
-        temperature=0.0,  # Low temperature for deterministic planning
-        # Max tokens might need adjustment based on complexity
+        temperature=0.0,
+        max_tokens=2048 # Allow reasonable size for plan
     )
 
-    # Process and validate the LLM response
+    # Process and validate the LLM response (Revised to handle single dict)
     plan_list: Optional[List[Dict[str, Any]]] = None
     if isinstance(result, list):
         plan_list = result
-    elif isinstance(result, dict) and "steps" in result and isinstance(result["steps"], list):
-        # Handle cases where LLM wraps the list in a "steps" key
-        logger.warning("LLM wrapped macro plan in 'steps' key. Extracting list.")
-        plan_list = result["steps"]
     elif isinstance(result, dict) and "error" in result:
         # Handle errors reported by the LLM call itself
         error_detail = result.get("raw_response", result["error"])
         raise ToolError(f"Macro planner LLM call failed: {result['error']}", details=error_detail)
+    elif isinstance(result, dict):
+        # --- Handling case where LLM returns a single step dict ---
+        if "action" in result: # Check if it looks like a valid step
+            logger.warning("LLM returned a single step dictionary instead of a list for macro plan. Wrapping it in a list.")
+            plan_list = [result]
+        elif "steps" in result and isinstance(result["steps"], list):
+            # Handle cases where LLM wraps the list in a "steps" key (existing logic)
+            logger.warning("LLM wrapped macro plan in 'steps' key. Extracting list.")
+            plan_list = result["steps"]
+        else:
+            # It's a dict, but doesn't look like a step or contain 'steps'
+            response_type = type(result).__name__
+            response_preview = str(result)[:500]
+            raise ToolError(
+                f"Macro planner returned unexpected dictionary format: {response_type}. Preview: '{response_preview}...'",
+                details={"raw_response": response_preview},
+            )
     else:
-        # Handle unexpected response formats
+        # Handle other unexpected response formats
         response_type = type(result).__name__
         response_preview = str(result)[:500]
         raise ToolError(
-            f"Macro planner returned unexpected format: {response_type}. Preview: '{response_preview}...'",
+            f"Macro planner returned unexpected format: {response_type}. Expected list or dict. Preview: '{response_preview}...'",
             details={"raw_response": response_preview},
         )
 
     # Validate individual steps in the plan
     validated_plan = []
-    if plan_list is not None:  # Check if we have a list to validate
+    if plan_list is not None:  # Check if we have a list to validate (could be empty list)
         for i, step in enumerate(plan_list):
             if not isinstance(step, dict) or "action" not in step:
+                # Log raw response preview on validation error
                 logger.warning(
-                    f"Macro plan step {i + 1} invalid format (not dict or missing 'action'): {step}"
+                    f"Macro plan step {i + 1} invalid format (not dict or missing 'action'): {step}. RAW LLM RESPONSE PREVIEW: {str(result)[:500]}"
                 )
                 continue  # Skip invalid step format
 
@@ -5132,41 +5766,59 @@ async def _plan_macro(
                 logger.warning(f"Macro plan step {i + 1} has invalid action '{action}': {step}")
                 continue  # Skip step with unknown action
 
-            # Basic argument checks (can be expanded)
-            if action == "click" and not step.get("task_hint"):
-                logger.warning(f"Macro plan step {i + 1} 'click' missing 'task_hint': {step}")
-                continue
-            if action == "type" and (not step.get("task_hint") or step.get("text") is None):
-                logger.warning(
-                    f"Macro plan step {i + 1} 'type' missing 'task_hint' or 'text': {step}"
-                )
-                continue
+            # --- Basic argument checks ---
+            error_flag = False
+            if action in ("click", "download") and not step.get("task_hint"):
+                logger.warning(f"Macro plan step {i + 1} '{action}' missing 'task_hint': {step}")
+                error_flag = True
+            if action == "type":
+                 if not step.get("task_hint"):
+                     logger.warning(f"Macro plan step {i + 1} 'type' missing 'task_hint': {step}")
+                     error_flag = True
+                 if step.get("text") is None: # Allow empty string, but not None
+                     logger.warning(f"Macro plan step {i + 1} 'type' missing 'text': {step}")
+                     error_flag = True
             if action == "wait" and step.get("ms") is None:
                 logger.warning(f"Macro plan step {i + 1} 'wait' missing 'ms': {step}")
-                continue
-            # Add more checks as needed...
+                error_flag = True
+            if action == "extract" and not step.get("selector"):
+                logger.warning(f"Macro plan step {i + 1} 'extract' missing 'selector': {step}")
+                error_flag = True
+            if action == "scroll" and step.get("direction") not in ('up', 'down', 'top', 'bottom'):
+                logger.warning(f"Macro plan step {i + 1} 'scroll' has invalid or missing 'direction': {step}")
+                error_flag = True
+            # Add more specific checks as needed...
 
-            validated_plan.append(step)  # Add valid step to the final plan
+            if not error_flag:
+                validated_plan.append(step)  # Add valid step to the final plan
+            else:
+                 logger.warning(f"Skipping invalid macro step {i+1} due to missing/invalid arguments.")
 
-    # Check if validation resulted in an empty plan
-    if not validated_plan:
+
+    # --- Final check and logging/error based on validation outcome ---
+    if not validated_plan: # If plan is empty after validation
         response_preview = str(result)[:500] if result else "None"
-        # Raise error if plan is empty after validation (unless original LLM response was explicitly empty list)
-        if plan_list is not None and len(plan_list) > 0:  # LLM returned steps, but all were invalid
+        # Distinguish between LLM intentionally returning [] and validation failing all steps
+        if plan_list is not None and len(plan_list) > 0:
+            # LLM returned steps, but all were invalid
             raise ToolError(
                 "Macro planner generated plan, but all steps were invalid.",
+                details={"raw_response": response_preview, "original_plan_length": len(plan_list)},
+            )
+        elif plan_list is None:
+            # This case should ideally be caught earlier by the type checking
+             raise ToolError(
+                "Macro planner failed to generate a valid list or dictionary of steps.",
                 details={"raw_response": response_preview},
             )
-        elif plan_list is None:  # LLM response was not a list initially
-            raise ToolError(
-                "Macro planner failed to generate a valid list of steps.",
-                details={"raw_response": response_preview},
-            )
-        else:  # LLM returned [], which is valid (means task done or impossible)
+        else: # LLM returned [], which is valid
             logger.info(
                 "Macro planner returned an empty list, indicating task completion or impossibility."
             )
+            # Return the empty list in this case
+            return []
 
+    logger.debug(f"Validated macro plan has {len(validated_plan)} steps.")
     return validated_plan
 
 
@@ -5308,78 +5960,105 @@ async def _plan_autopilot(
             tool_used = res.get("tool", "?")
             was_success = res.get("success", False)
             outcome_marker = "[OK]" if was_success else "[FAIL]"
-            # Get result summary or error message
-            result_data = res.get("result", res.get("error", ""))
-            details_str = str(result_data)[:150]  # Truncate long results/errors
-            summary_line = f"Step {i}: Ran {tool_used} -> {outcome_marker} ({details_str}...)"
+            # Get result summary or error message - prefer 'message' if present, else result/error
+            result_data = res.get("message", res.get("result", res.get("error", "")))
+            # Handle dict results slightly better
+            if isinstance(result_data, dict):
+                # Extract key info or just summarize keys
+                dict_preview = str(list(result_data.keys()))
+                details_str = f"Dict{dict_preview[:130]}" + ("..." if len(dict_preview) > 130 else "")
+            else:
+                details_str = str(result_data)[:150] + ("..." if len(str(result_data)) > 150 else "") # Truncate long results/errors
+
+            summary_line = f"Step {i}: Ran {tool_used} -> {outcome_marker} ({details_str})"
             summaries.append(summary_line)
         prior_summary = "\n".join(summaries)
 
     # Construct the user prompt
     tools_json_str = json.dumps(tools_desc, indent=2)
+    # Use the same _PLANNER_SYS prompt, as it requests a list with one step
     user_prompt = (
         f"AVAILABLE TOOLS (Schema):\n{tools_json_str}\n\n"
         f"PRIOR RESULTS SUMMARY (Last {len(summaries) if prior_results else 0} steps):\n{prior_summary}\n\n"
         f"USER TASK:\n{task}\n\n"
         "Select the single best tool and arguments for the *next* step to achieve the user task. "
-        "Respond ONLY with a JSON list containing a single step object (tool, args), or an empty list [] if the task is complete."
+        "Respond ONLY with a JSON list containing exactly one step object (tool, args), or an empty list [] if the task is complete or cannot proceed."
     )
 
     # Prepare messages and call the LLM planner
     messages = [
-        {"role": "system", "content": _PLANNER_SYS},
+        {"role": "system", "content": _PLANNER_SYS}, # Use the standardized system prompt
         {"role": "user", "content": user_prompt},
     ]
     response = await _call_llm(
         messages,
         expect_json=True,
-        temperature=0.0,  # Low temperature for deterministic planning
-        max_tokens=2048,  # Allow ample tokens for complex args/planning
+        temperature=0.0,
+        max_tokens=2048,
     )
 
-    # Process and validate the response
+    # --- Process and validate the LLM response (Revised) ---
     if isinstance(response, dict) and "error" in response:
-        # Handle errors from the LLM call itself
         raise ToolError(f"Autopilot planner LLM call failed: {response['error']}")
 
-    if not isinstance(response, list):
-        # Handle unexpected response format (expecting a list)
+    current_plan_list: List[Dict[str, Any]] = [] # Initialize as empty list
+
+    if isinstance(response, list):
+        current_plan_list = response # LLM returned the expected list
+    elif isinstance(response, dict):
+         # --- Handling case where LLM returns a single step dict ---
+        if "tool" in response and "args" in response: # Check if it looks like a valid step
+            logger.warning("Autopilot planner returned a single step dictionary instead of a list. Wrapping it.")
+            current_plan_list = [response]
+        else:
+            # It's a dict, but doesn't look like a valid step
+            response_type = type(response).__name__
+            raise ToolError(
+                f"Autopilot planner returned unexpected dictionary format: {response_type}. Expected a JSON list or a valid step dict."
+            )
+    else:
+        # Handle other unexpected response formats
         response_type = type(response).__name__
         raise ToolError(
             f"Autopilot planner returned unexpected format: {response_type}. Expected a JSON list."
         )
 
-    # Validate the structure of the step(s) in the list
+    # --- Validate the structure and content of the step(s) ---
     validated_plan: List[Dict[str, Any]] = []
-    if len(response) > 1:
+    if len(current_plan_list) > 1:
         logger.warning(
-            f"Autopilot planner returned multiple steps ({len(response)}). Only using the first one."
+            f"Autopilot planner returned multiple steps ({len(current_plan_list)}). Only using the first one."
         )
-        # Optionally, raise error or just take first: Taking first for now.
+    elif len(current_plan_list) == 0:
+         logger.info("Autopilot planner returned an empty list, indicating task completion or inability to proceed.")
+         return [] # Return empty list as intended
 
-    if len(response) >= 1:
-        step = response[0]  # Get the first (expected) step
+    # Process the first (and only expected) step
+    if len(current_plan_list) >= 1:
+        step = current_plan_list[0]
         if not isinstance(step, dict):
             logger.warning(f"Autopilot planner step is not a dictionary: {step}")
-            # Return empty plan if format is wrong
-            return []
+            return [] # Return empty plan if format is wrong
+
         tool_name = step.get("tool")
         tool_args = step.get("args")
+
         if not tool_name or not isinstance(tool_args, dict):
             logger.warning(
                 f"Autopilot planner step missing 'tool' or 'args' (must be dict): {step}"
             )
-            # Return empty plan if structure is wrong
-            return []
+            return [] # Return empty plan if structure is wrong
+
         if tool_name not in _AVAILABLE_TOOLS:
             logger.warning(f"Autopilot planner selected unknown tool '{tool_name}': {step}")
-            # Return empty plan if tool is unknown
-            return []
+            return [] # Return empty plan if tool is unknown
+
+        # Optional: Add deeper validation of args based on _AVAILABLE_TOOLS schema if needed
+
         # If validation passes, add the single step to the plan
         validated_plan.append(step)
-    # If response was [] or validation failed, validated_plan remains empty
 
-    # No need to check if validated_plan is empty here, Autopilot loop handles empty plan.
+    # Return the validated plan (containing 0 or 1 step)
     return validated_plan
 
 
@@ -5636,32 +6315,36 @@ async def search_web(
         "bing": {
             "url": f"https://www.bing.com/search?q={qs}&form=QBLH&nc={nonce}",
             "selectors": {
-                "item": "li.b_algo",
-                "title": "h2 > a",
-                "link": "h2 > a",
-                "snippet": "div.b_caption p",
-                "snippet_alt": ".b_lineclamp2",  # Fallback snippet
+                "item": "li.b_algo",                         # Correct: Main result container
+                "title": "h2 > a",                           # Correct: Targets link within H2 for title
+                "link": "h2 > a",                            # Correct: Same element for link href
+                "snippet": "div.b_caption p, .TextContainer.OrganicText", # CORRECTED: Handles standard captions and organic text containers
+                "snippet_alt": ".b_caption",                 # CORRECTED: General caption container as fallback
             },
         },
         "duckduckgo": {
-            # Using HTML version for simplicity, less likely to have heavy JS/CAPTCHAs
             "url": f"https://html.duckduckgo.com/html/?q={qs}&nc={nonce}",
             "selectors": {
-                "item": "div.result",
-                "title": "h2 > a",
-                "link": "h2 > a",
+                # Use the more specific class for the main result item
+                "item": "div.web-result",
+                # Add classes for specificity, although h2>a might have been okay
+                "title": "h2.result__title > a.result__a",
+                "link": "h2.result__title > a.result__a",
+                # Snippet selector looks correct
                 "snippet": "a.result__snippet",
+                # Add the snippet_alt just in case structure varies slightly
+                "snippet_alt": "div.result__snippet", # Alternative if snippet isn't a link
             },
         },
         "yandex": {
-            # Yandex is often tricky, use base search URL
-            "url": f"https://yandex.com/search/?text={qs}&nc={nonce}",
+            # Yandex search results structure
+            "url": f"https://yandex.com/search/?text={qs}&nc={nonce}&lr=202", # Added &lr=202 based on your example URL for consistency
             "selectors": {
-                "item": "li.serp-item",  # Standard organic result item
-                "title": "h2 .organic__url-text",  # Link text within H2
-                "link": "a.organic__url",  # The link itself
-                "snippet": ".text-container.organic__text",  # Snippet text
-                "snippet_alt": ".organic__content-wrapper",  # Broader fallback
+                "item": "li.serp-item",                   # Correct: Main result container
+                "title": "a.OrganicTitle-Link",           # CORRECTED: Target the main link for title text
+                "link": "a.OrganicTitle-Link",            # CORRECTED: Target the main link for href attribute
+                "snippet": ".TextContainer.OrganicText",  # Correct: Specific snippet container
+                "snippet_alt": ".Organic-ContentWrapper", # Correct: Parent as fallback
             },
         },
     }

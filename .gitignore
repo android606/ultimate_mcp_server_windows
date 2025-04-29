@@ -224,3 +224,7 @@ examples/demo.db
 downloaded_files/
 examples/sample/backprop_paper.md
 examples/sample/downloaded/
+storage/sb_demo_outputs/
+storage/smart_browser_scratch/autopilot_demo/
+storage/smart_browser_internal/*.db
+storage/smart_browser_internal/locator_cache.db

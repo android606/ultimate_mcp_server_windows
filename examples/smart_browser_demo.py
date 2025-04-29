@@ -50,12 +50,16 @@ from ultimate_mcp_server.exceptions import ToolError, ToolInputError  # noqa: E4
 # Import smart browser tools directly
 from ultimate_mcp_server.tools.smart_browser import (  # noqa: E402
     autopilot,
+    browse,
+    click,
     collect_documentation,
     download,
     download_site_pdfs,
+    parallel,
     run_macro,
     search,
     shutdown,
+    type_text,
 )
 from ultimate_mcp_server.utils import get_logger  # noqa: E402
 from ultimate_mcp_server.utils.display import CostTracker  # noqa: E402
@@ -548,73 +552,73 @@ async def safe_tool_call(
 
 # --- Demo Sections ---
 
-# async def demo_section_1_browse(gateway, tracker: CostTracker) -> None:
-#     console.print(Rule("[bold green]Demo 1: Basic Browsing[/]", style="green"))
-#     logger.info("Starting Demo Section 1: Basic Browsing")
+async def demo_section_1_browse(gateway, tracker: CostTracker) -> None:
+    console.print(Rule("[bold green]Demo 1: Basic Browsing[/]", style="green"))
+    logger.info("Starting Demo Section 1: Basic Browsing")
 
-#     # 1a: Browse Example.com
-#     success, result = await safe_tool_call(
-#         "Browse Example.com", browse, url=URL_EXAMPLE, tracker=tracker
-#     )
-#     display_result("Browse Example.com", result)
+    # 1a: Browse Example.com
+    success, result = await safe_tool_call(
+        "Browse Example.com", browse, url=URL_EXAMPLE, tracker=tracker
+    )
+    display_result("Browse Example.com", result)
 
-#     # 1b: Browse Bookstore (wait for specific element)
-#     success, result = await safe_tool_call(
-#         "Browse Bookstore (wait for footer)",
-#         browse,
-#         url=URL_BOOKSTORE,
-#         wait_for_selector="footer.footer",
-#         tracker=tracker,
-#     )
-#     display_result("Browse Bookstore (Wait)", result)
+    # 1b: Browse Bookstore (wait for specific element)
+    success, result = await safe_tool_call(
+        "Browse Bookstore (wait for footer)",
+        browse,
+        url=URL_BOOKSTORE,
+        wait_for_selector="footer.footer",
+        tracker=tracker,
+    )
+    display_result("Browse Bookstore (Wait)", result)
 
 
-# async def demo_section_2_interaction(gateway, tracker: CostTracker) -> None:
-#     console.print(Rule("[bold green]Demo 2: Page Interaction[/]", style="green"))
-#     logger.info("Starting Demo Section 2: Page Interaction")
+async def demo_section_2_interaction(gateway, tracker: CostTracker) -> None:
+    console.print(Rule("[bold green]Demo 2: Page Interaction[/]", style="green"))
+    logger.info("Starting Demo Section 2: Page Interaction")
 
-#     # 2a: Search on Bookstore
-#     console.print(f"--- Scenario: Search for 'Science' on {URL_BOOKSTORE} ---")
-#     success, initial_state_res = await safe_tool_call(
-#         "Load Bookstore Search Page",
-#         browse,
-#         url=URL_BOOKSTORE,
-#         tracker=tracker,
-#     )
-#     if not success:
-#         console.print("[red]Cannot proceed with interaction demo, failed to load page.[/]")
-#         return
-#     display_result("Bookstore Initial State", initial_state_res)
+    # 2a: Search on Bookstore
+    console.print(f"--- Scenario: Search for 'Science' on {URL_BOOKSTORE} ---")
+    success, initial_state_res = await safe_tool_call(
+        "Load Bookstore Search Page",
+        browse,
+        url=URL_BOOKSTORE,
+        tracker=tracker,
+    )
+    if not success:
+        console.print("[red]Cannot proceed with interaction demo, failed to load page.[/]")
+        return
+    display_result("Bookstore Initial State", initial_state_res)
 
-#     # Fill the search form using task hints
-#     fields_to_type = [
-#         {"task_hint": "The search input field", "text": "Science", "enter": False},
-#     ]
-#     success, fill_res = await safe_tool_call(
-#         "Type into Bookstore Search Form",
-#         type_text,
-#         url=URL_BOOKSTORE,
-#         fields=fields_to_type,
-#         submit_hint="The search button",
-#         wait_after_submit_ms=1500,
-#         tracker=tracker,
-#     )
-#     display_result("Type into Bookstore Search Form", fill_res)
+    # Fill the search form using task hints
+    fields_to_type = [
+        {"task_hint": "The search input field", "text": "Science", "enter": False},
+    ]
+    success, fill_res = await safe_tool_call(
+        "Type into Bookstore Search Form",
+        type_text,
+        url=URL_BOOKSTORE,
+        fields=fields_to_type,
+        submit_hint="The search button",
+        wait_after_submit_ms=1500,
+        tracker=tracker,
+    )
+    display_result("Type into Bookstore Search Form", fill_res)
 
-#     # 2b: Click the first search result (if successful)
-#     if success:
-#         console.print("--- Scenario: Click the first search result ---")
-#         current_url = fill_res.get("page_state", {}).get("url", URL_BOOKSTORE)
+    # 2b: Click the first search result (if successful)
+    if success:
+        console.print("--- Scenario: Click the first search result ---")
+        current_url = fill_res.get("page_state", {}).get("url", URL_BOOKSTORE)
 
-#         success, click_res = await safe_tool_call(
-#             "Click First Book Result",
-#             click,
-#             url=current_url,
-#             task_hint="The link for the first book shown in the results list",
-#             wait_ms=1000,
-#             tracker=tracker,
-#         )
-#         display_result("Click First Book Result", click_res)
+        success, click_res = await safe_tool_call(
+            "Click First Book Result",
+            click,
+            url=current_url,
+            task_hint="The link for the first book shown in the results list",
+            wait_ms=1000,
+            tracker=tracker,
+        )
+        display_result("Click First Book Result", click_res)
 
 
 async def demo_section_3_search(gateway, tracker: CostTracker) -> None:
@@ -651,7 +655,18 @@ async def demo_section_4_download(gateway, tracker: CostTracker) -> None:
     logger.info("Starting Demo Section 4: File Download")
 
     # Ensure local demo output dir exists
-    DEMO_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    DEMO_OUTPUTS_DIR_ABS = DEMO_OUTPUTS_DIR.resolve(strict=False) # Resolve to absolute, allow non-existent
+    DEMO_OUTPUTS_DIR_ABS.mkdir(parents=True, exist_ok=True) # Ensure it exists after resolving
+
+    # Create the parent directory for PDF downloads if it doesn't exist
+    pdf_parent_dir = "storage/smart_browser_site_pdfs"
+    console.print(f"[cyan]Creating parent directory for PDFs: {pdf_parent_dir}[/cyan]")
+    from ultimate_mcp_server.tools.filesystem import create_directory
+    parent_dir_result = await create_directory(path=pdf_parent_dir)
+    if not parent_dir_result.get("success", False):
+        console.print(f"[yellow]Warning: Could not create parent directory: {parent_dir_result.get('error', 'Unknown error')}[/yellow]")
+    else:
+        console.print(f"[green]Successfully created parent directory: {pdf_parent_dir}[/green]")
 
     # 4a: Download PDFs from a site
     console.print("--- Scenario: Find and Download PDFs from Example.com ---")
@@ -678,19 +693,19 @@ async def demo_section_4_download(gateway, tracker: CostTracker) -> None:
     <p>Another paragraph.</p>
     </body></html>
     """
-    download_page_path = DEMO_OUTPUTS_DIR / "download_test.html"
+    download_page_path = DEMO_OUTPUTS_DIR_ABS / "download_test.html"
     try:
         download_page_path.write_text(download_page_content, encoding="utf-8")
         local_url = download_page_path.as_uri()
 
         console.print("\n--- Scenario: Click a link to download a file ---")
         success, result = await safe_tool_call(
-            "Click to Download PDF",
-            download,
-            url=local_url,
-            task_hint="The 'Download Dummy PDF Now' link",
-            dest_dir=str(DEMO_OUTPUTS_DIR / "clicked_downloads"),
-            tracker=tracker,
+        "Click to Download PDF",
+        download,
+        url=local_url,
+        task_hint="The 'Download Dummy PDF Now' link",
+        dest_dir="storage/sb_demo_outputs/clicked_downloads", # Adjusted path
+        tracker=tracker,
         )
         display_result("Click to Download PDF", result)
     except Exception as e:
@@ -743,57 +758,57 @@ async def demo_section_6_autopilot(gateway, tracker: CostTracker) -> None:
         console.print(f"[dim]Autopilot run log saved to: {result['run_log']}[/]")
 
 
-# async def demo_section_7_parallel(gateway, tracker: CostTracker) -> None:
-#     console.print(Rule("[bold green]Demo 7: Parallel Processing[/]", style="green"))
-#     logger.info("Starting Demo Section 7: Parallel Processing")
+async def demo_section_7_parallel(gateway, tracker: CostTracker) -> None:
+    console.print(Rule("[bold green]Demo 7: Parallel Processing[/]", style="green"))
+    logger.info("Starting Demo Section 7: Parallel Processing")
 
-#     urls_to_process = [
-#         URL_EXAMPLE,
-#         URL_BOOKSTORE,
-#         URL_QUOTES,
-#         "http://httpbin.org/delay/1",
-#         "https://webscraper.io/test-sites/e-commerce/static",
-#     ]
-#     console.print("--- Scenario: Get Page State for Multiple URLs in Parallel ---")
-#     console.print(f"[dim]URLs:[/dim] {urls_to_process}")
+    urls_to_process = [
+        URL_EXAMPLE,
+        URL_BOOKSTORE,
+        URL_QUOTES,
+        "http://httpbin.org/delay/1",
+        "https://webscraper.io/test-sites/e-commerce/static",
+    ]
+    console.print("--- Scenario: Get Page State for Multiple URLs in Parallel ---")
+    console.print(f"[dim]URLs:[/dim] {urls_to_process}")
 
-#     success, result = await safe_tool_call(
-#         "Parallel Get Page State",
-#         parallel,
-#         urls=urls_to_process,
-#         action="get_state",  # Only 'get_state' supported currently
-#         # max_tabs=3 # Can override default here if needed
-#         tracker=tracker,
-#     )
+    success, result = await safe_tool_call(
+        "Parallel Get Page State",
+        parallel,
+        urls=urls_to_process,
+        action="get_state",  # Only 'get_state' supported currently
+        # max_tabs=3 # Can override default here if needed
+        tracker=tracker,
+    )
 
-#     # Custom display for parallel results (same logic as before)
-#     console.print(Rule("[bold cyan]Parallel Processing Results[/]", style="cyan"))
-#     if success:
-#         console.print(f"Total URLs Processed: {result.get('processed_count', 0)}")
-#         console.print(f"Successful: {result.get('successful_count', 0)}")
-#         console.print("-" * 20)
-#         for i, item_result in enumerate(result.get("results", [])):
-#             url = item_result.get("url", f"URL {i + 1}")
-#             item_success = item_result.get("success", False)
-#             panel_title = f"Result for: {escape(url)}"
-#             border = "green" if item_success else "red"
-#             content = ""
-#             if item_success:
-#                 state = item_result.get("page_state", {})
-#                 content = f"Title: {escape(state.get('title', 'N/A'))}\nElements Found: {len(state.get('elements', []))}"
-#             else:
-#                 content = f"[red]Error:[/red] {escape(item_result.get('error', 'Unknown'))}"
-#             console.print(
-#                 Panel(content, title=panel_title, border_style=border, padding=(0, 1), expand=False)
-#             )
-#     else:
-#         console.print(
-#             Panel(
-#                 f"[red]Parallel processing tool call failed:[/red]\n{escape(result.get('error', '?'))}",
-#                 border_style="red",
-#             )
-#         )
-#     console.print()
+    # Custom display for parallel results (same logic as before)
+    console.print(Rule("[bold cyan]Parallel Processing Results[/]", style="cyan"))
+    if success:
+        console.print(f"Total URLs Processed: {result.get('processed_count', 0)}")
+        console.print(f"Successful: {result.get('successful_count', 0)}")
+        console.print("-" * 20)
+        for i, item_result in enumerate(result.get("results", [])):
+            url = item_result.get("url", f"URL {i + 1}")
+            item_success = item_result.get("success", False)
+            panel_title = f"Result for: {escape(url)}"
+            border = "green" if item_success else "red"
+            content = ""
+            if item_success:
+                state = item_result.get("page_state", {})
+                content = f"Title: {escape(state.get('title', 'N/A'))}\nElements Found: {len(state.get('elements', []))}"
+            else:
+                content = f"[red]Error:[/red] {escape(item_result.get('error', 'Unknown'))}"
+            console.print(
+                Panel(content, title=panel_title, border_style=border, padding=(0, 1), expand=False)
+            )
+    else:
+        console.print(
+            Panel(
+                f"[red]Parallel processing tool call failed:[/red]\n{escape(result.get('error', '?'))}",
+                border_style="red",
+            )
+        )
+    console.print()
 
 
 async def demo_section_8_docs(gateway, tracker: CostTracker) -> None:
@@ -842,16 +857,16 @@ async def main() -> int:
         tracker = CostTracker()
 
         # Run Demo Sections (passing gateway and tracker)
-        # await demo_section_1_browse(gateway, tracker)
-        # await demo_section_2_interaction(gateway, tracker)
+        await demo_section_1_browse(gateway, tracker)
+        await demo_section_2_interaction(gateway, tracker)
         await demo_section_3_search(gateway, tracker)
         await demo_section_4_download(gateway, tracker)
         await demo_section_5_macro(gateway, tracker)
-        # await demo_section_6_autopilot(gateway, tracker) # Uncomment to run autopilot
-        console.print(
-            "[yellow]Skipping Autopilot demo section (can be intensive). Uncomment to run.[/]"
-        )
-        # await demo_section_7_parallel(gateway, tracker)
+        await demo_section_6_autopilot(gateway, tracker) # Uncomment to run autopilot
+        # console.print(
+        #     "[yellow]Skipping Autopilot demo section (can be intensive). Uncomment to run.[/]"
+        # )
+        await demo_section_7_parallel(gateway, tracker)
         await demo_section_8_docs(gateway, tracker)
 
         console.print(Rule("[bold magenta]Demo Complete[/bold magenta]"))
