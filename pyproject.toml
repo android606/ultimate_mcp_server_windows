@@ -102,6 +102,7 @@ dependencies = [
     "rapidfuzz>=0",
     "magika>=0",
     "tabula-py>=0",
+    "brotli>=0"
 ]
 
 [project.optional-dependencies]

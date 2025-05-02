@@ -138,6 +138,7 @@ class TaskType(str, Enum):
     QUALITY_ASSESSMENT = "quality_assessment"
     OCR = "ocr"
     TEXT_EXTRACTION = "text_extraction"
+    CODE_EXECUTION = "code_execution"
 
 
 class LogLevel(str, Enum):

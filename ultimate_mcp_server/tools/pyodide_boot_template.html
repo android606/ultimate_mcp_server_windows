@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Pyodide Sandbox v__PYODIDE_VERSION__ (Full)</title>
+    <script>
+        /* SessionStorage stub */
+        try { if(typeof window!=='undefined' && typeof window.sessionStorage!=='undefined'){void window.sessionStorage;}else{throw new Error();} }
+        catch(_){ if(typeof window!=='undefined'){Object.defineProperty(window, "sessionStorage", {value:{getItem:()=>null,setItem:()=>{},removeItem:()=>{},clear:()=>{},key:()=>null,length:0},configurable:true,writable:false});console.warn("sessionStorage stubbed.");} }
+    </script>
+    <style>
+        /* Basic styles */
+        body { font-family: system-ui, sans-serif; margin: 15px; background-color: #f8f9fa; color: #212529; }
+        .status { padding: 10px 15px; border: 1px solid #dee2e6; margin-bottom: 15px; border-radius: 0.25rem; font-size: 0.9em; }
+        .status-loading { background-color: #e9ecef; border-color: #ced4da; color: #495057; }
+        .status-ready { background-color: #d1e7dd; border-color: #a3cfbb; color: #0a3622;}
+        .status-error { background-color: #f8d7da; border-color: #f5c2c7; color: #842029; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="status-indicator" class="status status-loading">Initializing Sandbox...</div>
+
+<script type="module">
+    // --- Constants ---
+    const CDN_BASE = "__CDN_BASE__";
+    const PYODIDE_VERSION = "__PYODIDE_VERSION__";
+    // *** Use the constant for packages loaded AT STARTUP ***
+    const CORE_PACKAGES_JSON = '__CORE_PACKAGES_JSON__';
+    const MEM_LIMIT_MB = parseInt("__MEM_LIMIT_MB__", 10);
+    const logPrefix = "[PyodideFull]"; // Updated prefix
+
+    // --- DOM Element ---
+    const statusIndicator = document.getElementById('status-indicator');
+
+    // --- Performance & Heap Helpers ---
+    const perf = (typeof performance !== 'undefined') ? performance : { now: () => Date.now() };
+    const now = () => perf.now();
+    const heapMB = () => (performance?.memory?.usedJSHeapSize ?? 0) / 1048576;
+
+    // --- Safe Proxy Destruction Helper ---
+    function safeDestroy(proxy, name, handlerLogPrefix) {
+        try {
+            if (proxy && typeof proxy === 'object' && typeof proxy.destroy === 'function') {
+                const proxyId = proxy.toString ? proxy.toString() : '(proxy)';
+                console.log(`${handlerLogPrefix} Destroying ${name} proxy: ${proxyId}`);
+                proxy.destroy();
+                console.log(`${handlerLogPrefix} ${name} proxy destroyed.`);
+                return true;
+            }
+        } catch (e) { console.warn(`${handlerLogPrefix} Error destroying ${name}:`, e?.message || e); }
+        return false;
+    }
+
+    // --- Python Runner Code Template (Reads code from its own global scope) ---
+    // This should be the same simple runner that worked before
+    const pythonRunnerTemplate = `
+import sys, io, contextlib, traceback, time, base64, json
+print(f"[PyRunnerFull] Starting execution...")
+_stdout = io.StringIO(); _stderr = io.StringIO()
+result_value = None; error_info = None; execution_ok = False; elapsed_ms = 0.0; user_code = None
+try:
+    # Get code from the global scope *this script is run in*
+    print("[PyRunnerFull] Getting code from _USER_CODE_TO_EXEC...")
+    user_code = globals().get("_USER_CODE_TO_EXEC") # Read code set by JS onto the *passed* globals proxy
+    if user_code is None: raise ValueError("_USER_CODE_TO_EXEC global not found in execution scope.")
+    print(f"[PyRunnerFull] Code retrieved ({len(user_code)} chars). Ready to execute.")
+    start_time = time.time()
+    print(f"[PyRunnerFull] Executing user code...")
+    try:
+        with contextlib.redirect_stdout(_stdout), contextlib.redirect_stderr(_stderr):
+            compiled_code = compile(source=user_code, filename='<user_code>', mode='exec')
+            exec(compiled_code, globals()) # Execute in the provided globals
+        if 'result' in globals(): result_value = globals()['result']
+        execution_ok = True
+        print("[PyRunnerFull] User code execution finished successfully.")
+    except Exception as e:
+        exc_type=type(e).__name__; exc_msg=str(e); tb_str=traceback.format_exc()
+        error_info = {'type':exc_type, 'message':exc_msg, 'traceback':tb_str}
+        print(f"[PyRunnerFull] User code execution failed: {exc_type}: {exc_msg}\\n{tb_str}")
+    finally: elapsed_ms = (time.time() - start_time) * 1000 if 'start_time' in locals() else 0
+    print(f"[PyRunnerFull] Exec phase took: {elapsed_ms:.1f}ms")
+except Exception as outer_err:
+     tb_str = traceback.format_exc(); error_info = {'type': type(outer_err).__name__, 'message': str(outer_err), 'traceback': tb_str}
+     print(f"[PyRunnerFull] Setup/GetCode Error: {outer_err}\\n{tb_str}")
+     execution_ok = False
+payload_dict = {'ok':execution_ok,'stdout':_stdout.getvalue(),'stderr':_stderr.getvalue(),'elapsed':elapsed_ms,'result':result_value,'error':error_info}
+print("[PyRunnerFull] Returning payload dictionary.")
+payload_dict # Return value
+`; // End of pythonRunnerTemplate
+
+    // --- Main Async IIFE ---
+    (async () => {
+        let BOOT_MS = 0; let t0 = 0;
+        let corePackagesToLoad = []; // Store parsed core packages list
+        try {
+            // === Step 1: Prepare for Load ===
+            t0 = now(); console.log(`${logPrefix} Boot script starting at t0=${t0}`);
+            statusIndicator.textContent = `Importing Pyodide v${PYODIDE_VERSION}...`;
+
+            // Parse CORE packages list BEFORE calling loadPyodide
+            try {
+                corePackagesToLoad = JSON.parse(CORE_PACKAGES_JSON);
+                if (!Array.isArray(corePackagesToLoad)) { corePackagesToLoad = []; }
+                console.log(`${logPrefix} Core packages requested for init:`, corePackagesToLoad.length > 0 ? corePackagesToLoad : '(none)');
+            } catch (parseErr) {
+                console.error(`${logPrefix} Error parsing core packages JSON:`, parseErr);
+                statusIndicator.textContent += ' (Error parsing core package list!)';
+                corePackagesToLoad = [];
+            }
+
+            // === Step 2: Load Pyodide (with packages option) ===
+            const { loadPyodide } = await import(`${CDN_BASE}/pyodide.mjs`);
+            console.log(`${logPrefix} Calling loadPyodide with core packages...`);
+            statusIndicator.textContent = `Loading Pyodide runtime & core packages...`;
+
+            window.pyodide = await loadPyodide({
+                indexURL: `${CDN_BASE}/`,
+                packages: corePackagesToLoad // Load core packages during initialization
+            });
+            const pyodide = window.pyodide;
+            console.log(`${logPrefix} Pyodide core and initial packages loaded. Version: ${pyodide.version}`);
+            statusIndicator.textContent = 'Pyodide core & packages loaded.';
+
+            // === Step 3: Verify Loaded Packages (Optional Debugging) ===
+            if (corePackagesToLoad.length > 0) {
+                const loaded = pyodide.loadedPackages ? Object.keys(pyodide.loadedPackages) : [];
+                console.log(`${logPrefix} Currently loaded packages:`, loaded);
+                corePackagesToLoad.forEach(pkg => {
+                    if (!loaded.includes(pkg)) {
+                         console.warn(`${logPrefix} Core package '${pkg}' requested but not loaded! Check CDN/package name.`);
+                         statusIndicator.textContent += ` (Warn: ${pkg} failed load)`;
+                    }
+                });
+            }
+
+            BOOT_MS = now() - t0;
+            console.log(`${logPrefix} Pyodide setup complete in ${BOOT_MS.toFixed(0)}ms. Heap: ${heapMB().toFixed(1)} MB`);
+            statusIndicator.textContent = `Pyodide Ready (${BOOT_MS.toFixed(0)}ms). Awaiting commands...`;
+            statusIndicator.className = 'status status-ready';
+
+            // ================== Main Message Handler ==================
+            console.log(`${logPrefix} Setting up main message listener...`);
+            window.addEventListener("message", async (ev) => {
+                const msg = ev.data;
+                if (typeof msg !== 'object' || msg === null || !msg.id) { return; }
+                const handlerLogPrefix = `${logPrefix}[Handler id:${msg.id}]`;
+                console.log(`${handlerLogPrefix} Received: type=${msg.type}`);
+                const wall0 = now();
+
+                const reply = { id: msg.id, ok: false, stdout:'', stderr:'', result:null, elapsed:0, wall_ms:0, error:null };
+                let pyResultProxy = null;
+                let namespaceProxy = null; // Holds the target execution scope
+                let micropipProxy = null;
+                let persistentReplProxyToDestroy = null;
+
+                try { // Outer try for message handling
+                    if (!window.pyodide) { throw new Error('Pyodide instance lost!'); }
+                    const pyodide = window.pyodide;
+
+                    // === Handle Reset Message ===
+                    if (msg.type === "reset") {
+                         console.log(`${handlerLogPrefix} Reset request received.`);
+                         try {
+                             if (pyodide.globals.has("_MCP_REPL_NS")) {
+                                 console.log(`${handlerLogPrefix} Found _MCP_REPL_NS, attempting deletion.`);
+                                 persistentReplProxyToDestroy = pyodide.globals.get("_MCP_REPL_NS");
+                                 pyodide.globals.delete("_MCP_REPL_NS");
+                                 reply.cleared = true; console.log(`${handlerLogPrefix} _MCP_REPL_NS deleted.`);
+                             } else {
+                                 reply.cleared = false; console.log(`${handlerLogPrefix} No _MCP_REPL_NS found.`);
+                             }
+                             reply.ok = true;
+                         } catch (err) {
+                              console.error(`${handlerLogPrefix} Error during reset operation:`, err);
+                              reply.ok = false; reply.error = { type: err.name || 'ResetError', message: `Reset failed: ${err.message || err}`, traceback: err.stack };
+                         } finally {
+                              safeDestroy(persistentReplProxyToDestroy, "Persistent REPL (on reset)", handlerLogPrefix);
+                              console.log(`${handlerLogPrefix} Delivering reset response via callback (ok=${reply.ok})`);
+                              if(typeof window._deliverReplyToHost === 'function') { window._deliverReplyToHost(reply); }
+                              else { console.error(`${handlerLogPrefix} Host callback _deliverReplyToHost not found!`); }
+                         }
+                         return; // Exit handler
+                     } // End Reset
+
+                    // === Ignore Non-Exec ===
+                    if (msg.type !== "exec") { console.log(`${handlerLogPrefix} Ignoring non-exec type: ${msg.type}`); return; }
+
+                    // ================== Handle Exec Message ==================
+                    console.log(`${handlerLogPrefix} Processing exec request (repl=${msg.repl_mode})`);
+
+                    /* === Step 1: Load *Additional* Packages/Wheels === */
+                    // Filter out packages already loaded during init
+                    const currentlyLoaded = pyodide.loadedPackages ? Object.keys(pyodide.loadedPackages) : [];
+                    const additionalPackagesToLoad = msg.packages?.filter(p => !currentlyLoaded.includes(p)) || [];
+                    if (additionalPackagesToLoad.length > 0) {
+                        const pkgs = additionalPackagesToLoad.join(", ");
+                        console.log(`${handlerLogPrefix} Loading additional packages: ${pkgs}`);
+                        await pyodide.loadPackage(additionalPackagesToLoad).catch(err => {
+                            throw new Error(`Additional package loading failed: ${pkgs} - ${err?.message || err}`);
+                        });
+                        console.log(`${handlerLogPrefix} Additional packages loaded: ${pkgs}`);
+                    }
+
+                    // Load wheels (ensure micropip is available)
+                    if (msg.wheels?.length) {
+                        const whls = msg.wheels.join(", ");
+                        console.log(`${handlerLogPrefix} Loading wheels: ${whls}`);
+                        // Check if micropip needs loading (it might be a core package now)
+                        if (!pyodide.loadedPackages || !pyodide.loadedPackages['micropip']) {
+                            console.log(`${handlerLogPrefix} Loading micropip for wheels...`);
+                            await pyodide.loadPackage("micropip").catch(err => {
+                               throw new Error(`Failed to load micropip: ${err?.message || err}`);
+                            });
+                        }
+                        micropipProxy = pyodide.pyimport("micropip");
+                        console.log(`${handlerLogPrefix} Installing wheels via micropip...`);
+                        for (const whl of msg.wheels) {
+                             console.log(`${handlerLogPrefix} Installing wheel: ${whl}`);
+                             await micropipProxy.install(whl).catch(err => {
+                                 let pyError = ""; if (err instanceof pyodide.ffi.PythonError) pyError = `${err.type}: `;
+                                 throw new Error(`Wheel install failed for ${whl}: ${pyError}${err?.message || err}`);
+                             });
+                             console.log(`${handlerLogPrefix} Wheel installed: ${whl}`);
+                         }
+                         // Micropip proxy destroyed in finally
+                    }
+
+                    /* === Step 2: Prepare Namespace Proxy (REPL aware) === */
+                    if (msg.repl_mode) {
+                        if (pyodide.globals.has("_MCP_REPL_NS")) {
+                            console.log(`${handlerLogPrefix} Reusing persistent REPL namespace.`);
+                            namespaceProxy = pyodide.globals.get("_MCP_REPL_NS");
+                            if (!namespaceProxy || typeof namespaceProxy.set !== 'function') {
+                                console.warn(`${handlerLogPrefix} REPL namespace invalid. Resetting.`);
+                                safeDestroy(namespaceProxy, "Invalid REPL", handlerLogPrefix);
+                                namespaceProxy = pyodide.toPy({'__name__': '__main__'});
+                                pyodide.globals.set("_MCP_REPL_NS", namespaceProxy);
+                            }
+                        } else {
+                            console.log(`${handlerLogPrefix} Initializing new persistent REPL namespace.`);
+                            namespaceProxy = pyodide.toPy({'__name__': '__main__'});
+                            pyodide.globals.set("_MCP_REPL_NS", namespaceProxy);
+                        }
+                    } else {
+                        console.log(`${handlerLogPrefix} Creating fresh temporary namespace.`);
+                        namespaceProxy = pyodide.toPy({'__name__': '__main__'});
+                    }
+                    if (!namespaceProxy || typeof namespaceProxy.set !== 'function') { // Final check
+                        throw new Error("Failed to obtain valid namespace proxy.");
+                    }
+
+                    /* === Step 3: Prepare and Set User Code INTO Namespace Proxy === */
+                    let userCode = '';
+                    try {
+                        if (typeof msg.code_b64 !== 'string' || msg.code_b64 === '') throw new Error("Missing/empty code_b64");
+                        userCode = atob(msg.code_b64); // JS base64 decode
+                    } catch (decodeErr) { throw new Error(`Base64 decode failed: ${decodeErr.message}`); }
+                    console.log(`${handlerLogPrefix} Setting _USER_CODE_TO_EXEC on target namespace proxy...`);
+                    namespaceProxy.set("_USER_CODE_TO_EXEC", userCode); // Set ON THE TARGET PROXY
+
+                    /* === Step 4: Execute Runner === */
+                    console.log(`${handlerLogPrefix} Executing Python runner...`);
+                    // Pass the namespaceProxy (which now contains the code) as globals
+                    pyResultProxy = await pyodide.runPythonAsync(pythonRunnerTemplate, { globals: namespaceProxy });
+                    // Cleanup the code variable from the namespaceProxy afterwards
+                    console.log(`${handlerLogPrefix} Deleting _USER_CODE_TO_EXEC from namespace proxy...`);
+                    if (namespaceProxy.has && namespaceProxy.has("_USER_CODE_TO_EXEC")) { // Check if method exists
+                         namespaceProxy.delete("_USER_CODE_TO_EXEC");
+                    } else { console.warn(`${handlerLogPrefix} Could not check/delete _USER_CODE_TO_EXEC from namespace.`); }
+                    reply.wall_ms = now() - wall0;
+                    console.log(`${handlerLogPrefix} Python runner finished. Wall: ${reply.wall_ms.toFixed(0)}ms`);
+
+                    /* === Step 5: Process Result Proxy === */
+                    if (!pyResultProxy || typeof pyResultProxy.toJs !== 'function') { throw new Error(`Runner returned invalid result.`); }
+                    console.log(`${handlerLogPrefix} Converting Python result payload...`);
+                    let jsResultPayload = pyResultProxy.toJs({ dict_converter: Object.fromEntries });
+                    Object.assign(reply, jsResultPayload); // Merge python results
+                    reply.ok = jsResultPayload.ok;
+
+                } catch (err) { // Catch ANY error during the process
+                    reply.wall_ms = now() - wall0;
+                    console.error(`${handlerLogPrefix} *** ERROR DURING EXECUTION PROCESS ***:`, err);
+                    reply.ok = false;
+                    reply.error = { type: err.name || 'JavaScriptError', message: err.message || String(err), traceback: err.stack || null };
+                    if (err instanceof pyodide.ffi.PythonError) { reply.error.type = err.type || 'PythonError'; }
+                    reply.stdout = reply.stdout || ''; reply.stderr = reply.stderr || ''; reply.result = reply.result || null; reply.elapsed = reply.elapsed || 0;
+                } finally {
+                     /* === Step 6: Cleanup Proxies === */
+                     console.log(`${handlerLogPrefix} Entering finally block for cleanup.`);
+                     safeDestroy(pyResultProxy, "Result", handlerLogPrefix);
+                     safeDestroy(micropipProxy, "Micropip", handlerLogPrefix);
+                     // Only destroy namespace if it was temporary (non-REPL)
+                     if (!msg?.repl_mode) { // Use optional chaining
+                         safeDestroy(namespaceProxy, "Temporary Namespace", handlerLogPrefix);
+                     } else {
+                          console.log(`${handlerLogPrefix} Skipping destruction of persistent REPL namespace proxy.`);
+                     }
+                     console.log(`${handlerLogPrefix} Cleanup finished.`);
+
+                     /* === Step 7: Send Reply via Exposed Function === */
+                     console.log(`${handlerLogPrefix} *** Delivering final response via exposed function *** (ok=${reply.ok})`);
+                     console.log(`${handlerLogPrefix} Reply payload:`, JSON.stringify(reply, null, 2));
+                     try {
+                         if (typeof window._deliverReplyToHost === 'function') { window._deliverReplyToHost(reply); console.log(`${handlerLogPrefix} Reply delivered.`); }
+                         else { console.error(`${handlerLogPrefix} !!! ERROR: Host function _deliverReplyToHost not found!`); }
+                     } catch (deliveryErr) { console.error(`${handlerLogPrefix} !!! FAILED TO DELIVER REPLY !!!`, deliveryErr); }
+                } // End finally block
+
+                /* Step 8: Heap Watchdog */
+                const currentHeapMB = heapMB();
+                if (currentHeapMB > MEM_LIMIT_MB) {
+                     console.warn(`${handlerLogPrefix}[WATCHDOG] Heap ${currentHeapMB.toFixed(0)}MB > limit ${MEM_LIMIT_MB}MB. Closing!`);
+                     statusIndicator.textContent = `Heap limit exceeded (${currentHeapMB.toFixed(0)}MB). Closing...`;
+                     statusIndicator.className = 'status status-error';
+                     setTimeout(() => window.close(), 200);
+                 }
+
+            }); // End message listener
+
+            console.log(`${logPrefix} Main message listener active.`);
+            window.postMessage({ ready: true, boot_ms: BOOT_MS, id: "pyodide_ready" });
+            console.log(`${logPrefix} Full Sandbox Ready.`);
+
+        } catch (err) { // Catch Initialization Errors
+            const initErrorMsg = `FATAL: Pyodide init failed: ${err.message || err}`;
+            console.error(`${logPrefix} ${initErrorMsg}`, err.stack || '(no stack)', err);
+            statusIndicator.textContent = initErrorMsg; statusIndicator.className = 'status status-error';
+            try { window.postMessage({ id: "pyodide_init_error", ok: false, error: { type: err.name || 'InitError', message: initErrorMsg, traceback: err.stack || null } });
+            } catch (postErr) { console.error(`${logPrefix} Failed to post init error:`, postErr); }
+        }
+    })(); // End main IIFE
+</script>
+
+</body>
+</html>

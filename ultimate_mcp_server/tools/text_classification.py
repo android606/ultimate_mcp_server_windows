@@ -8,8 +8,8 @@ from typing import Any, Dict, List, Optional, Union
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import get_provider
 from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
+from ultimate_mcp_server.services.cache import with_cache
 from ultimate_mcp_server.tools.base import (
-    with_cache,
     with_error_handling,
     with_retry,
     with_tool_metrics,

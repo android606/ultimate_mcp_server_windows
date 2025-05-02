@@ -21,7 +21,8 @@ from ultimate_mcp_server.exceptions import (
     ToolInputError,
     format_error_response,
 )
-from ultimate_mcp_server.services.cache import with_cache
+
+# from ultimate_mcp_server.services.cache import with_cache
 from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("ultimate_mcp_server.tools.base")
@@ -1183,8 +1184,8 @@ def register_tool(mcp_server, name=None, description=None, cache_ttl=None):
         tool_description = description or func.__doc__ or f"Tool: {tool_name}"  # noqa: F841
         
         # Apply caching if specified
-        if cache_ttl is not None:
-            func = with_cache(ttl=cache_ttl)(func)
+        # if cache_ttl is not None:
+        #     func = with_cache(ttl=cache_ttl)(func)
         
         # Apply error handling
         func = with_error_handling(func)
