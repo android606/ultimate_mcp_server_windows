@@ -162,8 +162,7 @@ except OSError as e:
 # Diagnostic logging helpers
 ################################################################################
 # level 0 = quiet, 1 = basic req/resp, 2 = full body/hex dumps
-_VERBOSE_SANDBOX_LOGGING = int(os.getenv("PYODIDE_SANDBOX_DEBUG", "0"))
-
+_VERBOSE_SANDBOX_LOGGING = int(os.getenv("PYODIDE_SANDBOX_DEBUG", "0") or 0)
 
 def _wire_page_logging(page: "Page", session_id: str) -> None:  # type: ignore
     """
@@ -218,7 +217,7 @@ def _wire_page_logging(page: "Page", session_id: str) -> None:  # type: ignore
             page.on("request", lambda r: logger.debug(f"SB[{session_id}] → {r.method} {r.url}"))
             page.on(
                 "requestfailed",
-                lambda r: logger.warning(f"SB[{session_id}] ✗ {r.method} {r.url} ▶ {r.failure()}"),
+                lambda r: logger.warning(f"SB[{session_id}] ✗ {r.method} {r.url} ▶ {r.failure}"),
             )
 
             async def _resp_logger(resp: "pw.Response"):  # type: ignore # Use string literal hint
@@ -419,7 +418,7 @@ _GLOBAL_SEM: Optional[asyncio.Semaphore] = None
 ###############################################################################
 # PyodideSandbox Class Definition
 ###############################################################################
-@dataclass
+@dataclass(slots=True)
 class PyodideSandbox:
     """One Chromium tab with Pyodide runtime (optionally persistent)."""
 

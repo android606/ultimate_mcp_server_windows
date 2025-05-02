@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta http-equiv="Referrer-Policy" content="strict-origin-when-cross-origin" />
     <title>Pyodide Sandbox v__PYODIDE_VERSION__ (Full)</title>
     <script>
         /* SessionStorage stub */
@@ -139,6 +141,10 @@ payload_dict # Return value
             statusIndicator.textContent = `Pyodide Ready (${BOOT_MS.toFixed(0)}ms). Awaiting commands...`;
             statusIndicator.className = 'status status-ready';
 
+
+            Object.freeze(corePackagesToLoad);
+            Object.freeze(statusIndicator);   // prevents accidental re-assign
+            
             // ================== Main Message Handler ==================
             console.log(`${logPrefix} Setting up main message listener...`);
             window.addEventListener("message", async (ev) => {
@@ -309,7 +315,7 @@ payload_dict # Return value
 
                 /* Step 8: Heap Watchdog */
                 const currentHeapMB = heapMB();
-                if (currentHeapMB > MEM_LIMIT_MB) {
+                if (Number.isFinite(currentHeapMB) && currentHeapMB > MEM_LIMIT_MB) {
                      console.warn(`${handlerLogPrefix}[WATCHDOG] Heap ${currentHeapMB.toFixed(0)}MB > limit ${MEM_LIMIT_MB}MB. Closing!`);
                      statusIndicator.textContent = `Heap limit exceeded (${currentHeapMB.toFixed(0)}MB). Closing...`;
                      statusIndicator.className = 'status status-error';
