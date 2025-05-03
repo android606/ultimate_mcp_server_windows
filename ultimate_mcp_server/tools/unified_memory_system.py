@@ -1,4 +1,4 @@
-"""Unified Agent Memory and Cognitive System.
+"""Unified Memory System
 
 This module provides a comprehensive memory, reasoning, and workflow tracking system
 designed for LLM agents, merging sophisticated cognitive modeling with structured
@@ -35,6 +35,8 @@ import numpy as np
 from pygments.formatters import HtmlFormatter
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine_similarity
 
+from ultimate_mcp_server.config import get_config
+
 from ultimate_mcp_server.constants import (
     Provider as LLMGatewayProvider,  # To use provider constants
 )
@@ -54,46 +56,20 @@ logger = get_logger("ultimate_mcp_server.tools.unified_memory")
 # Configuration Settings
 # ======================================================
 
-DEFAULT_DB_PATH = os.environ.get("AGENT_MEMORY_DB_PATH", "unified_agent_memory.db")
-MAX_TEXT_LENGTH = 64000  # Maximum length for text fields (from agent_memory)
-CONNECTION_TIMEOUT = 10.0  # seconds (from cognitive_memory)
-ISOLATION_LEVEL = None  # autocommit mode (from cognitive_memory)
-
-# Memory management parameters (from cognitive_memory)
-MAX_WORKING_MEMORY_SIZE = int(os.environ.get("MAX_WORKING_MEMORY_SIZE", "20"))
-DEFAULT_TTL = {
-    "working": 60 * 30,  # 30 minutes
-    "episodic": 60 * 60 * 24 * 7,  # 7 days (Increased default)
-    "semantic": 60 * 60 * 24 * 30,  # 30 days
-    "procedural": 60 * 60 * 24 * 90,  # 90 days
-}
-MEMORY_DECAY_RATE = float(os.environ.get("MEMORY_DECAY_RATE", "0.01"))  # Per hour
-IMPORTANCE_BOOST_FACTOR = float(os.environ.get("IMPORTANCE_BOOST_FACTOR", "1.5"))
-
-# Embedding model configuration (from cognitive_memory)
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSION = 1536  # For the default model
-SIMILARITY_THRESHOLD = 0.75
-
-# SQLite optimization pragmas (from cognitive_memory)
-SQLITE_PRAGMAS = [
-    "PRAGMA journal_mode=WAL",
-    "PRAGMA synchronous=NORMAL",
-    "PRAGMA foreign_keys=ON",
-    "PRAGMA temp_store=MEMORY",
-    "PRAGMA cache_size=-32000",
-    "PRAGMA mmap_size=2147483647",
-    "PRAGMA busy_timeout=30000",
-]
-
-MAX_SEMANTIC_CANDIDATES = int(
-    os.environ.get("MAX_SEMANTIC_CANDIDATES", "500")
-)  # Hard cap for semantic search candidates
+# Load config once at module level for efficiency
+try:
+    config = get_config()
+    # Extract agent memory config for easier access
+    agent_memory_config = config.agent_memory
+except Exception as config_e:
+    logger.critical(f"CRITICAL: Failed to load configuration for unified_memory_system: {config_e}", exc_info=True)
+    # Provide fallback defaults if config fails, allowing *some* functionality maybe?
+    # Or raise the error immediately. Raising is probably safer.
+    raise RuntimeError(f"Failed to initialize configuration for unified_memory_system: {config_e}") from config_e
 
 # ======================================================
 # Enums (Combined & Standardized)
 # ======================================================
-
 
 # --- Workflow & Action Status ---
 class WorkflowStatus(str, Enum):
@@ -456,22 +432,22 @@ class DBConnection:
     """Context manager for database connections using aiosqlite."""
 
     global SCHEMA_STATEMENTS  # Reference the list of statements
-    _instance: Optional[aiosqlite.Connection] = None
+    _instance: Optional[Any] = None
     _lock = asyncio.Lock()
     _db_path_used: Optional[str] = None
     _init_lock_timeout = 15.0
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str = agent_memory_config.db_path):
         self.db_path = db_path
-        self.conn: Optional[aiosqlite.Connection] = None
+        self.conn: Optional[Any] = None
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    async def _initialize_instance(self) -> aiosqlite.Connection:
+    async def _initialize_instance(self) -> Any:
         """Handles the actual creation and setup of the database connection."""
         logger.info(f"Connecting to database: {self.db_path}", emoji_key="database")
         conn = await aiosqlite.connect(
             self.db_path,
-            timeout=CONNECTION_TIMEOUT,
+            timeout=agent_memory_config.connection_timeout,
             # isolation_level=None # Let aiosqlite manage transactions by default
         )
         conn.row_factory = aiosqlite.Row
@@ -641,7 +617,6 @@ class DBConnection:
         else:
             logger.info("No active database connection instance to close.")
 
-    # --- NEW TRANSACTION MANAGER ---
     @contextlib.asynccontextmanager
     async def transaction(self) -> AsyncIterator[aiosqlite.Connection]:
         """Provides an atomic transaction block using the singleton connection."""
@@ -666,7 +641,7 @@ class DBConnection:
             pass
 
 
-# Custom SQLite helper functions (from cognitive_memory) - Keep these
+# Custom SQLite helper functions
 def _json_contains(json_text, search_value):
     if not json_text:
         return False
@@ -714,7 +689,7 @@ def _compute_memory_relevance(importance, confidence, created_at, access_count, 
         1.0 + (now - (last_accessed or created_at)) / 86400
     )  # Use created_at if never accessed
 
-    decayed_importance = max(0, importance * (1.0 - MEMORY_DECAY_RATE * age_hours))
+    decayed_importance = max(0, importance * (1.0 - agent_memory_config.memory_decay_rate * age_hours))
     usage_boost = min(1.0 + (access_count / 10.0), 2.0) if access_count else 1.0
 
     relevance = decayed_importance * usage_boost * confidence * recency_factor
@@ -725,7 +700,6 @@ def _compute_memory_relevance(importance, confidence, created_at, access_count, 
 # Utilities
 # ======================================================
 
-
 def to_iso_z(ts: float) -> str:  # helper ⇒  ISO‑8601 with trailing “Z”
     return (
         datetime.fromtimestamp(ts, tz=timezone.utc)
@@ -733,6 +707,34 @@ def to_iso_z(ts: float) -> str:  # helper ⇒  ISO‑8601 with trailing “Z”
         .replace("+00:00", "Z")
     )
 
+def safe_format_timestamp(ts_value):
+    """Safely formats a timestamp value (int, float, or ISO string) to ISO Z format."""
+    if isinstance(ts_value, (int, float)):
+        try:
+            # Ensure it's not an extremely large number that might not be a valid timestamp
+            if abs(ts_value) > 2**40: # Arbitrary large number check
+                 logger.warning(f"Numeric timestamp {ts_value} seems out of range, returning as string.")
+                 return str(ts_value)
+            return to_iso_z(ts_value)
+        except (OverflowError, OSError, ValueError, TypeError) as e:
+            logger.warning(f"Failed to convert numeric timestamp {ts_value} to ISO: {e}")
+            return str(ts_value) # Fallback to string representation of number
+    elif isinstance(ts_value, str):
+        # Try to parse and reformat to ensure consistency, but return original if parsing fails
+        try:
+            # Attempt parsing, assuming it might already be close to ISO
+            dt_obj = datetime.fromisoformat(ts_value.replace("Z", "+00:00"))
+            # Reformat to our standard Z format
+            return to_iso_z(dt_obj.timestamp())
+        except ValueError:
+            # If parsing fails, return the original string but log a warning
+            logger.debug(f"Timestamp value '{ts_value}' is a string but not valid ISO format. Returning as is.")
+            return ts_value
+    elif ts_value is None:
+        return None
+    else:
+        logger.warning(f"Unexpected timestamp type {type(ts_value)}, value: {ts_value}. Returning string representation.")
+        return str(ts_value)
 
 class MemoryUtils:
     """Utility methods for memory operations."""
@@ -761,6 +763,14 @@ class MemoryUtils:
         """
         if obj is None:
             return None
+ 
+        # Define max_len *before* the try block using the loaded config
+        try:
+            max_len = agent_memory_config.max_text_length
+        except NameError:
+            # Fallback if agent_memory_config isn't loaded somehow (shouldn't happen)
+            print("CRITICAL WARNING: agent_memory_config not loaded in serialize, using default max_len") # Use print as logger might not be ready
+            max_len = 64000
 
         json_str = None  # Initialize variable
 
@@ -777,20 +787,22 @@ class MemoryUtils:
             try:
                 # Attempt a fallback using string representation
                 fallback_repr = str(obj)
+                # Use MAX_TEXT_LENGTH from config
+                max_len = agent_memory_config.max_text_length
                 # Ensure fallback doesn't exceed limits either, using robust UTF-8 handling
                 fallback_bytes = fallback_repr.encode("utf-8")
-                if len(fallback_bytes) > MAX_TEXT_LENGTH:
+                if len(fallback_bytes) > max_len:
                     # Truncate the byte representation
-                    truncated_bytes = fallback_bytes[:MAX_TEXT_LENGTH]
+                    truncated_bytes = fallback_bytes[:max_len]
                     # Decode back to string, replacing invalid byte sequences caused by truncation
                     truncated_repr = truncated_bytes.decode("utf-8", errors="replace")
 
                     # Optional refinement: Check if the last character is the replacement char (U+FFFD)
                     # If so, try truncating one byte less to avoid splitting a multi-byte char right at the end.
                     # This is a heuristic and might not always be perfect but can improve readability.
-                    if truncated_repr.endswith("\ufffd") and MAX_TEXT_LENGTH > 1:
+                    if truncated_repr.endswith("\ufffd") and max_len > 1:
                         # Try decoding one byte less
-                        shorter_repr = fallback_bytes[: MAX_TEXT_LENGTH - 1].decode(
+                        shorter_repr = fallback_bytes[: max_len - 1].decode(
                             "utf-8", errors="replace"
                         )
                         # If the shorter version *doesn't* end with the replacement character, use it.
@@ -847,11 +859,11 @@ class MemoryUtils:
 
         # Check final length against MAX_TEXT_LENGTH (bytes)
         final_bytes = json_str.encode("utf-8")
-        if len(final_bytes) > MAX_TEXT_LENGTH:
+        if len(final_bytes) > max_len:
             # If the generated JSON (even if it's an error JSON from fallback) is too long,
             # return a standard "too long" error marker with a preview.
             logger.warning(
-                f"Serialized JSON string exceeds max length ({MAX_TEXT_LENGTH} bytes). Returning truncated indicator."
+                f"Serialized JSON string exceeds max length ({max_len} bytes). Returning truncated indicator."
             )
             # Provide a preview of the oversized JSON string
             preview_str = json_str[:200] + ("..." if len(json_str) > 200 else "")
@@ -947,24 +959,6 @@ class MemoryUtils:
         validated_table = MemoryUtils._validate_sql_identifier(table, "table")
         validated_parent_col = MemoryUtils._validate_sql_identifier(parent_col, "parent_col")
         # --- End Validation ---
-        #
-        # --- Concurrency Note ---
-        # This read-then-write operation (SELECT MAX + 1, then INSERT) is
-        # generally safe within the transaction managed by the DBConnection
-        # context manager wrapping the calling tool function. This makes it
-        # atomic relative to other *completed* tool calls.
-        # However, a theoretical race condition exists if *multiple concurrent*
-        # calls to the *same* tool function attempt to get the sequence number
-        # for the *exact same parent_id* before the transaction commits.
-        # They might both read the same MAX value.
-        # In practice, SQLite's isolation levels (especially WAL mode) and the
-        # typical single-threaded nature of agent actions within a workflow
-        # make this unlikely to cause issues.
-        # If duplicate sequence numbers are observed under very high concurrency,
-        # consider implementing an explicit asyncio.Lock per parent_id,
-        # managed in a shared dictionary within the MemoryUtils class or a
-        # dedicated sequence manager. For now, we rely on transaction isolation.
-        # --- End Concurrency Note ---
 
         # Use validated identifiers in the f-string
         sql = f"SELECT MAX(sequence_number) FROM {validated_table} WHERE {validated_parent_col} = ?"
@@ -1189,7 +1183,7 @@ async def _find_similar_memories(
     query_text: str,
     workflow_id: Optional[str] = None,
     limit: int = 5,
-    threshold: float = SIMILARITY_THRESHOLD,
+    threshold: float = agent_memory_config.similarity_threshold,
     memory_level: Optional[str] = None,
     memory_type: Optional[str] = None,
 ) -> List[Tuple[str, float]]:
@@ -1320,14 +1314,14 @@ async def _find_similar_memories(
 
 
 # ======================================================
-# Public Tool Functions (Integrated & Adapted)
+# Public Tool Functions
 # ======================================================
 
 
 # --- 1. Initialization ---
 @with_tool_metrics
 @with_error_handling
-async def initialize_memory_system(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
+async def initialize_memory_system(db_path: str = agent_memory_config.db_path) -> Dict[str, Any]:
     """Initializes the Unified Agent Memory system and checks embedding service status.
 
     Creates or verifies the database schema using aiosqlite, applies optimizations,
@@ -1426,7 +1420,8 @@ async def initialize_memory_system(db_path: str = DEFAULT_DB_PATH) -> Dict[str, 
             raise ToolError(f"Memory system initialization failed: {str(e)}") from e
 
 
-# --- 2. Workflow Management Tools (Ported/Adapted from agent_memory) ---
+# --- 2. Workflow Management Tools ---
+
 @with_tool_metrics
 @with_error_handling
 async def create_workflow(
@@ -1436,7 +1431,7 @@ async def create_workflow(
     tags: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
     parent_workflow_id: Optional[str] = None,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Creates a new workflow, including a default thought chain and initial goal thought if specified.
 
@@ -1517,7 +1512,7 @@ async def create_workflow(
                     parent_workflow_id,
                     metadata_json,
                     now_unix,
-                ),  # *** CHANGED: Use now_unix ***
+                ),
             )
 
             # Process and associate tags with the workflow
@@ -1585,7 +1580,7 @@ async def update_workflow_status(
     status: str,
     completion_message: Optional[str] = None,
     update_tags: Optional[List[str]] = None,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Updates the status of a workflow. (Ported from agent_memory, adapted).
     Timestamps are returned as ISO 8601 strings.
@@ -1616,7 +1611,7 @@ async def update_workflow_status(
                 status_enum.value,
                 now_unix,
                 now_unix,
-            ]  # status, updated_at, last_active
+            ] 
             set_clauses = "status = ?, updated_at = ?, last_active = ?"
 
             if status_enum in [
@@ -1699,7 +1694,8 @@ async def update_workflow_status(
         raise ToolError(f"Failed to update workflow status: {str(e)}") from e
 
 
-# --- 3. Action Tracking Tools (Ported/Adapted from agent_memory & Integrated) ---
+# --- 3. Action Tracking Tools ---
+
 @with_tool_metrics
 @with_error_handling
 async def record_action_start(
@@ -1712,7 +1708,7 @@ async def record_action_start(
     parent_action_id: Optional[str] = None,
     tags: Optional[List[str]] = None,
     related_thought_id: Optional[str] = None,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Records the start of an action within a workflow and creates a corresponding episodic memory.
 
@@ -1870,7 +1866,7 @@ async def record_action_start(
                     now_unix,
                     now_unix,
                     0,
-                ),  # Memories already use Unix timestamps
+                ),
             )
             await MemoryUtils._log_memory_operation(
                 conn, workflow_id, "create_from_action_start", memory_id, action_id
@@ -1923,7 +1919,7 @@ async def record_action_completion(
     summary: Optional[str] = None,
     conclusion_thought: Optional[str] = None,
     conclusion_thought_type: str = "inference",  # Default type for conclusion
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Records the completion or failure of an action and updates its linked memory.
 
@@ -2150,7 +2146,7 @@ async def get_action_details(
     action_id: Optional[str] = None,
     action_ids: Optional[List[str]] = None,
     include_dependencies: bool = False,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves detailed information about one or more actions.
 
@@ -2202,18 +2198,7 @@ async def get_action_details(
     if action_ids:
         if isinstance(action_ids, list):
             target_action_ids = action_ids
-        else:
-            # Handle potential non-list input gracefully
-            logger.warning(
-                f"action_ids provided was not a list ({type(action_ids)}). Attempting to use action_id."
-            )
-            if action_id:
-                target_action_ids = [action_id]
-            else:
-                raise ToolInputError(
-                    "action_ids must be a list or action_id must be provided.",
-                    param_name="action_ids",
-                )
+
     elif action_id:
         target_action_ids = [action_id]
 
@@ -2323,7 +2308,7 @@ async def get_action_details(
 
 
 # ======================================================
-# Contextual Summarization (Used in Agent Context Compression)
+# Contextual Summarization
 # ======================================================
 
 
@@ -2334,9 +2319,9 @@ async def summarize_context_block(
     target_tokens: int = 500,
     context_type: str = "actions",  # "actions", "memories", "thoughts", etc.
     workflow_id: Optional[str] = None,
-    provider: str = LLMGatewayProvider.ANTHROPIC.value,  # Use enum/constant for default
-    model: Optional[str] = "claude-3-5-haiku-20241022",  # Default model
-    db_path: str = DEFAULT_DB_PATH,
+    provider: str = None,  # Use enum/constant for default
+    model: Optional[str] = None,  # Default model
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Summarizes a specific block of context for an agent, optimized for preserving key information.
 
@@ -2455,28 +2440,22 @@ TEXT TO SUMMARIZE:
 
 CONCISE SUMMARY:
 """
-
     try:
-        # Get provider instance using the function argument
-        provider_instance = await get_provider(provider)
+        # Determine provider/model to use
+        config = get_config()
+        provider_to_use = provider or config.default_provider or LLMGatewayProvider.ANTHROPIC.value # Fallback chain
+        provider_instance = await get_provider(provider_to_use)
         if not provider_instance:
-            raise ToolError(f"Failed to initialize provider '{provider}'. Check configuration.")
+            raise ToolError(f"Failed to initialize provider '{provider_to_use}'.")
 
-        # Prepare prompt
-        prompt = prompt_template.format(
-            text_to_summarize=text_to_summarize, target_tokens=target_tokens
-        )
-
-        # Use the model parameter passed to the function.
-        # The get_provider instance might handle None model by using its default,
-        # or we rely on the default value set in the function signature if None is passed.
-        model_to_use = (
-            model  # Pass the model argument (which defaults if None wasn't explicitly passed)
-        )
+        # Use passed model, or provider's default, or hardcoded fallback
+        model_to_use = model or provider_instance.get_default_model() # Use provider's default method
 
         # Generate summary
         generation_result = await provider_instance.generate_completion(
-            prompt=prompt,
+            prompt=prompt_template.format(
+                text_to_summarize=text_to_summarize, target_tokens=target_tokens
+            ),
             model=model_to_use,  # Use the variable holding the desired model
             max_tokens=target_tokens + 50,  # Add some buffer for prompt tokens
             temperature=0.2,  # Lower temperature for more deterministic summaries
@@ -2544,7 +2523,7 @@ async def add_action_dependency(
     source_action_id: str,
     target_action_id: str,
     dependency_type: str = "requires",  # e.g., requires, informs, blocks
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Records a dependency between two actions within the same workflow.
 
@@ -2636,7 +2615,7 @@ async def add_action_dependency(
                     target_action_id,
                     dependency_type,
                     now_unix,
-                ),  # *** Use now_unix ***
+                ),
             )
             # Check if a row was actually inserted
             if cursor.rowcount > 0:
@@ -2711,7 +2690,7 @@ async def get_action_dependencies(
     direction: str = "downstream",  # "downstream" (depends on this) or "upstream" (this depends on)
     dependency_type: Optional[str] = None,
     include_details: bool = False,  # Whether to fetch full action details
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves actions that depend on the given action (downstream) or actions the given action depends on (upstream).
 
@@ -2817,7 +2796,8 @@ async def get_action_dependencies(
         raise ToolError(f"Failed to get action dependencies: {str(e)}") from e
 
 
-# --- 4. Artifact Tracking Tools (Ported/Adapted from agent_memory & Integrated) ---
+# --- 4. Artifact Tracking Tools ---
+
 @with_tool_metrics
 @with_error_handling
 async def record_artifact(
@@ -2831,7 +2811,7 @@ async def record_artifact(
     metadata: Optional[Dict[str, Any]] = None,
     is_output: bool = False,
     tags: Optional[List[str]] = None,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Records information about an artifact created during a workflow
        and creates a corresponding linked episodic memory entry.
@@ -2916,16 +2896,18 @@ async def record_artifact(
             # --- Prepare Data ---
             metadata_json = await MemoryUtils.serialize(metadata)
             db_content = None
+            # Use max_text_length from config
+            max_len = agent_memory_config.max_text_length
             if content:
                 content_bytes = content.encode("utf-8")
-                if len(content_bytes) > MAX_TEXT_LENGTH:
+                if len(content_bytes) > max_len:
                     logger.warning(
-                        f"Artifact content for '{name}' exceeds max length ({MAX_TEXT_LENGTH} bytes). Storing truncated version in DB."
+                        f"Artifact content for '{name}' exceeds max length ({max_len} bytes). Storing truncated version in DB."
                     )
-                    truncated_bytes = content_bytes[:MAX_TEXT_LENGTH]
+                    truncated_bytes = content_bytes[:max_len]
                     db_content = truncated_bytes.decode("utf-8", errors="replace")
-                    if db_content.endswith("\ufffd") and MAX_TEXT_LENGTH > 1:
-                        db_content_shorter = content_bytes[: MAX_TEXT_LENGTH - 1].decode(
+                    if db_content.endswith("\ufffd") and max_len > 1:
+                        db_content_shorter = content_bytes[: max_len - 1].decode(
                             "utf-8", errors="replace"
                         )
                         if not db_content_shorter.endswith("\ufffd"):
@@ -2953,7 +2935,7 @@ async def record_artifact(
                     metadata_json,
                     now_unix,
                     is_output,
-                ),  # *** Use now_unix ***
+                ),
             )
             logger.debug(f"Inserted artifact record {artifact_id}")
 
@@ -2966,7 +2948,7 @@ async def record_artifact(
             await conn.execute(
                 "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
                 (now_unix, now_unix, workflow_id),
-            )  # *** Use now_unix ***
+            )
 
             # --- Create Linked Episodic Memory about the Artifact Creation ---
             memory_id = MemoryUtils.generate_id()
@@ -3061,7 +3043,7 @@ async def record_artifact(
         raise ToolError(f"Failed to record artifact: {str(e)}") from e
 
 
-# --- 5. Thought & Reasoning Tools (Ported/Adapted from agent_memory & Integrated) ---
+# --- 5. Thought & Reasoning Tools ---
 @with_tool_metrics
 @with_error_handling
 async def record_thought(
@@ -3073,8 +3055,8 @@ async def record_thought(
     relevant_action_id: Optional[str] = None,
     relevant_artifact_id: Optional[str] = None,
     relevant_memory_id: Optional[str] = None,
-    db_path: str = DEFAULT_DB_PATH,
-    conn: Optional[aiosqlite.Connection] = None,  # Use correct type hint if possible
+    db_path: str = agent_memory_config.db_path,
+    conn: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Records a thought in a reasoning chain, potentially linking to memory and creating an associated memory entry.
 
@@ -3198,9 +3180,6 @@ async def record_thought(
             ) as cursor:
                 row = await cursor.fetchone()
                 if not row:
-                    # Handle case where no primary chain exists
-                    # If running within a transaction (conn provided), creating the chain here might be complex.
-                    # Assume for now the primary chain should exist if adding thoughts without specifying one.
                     if conn:  # Check if running in external transaction
                         raise ToolError(
                             f"Primary thought chain for workflow {workflow_id} not found. Cannot auto-create within existing transaction."
@@ -3385,7 +3364,7 @@ async def record_thought(
         raise ToolError(f"Failed to record thought: {str(e)}") from e
 
 
-# --- 6. Core Memory Tools (Adapted from cognitive_memory) ---
+# --- 6. Core Memory Tools ---
 @with_tool_metrics
 @with_error_handling
 async def store_memory(
@@ -3402,13 +3381,13 @@ async def store_memory(
     ttl: Optional[int] = None,
     context_data: Optional[Dict[str, Any]] = None,
     generate_embedding: bool = True,  # Flag to control embedding generation
-    suggest_links: bool = True,  # Flag to control link suggestion (NEW)
-    link_suggestion_threshold: float = SIMILARITY_THRESHOLD,  # Use constant (NEW)
-    max_suggested_links: int = 3,  # Limit suggestions (NEW)
+    suggest_links: bool = True,  # Flag to control link suggestion
+    link_suggestion_threshold: float = agent_memory_config.similarity_threshold,
+    max_suggested_links: int = 3,  # Limit suggestions
     action_id: Optional[str] = None,
     thought_id: Optional[str] = None,
     artifact_id: Optional[str] = None,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Stores a new memory entry, generates embeddings, and suggests semantic links.
 
@@ -3510,7 +3489,7 @@ async def store_memory(
     final_tags = list(
         set([str(t).lower() for t in (tags or [])] + [mem_type.value, mem_level.value])
     )  # Also add level as tag
-    effective_ttl = ttl if ttl is not None else DEFAULT_TTL.get(mem_level.value, 0)
+    effective_ttl = ttl if ttl is not None else agent_memory_config.ttl_working
 
     try:
         async with DBConnection(db_path) as conn:
@@ -3741,7 +3720,7 @@ async def get_memory_by_id(
     include_links: bool = True,  # Default True for richer context
     include_context: bool = True,  # Default True for semantic context
     context_limit: int = 5,  # Limit for semantic context results
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves a specific memory by its ID, optionally including links and semantic context.
 
@@ -3801,9 +3780,8 @@ async def get_memory_by_id(
             if result_memory.get("ttl", 0) > 0:
                 expiry_time = result_memory["created_at"] + result_memory["ttl"]
                 if expiry_time <= int(time.time()):
-                    # Optionally delete expired memory here? Or just raise error.
-                    # await conn.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,))
-                    # await conn.commit()
+                    await conn.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,))
+                    await conn.commit()
                     logger.warning(f"Attempted to access expired memory {memory_id}.")
                     raise ToolError(f"Memory {memory_id} has expired.")
 
@@ -3883,7 +3861,7 @@ async def get_memory_by_id(
                             query_text=search_text,
                             workflow_id=result_memory["workflow_id"],  # Search within same workflow
                             limit=context_limit + 1,  # Fetch one extra in case self is included
-                            threshold=SIMILARITY_THRESHOLD
+                            threshold=agent_memory_config.similarity_threshold
                             * 0.9,  # Slightly lower threshold for context
                         )
 
@@ -3960,11 +3938,11 @@ async def search_semantic_memories(
     query: str,
     workflow_id: Optional[str] = None,  # Allow searching across workflows if None
     limit: int = 5,
-    threshold: float = SIMILARITY_THRESHOLD,  # Use constant
+    threshold: float = agent_memory_config.similarity_threshold,  # Use constant
     memory_level: Optional[str] = None,
     memory_type: Optional[str] = None,  # Filter by type is now handled by _find_similar_memories
     include_content: bool = True,  # Control whether full content is returned
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Searches memories based on semantic similarity using EmbeddingService.
 
@@ -4134,7 +4112,7 @@ async def hybrid_search_memories(
     include_content: bool = True,
     include_links: bool = False,  # Keep False by default for performance in search
     link_direction: str = "outgoing",  # 'outgoing', 'incoming', 'both' - Determines which links to fetch if include_links=True
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Performs a hybrid search combining semantic similarity and keyword/filtered relevance.
 
@@ -4247,7 +4225,7 @@ async def hybrid_search_memories(
                 try:
                     # Use internal helper _find_similar_memories
                     # Fetch more candidates than final limit initially to allow keyword scores to influence ranking
-                    semantic_candidate_limit = min(max(limit * 5, 50), MAX_SEMANTIC_CANDIDATES)
+                    semantic_candidate_limit = min(max(limit * 5, 50), agent_memory_config.max_semantic_candidates)
                     semantic_results = await _find_similar_memories(
                         conn=conn,
                         query_text=query,
@@ -4516,7 +4494,7 @@ async def create_memory_link(
     link_type: str,  # Use LinkType enum
     strength: float = 1.0,
     description: Optional[str] = None,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Creates an associative link between two memories.
     (Adapted from cognitive_memory.create_memory_link).
@@ -4615,7 +4593,7 @@ async def create_memory_link(
         raise ToolError(f"Failed to create memory link: {str(e)}") from e
 
 
-# --- 7. Core Memory Retrieval (Adapted from cognitive_memory, FULL link support) ---
+# --- 7. Core Memory Retrieval ---
 @with_tool_metrics
 @with_error_handling
 async def query_memories(
@@ -4636,7 +4614,7 @@ async def query_memories(
     link_direction: str = "outgoing",  # 'outgoing', 'incoming', 'both' - Determines which links to fetch if include_links=True
     limit: int = 10,
     offset: int = 0,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves memories based on various criteria like level, type, tags, text, importance, etc.
 
@@ -4840,7 +4818,6 @@ async def query_memories(
                 for row in rows:
                     memory_dict = dict(row)  # Convert row to dict
                     memory_dict["tags"] = await MemoryUtils.deserialize(memory_dict.get("tags"))
-                    # Add consistent unix timestamp keys
                     memory_dict["created_at_unix"] = memory_dict.get("created_at")
                     memory_dict["updated_at_unix"] = memory_dict.get("updated_at")
                     memory_dict["last_accessed_unix"] = memory_dict.get("last_accessed")
@@ -4920,7 +4897,8 @@ async def query_memories(
         raise ToolError(f"Failed to query memories: {str(e)}") from e
 
 
-# --- 8. Workflow Listing & Details (Ported from agent_memory) ---
+# --- 8. Workflow Listing & Details ---
+
 @with_tool_metrics
 @with_error_handling
 async def list_workflows(
@@ -4930,7 +4908,7 @@ async def list_workflows(
     before_date: Optional[str] = None,  # ISO Format string for filtering
     limit: int = 10,
     offset: int = 0,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Lists workflows matching specified criteria.
     Timestamps are returned as ISO 8601 strings.
@@ -4947,22 +4925,21 @@ async def list_workflows(
         after_ts: Optional[int] = None
         if after_date:
             try:
-                after_ts = int(
-                    datetime.fromisoformat(after_date.replace("Z", "+00:00")).timestamp()
-                )
+                # Use datetime.fromisoformat for robustness with timezone info
+                dt_obj = datetime.fromisoformat(after_date.replace("Z", "+00:00"))
+                after_ts = int(dt_obj.timestamp())
             except ValueError as e:
                 raise ToolInputError(
-                    "Invalid after_date format. Use ISO.", param_name="after_date"
+                    "Invalid after_date format. Use ISO 8601 format (e.g., YYYY-MM-DDTHH:MM:SSZ).", param_name="after_date"
                 ) from e
         before_ts: Optional[int] = None
         if before_date:
             try:
-                before_ts = int(
-                    datetime.fromisoformat(before_date.replace("Z", "+00:00")).timestamp()
-                )
+                dt_obj = datetime.fromisoformat(before_date.replace("Z", "+00:00"))
+                before_ts = int(dt_obj.timestamp())
             except ValueError as e:
                 raise ToolInputError(
-                    "Invalid before_date format. Use ISO.", param_name="before_date"
+                    "Invalid before_date format. Use ISO 8601 format (e.g., YYYY-MM-DDTHH:MM:SSZ).", param_name="before_date"
                 ) from e
 
         # Validate pagination
@@ -4974,7 +4951,7 @@ async def list_workflows(
         async with DBConnection(db_path) as conn:
             base_query = """
             SELECT DISTINCT w.workflow_id, w.title, w.description, w.goal, w.status,
-                   w.created_at, w.updated_at, w.completed_at -- Fetch timestamps as INTEGER
+                   w.created_at, w.updated_at, w.completed_at -- Fetch potentially mixed timestamp types
             FROM workflows w
             """
             count_query = "SELECT COUNT(DISTINCT w.workflow_id) FROM workflows w"
@@ -5019,23 +4996,7 @@ async def list_workflows(
 
             for row in rows:
                 wf_data = dict(row)
-                for ts_key in ["created_at", "updated_at", "completed_at"]:
-                    raw_value = wf_data.get(ts_key)
-                    if raw_value is not None:
-                        try:
-                            # Attempt conversion assuming it *should* be an int (Unix timestamp)
-                            unix_ts = int(raw_value)
-                            wf_data[ts_key] = to_iso_z(unix_ts)
-                        except (ValueError, TypeError) as e:
-                            # Log if conversion fails - indicates potential bad data
-                            logger.warning(
-                                f"Could not convert timestamp for key '{ts_key}' in workflow {wf_data.get('workflow_id')}: {e} - Value was: {raw_value}"
-                            )
-                            # Set to None in the output to avoid crashing downstream code
-                            wf_data[ts_key] = None
-                    else:
-                         wf_data[ts_key] = None # Ensure key exists with None value
-
+                # Keep raw timestamps for now
                 wf_data["tags"] = []  # Initialize tags list
                 workflows_list.append(wf_data)
                 workflow_ids_fetched.append(wf_data["workflow_id"])
@@ -5057,6 +5018,12 @@ async def list_workflows(
                 # Assign tags to workflows
                 for wf in workflows_list:
                     wf["tags"] = tags_map.get(wf["workflow_id"], [])
+
+            # --- Perform FINAL timestamp conversion before returning ---
+            for wf_data in workflows_list:
+                 for ts_key in ["created_at", "updated_at", "completed_at"]:
+                     # Apply the safe formatter
+                     wf_data[ts_key] = safe_format_timestamp(wf_data.get(ts_key))
 
             result = {"workflows": workflows_list, "total_count": total_count, "success": True}
             logger.info(
@@ -5081,7 +5048,7 @@ async def get_workflow_details(
     include_thoughts: bool = True,
     include_memories: bool = False,  # Keep memories optional for performance
     memories_limit: int = 20,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves comprehensive details about a specific workflow, including related items.
     Timestamps are returned as ISO 8601 strings.
@@ -5100,13 +5067,8 @@ async def get_workflow_details(
             if not wf_row:
                 raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
 
-            workflow_details = dict(wf_row)
-            if workflow_details.get("created_at"):
-                workflow_details["created_at"] = to_iso_z(workflow_details["created_at"])
-            if workflow_details.get("updated_at"):
-                workflow_details["updated_at"] = to_iso_z(workflow_details["updated_at"])
-            if workflow_details.get("completed_at"):
-                workflow_details["completed_at"] = to_iso_z(workflow_details["completed_at"])
+            workflow_details = dict(wf_row) # Keep raw timestamps
+
             workflow_details["metadata"] = await MemoryUtils.deserialize(
                 workflow_details.get("metadata")
             )
@@ -5134,15 +5096,11 @@ async def get_workflow_details(
                 """
                 actions_cursor = await conn.execute(actions_query, (workflow_id,))
                 async for row in actions_cursor:
-                    action = dict(row)
-                    if action.get("started_at"):
-                        action["started_at"] = to_iso_z(action["started_at"])
-                    if action.get("completed_at"):
-                        action["completed_at"] = to_iso_z(action["completed_at"])
+                    action = dict(row) # Keep raw timestamps
                     action["tool_args"] = await MemoryUtils.deserialize(action.get("tool_args"))
                     action["tool_result"] = await MemoryUtils.deserialize(action.get("tool_result"))
                     action["tags"] = row["tags_str"].split(",") if row["tags_str"] else []
-                    action.pop("tags_str", None)  # Remove the concatenated string
+                    action.pop("tags_str", None)
                     workflow_details["actions"].append(action)
                 await actions_cursor.close()
 
@@ -5160,9 +5118,7 @@ async def get_workflow_details(
                 """
                 artifacts_cursor = await conn.execute(artifacts_query, (workflow_id,))
                 async for row in artifacts_cursor:
-                    artifact = dict(row)
-                    if artifact.get("created_at"):
-                        artifact["created_at"] = to_iso_z(artifact["created_at"])
+                    artifact = dict(row) # Keep raw timestamp
                     artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
                     artifact["is_output"] = bool(artifact["is_output"])
                     artifact["tags"] = row["tags_str"].split(",") if row["tags_str"] else []
@@ -5180,18 +5136,14 @@ async def get_workflow_details(
                     (workflow_id,),
                 )
                 async for chain_row_data in chain_cursor:
-                    thought_chain = dict(chain_row_data)
-                    if thought_chain.get("created_at"):
-                        thought_chain["created_at"] = to_iso_z(thought_chain["created_at"])
+                    thought_chain = dict(chain_row_data) # Keep raw timestamp
                     thought_chain["thoughts"] = []
                     thought_cursor = await conn.execute(
                         "SELECT * FROM thoughts WHERE thought_chain_id = ? ORDER BY sequence_number ASC",
                         (thought_chain["thought_chain_id"],),
                     )
                     async for thought_row_data in thought_cursor:
-                        thought = dict(thought_row_data)
-                        if thought.get("created_at"):
-                            thought["created_at"] = to_iso_z(thought["created_at"])
+                        thought = dict(thought_row_data) # Keep raw timestamp
                         thought_chain["thoughts"].append(thought)
                     await thought_cursor.close()
                     workflow_details["thought_chains"].append(thought_chain)
@@ -5209,9 +5161,11 @@ async def get_workflow_details(
                 workflow_details["memories_sample"] = []
                 mem_cursor = await conn.execute(memories_query, (workflow_id, memories_limit))
                 async for row in mem_cursor:
-                    mem = dict(row)
-                    if mem.get("created_at"):
-                        mem["created_at_iso"] = to_iso_z(mem["created_at"])
+                    mem = dict(row) # Keep raw timestamp
+                    # Add iso format specifically for the sample if needed, or keep unix
+                    # Let's keep unix for consistency internally, formatter will handle later
+                    # if mem.get("created_at"):
+                    #     mem["created_at_iso"] = to_iso_z(mem["created_at"])
                     mem["created_at_unix"] = mem.get("created_at")
                     if mem.get("content") and len(mem["content"]) > 150:
                         mem["content_preview"] = mem["content"][:147] + "..."
@@ -5220,8 +5174,41 @@ async def get_workflow_details(
 
             workflow_details["success"] = True
             logger.info(f"Retrieved details for workflow {workflow_id}", emoji_key="books")
-            return workflow_details
 
+            # --- Perform FINAL timestamp conversion JUST before returning ---
+            timestamp_keys_to_convert = {
+                "workflow": ["created_at", "updated_at", "completed_at"],
+                "action": ["started_at", "completed_at"],
+                "artifact": ["created_at"],
+                "thought_chain": ["created_at"],
+                "thought": ["created_at"],
+            }
+
+            # Apply conversion safely using the helper
+            for key in timestamp_keys_to_convert["workflow"]:
+                if key in workflow_details:
+                    workflow_details[key] = safe_format_timestamp(workflow_details[key])
+
+            for action in workflow_details.get("actions", []):
+                for key in timestamp_keys_to_convert["action"]:
+                    if key in action:
+                        action[key] = safe_format_timestamp(action[key])
+
+            for artifact in workflow_details.get("artifacts", []):
+                for key in timestamp_keys_to_convert["artifact"]:
+                     if key in artifact:
+                         artifact[key] = safe_format_timestamp(artifact[key])
+
+            for chain in workflow_details.get("thought_chains", []):
+                for key in timestamp_keys_to_convert["thought_chain"]:
+                    if key in chain:
+                         chain[key] = safe_format_timestamp(chain[key])
+                for thought in chain.get("thoughts", []):
+                    for key in timestamp_keys_to_convert["thought"]:
+                         if key in thought:
+                             thought[key] = safe_format_timestamp(thought[key])
+
+            return workflow_details # Return the fully formatted details
     except ToolInputError:
         raise
     except Exception as e:
@@ -5239,7 +5226,7 @@ async def get_recent_actions(
     status: Optional[str] = None,
     include_tool_results: bool = True,
     include_reasoning: bool = True,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves the most recent actions for a workflow, optionally filtered.
 
@@ -5401,7 +5388,7 @@ async def get_artifacts(
     is_output: Optional[bool] = None,
     include_content: bool = False,  # Default False for list view
     limit: int = 10,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves artifacts created during a workflow, optionally filtered.
     Timestamps are returned as ISO 8601 strings.
@@ -5496,7 +5483,7 @@ async def get_artifacts(
 @with_tool_metrics
 @with_error_handling
 async def get_artifact_by_id(
-    artifact_id: str, include_content: bool = True, db_path: str = DEFAULT_DB_PATH
+    artifact_id: str, include_content: bool = True, db_path: str = agent_memory_config.db_path
 ) -> Dict[str, Any]:
     """Retrieves a specific artifact by its ID.
     Timestamps are returned as ISO 8601 strings.
@@ -5578,7 +5565,7 @@ async def create_thought_chain(
     title: str,
     initial_thought: Optional[str] = None,
     initial_thought_type: str = "goal",
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Creates a new reasoning chain for tracking related thoughts.
 
@@ -5656,7 +5643,7 @@ async def create_thought_chain(
                     content=initial_thought,
                     thought_type=initial_thought_type_enum.value,
                     thought_chain_id=thought_chain_id,
-                    db_path=db_path,  # Still pass db_path in case record_thought needs it for other reasons
+                    db_path=db_path,
                     conn=conn,  # Pass the active transaction connection
                 )
                 thought_id = thought_result.get("thought_id")
@@ -5690,8 +5677,7 @@ async def create_thought_chain(
 @with_tool_metrics
 @with_error_handling
 async def get_thought_chain(
-    thought_chain_id: str, include_thoughts: bool = True, db_path: str = DEFAULT_DB_PATH
-) -> Dict[str, Any]:
+    thought_chain_id: str, include_thoughts: bool = True, db_path: str = agent_memory_config.db_path) -> Dict[str, Any]:
     """Retrieves a thought chain and optionally its thoughts."""
     if not thought_chain_id:
         raise ToolInputError("Thought chain ID required.", param_name="thought_chain_id")
@@ -5792,10 +5778,10 @@ async def _add_to_active_memories(
                 return False
 
         removed_id = None
-        if len(current_working_memory_ids) >= MAX_WORKING_MEMORY_SIZE:
+        if len(current_working_memory_ids) >= agent_memory_config.max_working_memory_size:
             if not current_working_memory_ids:
                 logger.warning(
-                    f"Working memory limit reached ({MAX_WORKING_MEMORY_SIZE}) but list is empty for context {context_id}. Adding new memory."
+                    f"Working memory limit reached ({agent_memory_config.max_working_memory_size}) but list is empty for context {context_id}. Adding new memory."
                 )
                 # Fallthrough to append if list is somehow empty despite check
                 current_working_memory_ids.append(memory_id)
@@ -5885,14 +5871,13 @@ async def _add_to_active_memories(
 
 # --- 12. Working Memory Management ---
 
-
 @with_tool_metrics
 @with_error_handling
 async def get_working_memory(
     context_id: str,
     include_content: bool = True,
     include_links: bool = True,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves the current working memory (list of memory IDs and their details) for a given context.
 
@@ -6053,7 +6038,7 @@ async def get_working_memory(
 @with_tool_metrics
 @with_error_handling
 async def focus_memory(
-    memory_id: str, context_id: str, add_to_working: bool = True, db_path: str = DEFAULT_DB_PATH
+    memory_id: str, context_id: str, add_to_working: bool = True, db_path: str = agent_memory_config.db_path
 ) -> Dict[str, Any]:
     """Sets a specific memory as the current focus for a context.
 
@@ -6166,9 +6151,9 @@ async def focus_memory(
 @with_error_handling
 async def optimize_working_memory(
     context_id: str,
-    target_size: int = MAX_WORKING_MEMORY_SIZE,
+    target_size: int = agent_memory_config.max_working_memory_size,
     strategy: str = "balanced",
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Optimizes the working memory for a context by retaining the most relevant items.
 
@@ -6306,7 +6291,6 @@ async def optimize_working_memory(
             # Select memories to keep
             retained_memory_ids = []
             if strategy == "diversity":
-                 # (Diversity logic remains the same)
                 type_groups = defaultdict(list)
                 for mem in scored_memories:
                     type_groups[mem["type"]].append(mem)
@@ -6382,7 +6366,8 @@ async def optimize_working_memory(
         logger.error(f"Error optimizing working memory for {context_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to optimize working memory: {str(e)}") from e
     
-# --- 13. Cognitive State Persistence (Ported from agent_memory - Corrected) ---
+
+# --- 13. Cognitive State Persistence ---
 @with_tool_metrics
 @with_error_handling
 async def save_cognitive_state(
@@ -6393,7 +6378,7 @@ async def save_cognitive_state(
     focus_area_ids: Optional[List[str]] = None,  # Assuming focus areas are primarily memory IDs now
     context_action_ids: Optional[List[str]] = None,
     current_goal_thought_ids: Optional[List[str]] = None,  # Assuming goals are thought IDs
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Saves the agent's current cognitive state as a checkpoint for a workflow.
 
@@ -6527,14 +6512,14 @@ async def save_cognitive_state(
                     current_goals_json,
                     now_unix,
                     True,
-                ),  # *** Use now_unix ***
+                ),
             )
 
             # Update workflow timestamp
             await conn.execute(
                 "UPDATE workflows SET updated_at = ?, last_active = ? WHERE workflow_id = ?",
                 (now_unix, now_unix, workflow_id),
-            )  # *** Use now_unix ***
+            ) 
 
             # Log operation
             log_data = {
@@ -6578,7 +6563,7 @@ async def save_cognitive_state(
 async def load_cognitive_state(
     workflow_id: str,
     state_id: Optional[str] = None,  # If None, load latest
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Loads a previously saved cognitive state for a workflow.
 
@@ -6694,7 +6679,7 @@ async def get_workflow_context(
     recent_actions_limit: int = 10,  # Reduced default
     important_memories_limit: int = 5,
     key_thoughts_limit: int = 5,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves a comprehensive context summary for a workflow.
 
@@ -6904,7 +6889,7 @@ def _calculate_focus_score(memory: Dict, recent_action_ids: List[str], now_unix:
 async def auto_update_focus(
     context_id: str,
     recent_actions_count: int = 3,  # How many recent actions to consider influential
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Automatically updates the focal memory for a context based on relevance and recent activity.
 
@@ -7072,7 +7057,7 @@ async def promote_memory_level(
     min_confidence_episodic: float = 0.8,
     min_access_count_semantic: int = 10,
     min_confidence_semantic: float = 0.9,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Attempts to promote a memory to a higher cognitive level based on usage and confidence.
 
@@ -7267,7 +7252,7 @@ async def update_memory(
     ttl: Optional[int] = None,
     memory_level: Optional[str] = None,
     regenerate_embedding: bool = False,  # Explicit flag to trigger re-embedding
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Updates fields of an existing memory entry.
 
@@ -7314,8 +7299,6 @@ async def update_memory(
         raise ToolInputError("Confidence must be 0.0-1.0.", param_name="confidence")
     final_tags_json = None
     if tags is not None:
-        if not isinstance(tags, list):
-            raise ToolInputError("Tags must be a list.", param_name="tags")
         final_tags_json = json.dumps(list(set(str(t).lower() for t in tags)))
     if memory_level:
         try:
@@ -7478,7 +7461,7 @@ async def get_linked_memories(
     link_type: Optional[str] = None,  # Optional filter by link type
     limit: int = 10,
     include_memory_details: bool = True,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves memories linked to/from the specified memory.
 
@@ -7840,14 +7823,24 @@ def _generate_reflection_prompt(
         # Build description string parts
         desc_parts = [f"OP #{i} ({op_ts_str})", f"Type: {op_type}"]
         if mem_id:
-            mem_info = memories.get(mem_id)
-            # Provide more context from memory if available
-            mem_desc_text = f"Mem({mem_id[:6]}..)"
+            mem_info = memories.get(mem_id) # Use .get() which returns None if key missing
             if mem_info:
-                mem_desc_text += f" Desc: {mem_info.get('description', 'N/A')[:40]}"
-                if mem_info.get("memory_type"):
-                    mem_desc_text += f" Type: {mem_info['memory_type']}"
-            desc_parts.append(mem_desc_text)
+                mem_desc_text = f"Mem({mem_id[:6]}..)"
+                # Safely get description and type
+                mem_desc = mem_info.get('description', 'N/A')
+                mem_type_info = mem_info.get('memory_type')
+                mem_desc_text += f" Desc: {mem_desc[:40] if mem_desc else 'N/A'}" # Handle None description
+                if mem_type_info:
+                    mem_desc_text += f" Type: {mem_type_info}"
+                desc_parts.append(mem_desc_text)
+            else:
+                # Log specifically when this happens IN THE DEMO CONTEXT
+                logger.warning(
+                    f"Reflection prompt generator: Memory details not found for mem_id '{mem_id}' "
+                    f"(referenced in operation log entry #{i}, type: {op_type}). "
+                    f"This is unexpected in the demo."
+                )
+                desc_parts.append(f"Mem({mem_id[:6]}.. NOT FOUND)")
 
         if action_id:
             desc_parts.append(f"Action({action_id[:6]}..)")
@@ -7944,13 +7937,13 @@ async def consolidate_memories(
     query_filter: Optional[Dict[str, Any]] = None,
     max_source_memories: int = 20,
     prompt_override: Optional[str] = None,
-    provider: str = LLMGatewayProvider.OPENAI.value,
-    model: Optional[str] = None,
+    provider: Optional[str] = None, # Changed default to None
+    model: Optional[str] = None,    # Changed default to None
     store_result: bool = True,
     store_as_level: str = MemoryLevel.SEMANTIC.value,
     store_as_type: Optional[str] = None,
     max_tokens: int = 1000,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Consolidates multiple memories using an LLM to generate summaries, insights, etc."""
     start_time = time.time()
@@ -7966,31 +7959,68 @@ async def consolidate_memories(
 
     try:
         async with DBConnection(db_path) as conn:
-            # --- 1. Select Source Memories (Full Logic) ---
+            # --- 1. Select Source Memories (Full Logic with Corrected Validation) ---
             if target_memories:
-                if len(target_memories) < 2:
+                if not isinstance(target_memories, list) or len(target_memories) < 2:
                     raise ToolInputError(
-                        "At least 2 target_memories required.", param_name="target_memories"
+                        "target_memories must be a list containing at least 2 memory IDs.",
+                        param_name="target_memories",
                     )
+
+                # Fetch specified memories and their workflow IDs
                 placeholders = ", ".join(["?"] * len(target_memories))
+                # Fetch workflow_id along with other columns
                 query = f"SELECT * FROM memories WHERE memory_id IN ({placeholders})"
-                params: List[Any] = target_memories
-                if effective_workflow_id:
-                    query += " AND workflow_id = ?"
-                    params.append(effective_workflow_id)
+                params = list(target_memories) # Use list directly
 
                 async with conn.execute(query, params) as cursor:
                     rows = await cursor.fetchall()
-                    found_ids = {r["memory_id"] for r in rows}
-                    requested_ids = set(target_memories)
-                    if found_ids != requested_ids:
-                        missing = requested_ids - found_ids
-                        err_msg = f"Target memories issue. Missing: {missing or 'None'}. Workflow mismatch or invalid IDs?"
-                        raise ToolInputError(err_msg, param_name="target_memories")
-                    source_memories_list = [dict(row) for row in rows]
-                    source_memory_ids = target_memories
-                    if not effective_workflow_id and source_memories_list:
-                        effective_workflow_id = source_memories_list[0].get("workflow_id")
+
+                found_memories_details = {r["memory_id"]: dict(r) for r in rows}
+                found_mem_ids = set(found_memories_details.keys())
+                requested_ids_set = set(target_memories)
+
+                # --- START CORRECTED VALIDATION ---
+                mismatched_workflow_ids = set()
+                not_found_ids = requested_ids_set - found_mem_ids
+
+                # Determine the effective workflow ID. If not provided, infer from the first found memory.
+                # If provided, use it for validation.
+                if not effective_workflow_id and found_mem_ids:
+                    first_found_id = next(iter(found_mem_ids))
+                    effective_workflow_id = found_memories_details[first_found_id].get("workflow_id")
+                    if not effective_workflow_id:
+                        # This case is highly unlikely if data integrity is maintained,
+                        # but handle defensively.
+                        raise ToolError(f"Memory {first_found_id} exists but lacks a workflow ID.")
+                    logger.debug(f"Inferred effective_workflow_id: {effective_workflow_id} from target memories.")
+                elif not effective_workflow_id and not found_mem_ids:
+                    raise ToolInputError(
+                        "Workflow ID must be provided if target_memories are specified but none are found.",
+                        param_name="workflow_id"
+                        )
+
+                # Now validate all found memories against the effective_workflow_id
+                for mem_id, mem_data in found_memories_details.items():
+                    if mem_data.get("workflow_id") != effective_workflow_id:
+                        mismatched_workflow_ids.add(mem_id)
+
+                problematic_ids = not_found_ids.union(mismatched_workflow_ids)
+                # --- END CORRECTED VALIDATION ---
+
+                # Use the combined problematic_ids set for error reporting
+                if problematic_ids:
+                    # Format error message using the actual problematic IDs
+                    missing_ids_str = ", ".join(list(problematic_ids)[:5]) + ("..." if len(problematic_ids) > 5 else "")
+                    err_msg = f"Target memories issue. The following requested IDs were not found or do not belong to the effective workflow '{effective_workflow_id}': {missing_ids_str}"
+                    raise ToolInputError(err_msg, param_name="target_memories")
+
+                # If validation passes, proceed with the found memories that match the workflow
+                source_memories_list = [
+                    mem_data for mem_id, mem_data in found_memories_details.items()
+                    if mem_id not in mismatched_workflow_ids # Only include those matching the workflow
+                ]
+                source_memory_ids = [mem["memory_id"] for mem in source_memories_list] # IDs that are valid and match workflow
 
             elif query_filter:
                 # Build filter query dynamically
@@ -8000,6 +8030,12 @@ async def consolidate_memories(
                     filter_where.append("workflow_id = ?")
                     filter_params.append(effective_workflow_id)
                 for key, value in query_filter.items():
+                    # Ensure key is a valid column name before adding
+                    valid_filter_keys = {"memory_level", "memory_type", "source", "min_importance", "min_confidence"}
+                    if key not in valid_filter_keys:
+                         logger.warning(f"Ignoring unsupported filter key: {key}")
+                         continue
+
                     if key in ["memory_level", "memory_type", "source"] and value:
                         filter_where.append(f"{key} = ?")
                         filter_params.append(value)
@@ -8009,7 +8045,11 @@ async def consolidate_memories(
                     elif key == "min_confidence" and value is not None:
                         filter_where.append("confidence >= ?")
                         filter_params.append(float(value))
-                    # Add more complex filters here if needed
+
+                # Add TTL check
+                now_unix = int(time.time())
+                filter_where.append("(ttl = 0 OR created_at + ttl > ?)")
+                filter_params.append(now_unix)
 
                 query = f"SELECT * FROM memories WHERE {' AND '.join(filter_where)} ORDER BY importance DESC, created_at DESC LIMIT ?"
                 filter_params.append(max_source_memories)
@@ -8026,19 +8066,31 @@ async def consolidate_memories(
                         "workflow_id is required if not using target_memories or query_filter.",
                         param_name="workflow_id",
                     )
-                query = "SELECT * FROM memories WHERE workflow_id = ? ORDER BY importance DESC, created_at DESC LIMIT ?"
+                query = "SELECT * FROM memories WHERE workflow_id = ? AND (ttl = 0 OR created_at + ttl > ?) ORDER BY importance DESC, created_at DESC LIMIT ?"
+                now_unix = int(time.time())
                 async with conn.execute(
-                    query, [effective_workflow_id, max_source_memories]
+                    query, [effective_workflow_id, now_unix, max_source_memories]
                 ) as cursor:
                     source_memories_list = [dict(row) for row in await cursor.fetchall()]
                     source_memory_ids = [m["memory_id"] for m in source_memories_list]
 
             if len(source_memories_list) < 2:
+                # Log the criteria used when insufficient memories are found
+                criteria_desc = ""
+                if target_memories:
+                     criteria_desc = f"target_memories={target_memories}"
+                elif query_filter:
+                     criteria_desc = f"query_filter={query_filter}"
+                elif effective_workflow_id:
+                     criteria_desc = f"workflow_id={effective_workflow_id} (default recent/important)"
+
+                logger.warning(f"Insufficient source memories found ({len(source_memories_list)}) for consolidation based on criteria: {criteria_desc}.")
                 raise ToolError(
                     f"Insufficient source memories found ({len(source_memories_list)}) for consolidation based on criteria."
                 )
 
             if not effective_workflow_id:
+                # This should ideally be caught earlier, but added as a final safeguard
                 raise ToolError("Could not determine a workflow ID for consolidation.")
 
             # --- 2. Generate Consolidation Prompt (using the full helper) ---
@@ -8046,25 +8098,27 @@ async def consolidate_memories(
                 source_memories_list, consolidation_type
             )
 
-            # --- 3. Call LLM via Gateway ---
+            # --- 3. Call LLM via Gateway (Dynamic Provider/Model) ---
             consolidated_content = ""
+            provider_to_use = provider or config.default_provider or LLMGatewayProvider.OPENAI.value # Fallback chain
             try:
-                provider_instance = await get_provider(provider)
-                # Use a reasonable default model if none provided for the provider
-                default_models = {
-                    "openai": "gpt-4.1-mini",
-                    "anthropic": "claude-3-5-haiku-20241022",
-                }
-                final_model = model or default_models.get(provider)
-                if not final_model:
-                    logger.warning(
-                        f"No specific or default model known for provider '{provider}'. Attempting provider default."
-                    )
+                provider_instance = await get_provider(provider_to_use)
+                if not provider_instance:
+                     raise ToolError(f"Failed to initialize provider '{provider_to_use}'.")
+
+                # Use passed model, or provider's default
+                model_to_use = model or provider_instance.get_default_model()
+                if not model_to_use:
+                     logger.warning(f"Provider '{provider_to_use}' has no default model configured. LLM call might fail.")
+                     # Allow attempting the call without a model, provider might handle it
+
+                logger.info(f"Consolidating memories using LLM: {provider_to_use}/{model_to_use or 'provider_default'}...")
 
                 llm_result = await provider_instance.generate_completion(
-                    prompt=prompt, model=final_model, max_tokens=max_tokens, temperature=0.6
+                    prompt=prompt, model=model_to_use, max_tokens=max_tokens, temperature=0.6
                 )
                 consolidated_content = llm_result.text.strip()
+
                 if not consolidated_content:
                     logger.warning(
                         "LLM returned empty content for consolidation. Cannot store result."
@@ -8081,46 +8135,55 @@ async def consolidate_memories(
             # --- 4. Store Result ---
             stored_memory_id = None
             if store_result and consolidated_content:
+                # Determine memory type for the result
                 result_type_val = store_as_type or {
                     "summary": MemoryType.SUMMARY.value,
                     "insight": MemoryType.INSIGHT.value,
                     "procedural": MemoryType.PROCEDURE.value,
                     "question": MemoryType.QUESTION.value,
-                }.get(consolidation_type, MemoryType.INSIGHT.value)
+                }.get(consolidation_type, MemoryType.INSIGHT.value) # Default to insight
                 try:
                     result_type = MemoryType(result_type_val.lower())
                 except ValueError:
-                    result_type = MemoryType(MemoryType.INSIGHT.value)
+                    logger.warning(f"Invalid store_as_type '{result_type_val}', defaulting to insight.")
+                    result_type = MemoryType.INSIGHT
 
+                # Determine memory level for the result
                 try:
                     result_level = MemoryLevel(store_as_level.lower())
                 except ValueError:
+                    logger.warning(f"Invalid store_as_level '{store_as_level}', defaulting to semantic.")
                     result_level = MemoryLevel.SEMANTIC
 
                 result_desc = (
                     f"Consolidated {consolidation_type} from {len(source_memory_ids)} memories."
                 )
-                result_tags = ["consolidated", consolidation_type]
-                result_context = {"source_memories": source_memory_ids}
+                result_tags = ["consolidated", consolidation_type, result_type.value, result_level.value]
+                result_context = {"source_memories": source_memory_ids, "consolidation_type": consolidation_type}
 
                 # --- Calculate derived importance and confidence ---
                 derived_importance = 5.0  # Default
                 derived_confidence = 0.75  # Default
                 if source_memories_list:
-                    source_importances = [m.get("importance", 5.0) for m in source_memories_list]
-                    source_confidences = [m.get("confidence", 0.5) for m in source_memories_list]
+                    # Filter out potential None values before calculating max/sum
+                    source_importances = [m.get("importance", 5.0) for m in source_memories_list if m.get("importance") is not None]
+                    source_confidences = [m.get("confidence", 0.5) for m in source_memories_list if m.get("confidence") is not None]
 
-                    # Importance: Max source importance + small boost, capped at 10
-                    derived_importance = min(max(source_importances) + 0.5, 10.0)
+                    if source_importances:
+                         # Importance: Max source importance + small boost, capped at 10
+                         derived_importance = min(max(source_importances) + 0.5, 10.0)
 
-                    # Confidence: Average source confidence, capped at 1
-                    derived_confidence = min(sum(source_confidences) / len(source_confidences), 1.0)
-                    # Add a slight penalty based on number of sources (more sources -> slightly less confidence in exact consolidation?)
-                    derived_confidence = max(
-                        0.1,
-                        derived_confidence
-                        * (1.0 - min(0.2, (len(source_memories_list) - 1) * 0.02)),
-                    )
+                    if source_confidences:
+                         # Confidence: Average source confidence, capped at 1
+                         derived_confidence = min(sum(source_confidences) / len(source_confidences), 1.0)
+                         # Add a slight penalty based on number of sources
+                         derived_confidence = max(
+                             0.1,
+                             derived_confidence
+                             * (1.0 - min(0.2, (len(source_memories_list) - 1) * 0.02)),
+                         )
+                    else: # Handle case where all source confidences were None
+                         derived_confidence = 0.5 # Fallback confidence
 
                 logger.debug(
                     f"Derived Importance: {derived_importance:.2f}, Confidence: {derived_confidence:.2f}"
@@ -8129,51 +8192,59 @@ async def consolidate_memories(
 
                 try:
                     # Use store_memory tool function with derived values
+                    # Pass the connection to store_memory if it's implemented to accept it, otherwise rely on its internal connection management
                     store_result_dict = await store_memory(
                         workflow_id=effective_workflow_id,
                         content=consolidated_content,
                         memory_type=result_type.value,
                         memory_level=result_level.value,
-                        importance=round(derived_importance, 2),  # Use derived importance
-                        confidence=round(derived_confidence, 3),  # Use derived confidence
+                        importance=round(derived_importance, 2),
+                        confidence=round(derived_confidence, 3),
                         description=result_desc,
                         source=f"consolidation_{consolidation_type}",
                         tags=result_tags,
                         context_data=result_context,
-                        generate_embedding=True,
+                        generate_embedding=True, # Usually good to embed consolidations
+                        suggest_links=True, # Also suggest links for the new memory
                         db_path=db_path,
+                        # conn=conn # Pass connection if store_memory supports it for transactions
                     )
                     stored_memory_id = store_result_dict.get("memory_id")
                 except Exception as store_err:
                     logger.error(
                         f"Failed to store consolidated memory result: {store_err}", exc_info=True
                     )
+                    # Continue without storing if it fails, but log the error
 
-                # --- 5. Link Result to Sources ---
-                if stored_memory_id:
-                    link_tasks = []
-                    for source_id in source_memory_ids:
-                        link_task = create_memory_link(
-                            source_memory_id=stored_memory_id,
-                            target_memory_id=source_id,
-                            link_type=LinkType.GENERALIZES.value,
-                            description=f"Source for consolidated {consolidation_type}",
-                            db_path=db_path,
-                        )
-                        link_tasks.append(link_task)
-                    link_results = await asyncio.gather(*link_tasks, return_exceptions=True)
-                    failed_links = [res for res in link_results if isinstance(res, Exception)]
-                    if failed_links:
-                        logger.warning(
-                            f"Failed to create {len(failed_links)} links from consolidated memory {stored_memory_id} to sources."
-                        )
+            # --- 5. Link Result to Sources ---
+            if stored_memory_id:
+                link_tasks = []
+                for source_id in source_memory_ids:
+                    # Use create_memory_link tool function
+                    # Again, pass connection if supported, otherwise rely on its management
+                    link_task = create_memory_link(
+                        source_memory_id=stored_memory_id,
+                        target_memory_id=source_id,
+                        link_type=LinkType.GENERALIZES.value, # Consolidated memory generalizes sources
+                        description=f"Source for consolidated {consolidation_type}",
+                        db_path=db_path,
+                        # conn=conn # Pass connection if supported
+                    )
+                    link_tasks.append(link_task)
+                # Use asyncio.gather with return_exceptions=True to handle potential errors
+                link_results = await asyncio.gather(*link_tasks, return_exceptions=True)
+                failed_links = [res for res in link_results if isinstance(res, Exception)]
+                if failed_links:
+                    logger.warning(
+                        f"Failed to create {len(failed_links)} links from consolidated memory {stored_memory_id} to sources. Errors: {[str(e) for e in failed_links]}"
+                    )
 
             # --- 6. Log Consolidation Operation ---
             log_data = {
                 "consolidation_type": consolidation_type,
                 "source_count": len(source_memory_ids),
-                "llm_provider": provider,
-                "llm_model": model or "default",
+                "llm_provider": provider_to_use, # Log the actual provider used
+                "llm_model": model_to_use or "provider_default", # Log the actual model used
                 "stored": bool(stored_memory_id),
                 "stored_memory_id": stored_memory_id,
             }
@@ -8181,30 +8252,34 @@ async def consolidate_memories(
                 conn, effective_workflow_id, "consolidate", None, None, log_data
             )
 
-            await conn.commit()  # Commit logging operation
+            # Commit the logging operation (and potentially link creation if done within this transaction)
+            await conn.commit()
 
             processing_time = time.time() - start_time
             logger.info(
-                f"Consolidated {len(source_memory_ids)} memories ({consolidation_type}). Stored as: {stored_memory_id}",
+                f"Consolidated {len(source_memory_ids)} memories ({consolidation_type}). Stored as: {stored_memory_id or 'Not Stored'}",
                 emoji_key="sparkles",
                 time=processing_time,
             )
             return {
-                "consolidated_content": consolidated_content
-                or "Consolidation failed or produced no content.",
+                "consolidated_content": consolidated_content or "Consolidation failed or produced no content.",
                 "consolidation_type": consolidation_type,
                 "source_memory_ids": source_memory_ids,
                 "workflow_id": effective_workflow_id,
                 "stored_memory_id": stored_memory_id,
-                "success": True,  # Success of the operation itself
+                "success": True, # Success of the operation itself, even if LLM failed or storage failed
                 "processing_time": processing_time,
             }
 
-    except (ToolInputError, ToolError):
-        raise
+    except (ToolInputError, ToolError) as e: # Catch specific handled errors
+        # Log these at warning level as they are often user/input related
+        logger.warning(f"Consolidation failed due to input/tool error: {e}")
+        raise # Re-raise to be handled by the @with_error_handling decorator
     except Exception as e:
-        logger.error(f"Failed to consolidate memories: {str(e)}", exc_info=True)
-        raise ToolError(f"Failed to consolidate memories: {str(e)}") from e
+        # Log unexpected errors at error level
+        logger.error(f"Unexpected error during memory consolidation: {str(e)}", exc_info=True)
+        # Wrap in ToolError for consistent error response structure
+        raise ToolError(f"Unexpected error during memory consolidation: {str(e)}") from e
 
 
 @with_tool_metrics
@@ -8216,7 +8291,7 @@ async def generate_reflection(
     provider: str = LLMGatewayProvider.OPENAI.value,
     model: Optional[str] = None,
     max_tokens: int = 1000,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Generates a reflective analysis of a workflow using an LLM.
 
@@ -8370,7 +8445,7 @@ async def summarize_text(
     model: Optional[str] = None,
     workflow_id: Optional[str] = None,
     record_summary: bool = False,
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Summarizes text content using an LLM to generate a concise summary.
 
@@ -8543,7 +8618,7 @@ CONCISE SUMMARY:
 # --- 17. Maintenance (Adapted from cognitive_memory) ---
 @with_tool_metrics
 @with_error_handling
-async def delete_expired_memories(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
+async def delete_expired_memories(db_path: str = agent_memory_config.db_path) -> Dict[str, Any]:
     """Deletes memories that have exceeded their time-to-live (TTL)."""
     start_time = time.time()
     deleted_count = 0
@@ -8624,7 +8699,7 @@ async def delete_expired_memories(db_path: str = DEFAULT_DB_PATH) -> Dict[str, A
 @with_error_handling
 async def compute_memory_statistics(
     workflow_id: Optional[str] = None,  # Optional: If None, compute global stats
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Computes statistics about memories, optionally filtered by workflow."""
     start_time = time.time()
@@ -9058,7 +9133,7 @@ async def generate_workflow_report(
     include_thoughts: bool = True,
     include_artifacts: bool = True,
     style: Optional[str] = "professional",
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Generates a comprehensive report for a specific workflow in various formats and styles.
 
@@ -9251,13 +9326,13 @@ async def generate_workflow_report(
         ) from e
 
 
-# --- 20. Visualization (Ported from agent_memory) ---
+# --- 20. Visualization ---
 @with_tool_metrics
 @with_error_handling
 async def visualize_reasoning_chain(
     thought_chain_id: str,
     output_format: str = "mermaid",  # mermaid, json
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Generates a visualization of a specific thought chain."""
     if not thought_chain_id:
@@ -9333,6 +9408,7 @@ async def visualize_reasoning_chain(
         raise ToolError(f"Failed to visualize thought chain: {str(e)}") from e
 
 
+
 async def _generate_professional_report(workflow: Dict[str, Any], include_details: bool) -> str:
     """Generates a professional-style report with formal structure and comprehensive details."""
     report_lines = [f"# Workflow Report: {workflow.get('title', 'Untitled Workflow')}"]
@@ -9344,12 +9420,12 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
         report_lines.append(f"**Goal:** {workflow['goal']}")
     if workflow.get("description"):
         report_lines.append(f"\n{workflow['description']}")
-    report_lines.append(
-        f"\n**Created:** {to_iso_z(workflow.get('created_at_unix'))}"
-    )  # Assuming get_details returns unix ts
-    report_lines.append(f"**Last Updated:** {to_iso_z(workflow.get('updated_at_unix'))}")
-    if workflow.get("completed_at_unix"):
-        report_lines.append(f"**Completed:** {to_iso_z(workflow.get('completed_at_unix'))}")
+
+    # Use safe_format_timestamp with the correct keys
+    report_lines.append(f"\n**Created:** {safe_format_timestamp(workflow.get('created_at'))}")
+    report_lines.append(f"**Last Updated:** {safe_format_timestamp(workflow.get('updated_at'))}")
+    if workflow.get('completed_at'):
+        report_lines.append(f"**Completed:** {safe_format_timestamp(workflow.get('completed_at'))}")
     if workflow.get("tags"):
         report_lines.append(f"**Tags:** {', '.join(workflow['tags'])}")
 
@@ -9374,7 +9450,8 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
     # --- Key Actions and Steps ---
     if actions and include_details:
         report_lines.append("\n## Key Actions and Steps\n")
-        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", 0))
+        # Ensure sorting key exists or provide default
+        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", float('inf')))
         for i, action in enumerate(sorted_actions):
             status_emoji = {
                 "completed": "✅",
@@ -9388,30 +9465,46 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
             report_lines.append(f"**Action ID:** `{action.get('action_id')}`")
             report_lines.append(f"**Type:** {action.get('action_type', 'N/A').capitalize()}")
             report_lines.append(f"**Status:** {action.get('status', 'N/A').capitalize()}")
-            report_lines.append(
-                f"**Started:** {action.get('started_at', 'N/A')}"
-            )  # Assumes get_details already formatted these
+            report_lines.append(f"**Started:** {safe_format_timestamp(action.get('started_at'))}")
             if action.get("completed_at"):
-                report_lines.append(f"**Completed:** {action['completed_at']}")
+                report_lines.append(f"**Completed:** {safe_format_timestamp(action['completed_at'])}")
 
             if action.get("reasoning"):
                 report_lines.append(f"\n**Reasoning:**\n```\n{action['reasoning']}\n```")
             if action.get("tool_name"):
                 report_lines.append(f"\n**Tool Used:** `{action['tool_name']}`")
-                if action.get("tool_args"):
+                # tool_args might already be deserialized by get_workflow_details
+                tool_args = action.get("tool_args")
+                if tool_args:
                     try:
-                        args_str = json.dumps(action["tool_args"], indent=2)
-                    except TypeError:
-                        args_str = str(action["tool_args"])
-                    report_lines.append(f"**Arguments:**\n```json\n{args_str}\n```")
-                if action.get("tool_result"):
-                    result_repr = action["tool_result"]
+                        # Attempt to format as JSON if it's dict/list
+                        if isinstance(tool_args, (dict, list)):
+                            args_str = json.dumps(tool_args, indent=2)
+                            lang = "json"
+                        else:
+                            args_str = str(tool_args)
+                            lang = ""
+                    except Exception: # Catch potential errors during dump
+                        args_str = str(tool_args)
+                        lang = ""
+                    report_lines.append(f"**Arguments:**\n```{lang}\n{args_str}\n```")
+
+                # tool_result might already be deserialized by get_workflow_details
+                tool_result = action.get("tool_result")
+                if tool_result is not None: # Check for None explicitly
+                    result_repr = tool_result
                     try:
-                        result_str = json.dumps(result_repr, indent=2)
-                        lang = "json"
-                    except TypeError:
+                         # Attempt to format as JSON if it's dict/list
+                        if isinstance(result_repr, (dict, list)):
+                            result_str = json.dumps(result_repr, indent=2)
+                            lang = "json"
+                        else:
+                            result_str = str(result_repr)
+                            lang = ""
+                    except Exception: # Catch potential errors during dump
                         result_str = str(result_repr)
                         lang = ""
+
                     if len(result_str) > 500:
                         result_str = result_str[:497] + "..."
                     report_lines.append(f"**Result Preview:**\n```{lang}\n{result_str}\n```")
@@ -9426,7 +9519,8 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
         report_lines.append("\n## Key Findings & Insights (from Reasoning)\n")
         for i, chain in enumerate(thought_chains):
             report_lines.append(f"### Reasoning Chain {i + 1}: {chain.get('title', 'Untitled')}\n")
-            thoughts = sorted(chain.get("thoughts", []), key=lambda t: t.get("sequence_number", 0))
+             # Ensure sorting key exists or provide default
+            thoughts = sorted(chain.get("thoughts", []), key=lambda t: t.get("sequence_number", float('inf')))
             if not thoughts:
                 report_lines.append("_No thoughts recorded in this chain._")
             else:
@@ -9443,9 +9537,8 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
                     prefix = "**" if is_key_thought else ""
                     suffix = "**" if is_key_thought else ""
                     type_label = thought.get("thought_type", "Thought").capitalize()
-                    thought_time = thought.get(
-                        "created_at", "N/A"
-                    )  # Assumes get_details already formatted
+                    # Use safe_format_timestamp for thought timestamps
+                    thought_time = safe_format_timestamp(thought.get("created_at"))
                     report_lines.append(
                         f"- {prefix}{type_label}{suffix} ({thought_time}): {thought.get('content', '')}"
                     )
@@ -9480,9 +9573,8 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
             path_or_preview = (
                 f"`{path_or_preview}`" if artifact.get("path") else path_or_preview[:60]
             )
-            created_time = artifact.get(
-                "created_at", "N/A"
-            )  # Assumes get_details already formatted
+            # Use safe_format_timestamp for artifact timestamps
+            created_time = safe_format_timestamp(artifact.get("created_at"))
             tags = ", ".join(artifact.get("tags", []))
             is_output = "Yes" if artifact.get("is_output") else "No"
             report_lines.append(
@@ -9492,7 +9584,6 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
     # --- Conclusion / Next Steps ---
     report_lines.append("\n## Conclusion & Next Steps\n")
     status = workflow.get("status", "N/A")
-    # ... (rest of conclusion logic remains the same) ...
     if status == WorkflowStatus.COMPLETED.value:
         report_lines.append("Workflow marked as **Completed**.")
     elif status == WorkflowStatus.FAILED.value:
@@ -9504,7 +9595,7 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
     else:  # Active
         report_lines.append("Workflow is **Active**. Potential next steps include:")
         last_action = (
-            sorted(actions, key=lambda a: a.get("sequence_number", 0))[-1] if actions else None
+            sorted(actions, key=lambda a: a.get("sequence_number", float('inf')))[-1] if actions else None
         )
         if last_action and last_action.get("status") == ActionStatus.IN_PROGRESS.value:
             report_lines.append(f"- Completing action: '{last_action.get('title', 'Last Action')}'")
@@ -9517,12 +9608,9 @@ async def _generate_professional_report(workflow: Dict[str, Any], include_detail
 
     # Footer
     report_lines.append(
-        "\n---\n*Report generated on " + to_iso_z(datetime.now(timezone.utc).timestamp()) + "Z*"
+        "\n---\n*Report generated on " + safe_format_timestamp(datetime.now(timezone.utc).timestamp()) + "*"
     )
     return "\n".join(report_lines)
-
-
-# --- Concise, Narrative, Technical Reports (Keep these as separate functions for clarity) ---
 
 
 async def _generate_concise_report(workflow: Dict[str, Any], include_details: bool) -> str:
@@ -9544,7 +9632,8 @@ async def _generate_concise_report(workflow: Dict[str, Any], include_details: bo
     # Recent/Current Actions
     if actions:
         report_lines.append("\n**Recent Activity:**")
-        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", 0), reverse=True)
+        # Ensure sorting key exists or provide default
+        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", float('inf')), reverse=True)
         for action in sorted_actions[:3]:  # Show top 3 recent
             status_emoji = {
                 "completed": "✅",
@@ -9572,23 +9661,10 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
     """Generates a narrative-style report as a story."""
     report_lines = [f"# The Journey of: {workflow.get('title', 'Untitled Workflow')}"]
 
-    # Helper to format timestamp or return 'N/A'
-    def format_ts(unix_ts_or_iso_str):
-        if isinstance(unix_ts_or_iso_str, int):
-            try:
-                return to_iso_z(unix_ts_or_iso_str)
-            except (TypeError, ValueError):
-                return "an unknown time"
-        elif isinstance(unix_ts_or_iso_str, str):
-            try:
-                return to_iso_z(unix_ts_or_iso_str)
-            except (TypeError, ValueError):
-                return "an unknown time"
-        return "an unknown time"
-
     # Introduction
     report_lines.append("\n## Our Quest Begins\n")
-    start_time = format_ts(workflow.get("created_at"))  # Assumes get_details returned ISO string
+    # Use safe_format_timestamp with the correct key
+    start_time = safe_format_timestamp(workflow.get("created_at"))
     if workflow.get("goal"):
         report_lines.append(
             f"We embarked on a mission around {start_time}: **{workflow['goal']}**."
@@ -9604,12 +9680,12 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
     actions = workflow.get("actions", [])
     if actions:
         report_lines.append("## The Path Unfolds\n")
-        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", 0))
+        # Ensure sorting key exists or provide default
+        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", float('inf')))
         for action in sorted_actions:
             title = action.get("title", action.get("action_type", "A step"))
-            start_time_action = format_ts(
-                action.get("started_at")
-            )  # Assumes get_details returned ISO string
+            # Use safe_format_timestamp for action start time
+            start_time_action = safe_format_timestamp(action.get("started_at"))
             if action.get("status") == ActionStatus.COMPLETED.value:
                 report_lines.append(
                     f"Then, around {start_time_action}, we successfully **{title}**."
@@ -9624,7 +9700,12 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
                 report_lines.append(
                     f"Starting around {start_time_action}, we are working on **{title}**."
                 )
-            report_lines.append("")
+            # Add other statuses if needed (skipped, planned)
+            elif action.get("status") == ActionStatus.SKIPPED.value:
+                 report_lines.append(f"Around {start_time_action}, we decided to skip the step: **{title}**.")
+            elif action.get("status") == ActionStatus.PLANNED.value:
+                 report_lines.append(f"The plan included the step: **{title}** (not yet started).")
+            report_lines.append("") # Add spacing between actions
 
     # Discoveries
     thoughts = [
@@ -9634,14 +9715,14 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
         t
         for t in thoughts
         if t.get("thought_type") in ["decision", "insight", "hypothesis", "summary", "reflection"]
-    ]  # Added insight here
+    ]
     if key_thoughts and include_details:
         report_lines.append("## Moments of Clarity\n")
-        sorted_thoughts = sorted(key_thoughts, key=lambda t: t.get("sequence_number", 0))
+        # Ensure sorting key exists or provide default
+        sorted_thoughts = sorted(key_thoughts, key=lambda t: t.get("sequence_number", float('inf')))
         for thought in sorted_thoughts[:7]:
-            thought_time = format_ts(
-                thought.get("created_at")
-            )  # Assumes get_details returned ISO string
+            # Use safe_format_timestamp for thought timestamp
+            thought_time = safe_format_timestamp(thought.get("created_at"))
             report_lines.append(
                 f"- Around {thought_time}, a key **{thought.get('thought_type')}** emerged: *{thought.get('content', '')[:150]}...*"
             )
@@ -9652,12 +9733,17 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
         report_lines.append("\n## Treasures Found\n")
         outputs = [a for a in artifacts if a.get("is_output")]
         other_artifacts = [a for a in artifacts if not a.get("is_output")]
-        display_artifacts = outputs[:3] + other_artifacts[: (5 - len(outputs))]
+        # Ensure sorting key exists or provide default, sort by creation time
+        outputs.sort(key=lambda a: a.get("created_at", 0))
+        other_artifacts.sort(key=lambda a: a.get("created_at", 0))
+        # Combine lists for display, respecting limits
+        display_artifacts = outputs[:3] + other_artifacts[: max(0, 5 - len(outputs))]
+        display_artifacts.sort(key=lambda a: a.get("created_at", 0)) # Sort combined list
+
         for artifact in display_artifacts:
             marker = "🏆 Final Result:" if artifact.get("is_output") else "📌 Item Created:"
-            artifact_time = format_ts(
-                artifact.get("created_at")
-            )  # Assumes get_details returned ISO string
+            # Use safe_format_timestamp for artifact timestamp
+            artifact_time = safe_format_timestamp(artifact.get("created_at"))
             report_lines.append(
                 f"- {marker} Around {artifact_time}, **{artifact.get('name')}** ({artifact.get('artifact_type')}) was produced."
             )
@@ -9682,7 +9768,8 @@ async def _generate_narrative_report(workflow: Dict[str, Any], include_details: 
     else:
         report_lines.append("The journey continues...")
 
-    report_lines.append("\n---\n*Narrative recorded on " + to_iso_z(datetime.now()))
+    # Footer timestamp formatting
+    report_lines.append("\n---\n*Narrative recorded on " + safe_format_timestamp(datetime.now(timezone.utc).timestamp()) + "*")
     return "\n".join(report_lines)
 
 
@@ -9696,10 +9783,11 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
     report_lines.append(f"title: {workflow.get('title')}")
     report_lines.append(f"status: {workflow.get('status')}")
     report_lines.append(f"goal: {workflow.get('goal') or 'N/A'}")
-    report_lines.append(f"created_at: {to_iso_z(workflow.get('created_at'))}")
-    report_lines.append(f"updated_at: {to_iso_z(workflow.get('updated_at'))}")
+    # Use safe_format_timestamp for workflow timestamps
+    report_lines.append(f"created_at: {safe_format_timestamp(workflow.get('created_at'))}")
+    report_lines.append(f"updated_at: {safe_format_timestamp(workflow.get('updated_at'))}")
     if workflow.get("completed_at"):
-        report_lines.append(f"completed_at: {to_iso_z(workflow.get('completed_at'))}")
+        report_lines.append(f"completed_at: {safe_format_timestamp(workflow.get('completed_at'))}")
     if workflow.get("tags"):
         report_lines.append(f"tags: {workflow['tags']}")
     report_lines.append("```")
@@ -9725,22 +9813,25 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
     # --- Action Log ---
     if actions and include_details:
         report_lines.append("\n## Action Log\n")
-        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", 0))
+        # Ensure sorting key exists or provide default
+        sorted_actions = sorted(actions, key=lambda a: a.get("sequence_number", float('inf')))
         for action in sorted_actions:
             report_lines.append(f"### Action Sequence: {action.get('sequence_number')}\n```yaml")
             report_lines.append(f"action_id: {action.get('action_id')}")
             report_lines.append(f"title: {action.get('title')}")
             report_lines.append(f"type: {action.get('action_type')}")
             report_lines.append(f"status: {action.get('status')}")
-            report_lines.append(f"started_at: {to_iso_z(action.get('started_at'))}")
+            # Use safe_format_timestamp for action timestamps
+            report_lines.append(f"started_at: {safe_format_timestamp(action.get('started_at'))}")
             if action.get("completed_at"):
-                report_lines.append(f"completed_at: {to_iso_z(action.get('completed_at'))}")
+                report_lines.append(f"completed_at: {safe_format_timestamp(action.get('completed_at'))}")
             if action.get("tool_name"):
                 report_lines.append(f"tool_name: {action['tool_name']}")
-            if action.get("tool_args"):
-                report_lines.append(f"tool_args_preview: {str(action['tool_args'])[:100]}...")
-            if action.get("tool_result"):
-                report_lines.append(f"tool_result_preview: {str(action['tool_result'])[:100]}...")
+            # Use the already deserialized data if present
+            tool_args_repr = str(action.get('tool_args', 'N/A'))
+            tool_result_repr = str(action.get('tool_result', 'N/A'))
+            report_lines.append(f"tool_args_preview: {tool_args_repr[:100]}...")
+            report_lines.append(f"tool_result_preview: {tool_result_repr[:100]}...")
             report_lines.append("```")
             if action.get("reasoning"):
                 report_lines.append(f"**Reasoning:**\n```\n{action['reasoning']}\n```")
@@ -9764,10 +9855,12 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
                     "created_at",
                 ]
             }
+            # Format timestamp safely
             if "created_at" in repr_dict:
-                repr_dict["created_at"] = to_iso_z(repr_dict["created_at"])
+                repr_dict["created_at"] = safe_format_timestamp(repr_dict["created_at"])
             artifact_list_repr.append(repr_dict)
-        report_lines.append(json.dumps(artifact_list_repr, indent=2))
+        # Use default=str for safe JSON dumping
+        report_lines.append(json.dumps(artifact_list_repr, indent=2, default=str))
         report_lines.append("```")
 
     # --- Thoughts ---
@@ -9778,14 +9871,17 @@ async def _generate_technical_report(workflow: Dict[str, Any], include_details: 
             report_lines.append(
                 f"### Chain: {chain.get('title')} (`{chain.get('thought_chain_id')}`)\n```json"
             )
-            thoughts = sorted(chain.get("thoughts", []), key=lambda t: t.get("sequence_number", 0))
+            # Ensure sorting key exists or provide default
+            thoughts = sorted(chain.get("thoughts", []), key=lambda t: t.get("sequence_number", float('inf')))
             formatted_thoughts = []
             for thought in thoughts:
                 fmt_thought = dict(thought)
+                # Format timestamp safely
                 if fmt_thought.get("created_at"):
-                    fmt_thought["created_at"] = to_iso_z(fmt_thought["created_at"])
+                    fmt_thought["created_at"] = safe_format_timestamp(fmt_thought["created_at"])
                 formatted_thoughts.append(fmt_thought)
-            report_lines.append(json.dumps(formatted_thoughts, indent=2))
+            # Use default=str for safe JSON dumping
+            report_lines.append(json.dumps(formatted_thoughts, indent=2, default=str))
             report_lines.append("```")
 
     return "\n".join(report_lines)
@@ -9799,7 +9895,11 @@ async def _generate_memory_network_mermaid(
     def sanitize_mermaid_id(uuid_str: Optional[str], prefix: str) -> str:
         """Creates a valid Mermaid node ID from a UUID, handling None."""
         if not uuid_str:
-            return f"{prefix}_MISSING_{MemoryUtils.generate_id().replace('-', '_')}"
+            # Generate a unique fallback for missing IDs to avoid collisions
+            # Ensure MemoryUtils is available if needed
+            # return f"{prefix}_MISSING_{MemoryUtils.generate_id().replace('-', '_')}"
+             return f"{prefix}_MISSING_{str(uuid.uuid4()).replace('-', '_')}" # Use uuid directly
+        # Replace hyphens which are problematic in unquoted Mermaid node IDs
         sanitized = uuid_str.replace("-", "_")
         return f"{prefix}_{sanitized}"
 
@@ -9818,6 +9918,7 @@ async def _generate_memory_network_mermaid(
 
         # Label content: Type, Description (truncated), Importance
         mem_type = memory.get("memory_type", "memory").capitalize()
+        # Ensure _mermaid_escape is available
         desc = _mermaid_escape(memory.get("description", mem_id))  # Use full ID if no desc
         if len(desc) > 40:
             desc = desc[:37] + "..."
@@ -9825,6 +9926,7 @@ async def _generate_memory_network_mermaid(
         label = f"<b>{mem_type}</b><br/>{desc}<br/><i>(I: {importance:.1f})</i>"
 
         # Node shape/style based on level (e.g., Semantic=rectangle, Episodic=rounded, Procedural=subroutine)
+        # Ensure MemoryLevel enum is available
         level = memory.get("memory_level", MemoryLevel.EPISODIC.value)
         shape_start, shape_end = "[", "]"  # Default rectangle (Semantic)
         if level == MemoryLevel.EPISODIC.value:
@@ -9887,7 +9989,7 @@ async def visualize_memory_network(
     memory_level: Optional[str] = None,  # Filter nodes by level
     memory_type: Optional[str] = None,  # Filter nodes by type
     output_format: str = "mermaid",  # Only mermaid for now
-    db_path: str = DEFAULT_DB_PATH,
+    db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Generates a visualization of the memory network for a workflow or around a specific memory.
 

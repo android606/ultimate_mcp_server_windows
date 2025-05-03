@@ -240,10 +240,37 @@ class FilesystemConfig(BaseModel):
 class AgentMemoryConfig(BaseModel):
     """Configuration for Cognitive and Agent Memory tool."""
     db_path: str = Field("unified_agent_memory.db", description="Path to the agent memory SQLite database")
+    max_text_length: int = Field(64000, description="Maximum length for text fields (e.g., content, reasoning)")
+    connection_timeout: float = Field(10.0, description="Database connection timeout in seconds")
     max_working_memory_size: int = Field(20, description="Maximum number of items in working memory")
     memory_decay_rate: float = Field(0.01, description="Decay rate for memory relevance per hour")
     importance_boost_factor: float = Field(1.5, description="Multiplier for explicitly marked important memories")
     similarity_threshold: float = Field(0.75, description="Default threshold for semantic similarity search")
+    max_semantic_candidates: int = Field(500, description="Maximum candidates to consider in semantic search before scoring")
+
+    # TTLs per level (in seconds)
+    ttl_working: int = Field(60 * 30, description="Default TTL for working memories (seconds)")
+    ttl_episodic: int = Field(60 * 60 * 24 * 7, description="Default TTL for episodic memories (seconds)")
+    ttl_semantic: int = Field(60 * 60 * 24 * 30, description="Default TTL for semantic memories (seconds)")
+    ttl_procedural: int = Field(60 * 60 * 24 * 90, description="Default TTL for procedural memories (seconds)")
+
+    # Embedding related (primarily for reference/defaults, service might override)
+    default_embedding_model: str = Field("text-embedding-3-small", description="Default embedding model identifier")
+    embedding_dimension: int = Field(1536, description="Expected dimension for the default embedding model")
+
+    # SQLite Optimizations (Defined here, not env vars by default)
+    sqlite_pragmas: List[str] = Field(
+        default_factory=lambda: [
+            "PRAGMA journal_mode=WAL",
+            "PRAGMA synchronous=NORMAL",
+            "PRAGMA foreign_keys=ON",
+            "PRAGMA temp_store=MEMORY",
+            "PRAGMA cache_size=-32000", # ~32MB cache
+            "PRAGMA mmap_size=2147483647", # Max mmap size
+            "PRAGMA busy_timeout=30000", # 30 seconds busy timeout
+        ],
+        description="List of SQLite PRAGMA statements for optimization"
+    )
 
 class ToolRegistrationConfig(BaseModel):
     """Configuration for tool registration."""
@@ -349,7 +376,8 @@ class GatewayConfig(BaseModel): # Inherit from BaseModel now
     agent_memory: AgentMemoryConfig = Field(default_factory=AgentMemoryConfig) # Added agent memory
     tool_registration: ToolRegistrationConfig = Field(default_factory=ToolRegistrationConfig) # Added tool registration config
     smart_browser: SmartBrowserConfig = Field(default_factory=SmartBrowserConfig)
-    
+    default_provider: str = Field("openai", description="Default LLM provider to use if unspecified (e.g., 'openai', 'anthropic')")
+
     storage_directory: str = Field("./storage", description="Directory for persistent storage")
     log_directory: str = Field("./logs", description="Directory for log files")
     prompt_templates_directory: str = Field("./prompt_templates", description="Directory containing prompt templates") # Added prompt dir
@@ -575,13 +603,20 @@ def load_config(
                     config_logger.debug(f"Setting API key for {provider_name} from env/'.env'.")
                 provider_conf.api_key = api_key_from_env
 
+    try:
+        # Use the default defined in GatewayConfig as the fallback if env/file doesn't specify
+        loaded_config.default_provider = decouple_config('DEFAULT_PROVIDER', default=loaded_config.default_provider)
+        config_logger.debug(f"Set default provider: {loaded_config.default_provider}")
+    except Exception as e:
+        config_logger.warning(f"Could not load default provider from env: {e}. Using default '{loaded_config.default_provider}'.")
+
     # --- Load other Provider settings (base_url, default_model, org, specific headers) ---
     # Example for OpenRouter specific headers
     openrouter_conf = loaded_config.providers.openrouter
     try:
         # Use get() to avoid UndefinedValueError if not set
-        http_referer = decouple_config.get('GATEWAY_OPENROUTER_HTTP_REFERER', default=None)
-        x_title = decouple_config.get('GATEWAY_OPENROUTER_X_TITLE', default=None)
+        http_referer = decouple_config.get('OPENROUTER_HTTP_REFERER', default=None)
+        x_title = decouple_config.get('OPENROUTER_X_TITLE', default=None)
         if http_referer:
             openrouter_conf.additional_params['http_referer'] = http_referer
             config_logger.debug("Setting OpenRouter http_referer from env/'.env'.")
@@ -671,18 +706,31 @@ def load_config(
         config_logger.error(f"Error processing env var {allowed_dirs_env_var}: {e}", exc_info=True)
 
     # --- Load Agent Memory Settings ---
+    agent_mem_conf = loaded_config.agent_memory # Get the config object
     try:
-        loaded_config.agent_memory.db_path = decouple_config('GATEWAY_AGENT_MEMORY_DB_PATH', default=loaded_config.agent_memory.db_path)
-        loaded_config.agent_memory.max_working_memory_size = decouple_config('GATEWAY_AGENT_MEMORY_MAX_WORKING_SIZE', default=loaded_config.agent_memory.max_working_memory_size, cast=int)
-        loaded_config.agent_memory.memory_decay_rate = decouple_config('GATEWAY_AGENT_MEMORY_DECAY_RATE', default=loaded_config.agent_memory.memory_decay_rate, cast=float)
-        loaded_config.agent_memory.importance_boost_factor = decouple_config('GATEWAY_AGENT_MEMORY_IMPORTANCE_BOOST', default=loaded_config.agent_memory.importance_boost_factor, cast=float)
-        loaded_config.agent_memory.similarity_threshold = decouple_config('GATEWAY_AGENT_MEMORY_SIMILARITY_THRESHOLD', default=loaded_config.agent_memory.similarity_threshold, cast=float)
+        agent_mem_conf.db_path = decouple_config('AGENT_MEMORY_DB_PATH', default=agent_mem_conf.db_path)
+        agent_mem_conf.max_text_length = decouple_config('AGENT_MEMORY_MAX_TEXT_LENGTH', default=agent_mem_conf.max_text_length, cast=int)
+        agent_mem_conf.connection_timeout = decouple_config('AGENT_MEMORY_CONNECTION_TIMEOUT', default=agent_mem_conf.connection_timeout, cast=float)
+        agent_mem_conf.max_working_memory_size = decouple_config('AGENT_MEMORY_MAX_WORKING_SIZE', default=agent_mem_conf.max_working_memory_size, cast=int)
+        # Load TTLs
+        agent_mem_conf.ttl_working = decouple_config('AGENT_MEMORY_TTL_WORKING', default=agent_mem_conf.ttl_working, cast=int)
+        agent_mem_conf.ttl_episodic = decouple_config('AGENT_MEMORY_TTL_EPISODIC', default=agent_mem_conf.ttl_episodic, cast=int)
+        agent_mem_conf.ttl_semantic = decouple_config('AGENT_MEMORY_TTL_SEMANTIC', default=agent_mem_conf.ttl_semantic, cast=int)
+        agent_mem_conf.ttl_procedural = decouple_config('AGENT_MEMORY_TTL_PROCEDURAL', default=agent_mem_conf.ttl_procedural, cast=int)
+        # Load other parameters
+        agent_mem_conf.memory_decay_rate = decouple_config('AGENT_MEMORY_DECAY_RATE', default=agent_mem_conf.memory_decay_rate, cast=float)
+        agent_mem_conf.importance_boost_factor = decouple_config('AGENT_MEMORY_IMPORTANCE_BOOST', default=agent_mem_conf.importance_boost_factor, cast=float)
+        agent_mem_conf.similarity_threshold = decouple_config('AGENT_MEMORY_SIMILARITY_THRESHOLD', default=agent_mem_conf.similarity_threshold, cast=float)
+        agent_mem_conf.max_semantic_candidates = decouple_config('AGENT_MEMORY_MAX_SEMANTIC_CANDIDATES', default=agent_mem_conf.max_semantic_candidates, cast=int)
+        # Load embedding defaults (mainly for reference)
+        agent_mem_conf.default_embedding_model = decouple_config('AGENT_MEMORY_DEFAULT_EMBEDDING_MODEL', default=agent_mem_conf.default_embedding_model)
+        agent_mem_conf.embedding_dimension = decouple_config('AGENT_MEMORY_EMBEDDING_DIMENSION', default=agent_mem_conf.embedding_dimension, cast=int)
+
         config_logger.debug("Loaded agent memory settings from env/'.env' or defaults.")
     except (ValueError, UndefinedValueError) as e:
          config_logger.warning(f"Issue loading agent memory settings from env: {e}. Using Pydantic defaults.")
     except Exception as e:
         config_logger.error(f"Unexpected error loading agent memory settings: {e}", exc_info=True)
-
 
     # --- Load Prompt Templates Directory ---
     try:

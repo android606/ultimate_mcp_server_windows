@@ -79,10 +79,10 @@ from ultimate_mcp_server.tools.unified_memory_system import (
     record_action_completion,
     get_recent_actions,
     get_action_details,
-    # Action Dependency Tools (NEW)
+    # Action Dependency Tools
     add_action_dependency,
     get_action_dependencies,
-    # Artifacts (NEW)
+    # Artifacts
     record_artifact,
     get_artifacts,
     get_artifact_by_id,
@@ -95,17 +95,17 @@ from ultimate_mcp_server.tools.unified_memory_system import (
     get_memory_by_id,
     update_memory,
     query_memories,
-    create_memory_link, 
+    create_memory_link,
     get_linked_memories,
     search_semantic_memories,
-    hybrid_search_memories,    
+    hybrid_search_memories,
+    # Working Memory / State
     get_working_memory,
     save_cognitive_state,
-    load_cognitive_state,    
+    load_cognitive_state,
     focus_memory,
     optimize_working_memory,
     # Utilities/Enums/Exceptions needed
-    DEFAULT_DB_PATH,
     DBConnection,
     MemoryLevel,
     MemoryType,
@@ -117,18 +117,17 @@ from ultimate_mcp_server.tools.unified_memory_system import (
     LinkType,
     ToolError,
     ToolInputError,
-    # Defer these advanced features for now:
-    # get_workflow_context,
-    # auto_update_focus,
-    # promote_memory_level,
-    # consolidate_memories,
-    # generate_reflection,
-    # summarize_text,
-    # delete_expired_memories,
-    # compute_memory_statistics,
-    # generate_workflow_report,
-    # visualize_reasoning_chain,
-    # visualize_memory_network,
+    get_workflow_context,
+    auto_update_focus,
+    promote_memory_level,
+    consolidate_memories,
+    generate_reflection,
+    summarize_text,
+    delete_expired_memories,
+    compute_memory_statistics,
+    generate_workflow_report,
+    visualize_reasoning_chain,
+    visualize_memory_network,
 )
 
 # Utilities from the project
@@ -137,11 +136,11 @@ from ultimate_mcp_server.config import get_config
 
 console = Console()
 logger = get_logger("demo.unified_memory")
-config = get_config()
+config = get_config()  # Load config to ensure provider keys might be found
 
 install_rich_traceback(show_locals=False, width=console.width)
 
-DEMO_DB_FILE: Optional[str] = None  # Global to hold the DB path being used
+DEMO_DB_FILE: Optional[str] = config.agent_memory.db_path  # Global to hold the DB path being used
 
 
 async def safe_tool_call(func, args: Dict, description: str, suppress_output: bool = False):
@@ -187,15 +186,45 @@ async def safe_tool_call(func, args: Dict, description: str, suppress_output: bo
             panel_border = "green" if success else "yellow"
 
             try:
-                result_repr = pretty_repr(result, max_length=200, max_string=150)
+                # Handle specific large/complex outputs
+                if func.__name__ == "generate_workflow_report" and result.get("report"):
+                    report_preview = str(result["report"])[:500] + (
+                        "..." if len(str(result["report"])) > 500 else ""
+                    )
+                    result_repr = f"Report Format: {result.get('format')}\nStyle: {result.get('style_used')}\nPreview:\n---\n{report_preview}\n---"
+                elif func.__name__ in [
+                    "visualize_reasoning_chain",
+                    "visualize_memory_network",
+                ] and result.get("visualization"):
+                    viz_preview = str(result["visualization"])[:500] + (
+                        "..." if len(str(result["visualization"])) > 500 else ""
+                    )
+                    result_repr = f"Visualization Format: {result.get('format')}\nContent Preview:\n---\n{viz_preview}\n---"
+                elif func.__name__ == "summarize_text" and result.get("summary"):
+                    summary_preview = str(result["summary"])[:500] + (
+                        "..." if len(str(result["summary"])) > 500 else ""
+                    )
+                    result_repr = f"Summary Preview:\n---\n{summary_preview}\n---"
+                elif func.__name__ == "consolidate_memories" and result.get("consolidated_content"):
+                    content_preview = str(result["consolidated_content"])[:500] + (
+                        "..." if len(str(result["consolidated_content"])) > 500 else ""
+                    )
+                    result_repr = f"Consolidated Content Preview:\n---\n{content_preview}\n---"
+                elif func.__name__ == "generate_reflection" and result.get("content"):
+                    content_preview = str(result["content"])[:500] + (
+                        "..." if len(str(result["content"])) > 500 else ""
+                    )
+                    result_repr = f"Reflection Content Preview:\n---\n{content_preview}\n---"
+                else:
+                    result_repr = pretty_repr(result, max_length=200, max_string=150)
             except Exception:
                 result_repr = f"(Could not represent result of type {type(result)} fully)\n{str(result)[:500]}"
 
             console.print(
-                Panel(result_repr, title=panel_title, border_style=panel_border, expand=False)
+                Panel(
+                    escape(result_repr), title=panel_title, border_style=panel_border, expand=False
+                )
             )
-            # Specific display logic for reports/visualizations can remain here if needed later
-            # ...
 
         return result
 
@@ -217,7 +246,7 @@ async def safe_tool_call(func, args: Dict, description: str, suppress_output: bo
                     details_repr = pretty_repr(details)
                 except Exception:
                     details_repr = str(details)
-                error_content += f"\n\n[yellow]Details:[/]\n{details_repr}"
+                error_content += f"\n\n[yellow]Details:[/]\n{escape(details_repr)}"
             console.print(Panel(error_content, title=error_title, border_style="red", expand=False))
         return {
             "success": False,
@@ -253,7 +282,7 @@ async def safe_tool_call(func, args: Dict, description: str, suppress_output: bo
 async def setup_demo_environment():
     """Initialize the memory system using the DEFAULT database file."""
     global DEMO_DB_FILE
-    DEMO_DB_FILE = DEFAULT_DB_PATH
+    DEMO_DB_FILE = config.agent_memory.db_path
     log_func_info = getattr(logger, "info", print)
     log_func_info(f"Using default database for demo: {DEMO_DB_FILE}")
     console.print(
@@ -302,6 +331,7 @@ async def cleanup_demo_environment():
 # --- Individual Demo Sections ---
 
 
+# (Keep existing sections 1-8 as they are)
 async def demonstrate_basic_workflows():
     """Demonstrate basic workflow CRUD and listing operations."""
     console.print(Rule("[bold green]1. Basic Workflow Operations[/bold green]", style="green"))
@@ -394,32 +424,41 @@ async def demonstrate_basic_actions(wf_id: Optional[str]):
     if action_id_2:
         action_ids["action2_id"] = action_id_2
 
-    # Get Action Details (Multiple)
-    if action_id_1 and action_id_2:
+        # Get Action Details (Multiple) - Moved inside check
+        if action_id_1: # Ensure action_id_1 also exists
+            await safe_tool_call(
+                get_action_details,
+                {"action_ids": [action_id_1, action_id_2]},
+                "Get Action Details (Multiple Actions)",
+            )
+
+        # Record Action 2 Completion (Failed example) - Moved inside check
+        complete_args_2 = {
+            "action_id": action_id_2, # Now guaranteed to be non-None
+            "status": ActionStatus.FAILED.value,
+            "summary": "Simulation failed due to resource limit.",
+            "tool_result": {"error": "Timeout", "code": 504},
+        }
         await safe_tool_call(
-            get_action_details,
-            {"action_ids": [action_id_1, action_id_2]},
-            "Get Action Details (Multiple Actions)",
+            record_action_completion,
+            complete_args_2,
+            f"Record Action 2 Completion (Failed - {_fmt_id(action_id_2)})",
         )
-    elif action_id_1:
+    else:
+        # Action 2 failed to start, log and skip dependent steps
+        console.print("[bold red]Action 2 failed to start. Skipping completion and dependency tests involving Action 2.[/bold red]")
+        # Ensure action_id_2 is not added to the dict if it's None
+        if "action2_id" in action_ids:
+            del action_ids["action2_id"]
+        # Potentially skip dependency demo if action2_id is needed? (The demo logic does skip if action2_id is missing)
+
+    # Get Action Details (Only Action 1 if Action 2 failed) - Moved outside check block
+    if action_id_1 and not action_id_2: # Only fetch Action 1 if Action 2 failed
         await safe_tool_call(
             get_action_details,
             {"action_id": action_id_1},
-            f"Get Action Details ({_fmt_id(action_id_1)})",
+            f"Get Action Details (Action 1 Only - {_fmt_id(action_id_1)})",
         )
-
-    # Record Action 2 Completion (Failed example)
-    complete_args_2 = {
-        "action_id": action_id_2,
-        "status": ActionStatus.FAILED.value,
-        "summary": "Simulation failed due to resource limit.",
-        "tool_result": {"error": "Timeout", "code": 504},
-    }
-    await safe_tool_call(
-        record_action_completion,
-        complete_args_2,
-        f"Record Action 2 Completion (Failed - {_fmt_id(action_id_2)})",
-    )
 
     # Get Recent Actions (should show both)
     await safe_tool_call(
@@ -625,7 +664,7 @@ async def demonstrate_memory_operations(wf_id: Optional[str], action_ids: Dict, 
         "memory_level": MemoryLevel.EPISODIC.value,
         "description": "Summary of initial plan",
         "tags": ["planning", "summary"],
-        "generate_embedding": False,  # NO EMBEDDINGS YET
+        "generate_embedding": False,  # Set False explicitly for baseline
     }
     mem_res_1 = await safe_tool_call(store_memory, store_args_1, "Store Memory 1 (Plan Summary)")
     mem1_id = mem_res_1.get("memory_id") if mem_res_1.get("success") else None
@@ -727,11 +766,13 @@ async def demonstrate_memory_operations(wf_id: Optional[str], action_ids: Dict, 
     if mem3_id and thought_ids:  # Assuming demonstrate_thoughts ran successfully
         thought_chain_id_str = thought_ids.get("main_chain_id")
         if not thought_chain_id_str:
-            console.print("[yellow]Skipping thought link to memory: main_chain_id not found in thought_ids dict.[/yellow]")
+            console.print(
+                "[yellow]Skipping thought link to memory: main_chain_id not found in thought_ids dict.[/yellow]"
+            )
         else:
             thought_args_link = {
                 "workflow_id": wf_id,
-                "thought_chain_id": thought_chain_id_str, # Pass the string ID
+                "thought_chain_id": thought_chain_id_str,  # Pass the string ID
                 "content": "Based on the general knowledge about timeouts, need to check server logs.",
                 "thought_type": ThoughtType.PLAN.value,
                 "relevant_memory_id": mem3_id,  # Link to the Fact memory
@@ -742,36 +783,46 @@ async def demonstrate_memory_operations(wf_id: Optional[str], action_ids: Dict, 
                 f"Record Thought Linked to Memory ({_fmt_id(mem3_id)})",
             )
     elif not thought_ids:
-        console.print("[yellow]Skipping thought link to memory: thought_ids dict is empty or None.[/yellow]")
+        console.print(
+            "[yellow]Skipping thought link to memory: thought_ids dict is empty or None.[/yellow]"
+        )
 
     return mem_ids
 
+
 async def demonstrate_embedding_and_search(wf_id: Optional[str], mem_ids: Dict, thought_ids: Dict):
     """Demonstrate embedding generation and semantic/hybrid search."""
-    console.print(
-        Rule("[bold green]7. Embedding & Semantic Search[/bold green]", style="green")
-    )
+    console.print(Rule("[bold green]7. Embedding & Semantic Search[/bold green]", style="green"))
     if not wf_id:
         console.print("[yellow]Skipping embedding demo: No valid workflow ID.[/yellow]")
-        return # Return immediately if no workflow ID
-    mem1_id = mem_ids.get("mem1_id") # Plan summary
-    mem2_id = mem_ids.get("mem2_id") # Simulation error
-    mem3_id = mem_ids.get("mem3_id") # Timeout fact
+        return  # Return immediately if no workflow ID
+    mem1_id = mem_ids.get("mem1_id")  # Plan summary
+    mem2_id = mem_ids.get("mem2_id")  # Simulation error
+    mem3_id = mem_ids.get("mem3_id")  # Timeout fact
 
     if not mem1_id or not mem2_id or not mem3_id:
-        console.print("[yellow]Skipping embedding demo: Missing required memory IDs from previous steps.[/yellow]")
-        return # Return immediately if prerequisite memories are missing
+        console.print(
+            "[yellow]Skipping embedding demo: Missing required memory IDs from previous steps.[/yellow]"
+        )
+        return  # Return immediately if prerequisite memories are missing
 
     # 1. Update Memory 2 (Error) to generate embedding
-    # This call should now succeed if the update_memory tool code was fixed.
-    await safe_tool_call(
+    # This relies on the embedding service being functional (API key configured)
+    console.print(
+        "[yellow]Attempting to generate embeddings. Requires configured Embedding Service (e.g., OpenAI API key).[/yellow]"
+    )
+    update_res = await safe_tool_call(
         update_memory,
         {
             "memory_id": mem2_id,
             "regenerate_embedding": True,
         },
-        f"Update Memory 2 ({_fmt_id(mem2_id)}) to Generate Embedding"
+        f"Update Memory 2 ({_fmt_id(mem2_id)}) to Generate Embedding",
     )
+    if not (update_res and update_res.get("success") and update_res.get("embedding_regenerated")):
+        console.print(
+            f"[red]   -> Failed to generate embedding for Memory 2. Semantic/Hybrid search may not work as expected.[/red]"
+        )
 
     # 2. Store a new memory WITH embedding generation enabled
     store_args_4 = {
@@ -782,165 +833,215 @@ async def demonstrate_embedding_and_search(wf_id: Optional[str], mem_ids: Dict, 
         "description": "Next step planning",
         "importance": 7.5,
         "tags": ["investigation", "planning", "error_handling"],
-        "generate_embedding": True, # Explicitly enable
-        # suggest_links is False by default, keep it simple here
+        "generate_embedding": True,  # Explicitly enable
     }
-    mem_res_4 = await safe_tool_call(store_memory, store_args_4, "Store Memory 4 (Next Step Plan) with Embedding")
+    mem_res_4 = await safe_tool_call(
+        store_memory, store_args_4, "Store Memory 4 (Next Step Plan) with Embedding"
+    )
     mem4_id = mem_res_4.get("memory_id") if mem_res_4.get("success") else None
-    if mem4_id: mem_ids["mem4_id"] = mem4_id # Add to our tracked IDs
+    if mem4_id:
+        mem_ids["mem4_id"] = mem4_id  # Add to our tracked IDs
 
     # Check if embedding was actually generated for Mem4
     if mem4_id:
-        # Using suppress_output=True as we only care about the return value here
         mem4_details = await safe_tool_call(
             get_memory_by_id,
             {"memory_id": mem4_id},
             f"Check Memory 4 Details ({_fmt_id(mem4_id)})",
-            suppress_output=True
+            suppress_output=True,
         )
-        if mem4_details and mem4_details.get("embedding_id"):
-            console.print(f"[green]   -> Embedding ID confirmed for Memory 4: {_fmt_id(mem4_details['embedding_id'])}[/green]")
+        if mem4_details and mem4_details.get("success") and mem4_details.get("embedding_id"):
+            console.print(
+                f"[green]   -> Embedding ID confirmed for Memory 4: {_fmt_id(mem4_details['embedding_id'])}[/green]"
+            )
         else:
-            # This might happen if the API key is invalid or embedding service has issues
-            console.print(f"[yellow]   -> Warning: Embedding ID missing for Memory 4. Embedding generation likely failed.[/yellow]")
+            console.print(
+                f"[yellow]   -> Warning: Embedding ID missing for Memory 4. Embedding generation likely failed.[/yellow]"
+            )
             console.print("[dim]      (Semantic/Hybrid search results may be limited.)[/dim]")
 
-
-    # 3. Semantic Search (Will only work if embeddings were generated successfully above)
-    # Query related to the failure
+    # 3. Semantic Search
     await safe_tool_call(
         search_semantic_memories,
         {
             "workflow_id": wf_id,
             "query": "problems with simulation performance",
             "limit": 3,
-            "threshold": 0.5 # Lower threshold slightly for demo
+            "threshold": 0.5,
         },
-        "Semantic Search: 'problems with simulation performance'"
+        "Semantic Search: 'problems with simulation performance'",
     )
-
-    # Query related to planning
     await safe_tool_call(
         search_semantic_memories,
         {
             "workflow_id": wf_id,
             "query": "next actions to take",
             "limit": 2,
-            "memory_level": MemoryLevel.EPISODIC.value # Filter results
+            "memory_level": MemoryLevel.EPISODIC.value,
         },
-        "Semantic Search: 'next actions to take' (Episodic only)"
+        "Semantic Search: 'next actions to take' (Episodic only)",
     )
 
-    # 4. Hybrid Search (Will combine keyword + semantic if embeddings exist)
-    # Combining keyword and semantics for the error investigation
+    # 4. Hybrid Search
     await safe_tool_call(
         hybrid_search_memories,
         {
             "workflow_id": wf_id,
-            "query": "investigate timeout simulation", # Mix of keywords
+            "query": "investigate timeout simulation",
             "limit": 4,
             "semantic_weight": 0.6,
             "keyword_weight": 0.4,
-            "tags": ["error"], # Add a filter
-            "include_content": False, # Keep hybrid search results concise
+            "tags": ["error"],
+            "include_content": False,
         },
-        "Hybrid Search: 'investigate timeout simulation' + tag 'error'"
+        "Hybrid Search: 'investigate timeout simulation' + tag 'error'",
     )
 
-    # 5. Demonstrate link suggestions (Needs embedding for Mem3 and successful embedding for Mem5)
+    # 5. Demonstrate link suggestions
     # Update Mem3 (Timeout fact) to generate embedding
-    await safe_tool_call(
+    update_res_3 = await safe_tool_call(
         update_memory,
-        { "memory_id": mem3_id, "regenerate_embedding": True }, # Use the FIXED update_memory
-        f"Update Memory 3 ({_fmt_id(mem3_id)}) to Generate Embedding"
+        {"memory_id": mem3_id, "regenerate_embedding": True},
+        f"Update Memory 3 ({_fmt_id(mem3_id)}) to Generate Embedding",
     )
+    if not (
+        update_res_3 and update_res_3.get("success") and update_res_3.get("embedding_regenerated")
+    ):
+        console.print(
+            f"[red]   -> Failed to generate embedding for Memory 3. Link suggestion test might fail.[/red]"
+        )
 
-    # --- Store Memory 5 (Corrected Approach) ---
-    # First, record the hypothesis as a thought in the appropriate chain
+    # --- Store Memory 5 (Hypothesis) ---
     hypothesis_content = "Resource limits on the simulation server might be too low."
-    # Retrieve chain_id safely from the passed dictionary
-    # Ensure thought_ids is treated as a dictionary
     thought_chain_id = thought_ids.get("main_chain_id") if isinstance(thought_ids, dict) else None
-
     hypothesis_thought_id = None
     if thought_chain_id:
         thought_args_hyp = {
             "workflow_id": wf_id,
             "thought_chain_id": thought_chain_id,
             "content": hypothesis_content,
-            "thought_type": ThoughtType.HYPOTHESIS.value, # Correct ThoughtType
-            "relevant_memory_id": mem3_id # Link to the fact that prompted it
+            "thought_type": ThoughtType.HYPOTHESIS.value,
+            "relevant_memory_id": mem3_id,
         }
-        hyp_thought_res = await safe_tool_call(record_thought, thought_args_hyp, "Record Hypothesis Thought")
-        hypothesis_thought_id = hyp_thought_res.get("thought_id") if hyp_thought_res.get("success") else None
+        hyp_thought_res = await safe_tool_call(
+            record_thought, thought_args_hyp, "Record Hypothesis Thought"
+        )
+        hypothesis_thought_id = (
+            hyp_thought_res.get("thought_id") if hyp_thought_res.get("success") else None
+        )
     else:
-        console.print("[yellow]Skipping hypothesis memory storage: Could not get thought chain ID.[/yellow]")
+        console.print(
+            "[yellow]Skipping hypothesis memory storage: Could not get thought chain ID.[/yellow]"
+        )
 
-    # Now, optionally store this important reasoning step as a memory
     mem5_id = None
-    mem_res_5 = None # Initialize mem_res_5
+    mem_res_5 = None
     if hypothesis_thought_id:
         store_args_5 = {
             "workflow_id": wf_id,
-            "thought_id": hypothesis_thought_id, # Link memory back to the thought
-            "content": hypothesis_content, # Store the hypothesis content
-            "memory_type": MemoryType.REASONING_STEP.value, # Use REASONING_STEP instead of HYPOTHESIS
-            "memory_level": MemoryLevel.SEMANTIC.value, # Store hypothesis reasoning as semantic
-            "description": "Hypothesis on timeout cause (reasoning step)", # Clarify description
+            "thought_id": hypothesis_thought_id,
+            "content": hypothesis_content,
+            "memory_type": MemoryType.REASONING_STEP.value,
+            "memory_level": MemoryLevel.SEMANTIC.value,
+            "description": "Hypothesis on timeout cause",
             "importance": 6.5,
-            "confidence": 0.6, # Tentative confidence
-            "tags": ["hypothesis", "resource", "error", "reasoning_step"], # Add appropriate tags
-            "generate_embedding": True, # Try embedding the hypothesis text
-            "suggest_links": True, # Explicitly ask for suggestions
-            "max_suggested_links": 2, # Limit suggestions for demo clarity
+            "confidence": 0.6,
+            "tags": ["hypothesis", "resource", "error", "reasoning_step"],
+            "generate_embedding": True,
+            "suggest_links": True,  # Explicitly ask for suggestions
+            "max_suggested_links": 2,
         }
-        mem_res_5 = await safe_tool_call(store_memory, store_args_5, "Store Memory 5 (Hypothesis Reasoning Step) - Suggest Links")
+        mem_res_5 = await safe_tool_call(
+            store_memory, store_args_5, "Store Memory 5 (Hypothesis Reasoning) - Suggest Links"
+        )
         mem5_id = mem_res_5.get("memory_id") if mem_res_5.get("success") else None
-        if mem5_id: mem_ids["mem5_id"] = mem5_id # Add to tracked IDs only if successful
+        if mem5_id:
+            mem_ids["mem5_id"] = mem5_id
 
         # Check suggestions result
         if mem_res_5 and mem_res_5.get("success") and mem_res_5.get("suggested_links"):
             console.print(f"[cyan]   -> Link suggestions received for Memory 5:[/]")
             console.print(pretty_repr(mem_res_5["suggested_links"]))
         elif mem_res_5 and mem_res_5.get("success"):
-             console.print(f"[dim]   -> No link suggestions returned for Memory 5.[/dim]")
+            console.print(
+                f"[dim]   -> No link suggestions returned for Memory 5 (or embedding failed).[/dim]"
+            )
         elif mem_res_5 and not mem_res_5.get("success"):
-             console.print(f"[yellow]   -> Failed to store Memory 5, cannot check suggestions.[/yellow]")
-
+            console.print(
+                f"[yellow]   -> Failed to store Memory 5, cannot check suggestions.[/yellow]"
+            )
     else:
-        # Log if thought recording failed
-        console.print("[yellow]Skipping Memory 5 storage: Hypothesis thought recording failed.[/yellow]")
+        console.print(
+            "[yellow]Skipping Memory 5 storage: Hypothesis thought recording failed.[/yellow]"
+        )
 
 
 async def demonstrate_state_and_working_memory(
     wf_id: str,
     mem_ids_dict: Dict[str, str],
     action_ids_dict: Dict[str, str],
-    thought_ids_list: List[str],
-    state_ids_dict: Dict[str, str] # Pass dict by reference to store state_id
+    thought_ids_dict: Dict[str, Any],  # Contains chain_id and potentially thought IDs
+    state_ids_dict: Dict[str, str],  # Pass dict by reference to store state_id
 ):
     """Demonstrate saving/loading state and working memory operations."""
     console.print(
         Rule("[bold green]8. Cognitive State & Working Memory[/bold green]", style="green")
     )
 
-    # Prepare IDs for saving state - use a subset of available memories
-    working_mems = [
-        mem_id for mem_id in [
-            mem_ids_dict.get("mem2_id"), # Simulation error
-            mem_ids_dict.get("mem3_id"), # Timeout fact
-            mem_ids_dict.get("mem4_id"), # Next step plan
-            mem_ids_dict.get("mem5_id")  # Hypothesis reasoning step
-        ] if mem_id # Filter out None values if a memory wasn't created
-    ]
-    focus_mems = [mem_ids_dict.get("mem4_id")] if mem_ids_dict.get("mem4_id") else [] # Focus on the 'next step' memory
-    context_actions = [
-        action_id for action_id in [
-            action_ids_dict.get("action1_id"), # Planning
-            action_ids_dict.get("action2_id") # Failed simulation
-        ] if action_id
-    ]
-    goal_thoughts = [thought_id for thought_id in thought_ids_list if thought_id] # Use the hypothesis thought as a 'current goal' proxy
+    # --- Retrieve necessary IDs from previous steps ---
+    main_wf_id = wf_id  # Already have this
+    main_chain_id = thought_ids_dict.get("main_chain_id")  # Analysis chain
+    plan_action_id = action_ids_dict.get("action1_id")
+    sim_action_id = action_ids_dict.get("action2_id")  # Failed simulation
+    mem1_id = mem_ids_dict.get("mem1_id")  # Plan summary
+    mem2_id = mem_ids_dict.get("mem2_id")  # Simulation error
+    mem3_id = mem_ids_dict.get("mem3_id")  # Timeout fact
+    mem4_id = mem_ids_dict.get("mem4_id")  # Next step plan
+    mem5_id = mem_ids_dict.get("mem5_id")  # Hypothesis reasoning step
+
+    # Need the ID of the hypothesis thought itself
+    hypothesis_thought_id = None
+    if mem5_id and main_wf_id:
+        # Get the memory details to find the linked thought ID
+        mem5_details = await safe_tool_call(
+            get_memory_by_id,
+            {"memory_id": mem5_id},
+            f"Get Memory 5 Details ({_fmt_id(mem5_id)}) for Thought ID",
+            suppress_output=True,  # We just need the data
+        )
+        if mem5_details and mem5_details.get("success"):
+            hypothesis_thought_id = mem5_details.get(
+                "thought_id"
+            )  # Correct key from memories table
+            if hypothesis_thought_id:
+                console.print(
+                    f"[cyan]   -> Retrieved Hypothesis Thought ID: {_fmt_id(hypothesis_thought_id)}[/cyan]"
+                )
+            else:
+                console.print(
+                    "[yellow]   -> Could not retrieve hypothesis thought ID from Memory 5 details.[/yellow]"
+                )
+
+    # --- Check if we have enough data to proceed ---
+    if not (
+        main_wf_id
+        and mem1_id
+        and mem2_id
+        and mem3_id
+        and mem4_id
+        and plan_action_id
+        and hypothesis_thought_id
+    ):
+        console.print(
+            "[yellow]Skipping state/working memory demo: Missing required IDs from previous steps.[/yellow]"
+        )
+        return
+
+    # Prepare IDs for saving state
+    working_mems = [mem_id for mem_id in [mem2_id, mem3_id, mem4_id, mem5_id] if mem_id]
+    focus_mems = [mem4_id] if mem4_id else []
+    context_actions = [action_id for action_id in [plan_action_id, sim_action_id] if action_id]
+    goal_thoughts = [hypothesis_thought_id] if hypothesis_thought_id else []
 
     # 1. Save Cognitive State
     save_args = {
@@ -949,12 +1050,12 @@ async def demonstrate_state_and_working_memory(
         "working_memory_ids": working_mems,
         "focus_area_ids": focus_mems,
         "context_action_ids": context_actions,
-        "current_goal_thought_ids": goal_thoughts
+        "current_goal_thought_ids": goal_thoughts,
     }
     state_res = await safe_tool_call(save_cognitive_state, save_args, "Save Cognitive State")
     state_id = state_res.get("state_id") if state_res.get("success") else None
     if state_id:
-        state_ids_dict['saved_state_id'] = state_id # Store the ID in the passed dict
+        state_ids_dict["saved_state_id"] = state_id  # Store the ID in the passed dict
     else:
         console.print("[red]Cannot proceed with working memory demo: Failed to save state.[/red]")
         return
@@ -969,13 +1070,15 @@ async def demonstrate_state_and_working_memory(
     # 3. Load Cognitive State (Latest)
     await safe_tool_call(
         load_cognitive_state,
-        {"workflow_id": wf_id}, # No state_id means load latest
+        {"workflow_id": wf_id},  # No state_id means load latest
         "Load Latest Cognitive State",
     )
 
     # --- Working Memory Operations using the saved state_id as the context_id ---
     context_id_for_demo = state_id
-    console.print(f"\n[dim]Using saved state ID '{_fmt_id(context_id_for_demo)}' as context_id for working memory tests...[/dim]\n")
+    console.print(
+        f"\n[dim]Using saved state ID '{_fmt_id(context_id_for_demo)}' as context_id for working memory tests...[/dim]\n"
+    )
 
     # 4. Focus Memory (Focus on the 'hypothesis' memory if it exists)
     focus_target_id = mem_ids_dict.get("mem5_id")
@@ -985,66 +1088,274 @@ async def demonstrate_state_and_working_memory(
             {
                 "memory_id": focus_target_id,
                 "context_id": context_id_for_demo,
-                "add_to_working": False # Assume it's already there from save_state
+                "add_to_working": False,  # Assume it's already there from save_state
             },
             f"Focus Memory ({_fmt_id(focus_target_id)}) in Context ({_fmt_id(context_id_for_demo)})",
         )
     else:
-         console.print("[yellow]Skipping focus memory test: Hypothesis memory ID not available.[/yellow]")
+        console.print(
+            "[yellow]Skipping focus memory test: Hypothesis memory ID not available.[/yellow]"
+        )
 
     # 5. Get Working Memory (Should reflect the saved state initially)
     await safe_tool_call(
         get_working_memory,
         {
             "context_id": context_id_for_demo,
-            "include_links": False # Keep output cleaner for this demo step
+            "include_links": False,  # Keep output cleaner for this demo step
         },
         f"Get Working Memory for Context ({_fmt_id(context_id_for_demo)})",
     )
 
     # 6. Optimize Working Memory (Reduce size, using 'balanced' strategy)
-    # Check current size before optimizing
     wm_details = await safe_tool_call(
         get_working_memory,
         {"context_id": context_id_for_demo},
         "Get WM Size Before Optimization",
-        suppress_output=True
+        suppress_output=True,
     )
-    current_wm_size = len(wm_details.get("working_memories", [])) if wm_details and wm_details.get("success") else 0
+    current_wm_size = (
+        len(wm_details.get("working_memories", []))
+        if wm_details and wm_details.get("success")
+        else 0
+    )
 
-    if current_wm_size > 2: # Only optimize if we have more than 2 memories
-        target_optimize_size = max(1, current_wm_size // 2) # Aim to reduce size significantly
-        console.print(f"[cyan]   -> Optimizing working memory from {current_wm_size} down to {target_optimize_size}...[/cyan]")
+    if current_wm_size > 2:  # Only optimize if we have more than 2 memories
+        target_optimize_size = max(1, current_wm_size // 2)
+        console.print(
+            f"[cyan]   -> Optimizing working memory from {current_wm_size} down to {target_optimize_size}...[/cyan]"
+        )
         await safe_tool_call(
-            # Import optimize_working_memory tool
-            # from ultimate_mcp_server.tools.unified_memory_system import optimize_working_memory
             optimize_working_memory,
             {
                 "context_id": context_id_for_demo,
                 "target_size": target_optimize_size,
-                "strategy": "balanced"
+                "strategy": "balanced",
             },
             f"Optimize Working Memory (Context: {_fmt_id(context_id_for_demo)}, Target: {target_optimize_size})",
         )
-
-        # Get Working Memory again to show the result
         await safe_tool_call(
             get_working_memory,
-            {
-                "context_id": context_id_for_demo,
-                "include_links": False
-            },
+            {"context_id": context_id_for_demo, "include_links": False},
             f"Get Working Memory After Optimization (Context: {_fmt_id(context_id_for_demo)})",
         )
     else:
-        console.print(f"[dim]Skipping working memory optimization: Current size ({current_wm_size}) is too small.[/dim]")
+        console.print(
+            f"[dim]Skipping working memory optimization: Current size ({current_wm_size}) is too small.[/dim]"
+        )
+
+
+async def demonstrate_metacognition(wf_id: str, mem_ids: Dict, state_ids: Dict):
+    """Demonstrate context retrieval, auto-focus, promotion, consolidation, reflection, summarization."""
+    console.print(Rule("[bold green]9. Meta-Cognition & Summarization[/bold green]", style="green"))
+
+    # 1. Get Workflow Context
+    await safe_tool_call(get_workflow_context, {"workflow_id": wf_id}, "Get Full Workflow Context")
+
+    # 2. Auto Update Focus
+    context_id = state_ids.get("saved_state_id")
+    if context_id:
+        await safe_tool_call(
+            auto_update_focus,
+            {"context_id": context_id},
+            f"Auto Update Focus for Context ({_fmt_id(context_id)})"
+        )
+    else:
+        console.print("[yellow]Skipping auto-focus: No context_id (state_id) available.[/yellow]")
+
+    # 3. Promote Memory Level
+    mem1_id = mem_ids.get("mem1_id") # Episodic summary
+    mem3_id = mem_ids.get("mem3_id") # Semantic fact
+    if mem1_id:
+        console.print(f"[cyan]   -> Manually increasing access_count for Memory 1 ({_fmt_id(mem1_id)}) to test promotion...[/cyan]")
+        try:
+            async with DBConnection(DEMO_DB_FILE) as conn:
+                await conn.execute("UPDATE memories SET access_count = 10, confidence = 0.9 WHERE memory_id = ?", (mem1_id,))
+                await conn.commit()
+            await safe_tool_call(
+                promote_memory_level,
+                {"memory_id": mem1_id},
+                f"Attempt Promote Memory 1 ({_fmt_id(mem1_id)}) from Episodic"
+            )
+        except Exception as e:
+            console.print(f"[red]   -> Error updating access count for promotion test: {e}[/red]")
+
+    if mem3_id:
+        await safe_tool_call(
+            promote_memory_level,
+            {"memory_id": mem3_id},
+            f"Attempt Promote Memory 3 ({_fmt_id(mem3_id)}) from Semantic (Should Fail)"
+        )
+
+    # 4. Consolidate Memories (requires LLM)
+    mem_ids_for_consolidation = [
+        mid for mid in [
+            mem_ids.get("mem1_id"), mem_ids.get("mem2_id"), mem_ids.get("mem3_id")
+        ] if mid
+    ]
+    if len(mem_ids_for_consolidation) >= 2:
+        console.print("[yellow]Attempting memory consolidation. Requires configured LLM provider (e.g., OpenAI API key).[/yellow]")
+        await safe_tool_call(
+            consolidate_memories,
+            {
+                "workflow_id": wf_id,
+                "target_memories": mem_ids_for_consolidation,
+                "consolidation_type": "summary",
+                "store_result": True,
+                "provider": config.default_provider or "openai",
+            },
+            "Consolidate Memories (Summary)"
+        )
+    else:
+        console.print("[yellow]Skipping consolidation: Not enough source memories available.[/yellow]")
+
+    # 5. Generate Reflection (requires LLM)
+    console.print("[yellow]Attempting reflection generation. Requires configured LLM provider.[/yellow]")
+    await safe_tool_call(
+        generate_reflection,
+        {
+            "workflow_id": wf_id,
+            "reflection_type": "gaps",
+            "provider": config.default_provider or "openai", # Use configured default from GatewayConfig
+        },
+        "Generate Reflection (Gaps)"
+    )
+
+    # 6. Summarize Text (requires LLM)
+    console.print("[yellow]Attempting text summarization. Requires configured LLM provider.[/yellow]")
+    sample_text = """
+    The Unified Memory System integrates several components for advanced agent cognition.
+    It tracks workflows, actions, artifacts, and thoughts. A multi-level memory hierarchy
+    (working, episodic, semantic, procedural) allows for different types of knowledge storage.
+    Vector embeddings enable semantic search capabilities. Associative links connect related
+    memory items. Cognitive states can be saved and loaded, preserving the agent's context.
+    Maintenance tools help manage memory expiration and provide statistics. Reporting and
+    visualization tools offer insights into the agent's processes. This system aims to provide
+    a robust foundation for complex autonomous agents.
+    """
+    await safe_tool_call(
+        summarize_text,
+        {
+            "text_to_summarize": sample_text,
+            "target_tokens": 50,
+            "record_summary": True,
+            "workflow_id": wf_id,
+            "provider": config.default_provider or "openai",
+        },
+        "Summarize Sample Text and Record Memory"
+    )
+
+
+async def demonstrate_maintenance_and_stats(wf_id: str):
+    """Demonstrate memory deletion and statistics computation."""
+    console.print(Rule("[bold green]10. Maintenance & Statistics[/bold green]", style="green"))
+
+    # 1. Delete Expired Memories
+    # Store a temporary memory with a short TTL
+    console.print("[cyan]   -> Storing a temporary memory with TTL=1 second...[/cyan]")
+    ttl_mem_args = {
+        "workflow_id": wf_id,
+        "content": "This memory should expire quickly.",
+        "memory_type": "observation",
+        "ttl": 1 # 1 second TTL
+    }
+    ttl_mem_res = await safe_tool_call(
+        store_memory,  # Pass the function object
+        ttl_mem_args,  # Pass the arguments dictionary
+        "Store Temporary Memory",
+        suppress_output=True
+    )
+
+    if ttl_mem_res and ttl_mem_res.get("success"):
+        console.print("[cyan]   -> Waiting 2 seconds for memory to expire...[/cyan]")
+        await asyncio.sleep(2)
+        await safe_tool_call(
+            delete_expired_memories, {}, "Delete Expired Memories (Should delete 1)"
+        )
+    else:
+         console.print("[yellow]   -> Failed to store temporary memory for expiration test.[/yellow]")
+         if ttl_mem_res:
+             console.print(f"[yellow]      Error: {ttl_mem_res.get('error')}[/yellow]")
+
+    # 2. Compute Statistics (Workflow Specific)
+    await safe_tool_call(
+        compute_memory_statistics,
+        {"workflow_id": wf_id},
+        f"Compute Statistics for Workflow ({_fmt_id(wf_id)})"
+    )
+
+    # 3. Compute Statistics (Global)
+    await safe_tool_call(
+        compute_memory_statistics, {}, "Compute Global Statistics"
+    )
+
+
+async def demonstrate_reporting_and_viz(wf_id: str, thought_chain_id: str, mem_ids: Dict):
+    """Demonstrate report generation and visualization."""
+    console.print(Rule("[bold green]11. Reporting & Visualization[/bold green]", style="green"))
+
+    # 1. Generate Workflow Reports
+    await safe_tool_call(
+        generate_workflow_report,
+        {"workflow_id": wf_id, "report_format": "markdown", "style": "professional"},
+        "Generate Workflow Report (Markdown, Professional)",
+    )
+    await safe_tool_call(
+        generate_workflow_report,
+        {"workflow_id": wf_id, "report_format": "html", "style": "concise"},
+        "Generate Workflow Report (HTML, Concise)",
+    )
+    await safe_tool_call(
+        generate_workflow_report,
+        {"workflow_id": wf_id, "report_format": "json"},
+        "Generate Workflow Report (JSON)",
+    )
+    await safe_tool_call(
+        generate_workflow_report,
+        {"workflow_id": wf_id, "report_format": "mermaid"},
+        "Generate Workflow Report (Mermaid Diagram)",
+    )
+
+    # 2. Visualize Reasoning Chain
+    if thought_chain_id:
+        await safe_tool_call(
+            visualize_reasoning_chain,
+            {"thought_chain_id": thought_chain_id},
+            f"Visualize Reasoning Chain ({_fmt_id(thought_chain_id)})",
+        )
+    else:
+        console.print(
+            "[yellow]Skipping reasoning visualization: No thought_chain_id available.[/yellow]"
+        )
+
+    # 3. Visualize Memory Network
+    # Visualize around the 'error' memory
+    center_mem_id = mem_ids.get("mem2_id")
+    if center_mem_id:
+        await safe_tool_call(
+            visualize_memory_network,
+            {"center_memory_id": center_mem_id, "depth": 1, "max_nodes": 15},
+            f"Visualize Memory Network (Centered on Error Mem {_fmt_id(center_mem_id)}, Depth 1)",
+        )
+    else:
+        console.print(
+            "[yellow]Skipping centered memory visualization: Error memory ID not available.[/yellow]"
+        )
+
+    # Visualize top memories for the workflow
+    await safe_tool_call(
+        visualize_memory_network,
+        {"workflow_id": wf_id, "max_nodes": 20},
+        f"Visualize Memory Network (Workflow {_fmt_id(wf_id)}, Top 20 Relevant)",
+    )
+
 
 # --- Main Execution Logic ---
 async def main():
     """Run the extended Unified Memory System demonstration suite."""
     console.print(
         Rule(
-            "[bold magenta]Unified Memory System Tools Demo (Extended Basics)[/bold magenta]",
+            "[bold magenta]Unified Memory System Tools Demo (Extended)[/bold magenta]",
             style="white",
         )
     )
@@ -1055,6 +1366,7 @@ async def main():
     artifact_ids = {}
     thought_ids = {}  # Store chain ID
     mem_ids = {}
+    state_ids = {}  # Store state ID
 
     try:
         await setup_demo_environment()
@@ -1063,11 +1375,11 @@ async def main():
         wf_id = await demonstrate_basic_workflows()
         if wf_id:
             wf_ids["main_wf_id"] = wf_id
+        else:
+            raise RuntimeError("Workflow creation failed, cannot continue demo.")
 
         action_ids = await demonstrate_basic_actions(wf_ids.get("main_wf_id"))
-
         await demonstrate_action_dependencies(wf_ids.get("main_wf_id"), action_ids)
-
         artifact_ids = await demonstrate_artifacts(wf_ids.get("main_wf_id"), action_ids)
 
         chain_id = await demonstrate_thoughts_and_linking(
@@ -1076,79 +1388,34 @@ async def main():
         if chain_id:
             thought_ids["main_chain_id"] = chain_id
 
-        mem_ids = await demonstrate_memory_operations(wf_ids.get("main_wf_id"), action_ids, thought_ids) # Pass thought_ids dict
+        mem_ids = await demonstrate_memory_operations(
+            wf_ids.get("main_wf_id"), action_ids, thought_ids
+        )  # Pass thought_ids dict
+        await demonstrate_embedding_and_search(wf_ids.get("main_wf_id"), mem_ids, thought_ids)
 
-        await demonstrate_embedding_and_search(wf_ids.get("main_wf_id"), mem_ids, thought_ids) # Pass thought_ids dictionary here
-
- # --- Retrieve necessary IDs from previous steps ---
-        # Ensure these dictionaries are populated from previous steps
-        main_wf_id = wf_ids.get("main_wf_id")
-        main_chain_id = thought_ids.get("main_chain_id") # Analysis chain
-        plan_action_id = action_ids.get("action1_id")
-        sim_action_id = action_ids.get("action2_id") # Failed simulation
-        mem1_id = mem_ids.get("mem1_id") # Plan summary
-        mem2_id = mem_ids.get("mem2_id") # Simulation error
-        mem3_id = mem_ids.get("mem3_id") # Timeout fact
-        mem4_id = mem_ids.get("mem4_id") # Next step plan
-        mem5_id = mem_ids.get("mem5_id") # Hypothesis reasoning step
-
-        # Need the ID of the hypothesis thought itself
-        hypothesis_thought_id = None
-        if mem5_id and main_wf_id:
-            # Get the memory details to find the linked thought ID
-            mem5_details = await safe_tool_call(
-                get_memory_by_id,
-                {"memory_id": mem5_id},
-                f"Get Memory 5 Details ({_fmt_id(mem5_id)}) for Thought ID",
-                suppress_output=True # We just need the data
-            )
-            if mem5_details and mem5_details.get("success"):
-                # --- FIX: Use the correct key 'thought_id' from the DB row ---
-                hypothesis_thought_id = mem5_details.get("thought_id")
-                # --- END FIX ---
-                if hypothesis_thought_id:
-                     console.print(f"[cyan]   -> Retrieved Hypothesis Thought ID: {_fmt_id(hypothesis_thought_id)}[/cyan]")
-                else:
-                    # Update warning slightly for clarity
-                    console.print("[yellow]   -> Could not retrieve hypothesis thought ID from Memory 5 details (key 'thought_id' was missing or None).[/yellow]")
-
-        # --- 8. Demonstrate Cognitive State & Working Memory ---
-        # Check if we have enough data to proceed
-        state_ids = {} # To store the state ID created
-        if main_wf_id and mem1_id and mem2_id and mem3_id and mem4_id and plan_action_id and hypothesis_thought_id:
-             await demonstrate_state_and_working_memory(
-                 wf_id=main_wf_id,
-                 mem_ids_dict=mem_ids, # Pass the whole dict
-                 action_ids_dict=action_ids,
-                 thought_ids_list=[hypothesis_thought_id], # Pass the specific goal/hypothesis thought
-                 state_ids_dict=state_ids # Pass dict to store the created state_id
-             )
-        else:
-            console.print(
-                Rule(
-                    "[bold yellow]8. Cognitive State & Working Memory Skipped[/bold yellow]",
-                    style="yellow",
-                )
-            )
-            console.print("[yellow]Skipping state/working memory demo: Missing required IDs from previous steps.[/yellow]")
-
-
-        # --- Placeholder for remaining ADVANCED demos ---
-        console.print(
-            Rule(
-                "[bold yellow]Advanced Demo Sections (Meta-Cognition, Maintenance, Reporting) Skipped[/bold yellow]",
-                style="yellow",
-            )
+        # State/Working Memory depends on previous steps creating IDs
+        # Pass all collected ID dictionaries
+        await demonstrate_state_and_working_memory(
+            wf_id=wf_ids["main_wf_id"],
+            mem_ids_dict=mem_ids,
+            action_ids_dict=action_ids,
+            thought_ids_dict=thought_ids,  # Contains chain_id and potentially specific thought IDs if needed later
+            state_ids_dict=state_ids,  # Pass dict to store the created state_id
         )
-        # await demonstrate_metacognition(...)
-        # await demonstrate_maintenance_and_stats(...)
-        # await demonstrate_reporting_and_viz(...)
+
+        # --- Run NEW Advanced Demo Sections ---
+        await demonstrate_metacognition(wf_ids["main_wf_id"], mem_ids, state_ids)
+        await demonstrate_maintenance_and_stats(wf_ids["main_wf_id"])
+        await demonstrate_reporting_and_viz(
+            wf_ids["main_wf_id"], thought_ids.get("main_chain_id"), mem_ids
+        )
+        # --- End NEW Sections ---
 
         logger.success(
-            "Extended Basic Unified Memory System Demo completed successfully!",
+            "Unified Memory System Demo completed successfully!",
             emoji_key="complete",
         )
-        console.print(Rule("[bold green]Extended Basic Demo Finished[/bold green]", style="green"))
+        console.print(Rule("[bold green]Demo Finished[/bold green]", style="green"))
 
     except Exception as e:
         logger.critical(f"Demo crashed unexpectedly: {str(e)}", emoji_key="critical", exc_info=True)
