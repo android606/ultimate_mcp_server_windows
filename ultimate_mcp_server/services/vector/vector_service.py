@@ -569,27 +569,25 @@ class VectorCollection:
         n_results: int = 10,
         where: Optional[Dict[str, Any]] = None,
         where_document: Optional[Dict[str, Any]] = None,
-        include: Optional[List[str]] = None,
-        embedding_model: Optional[str] = None
+        include: Optional[List[str]] = None
     ) -> Dict[str, List[Any]]:
         """Query the collection with text queries (compatibility with ChromaDB).
-        
+
         Args:
             query_texts: List of query texts
             n_results: Number of results to return
             where: Optional metadata filter
             where_document: Optional document content filter
             include: Optional list of fields to include
-            embedding_model: Optional embedding model name to use for generating query embeddings
-            
+
         Returns:
             Dictionary with results in ChromaDB format
         """
         logger.debug(f"DEBUG VectorCollection.query: query_texts={query_texts}, n_results={n_results}")
         logger.debug(f"DEBUG VectorCollection.query: where={where}, where_document={where_document}")
-        logger.debug(f"DEBUG VectorCollection.query: include={include}, embedding_model={embedding_model}")
+        logger.debug(f"DEBUG VectorCollection.query: include={include}")
         logger.debug(f"DEBUG VectorCollection.query: Collection has {len(self.vectors)} vectors and {len(self.ids)} IDs")
-        
+
         # Initialize results
         results = {
             "ids": [],
@@ -598,18 +596,52 @@ class VectorCollection:
             "distances": [],
             "embeddings": []
         }
-        
+
         # Process each query
         for query_text in query_texts:
-            # Get embedding using the async embedding service with the specified model
-            logger.debug(f"DEBUG VectorCollection.query: Getting embedding for '{query_text}' using model: {embedding_model or 'default'}")
-            query_embedding = await self.embedding_service.get_embedding(query_text, model=embedding_model)
-            logger.debug(f"DEBUG VectorCollection.query: Embedding shape: {len(query_embedding)}")
-            
+            # Get embedding using the async embedding service (which uses its configured model)
+            logger.debug(f"DEBUG VectorCollection.query: Getting embedding for '{query_text}' using service model: {self.embedding_service.model_name}")
+            try:
+                query_embeddings_list = await self.embedding_service.create_embeddings([query_text])
+                if not query_embeddings_list or not query_embeddings_list[0]:
+                     logger.error(f"Failed to generate embedding for query: '{query_text[:50]}...'")
+                     # Add empty results for this query and continue
+                     results["ids"].append([])
+                     results["documents"].append([])
+                     results["metadatas"].append([])
+                     results["distances"].append([])
+                     if "embeddings" in (include or []):
+                         results["embeddings"].append([])
+                     continue # Skip to next query_text
+                query_embedding = np.array(query_embeddings_list[0], dtype=np.float32)
+                if query_embedding.size == 0:
+                     logger.warning(f"Generated query embedding is empty for: '{query_text[:50]}...'. Skipping search for this query.")
+                     # Add empty results for this query and continue
+                     results["ids"].append([])
+                     results["documents"].append([])
+                     results["metadatas"].append([])
+                     results["distances"].append([])
+                     if "embeddings" in (include or []):
+                         results["embeddings"].append([])
+                     continue # Skip to next query_text
+
+            except Exception as embed_err:
+                 logger.error(f"Error generating embedding for query '{query_text[:50]}...': {embed_err}", exc_info=True)
+                 # Add empty results for this query and continue
+                 results["ids"].append([])
+                 results["documents"].append([])
+                 results["metadatas"].append([])
+                 results["distances"].append([])
+                 if "embeddings" in (include or []):
+                     results["embeddings"].append([])
+                 continue # Skip to next query_text
+
+            logger.debug(f"DEBUG VectorCollection.query: Embedding shape: {query_embedding.shape}")
+
             # Search with the embedding
             logger.debug(f"Searching for query text: '{query_text}' in collection '{self.name}'")
             search_results = self.search(
-                query_vector=query_embedding,
+                query_vector=query_embedding, # Use the generated embedding
                 top_k=n_results,
                 filter=where,
                 similarity_threshold=0.0  # Set to 0 to get all results for debugging
@@ -623,62 +655,48 @@ class VectorCollection:
             metadatas = []
             distances = []
             embeddings = []
-            
+
             for i, item in enumerate(search_results):
                 ids.append(item["id"])
-                
-                # Extract document from metadata
+
+                # Extract document from metadata (keep existing robust logic)
                 metadata = item.get("metadata", {})
                 doc = ""
-                
-                # Try different known keys for document content
                 if "text" in metadata:
                     doc = metadata["text"]
-                    logger.debug(f"DEBUG VectorCollection.query: Found document in 'text' field, length: {len(doc)}")
                 elif "document" in metadata:
                     doc = metadata["document"]
-                    logger.debug(f"DEBUG VectorCollection.query: Found document in 'document' field, length: {len(doc)}")
                 elif "content" in metadata:
                     doc = metadata["content"]
-                    logger.debug(f"DEBUG VectorCollection.query: Found document in 'content' field, length: {len(doc)}")
-                
-                # If still empty, check if metadata itself is the document content
                 if not doc and isinstance(metadata, str):
                     doc = metadata
-                    logger.debug(f"DEBUG VectorCollection.query: Using metadata itself as document, length: {len(doc)}")
-                
+
                 # Apply document content filter if specified
                 if where_document and where_document.get("$contains"):
                     filter_text = where_document["$contains"]
                     if filter_text not in doc:
                         logger.debug(f"DEBUG VectorCollection.query: Skipping doc {i} - doesn't contain filter text")
                         continue
-                
+
                 logger.debug(f"Result {i+1}: id={item['id']}, similarity={item.get('similarity', 0.0):.4f}, doc_length={len(doc)}")
-                
-                # Add the document and metadata to results
+
                 documents.append(doc)
                 metadatas.append(metadata)
-                
-                # Convert similarity to distance (0 = exact match)
                 distance = 1.0 - item.get("similarity", 0.0)
                 distances.append(distance)
-                
-                # Include embedding if requested
                 if "embeddings" in (include or []):
                     embeddings.append(item.get("vector", []))
-            
-            # Add to results
+
+            # Add results for the current query_text
             results["ids"].append(ids)
             results["documents"].append(documents)
             results["metadatas"].append(metadatas)
             results["distances"].append(distances)
-            
             if "embeddings" in (include or []):
                 results["embeddings"].append(embeddings)
-            
-            logger.debug(f"DEBUG VectorCollection.query: Final formatted results - {len(documents)} documents")
-            
+
+            logger.debug(f"DEBUG VectorCollection.query: Final formatted results for this query - {len(documents)} documents")
+
         return results
 
 
@@ -859,13 +877,13 @@ class VectorDatabaseService:
                 await self.delete_collection(name)
                 logger.debug(f"Deleted existing collection '{name}' for overwrite")
                 
-                # If using ChromaDB and overwrite is True, also try to reset the client
-                if self.use_chromadb and self.chroma_client:
-                    await self._reset_chroma_client()
-                    logger.debug("Reset ChromaDB client before creating new collection")
+                # # If using ChromaDB and overwrite is True, also try to reset the client
+                # if self.use_chromadb and self.chroma_client:
+                #     await self._reset_chroma_client()
+                #     logger.debug("Reset ChromaDB client before creating new collection")
                 
                 # Force a delay to ensure deletions complete
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.5)
                 
             except Exception as e:
                 logger.debug(f"Error during collection cleanup for overwrite: {str(e)}")
