@@ -21,13 +21,6 @@ from ultimate_mcp_server.tools.document_conversion_and_processing import (
 )
 from ultimate_mcp_server.tools.entity_relation_graph import extract_entity_graph
 from ultimate_mcp_server.tools.extraction import extract_json
-from ultimate_mcp_server.tools.ocr_tools import (
-    analyze_pdf_structure,
-    batch_process_documents,
-    enhance_ocr_text,
-    extract_text_from_pdf,
-    process_image_ocr,
-)
 from ultimate_mcp_server.tools.rag import (
     add_documents,
     create_knowledge_base,
@@ -800,12 +793,6 @@ async def execute_optimized_workflow(
         "generate_with_rag": generate_with_rag,
         # Classification tools
         "text_classification": text_classification,
-        # OCR tools
-        "extract_text_from_pdf": extract_text_from_pdf,
-        "process_image_ocr": process_image_ocr,
-        "enhance_ocr_text": enhance_ocr_text, 
-        "analyze_pdf_structure": analyze_pdf_structure,
-        "batch_process_documents": batch_process_documents,
         
         # Merge Meta API tools
         **meta_api_tools,

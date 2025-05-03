@@ -74,10 +74,12 @@ TOOL_TO_EXAMPLE_MAP: Dict[str, str] = {
     "list_models": "multi_provider_demo.py",
     
     # Document tools
-    "summarize_document": "document_processing.py",
-    "extract_entities": "document_processing.py",
-    "chunk_document": "document_processing.py",
-    "process_document_batch": "document_processing.py",
+    "summarize_document": "document_conversion_and_processing_demo.py",
+    "extract_entities": "document_conversion_and_processing_demo.py",
+    "chunk_document": "document_conversion_and_processing_demo.py",
+    "process_document_batch": "document_conversion_and_processing_demo.py",
+    "extract_text_from_pdf": "document_conversion_and_processing_demo.py",
+    "process_image_ocr": "document_conversion_and_processing_demo.py",
     
     # Extraction tools
     "extract_json": "advanced_extraction_demo.py",
@@ -113,10 +115,7 @@ TOOL_TO_EXAMPLE_MAP: Dict[str, str] = {
     "list_directory": "filesystem_operations_demo.py",
     "search_files": "filesystem_operations_demo.py",
     
-    # OCR tools
-    "extract_text_from_pdf": "ocr_tools.py",
-    "process_image_ocr": "ocr_tools.py",
-    
+
     # HTML tools
     "clean_and_format_text_as_markdown": "html_to_markdown_demo.py",
     
@@ -146,8 +145,8 @@ EXAMPLE_CATEGORIES: Dict[str, List[str]] = {
         "multi_provider_demo.py",
         "grok_integration_demo.py",
     ],
-    "document-processing": [
-        "document_processing.py",
+    "document-conversion-and-processing": [
+        "document_conversion_and_processing_demo.py",
         "advanced_extraction_demo.py",
     ],
     "search-and-retrieval": [
