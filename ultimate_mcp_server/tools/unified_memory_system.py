@@ -36,7 +36,6 @@ from pygments.formatters import HtmlFormatter
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine_similarity
 
 from ultimate_mcp_server.config import get_config
-
 from ultimate_mcp_server.constants import (
     Provider as LLMGatewayProvider,  # To use provider constants
 )
@@ -4384,7 +4383,7 @@ async def hybrid_search_memories(
             if not combined_scores:
                 logger.info("Hybrid search yielded no candidates.")
             else:
-                for mem_id, scores in combined_scores.items():
+                for _mem_id, scores in combined_scores.items():
                     scores["hybrid"] = (scores["semantic"] * norm_sem_weight) + (
                         scores["keyword"] * norm_key_weight
                     )

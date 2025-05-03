@@ -229,3 +229,4 @@ storage/smart_browser_scratch/autopilot_demo/
 storage/smart_browser_internal/*.db
 storage/smart_browser_internal/locator_cache.db
 unified_agent_memory.db
+advanced_demo_memory.db
