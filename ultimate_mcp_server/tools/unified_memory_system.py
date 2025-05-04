@@ -4340,12 +4340,21 @@ async def hybrid_search_memories(
                     tags_json_kw = json.dumps([str(tag).lower() for tag in tags])
                     where_clauses_kw.append("json_contains_all(m.tags, ?)")
                     params_kw.append(tags_json_kw)
-                if query:
-                    if "memory_fts" not in joins_kw:
+                if query: # Check if the original query parameter exists
+                    if "memory_fts" not in joins_kw: # Only add join if FTS search is possible
                         joins_kw += " JOIN memory_fts fts ON m.rowid = fts.rowid"
-                    where_clauses_kw.append("fts.memory_fts MATCH ?")
-                    fts_query_term_kw = " OR ".join(query.strip().split())
-                    fts_params_kw.append(fts_query_term_kw)
+                    # Sanitize the query text for FTS MATCH (remove non-alphanumeric chars except spaces)
+                    sanitized_query_for_fts = re.sub(r"[^a-zA-Z0-9\s]", "", query)
+                    # Split sanitized query into terms, filter out empty strings
+                    fts_terms = [term for term in sanitized_query_for_fts.strip().split() if term]
+                    if fts_terms: # Only add MATCH clause if there are terms left after sanitization
+                        fts_query_term_kw = " OR ".join(fts_terms)
+                        where_clauses_kw.append("fts.memory_fts MATCH ?")
+                        fts_params_kw.append(fts_query_term_kw)
+                    else:
+                        # Log if sanitization removed all terms (optional, but helpful)
+                        logger.debug(f"Query '{query[:50]}...' resulted in no valid FTS terms after sanitization.")
+                        # Important: DO NOT add the "fts.memory_fts MATCH ?" clause if fts_terms is empty
 
                 where_sql_kw = " WHERE " + " AND ".join(where_clauses_kw)
                 final_query_kw = data_query_kw + joins_kw + where_sql_kw
