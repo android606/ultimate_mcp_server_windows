@@ -657,7 +657,7 @@ async def demonstrate_domain_extraction(
         domain: TextDomain,
         sample_file: str,
         strategy: GraphStrategy,
-        model: str = "claude-3-5-sonnet-20240620", # Default model for demos
+        model: str = "claude-3-5-haiku-20241022", # Default model for demos
         provider: str = Provider.ANTHROPIC.value
     ):
     """Helper function to demonstrate extraction for a specific domain."""

@@ -267,7 +267,7 @@ DEMO_EXPECTATIONS: Dict[str, Dict[str, Any]] = {
             r"Simulating usage with \d+ providers\." # Specific simulation statement
         ]
     },
-    "basic_completion.py": {
+    "basic_completion_demo.py": {
         "expected_exit_code": 0,
         "allowed_stderr_patterns": [
             # SPECIFIC provider availability issues - expected when API keys aren't configured

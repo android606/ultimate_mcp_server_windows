@@ -134,6 +134,12 @@ class GrokProvider(BaseProvider):
         if tool_choice:
             params["tool_choice"] = tool_choice
             
+        # Handle JSON mode
+        json_mode = kwargs.pop("json_mode", False)
+        if json_mode:
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for Grok")
+            
         # Add reasoning_effort for mini models if specified
         if reasoning_effort:
             params["reasoning_effort"] = reasoning_effort
@@ -145,7 +151,8 @@ class GrokProvider(BaseProvider):
         self.logger.info(
             f"Generating completion with Grok model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=len(prompt),
+            json_mode_requested=json_mode
         )
         
         try:
@@ -276,6 +283,12 @@ class GrokProvider(BaseProvider):
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
             
+        # Handle JSON mode
+        json_mode = kwargs.pop("json_mode", False)
+        if json_mode:
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for Grok streaming")
+            
         # Add reasoning_effort for mini models if specified
         if reasoning_effort:
             params["reasoning_effort"] = reasoning_effort
@@ -287,7 +300,8 @@ class GrokProvider(BaseProvider):
         self.logger.info(
             f"Generating streaming completion with Grok model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=len(prompt),
+            json_mode_requested=json_mode
         )
         
         start_time = time.time()

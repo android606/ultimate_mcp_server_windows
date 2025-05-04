@@ -65,15 +65,25 @@ from .filesystem import (
     search_files,
     write_file,
 )
+from .local_text_tools import (
+    get_workspace_dir,
+    run_awk,
+    run_awk_stream,
+    run_jq,
+    run_jq_stream,
+    run_ripgrep,
+    run_ripgrep_stream,
+    run_sed,
+    run_sed_stream,
+)
 from .marqo_fused_search import marqo_fused_search
 from .meta_api_tool import register_api_meta_tools
-
-# from .optimization import (
-#     compare_models,
-#     estimate_cost,
-#     execute_optimized_workflow,
-#     recommend_model,
-# )
+from .optimization import (
+    compare_models,
+    estimate_cost,
+    execute_optimized_workflow,
+    recommend_model,
+)
 from .provider import get_provider_status, list_models
 from .python_sandbox import (
     execute_python,
@@ -191,11 +201,11 @@ __all__ = [
     "text_classification",
 
     # Cost optimization tools
-    # "estimate_cost",
-    # "compare_models",
-    # "recommend_model",
-    # "execute_optimized_workflow",
-    # "refine_tool_documentation",
+    "estimate_cost",
+    "compare_models",
+    "recommend_model",
+    "execute_optimized_workflow",
+    "refine_tool_documentation",
     
     # Filesystem tools
     "read_file",
@@ -211,6 +221,17 @@ __all__ = [
     "list_allowed_directories",
     "get_unique_filepath",
 
+    # Local Text Tools
+    "run_ripgrep",
+    "run_awk",
+    "run_sed",
+    "run_jq",
+    "run_ripgrep_stream",
+    "run_awk_stream",
+    "run_sed_stream",
+    "run_jq_stream",
+    "get_workspace_dir",
+
     # SQL databases tools
     "manage_database",
     "execute_sql",
@@ -221,7 +242,7 @@ __all__ = [
     "execute_python",
     "repl_python",
 
-     # Smart Browser Standalone Functions
+    # Smart Browser Standalone Functions
     "click",
     "browse",
     "type_text",

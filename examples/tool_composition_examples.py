@@ -18,7 +18,7 @@ from ultimate_mcp_server.tools.document_conversion_and_processing import (
     summarize_document_standalone,
 )
 from ultimate_mcp_server.tools.filesystem import delete_file, read_file, write_file
-from ultimate_mcp_server.tools.use_local_text_tools import run_sed
+from ultimate_mcp_server.tools.local_text_tools import run_sed
 from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger("tool_composition_examples")

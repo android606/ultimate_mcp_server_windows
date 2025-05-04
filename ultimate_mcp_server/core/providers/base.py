@@ -109,8 +109,13 @@ class ModelResponse:
         if not self.model or not self.input_tokens or not self.output_tokens:
             return 0.0
             
+        # Extract model name without provider prefix (e.g., strip "openai/" from "openai/gpt-4o")
+        model_name = self.model
+        if "/" in model_name:
+            model_name = model_name.split("/", 1)[1]
+            
         # Get cost per token for this model
-        model_costs = COST_PER_MILLION_TOKENS.get(self.model, None)
+        model_costs = COST_PER_MILLION_TOKENS.get(model_name, None)
         if not model_costs:
             # If model not found, use a default estimation
             model_costs = {"input": 0.5, "output": 1.5}

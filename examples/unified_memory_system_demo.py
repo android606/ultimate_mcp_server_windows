@@ -1,13 +1,10 @@
 #!/usr/bin/env python
 import asyncio
-import json
-import os
 import sys
 import time
 import traceback
-from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 def _fmt_id(val: Any, length: int = 8) -> str:
@@ -55,84 +52,81 @@ except Exception as e:
     print(f"Error setting up sys.path: {e}", file=sys.stderr)
     sys.exit(1)
 
-from rich import box
-from rich.console import Console
-from rich.markup import escape
-from rich.panel import Panel
-from rich.pretty import pretty_repr
-from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.table import Table
-from rich.traceback import install as install_rich_traceback
+from rich.console import Console  # noqa: E402
+from rich.markup import escape  # noqa: E402 
+from rich.panel import Panel  # noqa: E402
+from rich.pretty import pretty_repr  # noqa: E402
+from rich.rule import Rule  # noqa: E402
+from rich.traceback import install as install_rich_traceback  # noqa: E402
+
+from ultimate_mcp_server.config import get_config  # noqa: E402
 
 # Tools and related components from unified_memory
-from ultimate_mcp_server.tools.unified_memory_system import (
-    # Initialization
-    initialize_memory_system,
-    # Workflow
-    create_workflow,
-    get_workflow_details,
-    list_workflows,
-    update_workflow_status,
-    # Action
-    record_action_start,
-    record_action_completion,
-    get_recent_actions,
-    get_action_details,
-    # Action Dependency Tools
-    add_action_dependency,
-    get_action_dependencies,
-    # Artifacts
-    record_artifact,
-    get_artifacts,
-    get_artifact_by_id,
-    # Thought
-    create_thought_chain,
-    record_thought,
-    get_thought_chain,
-    # Core Memory
-    store_memory,
-    get_memory_by_id,
-    update_memory,
-    query_memories,
-    create_memory_link,
-    get_linked_memories,
-    search_semantic_memories,
-    hybrid_search_memories,
-    # Working Memory / State
-    get_working_memory,
-    save_cognitive_state,
-    load_cognitive_state,
-    focus_memory,
-    optimize_working_memory,
+from ultimate_mcp_server.tools.unified_memory_system import (  # noqa: E402
+    ActionStatus,
+    ActionType,
+    ArtifactType,
     # Utilities/Enums/Exceptions needed
     DBConnection,
+    LinkType,
     MemoryLevel,
     MemoryType,
-    ActionType,
-    ActionStatus,
-    WorkflowStatus,
     ThoughtType,
-    ArtifactType,
-    LinkType,
     ToolError,
     ToolInputError,
-    get_workflow_context,
+    # Action Dependency Tools
+    add_action_dependency,
     auto_update_focus,
-    promote_memory_level,
-    consolidate_memories,
-    generate_reflection,
-    summarize_text,
-    delete_expired_memories,
     compute_memory_statistics,
+    consolidate_memories,
+    create_memory_link,
+    # Thought
+    create_thought_chain,
+    # Workflow
+    create_workflow,
+    delete_expired_memories,
+    focus_memory,
+    generate_reflection,
     generate_workflow_report,
-    visualize_reasoning_chain,
+    get_action_dependencies,
+    get_action_details,
+    get_artifact_by_id,
+    get_artifacts,
+    get_linked_memories,
+    get_memory_by_id,
+    get_recent_actions,
+    get_thought_chain,
+    get_workflow_context,
+    get_workflow_details,
+    # Working Memory / State
+    get_working_memory,
+    hybrid_search_memories,
+    # Initialization
+    initialize_memory_system,
+    list_workflows,
+    load_cognitive_state,
+    optimize_working_memory,
+    promote_memory_level,
+    query_memories,
+    record_action_completion,
+    # Action
+    record_action_start,
+    # Artifacts
+    record_artifact,
+    record_thought,
+    save_cognitive_state,
+    search_semantic_memories,
+    # Core Memory
+    store_memory,
+    summarize_text,
+    update_memory,
+    update_workflow_status,
     visualize_memory_network,
+    visualize_reasoning_chain,
 )
 
 # Utilities from the project
-from ultimate_mcp_server.utils import get_logger
-from ultimate_mcp_server.config import get_config
+from ultimate_mcp_server.utils import get_logger  # noqa: E402
 
 console = Console()
 logger = get_logger("demo.unified_memory")
@@ -607,7 +601,7 @@ async def demonstrate_thoughts_and_linking(
     if not wf_id:
         console.print("[yellow]Skipping thought demo: No valid workflow ID provided.[/yellow]")
         return None
-    action1_id = action_ids.get("action1_id")
+    action1_id = action_ids.get("action1_id")  # noqa: F841
     action2_id = action_ids.get("action2_id") # Might be None
     art1_id = artifact_ids.get("art1_id") # Might be None if artifact demo failed
 
@@ -698,8 +692,8 @@ async def demonstrate_memory_operations(wf_id: Optional[str], action_ids: Dict, 
 
     mem_ids = {}
 
-    action1_id = action_ids.get("action1_id") # Might be None
-    action2_id = action_ids.get("action2_id") # Might be None
+    action1_id = action_ids.get("action1_id") # Might be None  # noqa: F841
+    action2_id = action_ids.get("action2_id") # Might be None  # noqa: F841
 
 
     # Store Memory 1 (Related to Planning Action)
@@ -868,7 +862,7 @@ async def demonstrate_embedding_and_search(wf_id: Optional[str], mem_ids: Dict, 
     )
     if not (update_res and update_res.get("success") and update_res.get("embedding_regenerated")):
         console.print(
-            f"[red]   -> Failed to generate embedding for Memory 2. Semantic/Hybrid search may not work as expected.[/red]"
+            "[red]   -> Failed to generate embedding for Memory 2. Semantic/Hybrid search may not work as expected.[/red]"
         )
 
     # 2. Store a new memory WITH embedding generation enabled
@@ -903,7 +897,7 @@ async def demonstrate_embedding_and_search(wf_id: Optional[str], mem_ids: Dict, 
             )
         else:
             console.print(
-                f"[yellow]   -> Warning: Embedding ID missing for Memory 4. Embedding generation likely failed.[/yellow]"
+                "[yellow]   -> Warning: Embedding ID missing for Memory 4. Embedding generation likely failed.[/yellow]"
             )
             console.print("[dim]      (Semantic/Hybrid search results may be limited.)[/dim]")
 
@@ -955,7 +949,7 @@ async def demonstrate_embedding_and_search(wf_id: Optional[str], mem_ids: Dict, 
         update_res_3 and update_res_3.get("success") and update_res_3.get("embedding_regenerated")
     ):
         console.print(
-            f"[red]   -> Failed to generate embedding for Memory 3. Link suggestion test might fail.[/red]"
+            "[red]   -> Failed to generate embedding for Memory 3. Link suggestion test might fail.[/red]"
         )
 
     # --- Store Memory 5 (Hypothesis) ---
@@ -1007,15 +1001,15 @@ async def demonstrate_embedding_and_search(wf_id: Optional[str], mem_ids: Dict, 
 
         # Check suggestions result
         if mem_res_5 and mem_res_5.get("success") and mem_res_5.get("suggested_links"):
-            console.print(f"[cyan]   -> Link suggestions received for Memory 5:[/]")
+            console.print("[cyan]   -> Link suggestions received for Memory 5:[/]")
             console.print(pretty_repr(mem_res_5["suggested_links"]))
         elif mem_res_5 and mem_res_5.get("success"):
             console.print(
-                f"[dim]   -> No link suggestions returned for Memory 5 (or embedding failed).[/dim]"
+                "[dim]   -> No link suggestions returned for Memory 5 (or embedding failed).[/dim]"
             )
         elif mem_res_5 and not mem_res_5.get("success"):
             console.print(
-                f"[yellow]   -> Failed to store Memory 5, cannot check suggestions.[/yellow]"
+                "[yellow]   -> Failed to store Memory 5, cannot check suggestions.[/yellow]"
             )
     else:
         console.print(
@@ -1037,7 +1031,7 @@ async def demonstrate_state_and_working_memory(
 
     # --- Retrieve necessary IDs from previous steps ---
     main_wf_id = wf_id
-    main_chain_id = thought_ids_dict.get("main_chain_id")
+    main_chain_id = thought_ids_dict.get("main_chain_id")  # noqa: F841
     plan_action_id = action_ids_dict.get("action1_id")
     sim_action_id = action_ids_dict.get("action2_id")
     mem1_id = mem_ids_dict.get("mem1_id")

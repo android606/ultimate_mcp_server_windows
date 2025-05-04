@@ -19,7 +19,6 @@ from ultimate_mcp_server.tools.document_conversion_and_processing import (
     chunk_document,
     summarize_document,
 )
-from ultimate_mcp_server.tools.entity_relation_graph import extract_entity_graph
 from ultimate_mcp_server.tools.extraction import extract_json
 from ultimate_mcp_server.tools.rag import (
     add_documents,
@@ -776,6 +775,13 @@ async def execute_optimized_workflow(
         logger.warning("APIMetaTool not found (meta_api_tool.py). Meta API tools cannot be used in workflows.")
         meta_api_tools = {}
         
+    # Import extract_entity_graph lazily to avoid circular imports
+    try:
+        from ultimate_mcp_server.tools.entity_relation_graph import extract_entity_graph
+    except ImportError:
+        logger.warning("entity_relation_graph module not found. extract_entity_graph will not be available in workflows.")
+        extract_entity_graph = None
+        
     tool_functions = {
         # Core Gateway Tools
         "estimate_cost": estimate_cost,
@@ -785,7 +791,8 @@ async def execute_optimized_workflow(
         "chunk_document": chunk_document,
         "summarize_document": summarize_document,
         "extract_json": extract_json,
-        "extract_entity_graph": extract_entity_graph,
+        # Add extract_entity_graph conditionally
+        **({"extract_entity_graph": extract_entity_graph} if extract_entity_graph else {}),
         # RAG Tools
         "create_knowledge_base": create_knowledge_base,
         "add_documents": add_documents,

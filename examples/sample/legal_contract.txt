@@ -1,4 +1,4 @@
-MERGER AND ACQUISITION AGREEMENT
+## MERGER AND ACQUISITION AGREEMENT
 
 This MERGER AND ACQUISITION AGREEMENT (the "Agreement") is made and entered into as of June 15, 2025 (the "Effective Date"), by and among:
 
@@ -10,7 +10,7 @@ and
 
 THE STOCKHOLDERS OF TARGET COMPANY identified in Exhibit A attached hereto (collectively, the "Stockholders").
 
-RECITALS
+## RECITALS
 
 WHEREAS, Acquirer is a public technology company specializing in artificial intelligence software solutions;
 
@@ -36,64 +36,247 @@ WHEREAS, the Stockholders desire to sell their shares to Acquirer on the terms a
 
 NOW, THEREFORE, in consideration of the mutual covenants, agreements, representations, and warranties contained in this Agreement, and for other good and valuable consideration, the receipt and sufficiency of which are hereby acknowledged, the parties agree as follows:
 
-ARTICLE I
-THE ACQUISITION
+## ARTICLE I
+## THE ACQUISITION
 
-1.1 The Acquisition. Subject to the terms and conditions of this Agreement, at the Closing (as defined in Section 1.5), Acquirer shall acquire from the Stockholders, and the Stockholders shall sell, transfer, assign, convey and deliver to Acquirer, all issued and outstanding shares of Target Company.
+1.1 **The Acquisition**. Subject to the terms and conditions of this Agreement, at the Closing (as defined in Section 1.5), Acquirer shall acquire from the Stockholders, and the Stockholders shall sell, transfer, assign, convey and deliver to Acquirer, all issued and outstanding shares of Target Company.
 
-1.2 Consideration. The total consideration for the Acquisition shall be:
+1.2 **Consideration**. The total consideration for the Acquisition shall be:
    (a) Cash payment of $500,000,000 USD (the "Cash Consideration"); and
    (b) 1,000,000 shares of Acquirer common stock valued at $250,000,000 USD (the "Stock Consideration").
 
-1.3 Allocation of Consideration. The Cash Consideration and Stock Consideration shall be allocated among the Stockholders in proportion to their ownership percentages as set forth in Exhibit A.
+1.3 **Allocation of Consideration**. The Cash Consideration and Stock Consideration shall be allocated among the Stockholders in proportion to their ownership percentages as set forth in Exhibit A.
 
-1.4 Escrow. Ten percent (10%) of both the Cash Consideration and Stock Consideration shall be placed in escrow with First National Trust Company (the "Escrow Agent") for a period of eighteen (18) months following the Closing Date to secure indemnification obligations of the Stockholders.
+1.4 **Escrow**. Ten percent (10%) of both the Cash Consideration and Stock Consideration shall be placed in escrow with First National Trust Company (the "Escrow Agent") for a period of eighteen (18) months following the Closing Date to secure indemnification obligations of the Stockholders.
 
-1.5 Closing. The closing of the Acquisition (the "Closing") shall take place at the offices of Legal Partners LLP at 800 Corporate Drive, San Francisco, CA, on July 30, 2025 (the "Closing Date"), or at such other time, date, and location as the parties may mutually agree in writing.
+1.5 **Closing**. The closing of the Acquisition (the "Closing") shall take place at the offices of Legal Partners LLP at 800 Corporate Drive, San Francisco, CA, on July 30, 2025 (the "Closing Date"), or at such other time, date, and location as the parties may mutually agree in writing.
 
-ARTICLE II
-REPRESENTATIONS AND WARRANTIES
+1.6 **Payment Mechanics**. The Cash Consideration shall be paid by wire transfer of immediately available funds to accounts designated by each Stockholder in writing at least five (5) business days prior to the Closing Date. Stock certificates representing the Stock Consideration shall be issued and delivered to each Stockholder at Closing, with appropriate restrictive legends.
 
-2.1 Representations and Warranties of Target Company and Stockholders. Target Company and each Stockholder, jointly and severally, represent and warrant to Acquirer as set forth in Exhibit B.
+1.7 **Tax Treatment**. The parties intend that the Acquisition shall qualify as a reorganization within the meaning of Section 368(a) of the Internal Revenue Code of 1986, as amended. The parties shall not take any action that would reasonably be expected to cause the Acquisition to fail to qualify as such a reorganization.
 
-2.2 Representations and Warranties of Acquirer. Acquirer represents and warrants to Target Company and the Stockholders as set forth in Exhibit C.
+1.8 **Withholding**. Acquirer shall be entitled to deduct and withhold from any consideration payable pursuant to this Agreement such amounts as are required to be deducted and withheld under applicable tax law. Any amounts so deducted and withheld shall be treated for all purposes of this Agreement as having been paid to the person in respect of which such deduction and withholding was made.
 
-ARTICLE III
-COVENANTS
+## ARTICLE II
+## REPRESENTATIONS AND WARRANTIES
 
-3.1 Operation of Business. From the Effective Date until the Closing Date, Target Company shall continue to operate its business in the ordinary course, consistent with past practice.
+2.1 **Representations and Warranties of Target Company and Stockholders**. Target Company and each Stockholder, jointly and severally, represent and warrant to Acquirer as set forth in Exhibit B.
 
-3.2 Regulatory Approvals. The parties shall cooperate to obtain all necessary regulatory approvals, including filing required notifications with the Federal Trade Commission and the Department of Justice under the Hart-Scott-Rodino Antitrust Improvements Act of 1976.
+2.2 **Representations and Warranties of Acquirer**. Acquirer represents and warrants to Target Company and the Stockholders as set forth in Exhibit C.
 
-3.3 Non-Competition. For a period of three (3) years following the Closing Date, Dr. Wilson and Dr. Rodriguez agree not to engage in any business that directly competes with the quantum computing business of Acquirer.
+2.3 **Survival**. The representations and warranties contained in this Agreement shall survive the Closing for a period of eighteen (18) months; provided, however, that the representations and warranties regarding (i) organization and authority, (ii) capitalization, (iii) taxes, and (iv) intellectual property (collectively, the "Fundamental Representations") shall survive until the expiration of the applicable statute of limitations.
 
-ARTICLE IV
-CONDITIONS TO CLOSING
+2.4 **Disclaimer of Other Representations and Warranties**. EXCEPT FOR THE REPRESENTATIONS AND WARRANTIES EXPRESSLY SET FORTH IN THIS AGREEMENT, NEITHER PARTY MAKES ANY REPRESENTATION OR WARRANTY, EXPRESS OR IMPLIED, AT LAW OR IN EQUITY, IN RESPECT OF THE TRANSACTION CONTEMPLATED HEREBY, AND ANY SUCH OTHER REPRESENTATIONS OR WARRANTIES ARE HEREBY EXPRESSLY DISCLAIMED.
 
-4.1 Conditions to Obligations of All Parties. The obligations of each party to consummate the Acquisition shall be subject to the satisfaction of the following conditions:
+## ARTICLE III
+## COVENANTS
+
+3.1 **Operation of Business**. From the Effective Date until the Closing Date, Target Company shall continue to operate its business in the ordinary course, consistent with past practice.
+
+3.2 **Regulatory Approvals**. The parties shall cooperate to obtain all necessary regulatory approvals, including filing required notifications with the Federal Trade Commission and the Department of Justice under the Hart-Scott-Rodino Antitrust Improvements Act of 1976.
+
+3.3 **Non-Competition**. For a period of three (3) years following the Closing Date, Dr. Wilson and Dr. Rodriguez agree not to engage in any business that directly competes with the quantum computing business of Acquirer.
+
+3.4 **Access to Information**. From the date hereof until the Closing, Target Company shall provide Acquirer and its representatives reasonable access, during normal business hours, to the properties, books, records, employees, and auditors of Target Company for the purpose of completing Acquirer's due diligence investigation, provided that such access does not unreasonably interfere with the normal operations of Target Company.
+
+3.5 **Confidentiality**. Each party acknowledges that it has executed a Confidentiality Agreement dated March 15, 2025 (the "Confidentiality Agreement"), which shall continue in full force and effect in accordance with its terms until the Closing, at which time it shall terminate.
+
+3.6 **Employee Matters**.
+   (a) **Employment Offers**. Prior to the Closing Date, Acquirer shall extend offers of employment to all employees of Target Company who are actively employed as of the Closing Date (the "Continuing Employees"). Such offers shall be contingent upon the Closing and effective as of the Closing Date.
+   
+   (b) **Benefit Plans**. For a period of one (1) year following the Closing Date, Acquirer shall provide to Continuing Employees employee benefits that are substantially comparable in the aggregate to those provided to similarly situated employees of Acquirer.
+   
+   (c) **Service Credit**. For purposes of eligibility, vesting, and determination of level of benefits under the benefit plans of Acquirer providing benefits to Continuing Employees, each Continuing Employee shall be credited with his or her years of service with Target Company to the same extent as such Continuing Employee was entitled immediately prior to the Closing to credit for such service under any similar Target Company benefit plan.
+   
+   (d) **Stock Options**. All outstanding options to purchase Target Company common stock held by Continuing Employees shall be converted at the Closing into options to purchase Acquirer common stock, with appropriate adjustments to the number of shares and exercise price.
+
+3.7 **Public Announcements**. No party shall issue any press release or public announcement concerning this Agreement or the transactions contemplated hereby without obtaining the prior written approval of the other parties, unless disclosure is otherwise required by applicable law or by the applicable rules of any stock exchange.
+
+3.8 **Further Assurances**. Following the Closing, each of the parties shall execute and deliver such additional documents and take such additional actions as may reasonably be necessary to give full effect to the transactions contemplated by this Agreement.
+
+3.9 **Intellectual Property Protection**. Prior to the Closing Date, Target Company shall take all commercially reasonable actions necessary to protect, secure, and maintain all intellectual property rights, including filing all necessary patent applications, trademark registrations, and copyright registrations for any proprietary technology or intellectual property developed by Target Company.
+
+3.10 **Integration Planning**. Between the Effective Date and Closing Date, the parties shall establish a joint integration planning committee consisting of three (3) representatives from each party to develop and implement a detailed plan for the integration of Target Company's operations, employees, and technology with Acquirer's existing business.
+
+## ARTICLE IV
+## CONDITIONS TO CLOSING
+
+4.1 **Conditions to Obligations of All Parties**. The obligations of each party to consummate the Acquisition shall be subject to the satisfaction of the following conditions:
    (a) No governmental authority shall have enacted any law or order prohibiting the consummation of the Acquisition;
    (b) All required regulatory approvals shall have been obtained; and
    (c) No litigation shall be pending or threatened seeking to enjoin the Acquisition.
 
-ARTICLE V
-INDEMNIFICATION
+4.2 **Conditions to Obligations of Acquirer**. The obligations of Acquirer to consummate the Acquisition shall be subject to the satisfaction or waiver of the following additional conditions:
+   (a) The representations and warranties of Target Company and the Stockholders shall be true and correct in all material respects as of the Closing Date;
+   (b) Target Company and the Stockholders shall have performed all obligations required to be performed by them prior to the Closing;
+   (c) No Material Adverse Effect (as defined in Exhibit B) shall have occurred with respect to Target Company since the Effective Date;
+   (d) Target Company shall have delivered to Acquirer audited financial statements for the fiscal years ended December 31, 2023 and 2024, and unaudited financial statements for the period ended March 31, 2025;
+   (e) Target Company shall have obtained consent to the Acquisition from third parties under all Material Contracts (as defined in Exhibit B);
+   (f) At least 95% of Key Employees (as defined in Section 8.3) shall have accepted employment offers from Acquirer; and
+   (g) Target Company shall have delivered all closing deliverables set forth in Section 1.5.
 
-5.1 Indemnification by Stockholders. The Stockholders shall indemnify Acquirer against any losses arising from breaches of representations, warranties, or covenants by Target Company or the Stockholders.
+4.3 **Conditions to Obligations of Target Company and Stockholders**. The obligations of Target Company and the Stockholders to consummate the Acquisition shall be subject to the satisfaction or waiver of the following additional conditions:
+   (a) The representations and warranties of Acquirer shall be true and correct in all material respects as of the Closing Date;
+   (b) Acquirer shall have performed all obligations required to be performed by it prior to the Closing;
+   (c) No Material Adverse Effect shall have occurred with respect to Acquirer since the Effective Date;
+   (d) Acquirer shall have delivered all closing deliverables set forth in Section 1.5;
+   (e) The shares of Acquirer common stock to be issued as Stock Consideration shall have been approved for listing on the NASDAQ Global Select Market; and
+   (f) Acquirer shall have obtained all necessary approvals from its stockholders for the issuance of the Stock Consideration.
 
-5.2 Limitation on Liability. The maximum aggregate liability of the Stockholders for indemnification claims shall not exceed the amount held in escrow, except for claims arising from fraud or intentional misrepresentation.
+## ARTICLE V
+## INDEMNIFICATION
 
-ARTICLE VI
-MISCELLANEOUS
+5.1 **Indemnification by Stockholders**. The Stockholders shall indemnify Acquirer against any losses arising from breaches of representations, warranties, or covenants by Target Company or the Stockholders.
 
-6.1 Governing Law. This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without giving effect to any choice of law principles.
+5.2 **Limitation on Liability**. The maximum aggregate liability of the Stockholders for indemnification claims shall not exceed the amount held in escrow, except for claims arising from fraud or intentional misrepresentation.
 
-6.2 Dispute Resolution. Any disputes arising out of or relating to this Agreement shall be resolved through arbitration administered by the American Arbitration Association in San Francisco, California.
+5.3 **Indemnification by Acquirer**. Acquirer shall indemnify the Stockholders against any losses arising from breaches of representations, warranties, or covenants by Acquirer.
 
-6.3 Notices. All notices required under this Agreement shall be in writing and sent to the addresses listed in Exhibit D.
+5.4 **Indemnification Procedures**.
+   (a) **Direct Claims**. Any claim for indemnification hereunder shall be made by delivering a written notice describing in reasonable detail the nature and basis of such claim (a "Claim Notice") to the Indemnifying Party.
+   
+   (b) **Third-Party Claims**. In the event of a claim made by a third party against an Indemnified Party (a "Third-Party Claim"), the Indemnified Party shall promptly deliver a Claim Notice to the Indemnifying Party. The Indemnifying Party shall have the right to control the defense of such Third-Party Claim with counsel of its choice, provided that the Indemnified Party shall have the right to participate in such defense at its own expense.
+   
+   (c) **Settlement**. The Indemnifying Party shall not settle any Third-Party Claim without the prior written consent of the Indemnified Party unless such settlement (i) includes an unconditional release of the Indemnified Party from all liability, (ii) does not include any admission of wrongdoing by the Indemnified Party, and (iii) does not impose any non-monetary obligations on the Indemnified Party.
 
-6.4 Entire Agreement. This Agreement, including all exhibits and schedules hereto, constitutes the entire agreement among the parties with respect to the subject matter hereof.
+5.5 **Exclusive Remedy**. Except in the case of fraud or intentional misrepresentation, the indemnification provisions of this Article V shall be the sole and exclusive remedy of the parties with respect to any claims arising out of or relating to this Agreement.
 
-IN WITNESS WHEREOF, the parties have executed this Agreement as of the Effective Date.
+5.6 **Mitigation**. Each Indemnified Party shall take reasonable steps to mitigate any losses for which such Indemnified Party seeks indemnification hereunder.
+
+5.7 **Insurance**. Any indemnification payment made pursuant to this Agreement shall be reduced by the amount of any insurance proceeds actually received by the Indemnified Party with respect to the losses for which indemnification is being provided.
+
+## ARTICLE VI
+## TERMINATION
+
+6.1 **Termination**. This Agreement may be terminated at any time prior to the Closing:
+   (a) By mutual written consent of Acquirer and Target Company;
+   
+   (b) By either Acquirer or Target Company if the Closing has not occurred on or before September 30, 2025 (the "Outside Date"); provided, however, that the right to terminate this Agreement under this Section 6.1(b) shall not be available to any party whose failure to fulfill any obligation under this Agreement has been the cause of, or resulted in, the failure of the Closing to occur on or before the Outside Date;
+   
+   (c) By either Acquirer or Target Company if any governmental authority shall have issued an order, decree, or ruling or taken any other action permanently restraining, enjoining, or otherwise prohibiting the transactions contemplated by this Agreement, and such order, decree, ruling, or other action shall have become final and nonappealable;
+   
+   (d) By Acquirer if there has been a breach of any representation, warranty, covenant, or agreement made by Target Company or the Stockholders, or any such representation or warranty shall have become untrue after the Effective Date, such that the conditions set forth in Section 4.2(a) or 4.2(b) would not be satisfied and such breach or condition is not curable or, if curable, is not cured within thirty (30) days after written notice thereof is given by Acquirer to Target Company;
+   
+   (e) By Target Company if there has been a breach of any representation, warranty, covenant, or agreement made by Acquirer, or any such representation or warranty shall have become untrue after the Effective Date, such that the conditions set forth in Section 4.3(a) or 4.3(b) would not be satisfied and such breach or condition is not curable or, if curable, is not cured within thirty (30) days after written notice thereof is given by Target Company to Acquirer.
+
+6.2 **Effect of Termination**. In the event of termination of this Agreement pursuant to Section 6.1, this Agreement shall immediately become void and there shall be no liability or obligation on the part of Acquirer, Target Company, the Stockholders, or their respective officers, directors, stockholders, or affiliates; provided, however, that the provisions of this Section 6.2, Section 3.5 (Confidentiality), Section 3.7 (Public Announcements), and Article VIII (Miscellaneous) shall remain in full force and effect and survive any termination of this Agreement.
+
+6.3 **Termination Fee**. In the event that this Agreement is terminated by Target Company pursuant to Section 6.1(e), Acquirer shall pay to Target Company a termination fee of $30,000,000 (the "Termination Fee"). The Termination Fee shall be paid by wire transfer of immediately available funds to an account designated by Target Company within five (5) business days after such termination.
+
+## ARTICLE VII
+## STOCKHOLDERS' REPRESENTATIVE
+
+7.1 **Appointment**. By their execution of this Agreement, the Stockholders hereby irrevocably appoint Dr. James Wilson as their agent and attorney-in-fact (the "Stockholders' Representative") for and on behalf of the Stockholders to give and receive notices and communications, to authorize payment to any Indemnified Party from the Escrow Fund in satisfaction of claims, to object to such payments, to agree to, negotiate, enter into settlements and compromises of, and demand arbitration and comply with orders of courts and awards of arbitrators with respect to such claims, and to take all other actions that are either necessary or appropriate in the judgment of the Stockholders' Representative for the accomplishment of the foregoing.
+
+7.2 **Authority**. The Stockholders' Representative shall have authority to act on behalf of the Stockholders in all matters relating to this Agreement, including without limitation:
+   (a) Making decisions regarding indemnification claims under Article V;
+   (b) Executing and delivering all documents necessary or desirable to carry out the intent of this Agreement;
+   (c) Receiving notices on behalf of the Stockholders; and
+   (d) Taking all other actions authorized by this Agreement or which are necessary or appropriate to effectuate the transactions contemplated hereby.
+
+7.3 **Successor**. In the event that the Stockholders' Representative dies, becomes unable to perform his responsibilities hereunder or resigns from such position, Dr. Elena Rodriguez shall be appointed as the substitute Stockholders' Representative.
+
+7.4 **Indemnification**. The Stockholders shall severally indemnify the Stockholders' Representative and hold the Stockholders' Representative harmless against any loss, liability, or expense incurred without gross negligence or willful misconduct on the part of the Stockholders' Representative and arising out of or in connection with the acceptance or administration of the Stockholders' Representative's duties hereunder.
+
+## ARTICLE VIII
+## MISCELLANEOUS
+
+8.1 **Governing Law**. This Agreement shall be governed by and construed in accordance with the laws of the State of Delaware, without giving effect to any choice of law principles.
+
+8.2 **Dispute Resolution**. Any disputes arising out of or relating to this Agreement shall be resolved through arbitration administered by the American Arbitration Association in San Francisco, California.
+
+8.3 **Notices**. All notices required under this Agreement shall be in writing and sent to the addresses listed in Exhibit D.
+
+8.4 **Entire Agreement**. This Agreement, including all exhibits and schedules hereto, constitutes the entire agreement among the parties with respect to the subject matter hereof.
+
+8.5 **Amendments and Waivers**. This Agreement may be amended, modified, or supplemented only by a written instrument executed by all parties hereto. No waiver of any provision of this Agreement shall be deemed or shall constitute a waiver of any other provision hereof, whether or not similar, nor shall any waiver constitute a continuing waiver.
+
+8.6 **Expenses**. Except as otherwise provided herein, all costs and expenses incurred in connection with this Agreement and the transactions contemplated hereby shall be paid by the party incurring such costs and expenses.
+
+8.7 **Assignment**. This Agreement shall be binding upon and inure to the benefit of the parties hereto and their respective successors and permitted assigns. No party may assign this Agreement or any rights or obligations hereunder without the prior written consent of the other parties.
+
+8.8 **Severability**. If any term or provision of this Agreement is invalid, illegal, or unenforceable in any jurisdiction, such invalidity, illegality, or unenforceability shall not affect any other term or provision of this Agreement or invalidate or render unenforceable such term or provision in any other jurisdiction.
+
+8.9 **Counterparts**. This Agreement may be executed in counterparts, each of which shall be deemed an original, but all of which together shall be deemed to be one and the same agreement. A signed copy of this Agreement delivered by facsimile, email, or other means of electronic transmission shall be deemed to have the same legal effect as delivery of an original signed copy of this Agreement.
+
+8.10 **Third-Party Beneficiaries**. Except as otherwise expressly provided herein, this Agreement is for the sole benefit of the parties hereto and their respective successors and permitted assigns and nothing herein, express or implied, is intended to or shall confer upon any other person or entity any legal or equitable right, benefit, or remedy of any nature whatsoever under or by reason of this Agreement.
+
+8.11 **Specific Performance**. The parties agree that irreparable damage would occur if any provision of this Agreement were not performed in accordance with the terms hereof and that the parties shall be entitled to specific performance of the terms hereof, in addition to any other remedy to which they are entitled at law or in equity.
+
+8.12 **Definitions**. For purposes of this Agreement:
+   (a) "Key Employees" means Dr. James Wilson, Dr. Elena Rodriguez, Dr. Michael Chang (VP of Engineering), Dr. Sophia Patel (VP of Research), and Ms. Jennifer Lee (Chief Financial Officer).
+   
+   (b) "Material Adverse Effect" means any event, occurrence, fact, condition, or change that is, or could reasonably be expected to become, individually or in the aggregate, materially adverse to (i) the business, results of operations, condition (financial or otherwise), or assets of the applicable party, or (ii) the ability of the applicable party to consummate the transactions contemplated hereby on a timely basis.
+   
+   (c) "Material Contracts" means any contract to which Target Company is a party that (i) involves payments or receipts in excess of $250,000 per year, (ii) relates to intellectual property rights material to the business of Target Company, (iii) contains exclusivity, non-competition, or most-favored-nation provisions, (iv) is with a governmental authority, (v) involves the acquisition or disposition of any business, (vi) is with any Stockholder or affiliate thereof, or (vii) is otherwise material to the business of Target Company.
+
+## ARTICLE IX
+## DATA PROTECTION AND CYBERSECURITY
+
+9.1 **Compliance with Data Protection Laws**. Target Company represents and warrants that it is in compliance with all applicable data protection and privacy laws, including but not limited to the California Consumer Privacy Act (CCPA), the General Data Protection Regulation (GDPR), and the Health Insurance Portability and Accountability Act (HIPAA), to the extent applicable.
+
+9.2 **Cybersecurity Standards**. Target Company represents and warrants that it maintains commercially reasonable cybersecurity standards, including but not limited to:
+   (a) Implementation of appropriate technical and organizational measures to protect personal data and confidential information;
+   (b) Regular security assessments and penetration testing;
+   (c) Incident response procedures; and
+   (d) Employee training on cybersecurity and data protection.
+
+9.3 **Security Audits**. Prior to Closing, Target Company shall provide Acquirer with the results of any security audits or assessments conducted within the past two (2) years.
+
+9.4 **Data Breach Notification**. Target Company shall promptly notify Acquirer of any actual or suspected data breach or security incident that occurs between the Effective Date and the Closing Date.
+
+9.5 **Post-Closing Integration**. Within ninety (90) days following the Closing Date, Acquirer shall implement a plan to integrate Target Company's data protection and cybersecurity practices with Acquirer's existing policies and procedures.
+
+## ARTICLE X
+## INTELLECTUAL PROPERTY
+
+10.1 **IP Representations**. Target Company represents and warrants that:
+   (a) Exhibit E contains a complete and accurate list of all patents, patent applications, registered trademarks, trademark applications, registered copyrights, copyright applications, and domain names owned by Target Company (the "Registered IP");
+   
+   (b) Target Company owns or has valid licenses to all intellectual property used in the operation of its business (the "Company IP");
+   
+   (c) To the knowledge of Target Company, the operation of Target Company's business does not infringe, misappropriate, or otherwise violate the intellectual property rights of any third party;
+   
+   (d) No person has infringed, misappropriated, or otherwise violated any Company IP;
+   
+   (e) All current and former employees, consultants, and contractors who have contributed to the development of any Company IP have executed valid and enforceable written agreements assigning all of their rights in such contributions to Target Company.
+
+10.2 **Open Source Software**. Target Company has disclosed to Acquirer all open source software used by Target Company and the applicable license terms. No open source software is incorporated into, combined with, or distributed with any proprietary software products of Target Company in a manner that would require the disclosure, licensing, or distribution of any source code of such proprietary software products.
+
+10.3 **Post-Closing IP Matters**. Following the Closing, Acquirer shall have the right, but not the obligation, to:
+   (a) Continue prosecution of any pending patent applications, trademark applications, or copyright applications included in the Registered IP;
+   
+   (b) Maintain any registrations included in the Registered IP;
+   
+   (c) Assert any Company IP against third parties; and
+   
+   (d) Defend any Company IP against challenges by third parties.
+
+## ARTICLE XI
+## ENVIRONMENTAL MATTERS
+
+11.1 **Environmental Representations**. Target Company represents and warrants that:
+   (a) Target Company is in compliance with all applicable Environmental Laws (as defined below);
+   
+   (b) Target Company has obtained all environmental permits necessary for the operation of its business and is in compliance with all terms and conditions of such permits;
+   
+   (c) There are no pending or threatened claims, demands, or investigations against Target Company relating to any Environmental Law; and
+   
+   (d) Target Company has not released any Hazardous Substances (as defined below) on any property currently or formerly owned, leased, or operated by Target Company.
+
+11.2 **Definitions**.
+   (a) "Environmental Laws" means all applicable federal, state, local, and foreign laws, regulations, ordinances, orders, decrees, permits, licenses, and common law relating to pollution, protection of the environment, or human health and safety.
+   
+   (b) "Hazardous Substances" means any pollutant, contaminant, waste, petroleum, or any derivative thereof, or any other substance regulated under any Environmental Law.
+
+11.3 **Environmental Indemnification**. Notwithstanding any other provision of this Agreement, the Stockholders shall indemnify, defend, and hold harmless Acquirer from and against any and all losses arising out of or relating to:
+   (a) Any violation of or non-compliance with any Environmental Law by Target Company prior to the Closing Date;
+   
+   (b) Any release of Hazardous Substances on, at, or from any property currently or formerly owned, leased, or operated by Target Company prior to the Closing Date; or
+   
+   (c) Any arrangement by Target Company for the disposal or treatment of Hazardous Substances at any location not owned or operated by Target Company prior to the Closing Date.
+
+## IN WITNESS WHEREOF, the parties have executed this Agreement as of the Effective Date.
 
 TECH INNOVATIONS INC.
 
@@ -118,4 +301,229 @@ By: David Chen
 Title: Managing Partner
 
 ____________________________
-Dr. Elena Rodriguez 
+Dr. Elena Rodriguez
+
+## EXHIBIT A
+## STOCKHOLDERS AND OWNERSHIP PERCENTAGES
+
+| Stockholder | Ownership Percentage | Number of Shares |
+|-------------|----------------------|------------------|
+| Dr. James Wilson | 45% | 450,000 |
+| Venture Capital Fund Alpha Partners LP | 30% | 300,000 |
+| Dr. Elena Rodriguez | 15% | 150,000 |
+| Dr. Michael Chang | 3% | 30,000 |
+| Dr. Sophia Patel | 3% | 30,000 |
+| Ms. Jennifer Lee | 2% | 20,000 |
+| Angel Investors (various) | 2% | 20,000 |
+| TOTAL | 100% | 1,000,000 |
+
+## EXHIBIT B
+## REPRESENTATIONS AND WARRANTIES OF TARGET COMPANY AND STOCKHOLDERS
+
+[Detailed representations and warranties would be inserted here, including statements regarding organization, authority, capitalization, financial statements, liabilities, assets, intellectual property, contracts, employees, litigation, compliance with laws, taxes, etc.]
+
+## EXHIBIT C
+## REPRESENTATIONS AND WARRANTIES OF ACQUIRER
+
+[Detailed representations and warranties would be inserted here, including statements regarding organization, authority, capitalization, SEC filings, financing, etc.]
+
+## EXHIBIT D
+## NOTICE ADDRESSES
+
+**If to Acquirer:**
+Tech Innovations Inc.
+1234 Innovation Way
+Palo Alto, CA 94301
+Attention: General Counsel
+Email: legal@techinnovations.com
+
+With a copy (which shall not constitute notice) to:
+Legal Partners LLP
+800 Corporate Drive
+San Francisco, CA 94111
+Attention: Jessica Adams, Esq.
+Email: jadams@legalpartners.com
+
+**If to Target Company or Stockholders' Representative:**
+Dr. James Wilson
+Quantum Solutions LLC
+5678 Quantum Drive
+San Jose, CA 95113
+Email: jwilson@quantumsolutions.com
+
+With a copy (which shall not constitute notice) to:
+Tech Law Group PC
+400 Technology Parkway
+San Jose, CA 95110
+Attention: Robert Martinez, Esq.
+Email: rmartinez@techlawgroup.com
+
+## EXHIBIT E
+## REGISTERED INTELLECTUAL PROPERTY
+
+### Patents and Patent Applications
+
+| Patent/Application No. | Title | Filing Date | Issue Date | Status |
+|------------------------|-------|------------|------------|--------|
+| US 11,487,299 B2 | Scalable Quantum Computing Architecture Using Superconducting Qubits | 04/12/2022 | 11/08/2024 | Issued |
+| US 11,562,844 B1 | Method for Error Correction in Quantum Computing Systems | 06/28/2022 | 01/24/2025 | Issued |
+| US 2024/0126778 A1 | Quantum-Classical Hybrid Computing System | 09/15/2023 | N/A | Pending |
+| US 2024/0182455 A1 | Multi-Qubit Entanglement Stabilization Protocol | 11/30/2023 | N/A | Pending |
+| PCT/US2024/038291 | Room Temperature Quantum Computing Interface | 02/18/2024 | N/A | PCT Filed |
+| US 63/447,891 | Quantum Neural Network Training Methodology | 04/03/2024 | N/A | Provisional |
+
+### Registered Trademarks
+
+| Registration No. | Mark | Class | Registration Date | Renewal Date |
+|------------------|------|-------|-------------------|--------------|
+| US Reg. No. 6,892,344 | QUANTUMSOLVE | 9, 42 | 08/15/2023 | 08/15/2033 |
+| US Reg. No. 6,924,577 | QUBITCORE | 9 | 11/22/2023 | 11/22/2033 |
+| US Reg. No. 7,013,655 | QUANTUM SOLUTIONS (Stylized) | 42 | 03/05/2024 | 03/05/2034 |
+| US App. Serial No. 97/845,291 | QENTANGLE | 9, 42 | N/A (Filed 12/07/2023) | N/A |
+| EU Reg. No. 018934762 | QUANTUMSOLVE | 9, 42 | 10/12/2023 | 10/12/2033 |
+
+### Registered Copyrights
+
+| Registration No. | Title | Registration Date | Author |
+|------------------|-------|-------------------|--------|
+| TX0009112437 | QuantumSolve Control Software v.3.5 (source code) | 05/21/2023 | Quantum Solutions LLC |
+| TX0009128890 | Quantum Computing Systems: Architecture Guide | 07/14/2023 | Dr. James Wilson & Dr. Elena Rodriguez |
+| TX0009156721 | QEntangle API Documentation | 11/03/2023 | Quantum Solutions LLC |
+| TX0009188462 | QuantumSolve Control Software v.4.0 (source code) | 02/28/2024 | Quantum Solutions LLC |
+
+### Domain Names
+
+| Domain Name | Registration Date | Renewal Date |
+|-------------|-------------------|--------------|
+| quantumsolutions.com | 03/12/2015 | 03/12/2026 |
+| quantumsolve.io | 06/22/2020 | 06/22/2025 |
+| qentangle.tech | 09/17/2022 | 09/17/2025 |
+| qubitcore.dev | 01/14/2023 | 01/14/2026 |
+| quantum-solutions.ai | 04/30/2023 | 04/30/2026 |
+
+## SCHEDULE 1.2
+## ALLOCATION OF CONSIDERATION
+
+### Cash Consideration Allocation ($500,000,000 USD)
+
+| Stockholder | Ownership % | Cash Allocation ($) | Escrow Amount ($) | Net Cash Payment ($) |
+|-------------|-------------|---------------------|-------------------|----------------------|
+| Dr. James Wilson | 45% | 225,000,000 | 22,500,000 | 202,500,000 |
+| Venture Capital Fund Alpha Partners LP | 30% | 150,000,000 | 15,000,000 | 135,000,000 |
+| Dr. Elena Rodriguez | 15% | 75,000,000 | 7,500,000 | 67,500,000 |
+| Dr. Michael Chang | 3% | 15,000,000 | 1,500,000 | 13,500,000 |
+| Dr. Sophia Patel | 3% | 15,000,000 | 1,500,000 | 13,500,000 |
+| Ms. Jennifer Lee | 2% | 10,000,000 | 1,000,000 | 9,000,000 |
+| Angel Investors (various) | 2% | 10,000,000 | 1,000,000 | 9,000,000 |
+| **TOTAL** | **100%** | **$500,000,000** | **$50,000,000** | **$450,000,000** |
+
+### Stock Consideration Allocation (1,000,000 shares of Acquirer common stock)
+
+| Stockholder | Ownership % | Share Allocation | Escrow Shares | Net Share Distribution |
+|-------------|-------------|------------------|---------------|------------------------|
+| Dr. James Wilson | 45% | 450,000 | 45,000 | 405,000 |
+| Venture Capital Fund Alpha Partners LP | 30% | 300,000 | 30,000 | 270,000 |
+| Dr. Elena Rodriguez | 15% | 150,000 | 15,000 | 135,000 |
+| Dr. Michael Chang | 3% | 30,000 | 3,000 | 27,000 |
+| Dr. Sophia Patel | 3% | 30,000 | 3,000 | 27,000 |
+| Ms. Jennifer Lee | 2% | 20,000 | 2,000 | 18,000 |
+| Angel Investors (various) | 2% | 20,000 | 2,000 | 18,000 |
+| **TOTAL** | **100%** | **1,000,000** | **100,000** | **900,000** |
+
+### Angel Investor Detailed Allocation (representing 2% ownership)
+
+| Angel Investor | Ownership % | Cash Amount ($) | Share Allocation |
+|----------------|-------------|-----------------|------------------|
+| Robert Johnson | 0.5% | 2,500,000 | 5,000 |
+| Quantum Seed Fund LLC | 0.5% | 2,500,000 | 5,000 |
+| Dr. Thomas Williams | 0.3% | 1,500,000 | 3,000 |
+| NextGen Ventures | 0.3% | 1,500,000 | 3,000 |
+| Patricia Garcia | 0.2% | 1,000,000 | 2,000 |
+| Daniel Kim | 0.2% | 1,000,000 | 2,000 |
+| **TOTAL** | **2.0%** | **$10,000,000** | **20,000** |
+
+## SCHEDULE 3.3
+## PERMITTED ACTIVITIES
+
+Notwithstanding the non-competition covenant set forth in Section 3.3 of the Agreement, Dr. James Wilson and Dr. Elena Rodriguez may engage in the following activities:
+
+1. **Academic and Research Activities**:
+   - Holding faculty positions at accredited universities or research institutions
+   - Publishing academic papers on quantum computing theory
+   - Serving as peer reviewers for academic journals
+   - Participating in academic conferences and workshops
+   - Supervising PhD students and post-doctoral researchers
+   - Collaborating with academic research groups on fundamental quantum computing research
+
+2. **Advisory Roles**:
+   - Serving on scientific advisory boards of non-competing companies (defined as companies not engaged in the development, manufacturing, or sale of quantum computing hardware)
+   - Serving on government advisory committees related to quantum computing policy, standards, or regulations
+   - Providing technical advice to non-profit organizations promoting STEM education
+
+3. **Investment Activities**:
+   - Passive investments (defined as ownership of less than 5% of outstanding equity) in publicly traded companies
+   - Limited partner investments in venture capital funds, provided such funds agree not to share confidential information about quantum computing investments with Dr. Wilson or Dr. Rodriguez
+   - Angel investments in startups not engaged in quantum computing hardware development
+
+4. **Educational Activities**:
+   - Teaching courses at educational institutions
+   - Creating and distributing educational content on quantum computing fundamentals
+   - Participating in STEM outreach programs for K-12 students
+   - Authoring textbooks or educational materials on quantum computing theory
+
+5. **Specified Technology Areas**:
+   - Research, development, or commercialization of quantum cryptography software solutions that do not compete with Acquirer's products
+   - Research, development, or commercialization of quantum sensing applications for geological exploration or medical imaging
+   - Research or advisory work related to quantum networking protocols that are complementary to Acquirer's quantum computing hardware
+
+6. **Continuation of Existing Commitments**:
+   - Dr. Wilson may continue his role as scientific advisor to Quantum Ethics Initiative, a non-profit organization focused on ethical implications of quantum technologies
+   - Dr. Rodriguez may complete her current commitments as guest editor for the Special Issue on Quantum Computing Advances in the Journal of Quantum Information Processing (to be completed by December 31, 2025)
+   - Both may fulfill speaking engagements scheduled prior to the Closing Date and disclosed in writing to Acquirer
+
+## SCHEDULE 4.2(e)
+## REQUIRED CONSENTS
+
+The following third-party consents are required to be obtained prior to the Closing:
+
+### Material Commercial Agreements
+
+1. **Manufacturing and Supply Agreements**:
+   - Superconducting Materials Supply Agreement with Cryogenic Materials Inc., dated March 10, 2023
+   - Manufacturing Services Agreement with Precision Quantum Fabrication Ltd., dated July 22, 2023
+   - Equipment Purchase Agreement with Advanced Cryogenics Corporation, dated November 8, 2023
+   - Component Supply Agreement with NanoCircuit Technologies Inc., dated January 15, 2024
+
+2. **Research and Development Agreements**:
+   - Joint Development Agreement with Stanford University Department of Physics, dated September 5, 2022
+   - Research Collaboration Agreement with National Quantum Laboratory, dated April 18, 2023
+   - Materials Testing Agreement with Quantum Materials Characterization Lab LLC, dated February 12, 2024
+
+3. **Software and Technology Licenses**:
+   - Software License Agreement with Quantum Control Systems Inc., dated May 30, 2023
+   - Patent License Agreement with Cambridge Quantum Technologies Ltd., dated August 17, 2023
+   - API Integration Agreement with Cloud Quantum Computing Platform Inc., dated December 5, 2023
+
+### Real Estate Leases
+
+1. Office and Laboratory Lease Agreement with Silicon Valley Science Park LLC for premises at 5678 Quantum Drive, San Jose, CA 95113, dated January 10, 2022
+2. Manufacturing Facility Lease with Advanced Technology Properties for premises at 4201 Quantum Circle, Fremont, CA 94538, dated March 22, 2023
+3. Research Facility Lease with University Research Park for premises at 2185 Innovation Boulevard, Boulder, CO 80305, dated June 8, 2023
+
+### Government Contracts
+
+1. Research Grant Agreement No. QC-2023-01458 with the Department of Energy, Advanced Scientific Computing Research Program, dated February 15, 2023
+2. Cooperative Research and Development Agreement No. CRADA-QC-2023-005 with National Institute of Standards and Technology, dated May 4, 2023
+3. Small Business Innovation Research Grant No. SBIR-24-QC-0089 with the National Science Foundation, dated January 22, 2024
+
+### Financing Agreements
+
+1. Loan and Security Agreement with Silicon Valley Technology Bank, dated April 8, 2023
+2. Series B Preferred Stock Purchase Agreement with investors listed therein, dated June 30, 2022
+3. Convertible Note Purchase Agreement with Quantum Venture Partners LLC, dated November 15, 2023
+
+### IP Licenses
+
+1. Cross-License Agreement with Quantum Processing Technologies Inc., dated September 29, 2022
+2. Open Source Software License Compliance for QEntangle Framework (MIT License)
+3. Trademark Coexistence Agreement with Quantum Innovations GmbH, dated March 3, 2023

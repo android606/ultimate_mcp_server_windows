@@ -56,100 +56,120 @@ class DeepSeekProvider(BaseProvider):
         
     async def generate_completion(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7,
+        json_mode: bool = False,
         **kwargs
     ) -> ModelResponse:
-        """Generate a completion using DeepSeek.
+        """Generate a completion using DeepSeek's API.
         
         Args:
-            prompt: Text prompt to send to the model
-            model: Model name to use (e.g., "deepseek-chat")
+            prompt: Text prompt to send to the model (optional if messages provided)
+            messages: List of message dictionaries (optional if prompt provided)
+            model: Model name to use
             max_tokens: Maximum tokens to generate
             temperature: Temperature parameter (0.0-1.0)
-            **kwargs: Additional model-specific parameters
+            json_mode: If True, attempt to generate JSON output
+            **kwargs: Additional parameters
             
         Returns:
-            ModelResponse with completion result
-            
-        Raises:
-            Exception: If API call fails
+            ModelResponse with the completion result
         """
         if not self.client:
             await self.initialize()
             
+        # Verify we have either prompt or messages
+        if prompt is None and not messages:
+            raise ValueError("Either prompt or messages must be provided")
+            
         # Use default model if not specified
         model = model or self.get_default_model()
         
-        # Strip provider prefix if present (e.g., "deepseek:deepseek-chat" -> "deepseek-chat")
-        if ":" in model:
-            original_model = model
-            model = model.split(":", 1)[1]
-            self.logger.debug(f"Stripped provider prefix from model name: {original_model} -> {model}")
-        
-        # Create messages
-        messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
-        
-        # Prepare API call parameters
-        params = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-        }
-        
-        # Add max_tokens if specified
+        # Prepare API parameters
+        if messages:
+            # Using chat completion with messages
+            params = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature
+            }
+        else:
+            # Using completion with prompt
+            # Convert prompt to messages format for DeepSeek
+            params = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature
+            }
+            
+        # Add max_tokens if provided
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
             
-        # Add any additional parameters
-        params.update(kwargs)
-        
-        # Log request
+        # Handle JSON mode via response_format for compatible models
+        if json_mode:
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for DeepSeek")
+            
+        # Add any remaining parameters
+        for key, value in kwargs.items():
+            if key not in params:
+                params[key] = value
+                
+        # Log request parameters
+        prompt_length = len(prompt) if prompt else sum(len(m.get("content", "")) for m in messages)
         self.logger.info(
             f"Generating completion with DeepSeek model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=prompt_length,
+            json_mode=json_mode
         )
         
         try:
-            # Make API call with timing
-            response, processing_time = await self.process_with_timer(
-                self.client.chat.completions.create, **params
-            )
+            # Start timer
+            start_time = time.time()
             
-            # Extract response text
+            # Make API call
+            response = await self.client.chat.completions.create(**params)
+            
+            # Calculate processing time
+            processing_time = time.time() - start_time
+            
+            # Extract text from response
             completion_text = response.choices[0].message.content
             
-            # Create standardized response
+            # Create ModelResponse
             result = ModelResponse(
                 text=completion_text,
-                model=model,
+                model=f"{self.provider_name}/{model}",
                 provider=self.provider_name,
                 input_tokens=response.usage.prompt_tokens,
                 output_tokens=response.usage.completion_tokens,
                 total_tokens=response.usage.total_tokens,
                 processing_time=processing_time,
-                raw_response=response,
+                raw_response=response
             )
+            
+            # Add message for compatibility with chat_completion
+            result.message = {"role": "assistant", "content": completion_text}
             
             # Log success
             self.logger.success(
                 "DeepSeek completion successful",
                 emoji_key="success",
                 model=model,
-                tokens={
-                    "input": result.input_tokens,
-                    "output": result.output_tokens
-                },
+                tokens={"input": result.input_tokens, "output": result.output_tokens},
                 cost=result.cost,
-                time=result.processing_time
+                time=processing_time
             )
             
             return result
             
         except Exception as e:
+            # Log error
             self.logger.error(
                 f"DeepSeek completion failed: {str(e)}",
                 emoji_key="error",
@@ -159,62 +179,78 @@ class DeepSeekProvider(BaseProvider):
             
     async def generate_completion_stream(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7,
+        json_mode: bool = False,
         **kwargs
     ) -> AsyncGenerator[Tuple[str, Dict[str, Any]], None]:
         """Generate a streaming completion using DeepSeek.
         
         Args:
-            prompt: Text prompt to send to the model
-            model: Model name to use (e.g., "deepseek-chat")
+            prompt: Text prompt to send to the model (optional if messages provided)
+            messages: List of message dictionaries (optional if prompt provided)
+            model: Model name to use
             max_tokens: Maximum tokens to generate
             temperature: Temperature parameter (0.0-1.0)
-            **kwargs: Additional model-specific parameters
+            json_mode: If True, attempt to generate JSON output
+            **kwargs: Additional parameters
             
         Yields:
-            Tuple of (text_chunk, metadata)
-            
-        Raises:
-            Exception: If API call fails
+            Tuples of (text_chunk, metadata)
         """
         if not self.client:
             await self.initialize()
             
+        # Verify we have either prompt or messages
+        if prompt is None and not messages:
+            raise ValueError("Either prompt or messages must be provided")
+            
         # Use default model if not specified
         model = model or self.get_default_model()
         
-        # Strip provider prefix if present (e.g., "deepseek:deepseek-chat" -> "deepseek-chat")
-        if ":" in model:
-            original_model = model
-            model = model.split(":", 1)[1]
-            self.logger.debug(f"Stripped provider prefix from model name (stream): {original_model} -> {model}")
-        
-        # Create messages
-        messages = kwargs.pop("messages", None) or [{"role": "user", "content": prompt}]
-        
-        # Prepare API call parameters
-        params = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "stream": True,
-        }
-        
-        # Add max_tokens if specified
+        # Prepare API parameters
+        if messages:
+            # Using chat completion with messages
+            params = {
+                "model": model,
+                "messages": messages,
+                "temperature": temperature,
+                "stream": True
+            }
+        else:
+            # Using completion with prompt
+            # Convert prompt to messages format for DeepSeek
+            params = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": temperature,
+                "stream": True
+            }
+            
+        # Add max_tokens if provided
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
             
-        # Add any additional parameters
-        params.update(kwargs)
-        
-        # Log request
+        # Handle JSON mode via response_format for compatible models
+        if json_mode:
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for DeepSeek streaming")
+            
+        # Add any remaining parameters
+        for key, value in kwargs.items():
+            if key not in params and key != "stream":  # Don't allow overriding stream
+                params[key] = value
+                
+        # Log request parameters
+        prompt_length = len(prompt) if prompt else sum(len(m.get("content", "")) for m in messages)
         self.logger.info(
             f"Generating streaming completion with DeepSeek model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=prompt_length,
+            json_mode=json_mode
         )
         
         start_time = time.time()
@@ -234,7 +270,7 @@ class DeepSeekProvider(BaseProvider):
                 
                 # Metadata for this chunk
                 metadata = {
-                    "model": model,
+                    "model": f"{self.provider_name}/{model}",
                     "provider": self.provider_name,
                     "chunk_index": total_chunks,
                     "finish_reason": chunk.choices[0].finish_reason,
@@ -252,13 +288,34 @@ class DeepSeekProvider(BaseProvider):
                 time=processing_time
             )
             
+            # Yield final metadata chunk
+            final_metadata = {
+                "model": f"{self.provider_name}/{model}",
+                "provider": self.provider_name,
+                "chunk_index": total_chunks + 1,
+                "processing_time": processing_time,
+                "finish_reason": "stop"
+            }
+            yield "", final_metadata
+            
         except Exception as e:
+            processing_time = time.time() - start_time
             self.logger.error(
                 f"DeepSeek streaming completion failed: {str(e)}",
                 emoji_key="error",
                 model=model
             )
-            raise
+            
+            # Yield error metadata
+            error_metadata = {
+                "model": f"{self.provider_name}/{model}",
+                "provider": self.provider_name,
+                "chunk_index": total_chunks + 1,
+                "error": f"{type(e).__name__}: {str(e)}",
+                "processing_time": processing_time,
+                "finish_reason": "error"
+            }
+            yield "", error_metadata
             
     async def list_models(self) -> List[Dict[str, Any]]:
         """List available DeepSeek models.

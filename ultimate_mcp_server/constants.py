@@ -168,7 +168,6 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     "claude-3-7-sonnet-20250219": {"input": 3.0, "output": 15.0},
     "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.0},
     "claude-3-opus-20240229": {"input": 15.0, "output": 75.0},
-    "claude-3-sonnet-20240229": {"input": 3.0, "output": 15.0},
 
     # DeepSeek models
     "deepseek-chat": {"input": 0.27, "output": 1.10},

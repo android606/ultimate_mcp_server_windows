@@ -123,7 +123,24 @@ class OpenAIProvider(BaseProvider):
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
             
-        # Add any additional parameters
+        # Check for json_mode flag and remove it from kwargs
+        json_mode = kwargs.pop("json_mode", False)
+        if json_mode:
+            # Use the correct response_format for JSON mode
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for OpenAI")
+
+        # Handle any legacy response_format passed directly, but prefer json_mode
+        if "response_format" in kwargs and not json_mode:
+             # Support both direct format object and type-only specification
+             response_format = kwargs.pop("response_format")
+             if isinstance(response_format, dict):
+                 params["response_format"] = response_format
+             elif isinstance(response_format, str) and response_format in ["json_object", "text"]:
+                 params["response_format"] = {"type": response_format}
+             self.logger.debug(f"Setting response_format from direct param: {params.get('response_format')}")
+
+        # Add any remaining additional parameters
         params.update(kwargs)
 
         # --- Special handling for specific model parameter constraints ---
@@ -144,7 +161,8 @@ class OpenAIProvider(BaseProvider):
         self.logger.info(
             f"Generating completion with OpenAI model {model}",
             emoji_key=self.provider_name,
-            prompt_length=prompt_length
+            prompt_length=prompt_length,
+            json_mode=json_mode # Log if json_mode was requested
         )
         
         try:
@@ -258,7 +276,14 @@ class OpenAIProvider(BaseProvider):
         if max_tokens is not None:
             params["max_tokens"] = max_tokens
             
-        # Add any additional parameters
+        # Check for json_mode flag and remove it from kwargs
+        json_mode = kwargs.pop("json_mode", False)
+        if json_mode:
+            # Use the correct response_format for JSON mode
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for OpenAI streaming")
+
+        # Add any remaining additional parameters
         params.update(kwargs)
         
         # Log request
@@ -266,7 +291,8 @@ class OpenAIProvider(BaseProvider):
         self.logger.info(
             f"Generating streaming completion with OpenAI model {model}",
             emoji_key=self.provider_name,
-            prompt_length=prompt_length
+            prompt_length=prompt_length,
+            json_mode=json_mode # Log if json_mode was requested
         )
         
         start_time = time.time()

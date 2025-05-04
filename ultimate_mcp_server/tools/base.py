@@ -831,10 +831,15 @@ def with_tool_metrics(func):
             # Call original function, passing self_obj if it exists
             if self_obj:
                 # Assumes if self_obj exists, it's the first positional arg expected by func
-                result = await func(self_obj, *args[1:], **kwargs)
+                result = func(self_obj, *args[1:], **kwargs)
             else:
                 # Pass only the args/kwargs received, assuming func is standalone
-                result = await func(*args, **kwargs)
+                result = func(*args, **kwargs)
+            
+            # Only await when necessary
+            if inspect.isawaitable(result):
+                result = await result
+            # result is now either a ToolResult _or_ an async iterator
             
             # Extract metrics if available from result
             if isinstance(result, dict):
@@ -1062,7 +1067,13 @@ def with_error_handling(func):
             # Call original function with reconstructed args/kwargs
             # This version passes *all* kwargs received by the wrapper,
             # trusting FastMCP to pass the correct ones including 'ctx'.
-            return await func(*call_args, **call_kwargs)
+            result = func(*call_args, **call_kwargs)
+            
+            # Only await when necessary
+            if inspect.isawaitable(result):
+                result = await result
+            # result is now either a ToolResult _or_ an async iterator
+            return result
             
         except ToolError as e:
             # Already a tool error, log and return

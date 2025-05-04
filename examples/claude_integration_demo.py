@@ -55,8 +55,8 @@ async def compare_claude_models(tracker: CostTracker):
         
         # Select specific models to compare (Ensure these are valid and available)
         claude_models = [
-            "claude-3-5-haiku-20241022", 
-            "claude-3-7-sonnet-20250219"
+            "anthropic/claude-3-7-sonnet-20250219", 
+            "anthropic/claude-3-5-haiku-20241022"
         ]
         # Filter based on available models
         models_to_compare = [m for m in claude_models if m in model_names]
@@ -165,7 +165,7 @@ async def demonstrate_system_prompt(tracker: CostTracker):
             return
         
         # Use a fast Claude model (ensure it's available)
-        model = "claude-3-5-haiku-20241022"
+        model = "anthropic/claude-3-5-haiku-20241022"
         available_models = await provider.list_models()
         if model not in [m["id"] for m in available_models]:
             logger.warning(f"Model {model} not available, falling back to default.", emoji_key="warning")

@@ -6247,32 +6247,58 @@ async def focus_memory(
 async def optimize_working_memory(
     context_id: str,
     target_size: int = agent_memory_config.max_working_memory_size,
-    strategy: str = "balanced",
+    strategy: str = "balanced", # 'balanced', 'importance', 'recency', 'diversity'
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Optimizes the working memory for a context by retaining the most relevant items.
+    """Calculates an optimized working memory set based on relevance and strategy, returning IDs to keep/remove.
 
-    Reduces the number of memory IDs in the `working_memory` list down to the target size
-    based on the chosen strategy.
+    This tool fetches the working memory list associated with a given cognitive state snapshot (`context_id`),
+    analyzes the memories based on the chosen strategy (considering importance, recency, confidence, etc.),
+    and determines which memories should be retained to meet the `target_size`.
+
+    **Crucially, this tool DOES NOT modify the saved cognitive state record.** It only performs the
+    calculation and returns the results. The caller is responsible for using these results
+    to update the agent's *current* working memory context or potentially save a *new*
+    cognitive state reflecting the optimized set.
 
     Args:
-        context_id: The context identifier (maps to state_id in cognitive_states).
-        target_size: (Optional) Desired number of memories after optimization. Default MAX_WORKING_MEMORY_SIZE.
-        strategy: (Optional) Optimization strategy: 'balanced', 'importance', 'recency', 'diversity'. Default 'balanced'.
+        context_id: The context identifier (maps to state_id in cognitive_states) representing the
+                    snapshot whose working memory list will be used as the input for optimization.
+        target_size: (Optional) Desired number of memories after optimization. Defaults to
+                     `agent_memory_config.max_working_memory_size`.
+        strategy: (Optional) Optimization strategy:
+                  - 'balanced': Uses overall relevance score (_compute_memory_relevance).
+                  - 'importance': Prioritizes high importance and confidence.
+                  - 'recency': Prioritizes recently accessed/created memories.
+                  - 'diversity': Attempts to keep a mix of memory types (based on relevance within type).
+                  Default 'balanced'.
         db_path: (Optional) Path to the SQLite database file.
 
     Returns:
-        Dictionary detailing the optimization results.
-        { ... same structure as before ... }
+        Dictionary detailing the optimization calculation results:
+        {
+            "context_id": "context-uuid", # The ID of the state used as input
+            "workflow_id": "workflow-uuid", # Workflow associated with the input state
+            "strategy_used": "balanced",
+            "target_size": 5,
+            "before_count": 10, # Original number of memories in the state's list
+            "after_count": 5,   # Number of memories identified to be retained
+            "removed_count": 5, # Number of memories identified for removal
+            "retained_memories": ["mem_id_kept1", ...], # List of IDs to keep
+            "removed_memories": ["mem_id_removed1", ...], # List of IDs suggested for removal
+            "success": true,
+            "processing_time": 0.09
+        }
 
     Raises:
-        ToolInputError: If context not found or strategy is invalid.
-        ToolError: If the database operation fails.
+        ToolInputError: If context_id not found, strategy is invalid, or target_size is negative.
+        ToolError: If the database operation fails during data fetching.
     """
+    # --- Input Validation ---
     if not context_id:
         raise ToolInputError("Context ID required.", param_name="context_id")
-    if target_size < 0:
-        raise ToolInputError("Target size cannot be negative.", param_name="target_size")
+    if not isinstance(target_size, int) or target_size < 0:
+        raise ToolInputError("Target size must be a non-negative integer.", param_name="target_size")
     valid_strategies = ["balanced", "importance", "recency", "diversity"]
     if strategy not in valid_strategies:
         raise ToolInputError(
@@ -6282,26 +6308,27 @@ async def optimize_working_memory(
 
     try:
         async with DBConnection(db_path) as conn:
-            # Get current context state using correct column name
-            state_cursor = await conn.execute(
-                "SELECT workflow_id, focal_memory_id, working_memory FROM cognitive_states WHERE state_id = ?",
+            # --- 1. Get Cognitive State Snapshot ---
+            # Fetch the specific state record to get its associated working memory list
+            async with conn.execute(
+                "SELECT workflow_id, working_memory FROM cognitive_states WHERE state_id = ?",
                 (context_id,),
-            )
-            state_row = await state_cursor.fetchone()
-            await state_cursor.close()  # Close cursor
-            if not state_row:
-                raise ToolInputError(f"Context {context_id} not found.", param_name="context_id")
+            ) as cursor:
+                state_row = await cursor.fetchone()
+                if not state_row:
+                    raise ToolInputError(f"Context state {context_id} not found.", param_name="context_id")
 
-            workflow_id = state_row["workflow_id"]
-            # Deserialize using the correct column name
-            current_memory_ids = await MemoryUtils.deserialize(state_row["working_memory"]) or []
+                workflow_id = state_row["workflow_id"]
+                # Deserialize the working memory list from the *saved state*
+                current_memory_ids = await MemoryUtils.deserialize(state_row["working_memory"]) or []
 
             before_count = len(current_memory_ids)
+
+            # --- 2. Handle Edge Case: Already Optimized ---
             if before_count <= target_size:
                 logger.info(
-                    f"Working memory for {context_id} already at or below target size ({before_count}/{target_size}). No optimization needed."
+                    f"Working memory list in state {context_id} already at/below target size ({before_count}/{target_size}). No optimization calculation needed."
                 )
-                # Return block remains the same
                 return {
                     "context_id": context_id,
                     "workflow_id": workflow_id,
@@ -6310,36 +6337,30 @@ async def optimize_working_memory(
                     "before_count": before_count,
                     "after_count": before_count,
                     "removed_count": 0,
-                    "retained_memories": current_memory_ids,
+                    "retained_memories": current_memory_ids, # Return the existing list
                     "removed_memories": [],
                     "success": True,
                     "processing_time": time.time() - start_time,
                 }
 
-            # Fetch details needed for scoring/diversity
+            # --- 3. Fetch Details for Scoring ---
             memories_to_consider = []
             if current_memory_ids:
                 placeholders = ", ".join(["?"] * len(current_memory_ids))
+                # Fetch all necessary fields for scoring calculations
                 query = f"""
                 SELECT memory_id, memory_type, importance, confidence, created_at, last_accessed, access_count
                 FROM memories WHERE memory_id IN ({placeholders})
                 """
-                async with conn.execute(query, current_memory_ids) as mem_cursor:  # Use async with
-                    async for row in mem_cursor:
-                        memories_to_consider.append(dict(row))
-                # Cursor closed automatically by async with
+                async with conn.execute(query, current_memory_ids) as mem_cursor:
+                    memories_to_consider = [dict(row) for row in await mem_cursor.fetchall()]
 
-            # Check if fetching details failed unexpectedly
-            if not memories_to_consider and before_count > 0:
+            # Check if we found details for the IDs (handle potential data inconsistencies)
+            if not memories_to_consider:
                 logger.warning(
-                    f"Working memory ID list for {context_id} was not empty ({before_count}), but no memory details found. Clearing working memory list."
+                    f"Working memory ID list for state {context_id} was not empty ({before_count}), "
+                    f"but failed to fetch details for scoring. Returning empty optimization."
                 )
-                await conn.execute(
-                    "UPDATE cognitive_states SET working_memory = ?, last_active = ? WHERE state_id = ?",
-                    ("[]", int(time.time()), context_id),
-                )
-                await conn.commit()
-
                 return {
                     "context_id": context_id,
                     "workflow_id": workflow_id,
@@ -6349,109 +6370,97 @@ async def optimize_working_memory(
                     "after_count": 0,
                     "removed_count": before_count,
                     "retained_memories": [],
-                    "removed_memories": current_memory_ids,
-                    "success": True,
+                    "removed_memories": current_memory_ids, # Indicate all would be removed
+                    "success": True, # Tool succeeded, but result is empty
                     "processing_time": time.time() - start_time,
                 }
 
-            # --- Scoring and Selection Logic (remains the same) ---
+            # --- 4. Score Memories Based on Strategy ---
             scored_memories = []
-            now = time.time()
+            now_unix = int(time.time())
             for memory in memories_to_consider:
                 mem_id = memory["memory_id"]
-                importance = memory["importance"]
-                confidence = memory["confidence"]
-                created_at = memory["created_at"]
-                last_accessed = memory["last_accessed"]
-                access_count = memory["access_count"] or 0  # Handle potential None
-                mem_type = memory["memory_type"]
+                importance = memory.get("importance", 5.0)
+                confidence = memory.get("confidence", 1.0)
+                created_at = memory.get("created_at", now_unix)
+                last_accessed = memory.get("last_accessed") # Can be None
+                access_count = memory.get("access_count", 0)
+                mem_type = memory.get("memory_type")
 
                 relevance = _compute_memory_relevance(
                     importance, confidence, created_at, access_count, last_accessed
                 )
-                recency = 1.0 / (1.0 + (now - (last_accessed or created_at)) / 86400)
+                recency = 1.0 / (1.0 + (now_unix - (last_accessed or created_at)) / 86400)
 
                 score = 0.0
                 if strategy == "balanced":
                     score = relevance
                 elif strategy == "importance":
-                    score = (
-                        (importance * 0.7)
-                        + (confidence * 0.1)
-                        + (recency * 0.1)
-                        + (min(1.0, access_count / 5.0) * 0.1)
-                    )
+                    # Weighted sum prioritizing importance/confidence
+                    score = (importance * 0.6) + (confidence * 0.2) + (relevance * 0.1) + (recency * 0.1)
                 elif strategy == "recency":
-                    score = (
-                        (recency * 0.6) + (importance * 0.2) + (min(1.0, access_count / 5.0) * 0.2)
-                    )
+                     # Weighted sum prioritizing recency/access
+                    score = (recency * 0.5) + (min(1.0, access_count / 5.0) * 0.2) + (relevance * 0.3)
                 elif strategy == "diversity":
-                    score = relevance  # Base score for sorting within types
+                    score = relevance # Use relevance as the base score for sorting within types
 
                 scored_memories.append({"id": mem_id, "score": score, "type": mem_type})
 
-            # Select memories to keep
+            # --- 5. Select Memories to Retain ---
             retained_memory_ids = []
             if strategy == "diversity":
+                # Group by type and sort within groups
                 type_groups = defaultdict(list)
                 for mem in scored_memories:
                     type_groups[mem["type"]].append(mem)
                 for group in type_groups.values():
                     group.sort(key=lambda x: x["score"], reverse=True)
+
+                # Round-robin selection until target size is met
                 group_iters = {mem_type: iter(group) for mem_type, group in type_groups.items()}
                 active_groups = list(group_iters.keys())
                 while len(retained_memory_ids) < target_size and active_groups:
-                    group_type_to_select = active_groups.pop(0)
+                    group_type_to_select = active_groups.pop(0) # Take from front
                     try:
                         selected_mem = next(group_iters[group_type_to_select])
                         retained_memory_ids.append(selected_mem["id"])
-                        active_groups.append(group_type_to_select)  # Add back for round-robin
+                        active_groups.append(group_type_to_select) # Add back to end for next round
                     except StopIteration:
-                        pass  # Group exhausted
-                    if not active_groups and len(retained_memory_ids) < target_size:
-                        break
-            else:  # Balanced, Importance, Recency
+                        pass # Group exhausted, don't add back
+            else: # Balanced, Importance, Recency strategies
                 scored_memories.sort(key=lambda x: x["score"], reverse=True)
                 retained_memory_ids = [m["id"] for m in scored_memories[:target_size]]
-            # --- End Scoring and Selection Logic ---
 
-            # Determine removed memories
+            # --- 6. Determine Removed Memories ---
             removed_memory_ids = list(set(current_memory_ids) - set(retained_memory_ids))
             after_count = len(retained_memory_ids)
             removed_count = len(removed_memory_ids)
 
-            # Update cognitive state with the correct column name
-            now_unix = int(time.time())
-            await conn.execute(
-                "UPDATE cognitive_states SET working_memory = ?, last_active = ? WHERE state_id = ?",
-                (await MemoryUtils.serialize(retained_memory_ids), now_unix, context_id),
-            )
-
-            # Log operation
+            # --- 7. Log the *Outcome* of the Optimization Calculation ---
+            # This operation still requires DB write access for logging.
+            # *** NO STATE UPDATE HERE ***
             await MemoryUtils._log_memory_operation(
                 conn,
                 workflow_id,
-                "optimize_working_memory",
-                None,
-                None,
+                "calculate_wm_optimization", # Changed operation name
+                None, None,
                 {
-                    "context_id": context_id,
-                    "strategy": strategy,
-                    "target_size": target_size,
-                    "before_count": before_count,
-                    "after_count": after_count,
-                    "removed_count": removed_count,
+                    "context_id": context_id, "strategy": strategy,
+                    "target_size": target_size, "before_count": before_count,
+                    "after_count": after_count, "removed_count": removed_count,
+                    "retained_ids_sample": retained_memory_ids[:5], # Log sample IDs
+                    "removed_ids_sample": removed_memory_ids[:5],
                 },
             )
+            await conn.commit() # Commit *only* the log entry
 
-            await conn.commit()
-
+            # --- 8. Return the calculated lists ---
             processing_time = time.time() - start_time
             logger.info(
-                f"Optimized working memory for {context_id} using '{strategy}'. Retained: {after_count}, Removed: {removed_count}",
-                emoji_key="recycle",
+                f"Calculated working memory optimization for state {context_id} using '{strategy}'. "
+                f"Input: {before_count}, Retained: {after_count}, Removed: {removed_count}",
+                emoji_key="brain",
             )
-            # Return block remains the same
             return {
                 "context_id": context_id,
                 "workflow_id": workflow_id,
@@ -6460,8 +6469,8 @@ async def optimize_working_memory(
                 "before_count": before_count,
                 "after_count": after_count,
                 "removed_count": removed_count,
-                "retained_memories": retained_memory_ids,
-                "removed_memories": removed_memory_ids,
+                "retained_memories": retained_memory_ids, # The list to keep
+                "removed_memories": removed_memory_ids,   # The list to discard
                 "success": True,
                 "processing_time": processing_time,
             }
@@ -6469,8 +6478,8 @@ async def optimize_working_memory(
     except ToolInputError:
         raise
     except Exception as e:
-        logger.error(f"Error optimizing working memory for {context_id}: {e}", exc_info=True)
-        raise ToolError(f"Failed to optimize working memory: {str(e)}") from e
+        logger.error(f"Error calculating working memory optimization for {context_id}: {e}", exc_info=True)
+        raise ToolError(f"Failed to calculate working memory optimization: {str(e)}") from e
 
 
 # --- 13. Cognitive State Persistence ---
@@ -8105,7 +8114,6 @@ async def consolidate_memories(
                 found_mem_ids = set(found_memories_details.keys())
                 requested_ids_set = set(target_memories)
 
-                # --- START CORRECTED VALIDATION ---
                 mismatched_workflow_ids = set()
                 not_found_ids = requested_ids_set - found_mem_ids
 
@@ -8135,7 +8143,6 @@ async def consolidate_memories(
                         mismatched_workflow_ids.add(mem_id)
 
                 problematic_ids = not_found_ids.union(mismatched_workflow_ids)
-                # --- END CORRECTED VALIDATION ---
 
                 # Use the combined problematic_ids set for error reporting
                 if problematic_ids:

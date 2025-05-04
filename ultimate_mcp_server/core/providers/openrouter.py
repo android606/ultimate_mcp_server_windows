@@ -172,13 +172,20 @@ class OpenRouterProvider(BaseProvider):
         extra_headers = kwargs.pop("extra_headers", {})
         extra_body = kwargs.pop("extra_body", {})
 
+        json_mode = kwargs.pop("json_mode", False)
+        if json_mode:
+            # OpenRouter uses OpenAI-compatible API
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for OpenRouter")
+
         # Add any remaining kwargs to the main params (standard OpenAI args)
         params.update(kwargs)
 
-        logger.info(
+        self.logger.info(
             f"Generating completion with {self.provider_name} model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=len(prompt),
+            json_mode_requested=json_mode
         )
 
         try:
@@ -202,7 +209,7 @@ class OpenRouterProvider(BaseProvider):
                 raw_response=response,
             )
 
-            logger.success(
+            self.logger.success(
                 f"{self.provider_name} completion successful",
                 emoji_key="success",
                 model=result.model,
@@ -217,7 +224,7 @@ class OpenRouterProvider(BaseProvider):
             return result
 
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 f"{self.provider_name} completion failed for model {model}: {str(e)}",
                 emoji_key="error",
                 model=model
@@ -272,12 +279,20 @@ class OpenRouterProvider(BaseProvider):
 
         extra_headers = kwargs.pop("extra_headers", {})
         extra_body = kwargs.pop("extra_body", {})
+
+        json_mode = kwargs.pop("json_mode", False)
+        if json_mode:
+            # OpenRouter uses OpenAI-compatible API
+            params["response_format"] = {"type": "json_object"}
+            self.logger.debug("Setting response_format to JSON mode for OpenRouter streaming")
+
         params.update(kwargs)
 
-        logger.info(
+        self.logger.info(
             f"Generating streaming completion with {self.provider_name} model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=len(prompt),
+            json_mode_requested=json_mode
         )
 
         start_time = time.time()
@@ -306,7 +321,7 @@ class OpenRouterProvider(BaseProvider):
                 yield content, metadata
 
             processing_time = time.time() - start_time
-            logger.success(
+            self.logger.success(
                 f"{self.provider_name} streaming completion successful",
                 emoji_key="success",
                 model=final_model_name,
@@ -315,7 +330,7 @@ class OpenRouterProvider(BaseProvider):
             )
 
         except Exception as e:
-            logger.error(
+            self.logger.error(
                 f"{self.provider_name} streaming completion failed for model {model}: {str(e)}",
                 emoji_key="error",
                 model=model

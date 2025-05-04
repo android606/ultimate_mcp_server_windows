@@ -64,7 +64,8 @@ class GeminiProvider(BaseProvider):
         
     async def generate_completion(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7,
@@ -73,7 +74,8 @@ class GeminiProvider(BaseProvider):
         """Generate a completion using Google Gemini.
         
         Args:
-            prompt: Text prompt to send to the model
+            prompt: Text prompt to send to the model (or None if messages provided)
+            messages: List of message dictionaries (alternative to prompt)
             model: Model name to use (e.g., "gemini-2.0-flash-lite")
             max_tokens: Maximum tokens to generate
             temperature: Temperature parameter (0.0-1.0)
@@ -97,11 +99,98 @@ class GeminiProvider(BaseProvider):
             model = model.split(":", 1)[1]
             self.logger.debug(f"Stripped provider prefix from model name: {original_model} -> {model}")
         
+        # Validate that either prompt or messages is provided
+        if prompt is None and not messages:
+            raise ValueError("Either 'prompt' or 'messages' must be provided")
+        
+        # Prepare generation config and API call kwargs
+        config = {
+            "temperature": temperature,
+        }
+        if max_tokens is not None:
+             config["max_output_tokens"] = max_tokens # Gemini uses max_output_tokens
+
+        # Pop json_mode flag
+        json_mode = kwargs.pop("json_mode", False)
+        
+        # Set up JSON mode in config dict per Gemini API docs
+        if json_mode:
+            # For Gemini, JSON mode is set via response_mime_type in the config dict
+            config["response_mime_type"] = "application/json"
+            self.logger.debug("Setting response_mime_type to application/json for Gemini in config")
+
+        # Add remaining kwargs to config
+        for key in list(kwargs.keys()):
+             if key in ["top_p", "top_k", "candidate_count", "stop_sequences"]:
+                 config[key] = kwargs.pop(key)
+                 
+        # Store other kwargs that might need to be passed directly
+        request_params = {}
+        for key in list(kwargs.keys()):
+            if key in ["safety_settings", "tools", "system"]:
+                request_params[key] = kwargs.pop(key)
+
+        # Prepare content based on input type (prompt or messages)
+        content = None
+        if prompt:
+            content = prompt
+            log_input_size = len(prompt)
+        elif messages:
+            # Convert messages to Gemini format
+            content = []
+            log_input_size = 0
+            for msg in messages:
+                role = msg.get("role", "").lower()
+                text = msg.get("content", "")
+                log_input_size += len(text)
+                
+                # Map roles to Gemini's expectations
+                if role == "system":
+                    # For system messages, prepend to user input or add as user message
+                    system_text = text
+                    # Find the next user message to prepend to
+                    for _i, future_msg in enumerate(messages[messages.index(msg) + 1:], messages.index(msg) + 1):
+                        if future_msg.get("role", "").lower() == "user":
+                            # Leave this system message to be handled when we reach the user message
+                            # Just track its content for now
+                            break
+                    else:
+                        # No user message found after system, add as separate user message
+                        content.append({"role": "user", "parts": [{"text": system_text}]})
+                    continue
+                
+                elif role == "user":
+                    # Check if previous message was a system message
+                    prev_system_text = ""
+                    if messages.index(msg) > 0:
+                        prev_msg = messages[messages.index(msg) - 1]
+                        if prev_msg.get("role", "").lower() == "system":
+                            prev_system_text = prev_msg.get("content", "")
+                    
+                    # If there was a system message before, prepend it to the user message
+                    if prev_system_text:
+                        gemini_role = "user"
+                        gemini_text = f"{prev_system_text}\n\n{text}"
+                    else:
+                        gemini_role = "user"
+                        gemini_text = text
+                        
+                elif role == "assistant":
+                    gemini_role = "model"
+                    gemini_text = text
+                else:
+                    self.logger.warning(f"Unsupported message role '{role}', treating as user")
+                    gemini_role = "user"
+                    gemini_text = text
+                
+                content.append({"role": gemini_role, "parts": [{"text": gemini_text}]})
+
         # Log request
         self.logger.info(
             f"Generating completion with Gemini model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            prompt_length=log_input_size,
+            json_mode_requested=json_mode
         )
         
         start_time = time.time()
@@ -112,13 +201,23 @@ class GeminiProvider(BaseProvider):
                 # Return mock response for tests
                 completion_text = "Mock Gemini response for testing"
                 processing_time = 0.1
+                response = None
             else:
-                # Use direct models.generate_content approach with correct parameters
-                response = self.client.models.generate_content(
-                    model=model,
-                    contents=prompt,
-                    **kwargs
-                )
+                # Pass everything in the correct structure according to the API
+                if isinstance(content, list):  # messages format
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=content,
+                        config=config,  # Pass config dict containing temperature, max_output_tokens, etc.
+                        **request_params  # Pass other params directly if needed
+                    )
+                else:  # prompt format (string)
+                    response = self.client.models.generate_content(
+                        model=model,
+                        contents=content,
+                        config=config,  # Pass config dict containing temperature, max_output_tokens, etc.
+                        **request_params  # Pass other params directly if needed
+                    )
                 
                 processing_time = time.time() - start_time
                 
@@ -128,7 +227,7 @@ class GeminiProvider(BaseProvider):
             # Estimate token usage (Gemini doesn't provide token counts)
             # Roughly 4 characters per token as a crude approximation
             char_to_token_ratio = 4.0
-            estimated_input_tokens = len(prompt) / char_to_token_ratio
+            estimated_input_tokens = log_input_size / char_to_token_ratio
             estimated_output_tokens = len(completion_text) / char_to_token_ratio
             
             # Create standardized response
@@ -142,6 +241,9 @@ class GeminiProvider(BaseProvider):
                 raw_response=None,  # Don't need raw response for tests
                 metadata={"token_count_estimated": True}
             )
+            
+            # Add message for consistency with other providers
+            result.message = {"role": "assistant", "content": completion_text}
             
             # Log success
             self.logger.success(
@@ -168,7 +270,8 @@ class GeminiProvider(BaseProvider):
             
     async def generate_completion_stream(
         self,
-        prompt: str,
+        prompt: Optional[str] = None,
+        messages: Optional[List[Dict[str, Any]]] = None,
         model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: float = 0.7,
@@ -177,7 +280,8 @@ class GeminiProvider(BaseProvider):
         """Generate a streaming completion using Google Gemini.
         
         Args:
-            prompt: Text prompt to send to the model
+            prompt: Text prompt to send to the model (or None if messages provided)
+            messages: List of message dictionaries (alternative to prompt)
             model: Model name to use (e.g., "gemini-2.0-flash-lite")
             max_tokens: Maximum tokens to generate
             temperature: Temperature parameter (0.0-1.0)
@@ -201,59 +305,192 @@ class GeminiProvider(BaseProvider):
             model = model.split(":", 1)[1]
             self.logger.debug(f"Stripped provider prefix from model name (stream): {original_model} -> {model}")
         
-        # Prepare generation config
-        generation_config = {
+        # Validate that either prompt or messages is provided
+        if prompt is None and not messages:
+            raise ValueError("Either 'prompt' or 'messages' must be provided")
+        
+        # Prepare config dict per Gemini API
+        config = {
             "temperature": temperature,
         }
-        
-        # Add max_tokens if specified (Gemini uses max_output_tokens)
         if max_tokens is not None:
-            generation_config["max_output_tokens"] = max_tokens
+            config["max_output_tokens"] = max_tokens
+
+        # Pop json_mode flag
+        json_mode = kwargs.pop("json_mode", False)
         
+        # Set up JSON mode in config dict
+        if json_mode:
+            # For Gemini, JSON mode is set via response_mime_type in the config dict
+            config["response_mime_type"] = "application/json"
+            self.logger.debug("Setting response_mime_type to application/json for Gemini streaming in config")
+
+        # Add remaining kwargs to config
+        for key in list(kwargs.keys()):
+             if key in ["top_p", "top_k", "candidate_count", "stop_sequences"]:
+                 config[key] = kwargs.pop(key)
+                 
+        # Store other kwargs that might need to be passed directly
+        request_params = {}
+        for key in list(kwargs.keys()):
+            if key in ["safety_settings", "tools", "system"]:
+                request_params[key] = kwargs.pop(key)
+
+        # Prepare content based on input type (prompt or messages)
+        content = None
+        if prompt:
+            content = prompt
+            log_input_size = len(prompt)
+        elif messages:
+            # Convert messages to Gemini format
+            content = []
+            log_input_size = 0
+            for msg in messages:
+                role = msg.get("role", "").lower()
+                text = msg.get("content", "")
+                log_input_size += len(text)
+                
+                # Map roles to Gemini's expectations
+                if role == "system":
+                    # For system messages, prepend to user input or add as user message
+                    system_text = text
+                    # Find the next user message to prepend to
+                    for _i, future_msg in enumerate(messages[messages.index(msg) + 1:], messages.index(msg) + 1):
+                        if future_msg.get("role", "").lower() == "user":
+                            # Leave this system message to be handled when we reach the user message
+                            # Just track its content for now
+                            break
+                    else:
+                        # No user message found after system, add as separate user message
+                        content.append({"role": "user", "parts": [{"text": system_text}]})
+                    continue
+                
+                elif role == "user":
+                    # Check if previous message was a system message
+                    prev_system_text = ""
+                    if messages.index(msg) > 0:
+                        prev_msg = messages[messages.index(msg) - 1]
+                        if prev_msg.get("role", "").lower() == "system":
+                            prev_system_text = prev_msg.get("content", "")
+                    
+                    # If there was a system message before, prepend it to the user message
+                    if prev_system_text:
+                        gemini_role = "user"
+                        gemini_text = f"{prev_system_text}\n\n{text}"
+                    else:
+                        gemini_role = "user"
+                        gemini_text = text
+                        
+                elif role == "assistant":
+                    gemini_role = "model"
+                    gemini_text = text
+                else:
+                    self.logger.warning(f"Unsupported message role '{role}', treating as user")
+                    gemini_role = "user"
+                    gemini_text = text
+                
+                content.append({"role": gemini_role, "parts": [{"text": gemini_text}]})
+
         # Log request
         self.logger.info(
             f"Generating streaming completion with Gemini model {model}",
             emoji_key=self.provider_name,
-            prompt_length=len(prompt)
+            input_type=f"{'prompt' if prompt else 'messages'} ({log_input_size} chars)",
+            json_mode_requested=json_mode
         )
         
         start_time = time.time()
         total_chunks = 0
         
         try:
-            # Use the streaming approach with the client's models API
-            response = self.client.models.generate_content(
-                model=model,
-                contents=prompt,
-                stream=True,
-                **kwargs
-            )
-            
-            # Process the stream
-            for chunk in response:
-                total_chunks += 1
+            # Use the dedicated streaming method as per Google's documentation
+            try:
+                if isinstance(content, list):  # messages format
+                    stream_response = self.client.models.generate_content_stream(
+                        model=model,
+                        contents=content,
+                        config=config,
+                        **request_params
+                    )
+                else:  # prompt format (string)
+                    stream_response = self.client.models.generate_content_stream(
+                        model=model,
+                        contents=content,
+                        config=config,
+                        **request_params
+                    )
+                    
+                # Process the stream - iterating over chunks
+                async def iterate_response():
+                    # Convert sync iterator to async
+                    for chunk in stream_response:
+                        yield chunk
                 
-                # Extract content from the chunk
-                chunk_text = chunk.text if hasattr(chunk, 'text') else ""
+                async for chunk in iterate_response():
+                    total_chunks += 1
+                    
+                    # Extract text from the chunk
+                    chunk_text = ""
+                    if hasattr(chunk, 'text'):
+                        chunk_text = chunk.text
+                    elif hasattr(chunk, 'candidates') and chunk.candidates:
+                        if hasattr(chunk.candidates[0], 'content') and chunk.candidates[0].content:
+                            if hasattr(chunk.candidates[0].content, 'parts') and chunk.candidates[0].content.parts:
+                                chunk_text = chunk.candidates[0].content.parts[0].text
+                    
+                    # Metadata for this chunk
+                    metadata = {
+                        "model": model,
+                        "provider": self.provider_name,
+                        "chunk_index": total_chunks,
+                    }
+                    
+                    yield chunk_text, metadata
                 
-                # Metadata for this chunk
-                metadata = {
+                # Log success
+                processing_time = time.time() - start_time
+                self.logger.success(
+                    "Gemini streaming completion successful",
+                    emoji_key="success",
+                    model=model,
+                    chunks=total_chunks,
+                    time=processing_time
+                )
+                
+                # Yield final metadata chunk
+                yield "", {
                     "model": model,
                     "provider": self.provider_name,
-                    "chunk_index": total_chunks,
+                    "chunk_index": total_chunks + 1,
+                    "processing_time": processing_time,
+                    "finish_reason": "stop",  # Gemini doesn't provide this directly
                 }
                 
-                yield chunk_text, metadata
+            except (AttributeError, TypeError) as e:
+                # If streaming isn't supported, fall back to non-streaming
+                self.logger.warning(f"Streaming not supported for current Gemini API: {e}. Falling back to non-streaming.")
                 
-            # Log success
-            processing_time = time.time() - start_time
-            self.logger.success(
-                "Gemini streaming completion successful",
-                emoji_key="success",
-                model=model,
-                chunks=total_chunks,
-                time=processing_time
-            )
+                # Call generate_completion and yield the entire result as one chunk
+                completion = await self.generate_completion(
+                    prompt=prompt,
+                    messages=messages,
+                    model=model,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    json_mode=json_mode,
+                    **kwargs
+                )
+                
+                yield completion.text, {
+                    "model": model,
+                    "provider": self.provider_name,
+                    "chunk_index": 1,
+                    "is_fallback": True
+                }
+                total_chunks = 1
+                
+                # Skip the rest of the streaming logic
+                raise StopAsyncIteration() from e
             
         except Exception as e:
             self.logger.error(
@@ -261,7 +498,15 @@ class GeminiProvider(BaseProvider):
                 emoji_key="error",
                 model=model
             )
-            raise
+            # Yield error info in final chunk
+            yield "", {
+                "model": model,
+                "provider": self.provider_name,
+                "chunk_index": total_chunks + 1,
+                "error": f"{type(e).__name__}: {str(e)}",
+                "processing_time": time.time() - start_time,
+                "finish_reason": "error"
+            }
             
     async def list_models(self) -> List[Dict[str, Any]]:
         """List available Gemini models.

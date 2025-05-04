@@ -5,7 +5,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from ultimate_mcp_server.constants import Provider, TaskType
 from ultimate_mcp_server.core.providers.base import get_provider, parse_model_string
-from ultimate_mcp_server.exceptions import ProviderError, ToolInputError
+from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
 from ultimate_mcp_server.services.cache import with_cache
 from ultimate_mcp_server.tools.base import with_error_handling, with_retry, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
@@ -23,6 +23,7 @@ async def generate_completion(
     max_tokens: Optional[int] = None,
     temperature: float = 0.7,
     stream: bool = False,
+    json_mode: bool = False,
     additional_params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Generates a single, complete text response for a given prompt (non-streaming).
@@ -43,6 +44,8 @@ async def generate_completion(
         max_tokens: (Optional) Maximum number of tokens to generate in the response.
         temperature: (Optional) Controls response randomness (0.0=deterministic, 1.0=creative). Default 0.7.
         stream: Must be False for this tool. Set to True to trigger an error directing to `stream_completion`.
+        json_mode: (Optional) When True, instructs the model to return a valid JSON response. Default False.
+                   Note: Support and behavior varies by provider.
         additional_params: (Optional) Dictionary of additional provider-specific parameters (e.g., `{"top_p": 0.9}`).
 
     Returns:
@@ -99,12 +102,13 @@ async def generate_completion(
     additional_params = additional_params or {}
     
     try:
-        # Generate completion
+        # Generate completion, passing json_mode directly
         result = await provider_instance.generate_completion(
             prompt=prompt,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
+            json_mode=json_mode, # Pass the flag here
             **additional_params
         )
         
@@ -157,6 +161,7 @@ async def stream_completion(
     model: Optional[str] = None,
     max_tokens: Optional[int] = None,
     temperature: float = 0.7,
+    json_mode: bool = False,
     additional_params: Optional[Dict[str, Any]] = None
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Generates a text completion for a prompt and streams the response chunk by chunk.
@@ -174,6 +179,7 @@ async def stream_completion(
                If None, the provider's default model is used. Use `list_models` to find available IDs.
         max_tokens: (Optional) Maximum number of tokens to generate in the response.
         temperature: (Optional) Controls response randomness (0.0=deterministic, 1.0=creative). Default 0.7.
+        json_mode: (Optional) When True, instructs the model to return a valid JSON response. Default False.
         additional_params: (Optional) Dictionary of additional provider-specific parameters (e.g., `{"top_p": 0.9}`).
 
     Yields:
@@ -243,11 +249,11 @@ async def stream_completion(
     # Set default additional params
     additional_params = additional_params or {}
     
-    # Log start of streaming
     logger.info(
         f"Starting streaming completion with {provider}",
         emoji_key=TaskType.COMPLETION.value,
-        prompt_length=len(prompt)
+        prompt_length=len(prompt),
+        json_mode_requested=json_mode # Log the request
     )
     
     chunk_count = 0
@@ -257,12 +263,13 @@ async def stream_completion(
     actual_model_used = model # Keep track of the actual model used
 
     try:
-        # Get stream
+        # Get stream, passing json_mode directly
         stream = provider_instance.generate_completion_stream(
             prompt=prompt,
             model=model,
             max_tokens=max_tokens,
             temperature=temperature,
+            json_mode=json_mode, # Pass the flag here
             **additional_params
         )
         
@@ -330,6 +337,83 @@ async def stream_completion(
         "error": error_during_stream 
     }
 
+@with_tool_metrics
+@with_error_handling
+async def generate_completion_stream(
+    prompt: str,
+    provider: str = Provider.OPENAI.value,
+    model: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    temperature: float = 0.7,
+    json_mode: bool = False,
+    additional_params: Optional[Dict[str, Any]] = None
+) -> AsyncGenerator[Dict[str, Any], None]:
+    """Generates a text response in a streaming fashion for a given prompt.
+    
+    Use this tool when you want to display the response as it's being generated
+    without waiting for the entire response to be completed. It yields chunks of text
+    as they become available, allowing for more interactive user experiences.
+    
+    Args:
+        prompt: The text prompt to send to the LLM.
+        provider: The LLM provider to use (default: "openai").
+        model: The specific model to use (if None, uses provider's default).
+        max_tokens: Maximum tokens to generate in the response.
+        temperature: Controls randomness in the output (0.0-1.0).
+        json_mode: Whether to request JSON formatted output from the model.
+        additional_params: Additional provider-specific parameters.
+        
+    Yields:
+        Dictionary containing the generated text chunk and metadata:
+        {
+            "text": str,           # The text chunk
+            "metadata": {...},     # Additional information about the generation
+            "done": bool           # Whether this is the final chunk
+        }
+        
+    Raises:
+        ToolError: If an error occurs during text generation.
+    """
+    # Initialize variables to track metrics
+    start_time = time.time()
+    
+    try:
+        # Get provider instance
+        provider_instance = await get_provider(provider)
+        if not provider_instance:
+            raise ValueError(f"Invalid provider: {provider}")
+            
+        # Add json_mode to additional_params if specified
+        params = additional_params.copy() if additional_params else {}
+        if json_mode:
+            params["json_mode"] = True
+        
+        # Stream the completion
+        async for chunk, metadata in provider_instance.generate_completion_stream(
+            prompt=prompt,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            **params
+        ):
+            # Calculate elapsed time for each chunk
+            elapsed_time = time.time() - start_time
+            
+            # Include additional metadata with each chunk
+            response = {
+                "text": chunk,
+                "metadata": {
+                    **metadata,
+                    "elapsed_time": elapsed_time,
+                },
+                "done": metadata.get("finish_reason") is not None
+            }
+            
+            yield response
+            
+    except Exception as e:
+        logger.error(f"Error in generate_completion_stream: {str(e)}", exc_info=True)
+        raise ToolError(f"Failed to generate streaming completion: {str(e)}") from e
 
 @with_cache(ttl=24 * 60 * 60) # Cache results for 24 hours
 @with_tool_metrics
@@ -342,6 +426,7 @@ async def chat_completion(
     max_tokens: Optional[int] = None,
     temperature: float = 0.7,
     system_prompt: Optional[str] = None,
+    json_mode: bool = False,
     additional_params: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """Generates a response within a conversational context (multi-turn chat).
@@ -365,6 +450,7 @@ async def chat_completion(
         temperature: (Optional) Controls response randomness (0.0=deterministic, 1.0=creative). Default 0.7.
         system_prompt: (Optional) An initial system message to guide the model's behavior (e.g., persona, instructions).
                        If provided, it's effectively prepended to the `messages` list as a system message.
+        json_mode: (Optional) Request structured JSON output from the LLM. Default False.
         additional_params: (Optional) Dictionary of additional provider-specific parameters (e.g., `{"top_p": 0.9}`).
 
     Returns:
@@ -428,6 +514,9 @@ async def chat_completion(
         ) from e
 
     additional_params = additional_params or {}
+    # Add json_mode to additional params if specified
+    if json_mode:
+        additional_params["json_mode"] = True
 
     try:
         result = await provider_instance.generate_completion(
