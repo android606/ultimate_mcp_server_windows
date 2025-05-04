@@ -7,7 +7,6 @@ import asyncio
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
 
 # --- Configuration & Path Setup ---
 # Add project root to path for imports when running as script
@@ -48,18 +47,16 @@ except ImportError:
 
 # --- Defer ultimate_mcp_server imports AFTER path setup ---
 # Import Rich components
-from rich import box
 from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.syntax import Syntax
-from rich.table import Table
 from rich.traceback import install as install_rich_traceback
 
 # Import necessary tool functions and exceptions
 from ultimate_mcp_server.exceptions import ProviderError, ToolError, ToolInputError
 from ultimate_mcp_server.tools.python_sandbox import (
     _close_all_sandboxes,  # Import cleanup function
+    display_sandbox_result,
     execute_python,
     repl_python,
 )
@@ -79,150 +76,6 @@ install_rich_traceback(show_locals=False, width=console.width)
 
 # --- Enhanced Display Helper (from older script) ---
 
-
-def display_sandbox_result(
-    title: str, result: Optional[Dict[str, Any]], code_str: Optional[str] = None
-) -> None:
-    """Display sandbox execution result with enhanced formatting."""
-    console.print(Rule(f"[bold cyan]{escape(title)}[/bold cyan]"))
-
-    if code_str:
-        console.print(
-            Panel(
-                Syntax(
-                    code_str.strip(), "python", theme="monokai", line_numbers=True, word_wrap=True
-                ),
-                title="Executed Code",
-                border_style="blue",
-                padding=(1, 2),
-            )
-        )
-
-    if result is None:
-        console.print(
-            Panel(
-                "[bold yellow]No result object returned from tool call.[/]",
-                title="Warning",
-                border_style="yellow",
-            )
-        )
-        console.print()
-        return
-
-    # Check for errors based on the result structure from safe_tool_call
-    if not result.get("success", False) and "error" in result:
-        error_msg = result.get("error", "Unknown error")
-        error_type = result.get("error_type", "UnknownError")
-        error_code = result.get("error_code", "UNKNOWN")
-        details = result.get("details", {})
-
-        error_renderable = f"[bold red]:x: Operation Failed ({escape(error_type)} / {escape(error_code)}):[/]\n{escape(error_msg)}"
-        if details:
-            try:
-                details_str = escape(str(details))  # Basic string representation
-                error_renderable += f"\n\n[bold]Details:[/]\n{details_str}"
-            except Exception:
-                error_renderable += "\n\n[bold]Details:[/]\n(Could not display details)"
-
-        console.print(
-            Panel(error_renderable, title="Error", border_style="red", padding=(1, 2), expand=False)
-        )
-        console.print()
-        return
-
-    # --- Display Success Case ---
-    actual_result = result.get(
-        "result", {}
-    )  # Get the nested result dict from execute_python/repl_python
-
-    # Create output panel for stdout/stderr
-    output_parts = []
-    if stdout := actual_result.get("stdout", ""):
-        output_parts.append(f"[bold green]STDOUT:[/]\n{escape(stdout)}")
-
-    if stderr := actual_result.get("stderr", ""):
-        if output_parts:
-            output_parts.append("\n" + ("-" * 20) + "\n")  # Separator
-        output_parts.append(f"[bold red]STDERR:[/]\n{escape(stderr)}")
-
-    if output_parts:
-        console.print(
-            Panel(
-                "\n".join(output_parts),
-                title="Output (stdout/stderr)",
-                border_style="yellow",
-                padding=(1, 2),
-            )
-        )
-    else:
-        console.print("[dim]No stdout or stderr captured.[/dim]")
-
-    # Display result value if present and not None
-    result_value = actual_result.get(
-        "result"
-    )  # This is the value assigned to 'result' in the executed code
-    if result_value is not None:
-        try:
-            # Attempt to pretty-print common types
-            if isinstance(result_value, (dict, list)):
-                result_str = str(result_value)  # Keep it simple for now
-            else:
-                result_str = str(result_value)
-
-            # Limit length for display
-            max_len = 500
-            display_str = result_str[:max_len] + ("..." if len(result_str) > max_len else "")
-
-            console.print(
-                Panel(
-                    Syntax(
-                        display_str, "python", theme="monokai", line_numbers=False, word_wrap=True
-                    ),
-                    title="Result Variable ('result')",
-                    border_style="green",
-                    padding=(1, 2),
-                )
-            )
-        except Exception as e:
-            console.print(
-                Panel(
-                    f"[yellow]Could not format result value: {e}[/]",
-                    title="Result Variable ('result')",
-                    border_style="yellow",
-                )
-            )
-            console.print(f"Raw Result Type: {type(result_value)}")
-            try:
-                console.print(f"Raw Result Repr: {escape(repr(result_value)[:500])}...")
-            except Exception:
-                pass
-
-    # Display execution stats
-    stats_table = Table(
-        title="Execution Statistics",
-        box=box.ROUNDED,
-        show_header=False,
-        padding=(0, 1),
-        border_style="dim",
-    )
-    stats_table.add_column("Metric", style="cyan", justify="right")
-    stats_table.add_column("Value", style="white")
-
-    if "elapsed_py_ms" in actual_result:
-        stats_table.add_row("Python Execution Time", f"{actual_result['elapsed_py_ms']:.2f} ms")
-    if "elapsed_wall_ms" in actual_result:
-        stats_table.add_row("Sandbox Wall Clock Time", f"{actual_result['elapsed_wall_ms']:.2f} ms")
-    if "total_duration_ms" in result:  # From safe_tool_call wrapper
-        stats_table.add_row("Total Tool Call Time", f"{result['total_duration_ms']:.2f} ms")
-    if "session_id" in actual_result:
-        stats_table.add_row("Session ID", actual_result["session_id"])
-    if "handle" in actual_result:
-        stats_table.add_row("REPL Handle", actual_result["handle"])
-
-    if stats_table.row_count > 0:
-        console.print(stats_table)
-
-    console.print()  # Add spacing
 
 
 # --- Argument Parsing ---
