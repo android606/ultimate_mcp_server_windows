@@ -32,6 +32,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import aiosqlite
 import markdown
 import numpy as np
+from grpc import Status
 from pygments.formatters import HtmlFormatter
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine_similarity
 
@@ -1396,30 +1397,7 @@ async def _find_similar_memories(
 @with_tool_metrics
 @with_error_handling
 async def initialize_memory_system(db_path: str = agent_memory_config.db_path) -> Dict[str, Any]:
-    """Initializes the Unified Agent Memory system and checks embedding service status.
-
-    Creates or verifies the database schema using aiosqlite, applies optimizations,
-    and attempts to initialize the singleton EmbeddingService. **Raises ToolError if
-    the embedding service fails to initialize or is non-functional.**
-
-    Args:
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Initialization status dictionary (only if successful).
-        {
-            "success": true,
-            "message": "Unified Memory System initialized successfully.",
-            "db_path": "/path/to/unified_agent_memory.db",
-            "embedding_service_functional": true, # Will always be true if function returns successfully
-            "embedding_service_warning": null,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolError: If database initialization fails OR if the EmbeddingService
-                   cannot be initialized or lacks a functional client (e.g., missing API key).
-    """
+    """(Agent Internal) Initializes/verifies UMS DB & embeddings. Not for direct LLM call."""
     start_time = time.time()
     logger.info("Initializing Unified Memory System...", emoji_key="rocket")
     embedding_service_warning = None  # This will now likely be part of the error message
@@ -1508,37 +1486,9 @@ async def create_workflow(
     parent_workflow_id: Optional[str] = None,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Creates a new workflow, including a default thought chain and initial goal thought if specified.
-
-    Args:
-        title: A clear, descriptive title for the workflow.
-        description: (Optional) A more detailed explanation of the workflow's purpose.
-        goal: (Optional) The high-level goal or objective. If provided, an initial 'goal' thought is created.
-        tags: (Optional) List of keyword tags to categorize this workflow.
-        metadata: (Optional) Additional structured data about the workflow.
-        parent_workflow_id: (Optional) ID of a parent workflow.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing information about the created workflow and its primary thought chain.
-        Timestamps are returned as ISO 8601 strings.
-        {
-            "workflow_id": "uuid-string",
-            "title": "Workflow Title",
-            "description": "...",
-            "goal": "...",
-            "status": "active",
-            "created_at": "iso-timestampZ",
-            "updated_at": "iso-timestampZ",
-            "tags": ["tag1"],
-            "primary_thought_chain_id": "uuid-string",
-            "success": true
-        }
-
-    Raises:
-        ToolInputError: If title is empty or parent workflow doesn't exist.
-        ToolError: If the database operation fails.
-    """
+    """Starts a new task/project; creates a workflow with an initial UMS goal.
+    Args: title, goal, description, tags, parent_workflow_id.
+    Returns: workflow_id, primary_thought_chain_id."""
     # Validate required input
     if not title or not isinstance(title, str):
         raise ToolInputError("Workflow title must be a non-empty string", param_name="title")
@@ -1657,9 +1607,8 @@ async def update_workflow_status(
     update_tags: Optional[List[str]] = None,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Updates the status of a workflow. (Ported from agent_memory, adapted).
-    Timestamps are returned as ISO 8601 strings.
-    """
+    """Changes a workflow's status (e.g., active, completed, failed).
+    Args: workflow_id, status, completion_message, update_tags."""
     try:
         status_enum = WorkflowStatus(status.lower())
     except ValueError as e:
@@ -1771,7 +1720,6 @@ async def update_workflow_status(
 
 # --- 3. Action Tracking Tools ---
 
-
 @with_tool_metrics
 @with_error_handling
 async def record_action_start(
@@ -1786,30 +1734,9 @@ async def record_action_start(
     related_thought_id: Optional[str] = None,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Records the start of an action within a workflow and creates a corresponding episodic memory.
-
-    Use this tool whenever you begin a significant step in your workflow. It logs the action details
-    and automatically creates a linked memory entry summarizing the action's initiation and reasoning.
-
-    Args:
-        workflow_id: The ID of the workflow this action belongs to.
-        action_type: The type of action (e.g., 'tool_use', 'reasoning', 'planning'). See ActionType enum.
-        reasoning: An explanation of why this action is being taken.
-        tool_name: (Optional) The name of the tool being used (required if action_type is 'tool_use').
-        tool_args: (Optional) Arguments passed to the tool (used if action_type is 'tool_use').
-        title: (Optional) A brief, descriptive title for this action. Auto-generated if omitted.
-        parent_action_id: (Optional) ID of parent action if this is a sub-action.
-        tags: (Optional) List of tags to categorize this action.
-        related_thought_id: (Optional) ID of a thought that led to this action.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        A dictionary containing information about the started action and the linked memory.
-
-    Raises:
-        ToolInputError: If required parameters are missing or invalid, or referenced entities don't exist.
-        ToolError: If the database operation fails.
-    """
+    """Logs the beginning of an agent action or tool use, with reasoning. Creates linked memory.
+	Args: workflow_id, action_type, reasoning, tool_name, tool_args, title, parent_action_id, tags, related_thought_id.
+	Returns: action_id, linked_memory_id."""
     # --- Input Validation ---
     try:
         action_type_enum = ActionType(action_type.lower())
@@ -1997,40 +1924,13 @@ async def record_action_completion(
     conclusion_thought_type: str = "inference",  # Default type for conclusion
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Records the completion or failure of an action and updates its linked memory.
-
-    Marks an action (previously started with record_action_start) as finished,
-    stores the tool result if applicable, optionally adds a summary or concluding thought,
-    and updates the corresponding 'action_log' memory entry.
-
-    Args:
-        action_id: The ID of the action to complete.
-        status: (Optional) Final status: 'completed', 'failed', or 'skipped'. Default 'completed'.
-        tool_result: (Optional) The result returned by the tool for 'tool_use' actions.
-        summary: (Optional) A brief summary of the action's outcome or findings.
-        conclusion_thought: (Optional) A thought derived from this action's completion.
-        conclusion_thought_type: (Optional) Type for the conclusion thought. Default 'inference'.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary confirming the action completion.
-        {
-            "action_id": "action-uuid",
-            "workflow_id": "workflow-uuid",
-            "status": "completed" | "failed" | "skipped",
-            "completed_at": "iso-timestamp",
-            "conclusion_thought_id": "thought-uuid" | None,
-            "success": true
-        }
-
-    Raises:
-        ToolInputError: If action not found or status/thought type is invalid.
-        ToolError: If database operation fails.
-    """
+    """Logs the end of an agent action, its result, and status. Updates linked memory.
+    Args: action_id, status, tool_result, summary, conclusion_thought.
+    Returns: action_id, conclusion_thought_id."""
     start_time = time.time()
     # --- Validate Status ---
     try:
-        status_enum = ActionStatus(status.lower())
+        status_enum = ActionStatus(Status.lower())
         if status_enum not in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.SKIPPED]:
             raise ValueError("Status must indicate completion, failure, or skipping.")
     except ValueError as e:
@@ -2224,43 +2124,9 @@ async def get_action_details(
     include_dependencies: bool = False,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves detailed information about one or more actions.
-
-    Fetch complete details about specific actions by their IDs, either individually
-    or in batch. Optionally includes information about action dependencies.
-
-    Args:
-        action_id: ID of a single action to retrieve (ignored if action_ids is provided)
-        action_ids: Optional list of action IDs to retrieve in batch
-        include_dependencies: Whether to include dependency information for each action
-        db_path: Path to the SQLite database file
-
-    Returns:
-        Dictionary containing action details:
-        {
-            "actions": [
-                {
-                    "action_id": "uuid-string",
-                    "workflow_id": "workflow-uuid",
-                    "action_type": "tool_use",
-                    "status": "completed",
-                    "title": "Load data",
-                    ... other action fields ...
-                    "dependencies": { # Only if include_dependencies=True
-                        "depends_on": [{"action_id": "action-id-1", "type": "requires"}],
-                        "dependent_actions": [{"action_id": "action-id-3", "type": "informs"}]
-                    }
-                },
-                ... more actions if batch ...
-            ],
-            "success": true,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolInputError: If neither action_id nor action_ids is provided, or if no matching actions found
-        ToolError: If database operation fails
-    """
+    """Retrieves detailed information about one or more specific actions.
+    Args: action_id or action_ids, include_dependencies.
+    Returns: List of action objects."""
     start_time = time.time()
 
     # Validate inputs
@@ -2417,38 +2283,10 @@ async def summarize_context_block(
     model: Optional[str] = None,  # Default model
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Summarizes a specific block of context for an agent, optimized for preserving key information.
-
-    A specialized version of summarize_text designed specifically for compressing agent context
-    blocks like action histories, memory sets, or thought chains. Uses optimized prompting
-    based on context_type to preserve the most relevant information for agent decision-making.
-
-    Args:
-        text_to_summarize: Context block text to summarize
-        target_tokens: Desired length of summary (default 500)
-        context_type: Type of context being summarized (affects prompting)
-        workflow_id: Optional workflow ID for logging
-        provider: (Optional) LLM provider to use (e.g., 'openai', 'anthropic').
-                  Default 'anthropic'.
-        model: (Optional) Specific LLM model name (e.g., 'gpt-4.1-mini',
-               'claude-3-5-haiku-20241022'). If None, uses provider's default.
-               Default 'claude-3-5-haiku-20241022'.
-        db_path: Path to the SQLite database file
-
-    Returns:
-        Dictionary containing the generated summary:
-        {
-            "summary": "Concise context summary...",
-            "context_type": "actions",
-            "compression_ratio": 0.25,  # ratio of summary length to original length
-            "success": true,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolInputError: If text_to_summarize is empty
-        ToolError: If summarization fails or provider is invalid
-    """
+    """(Agent Internal Utility) LLM-summarizes a given text block.
+    Agent should use 'get_rich_context_package' for its main operational context.
+    Args: text_to_summarize, target_tokens, context_type, workflow_id.
+    Returns: summary text."""
     start_time = time.time()
 
     if not text_to_summarize:
@@ -2623,35 +2461,9 @@ async def add_action_dependency(
     dependency_type: str = "requires",  # e.g., requires, informs, blocks
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Records a dependency between two actions within the same workflow.
-
-    Use this during planning or reflection to explicitly state relationships, like:
-    - Action B 'requires' the output of Action A.
-    - Action C 'informs' the decision made in Action D.
-    - Action E 'blocks' Action F until E is complete.
-
-    Args:
-        source_action_id: The ID of the action that depends on the target action.
-        target_action_id: The ID of the action that the source action depends upon.
-        dependency_type: (Optional) Describes the nature of the dependency (e.g., 'requires', 'informs', 'blocks'). Default 'requires'.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary confirming the dependency creation.
-        {
-            "source_action_id": "source-uuid",
-            "target_action_id": "target-uuid",
-            "dependency_type": "requires",
-            "dependency_id": 123, # Auto-incremented ID
-            "created_at": "iso-timestamp",
-            "success": true,
-            "processing_time": 0.04
-        }
-
-    Raises:
-        ToolInputError: If IDs are missing, the same, actions not found, or actions belong to different workflows.
-        ToolError: If the database operation fails.
-    """
+    """Defines a dependency: action A requires action B to complete first.
+    Args: source_action_id (dependent), target_action_id (prerequisite), dependency_type.
+    Returns: dependency_id."""
     if not source_action_id:
         raise ToolInputError("Source action ID required.", param_name="source_action_id")
     if not target_action_id:
@@ -2790,41 +2602,9 @@ async def get_action_dependencies(
     include_details: bool = False,  # Whether to fetch full action details
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves actions that depend on the given action (downstream) or actions the given action depends on (upstream).
-
-    Use this to understand the relationship between actions in a workflow.
-    - direction='downstream': Find actions that need this one to complete first ('get_dependent_actions').
-    - direction='upstream': Find actions that this one needs to complete first ('get_action_prerequisites').
-
-    Args:
-        action_id: The ID of the action to query dependencies for.
-        direction: (Optional) 'downstream' (actions depending on this one) or 'upstream' (actions this one depends on). Default 'downstream'.
-        dependency_type: (Optional) Filter by the type of dependency (e.g., 'requires').
-        include_details: (Optional) If True, returns full details of the related actions, otherwise just their IDs and titles. Default False.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing a list of dependent or prerequisite actions.
-        {
-            "action_id": "query-action-uuid",
-            "direction": "downstream" | "upstream",
-            "related_actions": [
-                {
-                    "action_id": "related-action-uuid",
-                    "title": "Related Action Title",
-                    "dependency_type": "requires",
-                    # ... more details if include_details=True ...
-                },
-                ...
-            ],
-            "success": true,
-            "processing_time": 0.06
-        }
-
-    Raises:
-        ToolInputError: If action ID not found or direction is invalid.
-        ToolError: If the database operation fails.
-    """
+    """Lists actions that an action depends on (upstream) or that depend on it (downstream).
+    Args: action_id, direction, dependency_type, include_details.
+    Returns: List of related action summaries/details."""
     if not action_id:
         raise ToolInputError("Action ID required.", param_name="action_id")
     if direction not in ["downstream", "upstream"]:
@@ -2912,47 +2692,9 @@ async def record_artifact(
     tags: Optional[List[str]] = None,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Records information about an artifact created during a workflow
-       and creates a corresponding linked episodic memory entry.
-
-    Use this tool to keep track of files, code, data, or other outputs generated during your
-    workflow. This creates a persistent record of these artifacts that you can reference later
-    and include in reports. It also creates a memory entry about the artifact's creation.
-
-    Args:
-        workflow_id: The ID of the workflow this artifact belongs to.
-        name: A descriptive name for the artifact.
-        artifact_type: Type of artifact. Use a value from ArtifactType enum: 'file', 'text',
-                      'image', 'table', 'chart', 'code', 'data', 'json', 'url'.
-        action_id: (Optional) The ID of the action that created this artifact.
-        description: (Optional) A detailed description of the artifact's purpose or contents.
-        path: (Optional) Filesystem path to the artifact if it's a file.
-        content: (Optional) The content of the artifact if it's text-based. Can be large.
-        metadata: (Optional) Additional structured information about the artifact.
-        is_output: (Optional) Whether this is a final output of the workflow. Default False.
-        tags: (Optional) List of tags to categorize this artifact.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        A dictionary containing information about the recorded artifact and linked memory.
-        {
-            "artifact_id": "artifact-uuid",
-            "workflow_id": "workflow-uuid",
-            "name": "requirements.txt",
-            "artifact_type": "file",
-            "path": "/path/to/requirements.txt",
-            "created_at": "iso-timestamp",
-            "is_output": false,
-            "tags": ["dependency"],
-            "linked_memory_id": "memory-uuid", # ID of the memory entry about this artifact
-            "success": true,
-            "processing_time": 0.09
-        }
-
-    Raises:
-        ToolInputError: If required parameters are missing or invalid.
-        ToolError: If the database operation fails.
-    """
+    """Logs a created file, data, code, or other output as an artifact. Creates linked memory.
+    Args: workflow_id, name, artifact_type, action_id, description, path, content, metadata, is_output, tags.
+    Returns: artifact_id, linked_memory_id."""
     start_time = time.time()
     # --- Input Validation ---
     if not name:
@@ -3157,43 +2899,9 @@ async def record_thought(
     db_path: str = agent_memory_config.db_path,
     conn: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Records a thought in a reasoning chain, potentially linking to memory and creating an associated memory entry.
-
-    If an existing database connection (`conn`) is provided, this function will use it
-    and operate within the existing transaction context (no internal commit). Otherwise,
-    it will acquire a new connection and manage its own transaction.
-
-    Args:
-        workflow_id: The ID of the workflow this thought belongs to.
-        content: The textual content of the thought.
-        thought_type: (Optional) Type of thought (e.g., 'goal', 'plan', 'inference'). Default 'inference'.
-        thought_chain_id: (Optional) ID of the chain to add to. If None, adds to the primary chain.
-        parent_thought_id: (Optional) ID of the parent thought in the chain.
-        relevant_action_id: (Optional) ID of an action this thought relates to.
-        relevant_artifact_id: (Optional) ID of an artifact this thought relates to.
-        relevant_memory_id: (Optional) ID of a memory this thought relates to.
-        db_path: (Optional) Path to the SQLite database file. Used if `conn` is not provided.
-        conn: (Optional) An existing aiosqlite database connection to use for database operations.
-              If provided, commit/rollback is handled externally.
-
-    Returns:
-        Dictionary containing information about the recorded thought.
-        Timestamps are returned as ISO 8601 strings.
-        {
-            "thought_id": "uuid-string",
-            "thought_chain_id": "uuid-string",
-            "thought_type": "inference",
-            "content": "Thought content...",
-            "sequence_number": 5,
-            "created_at": "iso-timestampZ",
-            "linked_memory_id": "uuid-string" | None,
-            "success": true
-        }
-
-    Raises:
-        ToolInputError: If required parameters are missing or invalid, or referenced entities don't exist.
-        ToolError: If the database operation fails.
-    """
+    """Saves a single reasoning step, goal, decision, or reflection to a thought chain. Optionally links to memory.
+    Args: workflow_id, content, thought_type, thought_chain_id, parent_thought_id, relevant_action/artifact/memory_id.
+    Returns: thought_id, linked_memory_id (if created)."""
     # --- Input Validation ---
     if not content or not isinstance(content, str):
         raise ToolInputError("Thought content must be a non-empty string", param_name="content")
@@ -3488,67 +3196,9 @@ async def store_memory(
     artifact_id: Optional[str] = None,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Stores a new memory entry, generates embeddings, and suggests semantic links.
-
-    Stores a new piece of knowledge or observation, potentially linking it to actions,
-    thoughts, or artifacts. Optionally generates a vector embedding and uses it to
-    find and suggest links to existing semantically similar memories within the same workflow.
-
-    Args:
-        workflow_id: The ID of the workflow this memory belongs to.
-        content: The main content of the memory.
-        memory_type: The type classification (e.g., 'observation', 'fact', 'insight'). See MemoryType enum.
-        memory_level: (Optional) The memory hierarchy level. Default 'episodic'. See MemoryLevel enum.
-        importance: (Optional) Importance score (1.0-10.0). Default 5.0.
-        confidence: (Optional) Confidence score (0.0-1.0). Default 1.0.
-        description: (Optional) A brief description or title for the memory.
-        reasoning: (Optional) Explanation of why this memory is relevant or how it was derived.
-        source: (Optional) Origin of the memory (e.g., tool name, user input, filename).
-        tags: (Optional) List of keywords for categorization. Type and level are added automatically.
-        ttl: (Optional) Time-to-live in seconds (0 for permanent, None for level default).
-        context_data: (Optional) Additional JSON-serializable context about the memory's creation.
-        generate_embedding: (Optional) Whether to generate a vector embedding. Default True.
-        suggest_links: (Optional) Whether to find and suggest links to similar memories. Default True.
-        link_suggestion_threshold: (Optional) Min similarity score for suggested links. Default SIMILARITY_THRESHOLD.
-        max_suggested_links: (Optional) Max number of links to suggest. Default 3.
-        action_id: (Optional) ID of an associated action.
-        thought_id: (Optional) ID of an associated thought.
-        artifact_id: (Optional) ID of an associated artifact.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing details of the stored memory and any suggested links.
-        {
-            "memory_id": "uuid",
-            "workflow_id": "uuid",
-            "memory_level": "episodic",
-            "memory_type": "observation",
-            "content_preview": "Column A seems...",
-            "importance": 6.0,
-            "confidence": 1.0,
-            "created_at_unix": 1678886400,
-            "tags": ["observation", "episodic", ...],
-            "embedding_id": "uuid" | None,
-            "linked_action_id": "uuid" | None,
-            "linked_thought_id": "uuid" | None,
-            "linked_artifact_id": "uuid" | None,
-            "suggested_links": [ # Included if suggest_links=True and matches found
-                {
-                    "target_memory_id": "uuid",
-                    "target_description": "Similar memory desc...",
-                    "target_type": "observation",
-                    "similarity": 0.85,
-                    "suggested_link_type": "related"
-                }, ...
-            ],
-            "success": true,
-            "processing_time": 0.25
-        }
-
-    Raises:
-        ToolInputError: If required parameters are missing or invalid.
-        ToolError: If the database operation fails.
-    """
+    """Adds a new piece of knowledge, fact, or observation to UMS memory.
+    Args: workflow_id, content, memory_type, memory_level, importance, confidence, description, reasoning, source, tags, ttl, context_data, generate_embedding, suggest_links, action_id, thought_id, artifact_id.
+    Returns: memory_id, embedding_id, suggested_links."""
     # Parameter validation
     if not content:
         raise ToolInputError("Content cannot be empty.", param_name="content")
@@ -3821,41 +3471,9 @@ async def get_memory_by_id(
     context_limit: int = 5,  # Limit for semantic context results
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves a specific memory by its ID, optionally including links and semantic context.
-
-    Fetches the core memory details, updates access time, and can optionally retrieve:
-    - Both incoming and outgoing links to other memories.
-    - Semantically similar memories based on embedding comparison.
-
-    Args:
-        memory_id: ID of the memory to retrieve.
-        include_links: (Optional) Whether to include incoming/outgoing links. Default True.
-        include_context: (Optional) Whether to include semantically similar memories. Default True.
-        context_limit: (Optional) Max number of semantic context memories to return. Default 5.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the memory details, links, and context.
-        {
-            "memory_id": "uuid-string",
-            "workflow_id": "uuid-string",
-            "content": "Memory content...",
-            # ... other core memory fields ...
-            "tags": ["tag1", "tag2"],
-            "created_at_unix": 1649712000,
-            "updated_at_unix": 1649712000,
-            "last_accessed_unix": 1649712000,
-            "outgoing_links": [ { ...link_details... } ], # Only if include_links=True
-            "incoming_links": [ { ...link_details... } ], # Only if include_links=True
-            "semantic_context": [ { ...context_memory_details... } ], # Only if include_context=True
-            "success": true,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolInputError: If the memory ID is not provided or the memory is not found.
-        ToolError: If the memory has expired or a database operation fails.
-    """
+    """Retrieves a specific UMS memory entry by its unique ID, with optional links/context.
+    Args: memory_id, include_links, include_context, context_limit.
+    Returns: Full memory object with details."""
     if not memory_id:
         raise ToolInputError("Memory ID required.", param_name="memory_id")
 
@@ -4066,11 +3684,9 @@ async def search_semantic_memories(
     include_content: bool = True,  # Control whether full content is returned
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Searches memories based on semantic similarity using EmbeddingService.
-
-    Retrieves memories whose embeddings are semantically close to the query text's embedding.
-    Optionally filters by workflow, memory level, and type. Updates access stats for retrieved memories.
-    """
+    """Finds UMS memories semantically similar to a query text using embeddings.
+    Args: query, workflow_id, limit, threshold, memory_level, memory_type, include_content.
+    Returns: List of matching memory objects with similarity scores."""
     # Input validation
     if not query:
         raise ToolInputError("Search query required.", param_name="query")
@@ -4236,58 +3852,9 @@ async def hybrid_search_memories(
     link_direction: str = "outgoing",  # 'outgoing', 'incoming', 'both' - Determines which links to fetch if include_links=True
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Performs a hybrid search combining semantic similarity and keyword/filtered relevance.
-
-    Retrieves memories ranked by a weighted combination of their semantic similarity
-    to the query and their relevance based on keywords (FTS) and other attributes
-    (importance, recency, confidence). Timestamps in the returned structure are
-    formatted as ISO 8601 strings with 'Z' timezone indicator.
-
-    Args:
-        query: The search query text (used for both semantic and keyword/FTS search).
-        workflow_id: (Optional) ID of the workflow to search within. If None, searches globally.
-        limit: (Optional) Maximum number of results to return. Default 10.
-        offset: (Optional) Number of results to skip for pagination. Default 0.
-        semantic_weight: (Optional) Weight (0.0-1.0) for the semantic similarity score. Default 0.6.
-        keyword_weight: (Optional) Weight (0.0-1.0) for the keyword/attribute relevance score. Default 0.4.
-        memory_level: (Optional) Filter by memory level.
-        memory_type: (Optional) Filter by memory type.
-        tags: (Optional) Filter memories containing ALL specified tags.
-        min_importance: (Optional) Minimum importance score.
-        max_importance: (Optional) Maximum importance score.
-        min_confidence: (Optional) Minimum confidence score.
-        min_created_at_unix: (Optional) Minimum creation timestamp (Unix seconds).
-        max_created_at_unix: (Optional) Maximum creation timestamp (Unix seconds).
-        include_content: (Optional) Whether to include full memory content. Default True.
-        include_links: (Optional) Whether to include detailed link info. Default False.
-        link_direction: (Optional) Direction for links if included ('outgoing', 'incoming', 'both'). Default 'outgoing'.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the ranked list of matching memories and scores.
-        {
-            "memories": [
-                {
-                    ...memory_details...,
-                    "created_at": "2025-01-01T12:00:00Z", # Formatted timestamp
-                    "updated_at": "2025-01-01T12:00:00Z", # Formatted timestamp
-                    "last_accessed": "2025-01-01T12:05:00Z", # Formatted timestamp
-                    "hybrid_score": 0.85,
-                    "semantic_score": 0.92,
-                    "keyword_relevance_score": 0.75, # Normalized 0-1
-                    "links": { ... } # Populated if include_links=True, links also have formatted timestamps
-                },
-                ...
-            ],
-            "total_candidates_considered": 55,
-            "success": true,
-            "processing_time": 0.45
-        }
-
-    Raises:
-        ToolInputError: If parameters are invalid.
-        ToolError: If the database operation or semantic search fails.
-    """
+    """Searches UMS memories combining keyword (FTS) and semantic similarity with filters.
+    Args: query, workflow_id, limit, offset, semantic_weight, keyword_weight, filters (level, type, tags, etc.), include_content, include_links.
+    Returns: List of ranked matching memory objects with scores."""
     start_time = time.time()
 
     # --- Input Validation ---
@@ -4589,9 +4156,9 @@ async def create_memory_link(
     description: Optional[str] = None,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Creates an associative link between two memories.
-    (Adapted from cognitive_memory.create_memory_link).
-    """
+    """Creates a typed association (e.g., related, supports) between two UMS memories.
+    Args: source_memory_id, target_memory_id, link_type, strength, description.
+    Returns: link_id."""
     if source_memory_id == target_memory_id:
         raise ToolInputError("Cannot link memory to itself.", param_name="source_memory_id")
     try:
@@ -4709,60 +4276,9 @@ async def query_memories(
     offset: int = 0,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves memories based on various criteria like level, type, tags, text, importance, etc.
-
-    This is the primary tool for filtering and retrieving memories from the knowledge base
-    using structured criteria and keyword search (distinct from pure semantic search).
-    Includes option to fetch detailed information about linked memories. Timestamps in the
-    returned structure are formatted as ISO 8601 strings with 'Z' timezone indicator.
-
-    Args:
-        workflow_id: (Optional) ID of the workflow to query. If None, searches across all accessible workflows.
-        memory_level: (Optional) Filter by memory level (e.g., 'episodic', 'semantic').
-        memory_type: (Optional) Filter by memory type (e.g., 'insight', 'fact').
-        search_text: (Optional) Full-text search query for content, description, reasoning, tags.
-        tags: (Optional) Filter memories containing ALL specified tags.
-        min_importance: (Optional) Minimum importance score (1.0-10.0).
-        max_importance: (Optional) Maximum importance score (1.0-10.0).
-        min_confidence: (Optional) Minimum confidence score (0.0-1.0).
-        min_created_at_unix: (Optional) Minimum creation timestamp (Unix seconds).
-        max_created_at_unix: (Optional) Maximum creation timestamp (Unix seconds).
-        sort_by: (Optional) Field to sort by. Options: 'relevance', 'importance', 'created_at',
-                 'updated_at', 'confidence', 'last_accessed', 'access_count'. Default 'relevance'.
-        sort_order: (Optional) Sort direction ('ASC' or 'DESC'). Default 'DESC'.
-        include_content: (Optional) Whether to include the full memory content. Default True.
-        include_links: (Optional) Whether to include detailed info about linked memories. Default False.
-        link_direction: (Optional) Which links to fetch if include_links is True:
-                        'outgoing', 'incoming', or 'both'. Default 'outgoing'.
-        limit: (Optional) Maximum number of memories to return. Default 10.
-        offset: (Optional) Number of memories to skip for pagination. Default 0.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the list of matching memories and total count.
-        {
-            "memories": [
-                {
-                    ...memory_details...,
-                    "created_at": "2025-01-01T12:00:00Z", # Formatted timestamp
-                    "updated_at": "2025-01-01T12:00:00Z", # Formatted timestamp
-                    "last_accessed": "2025-01-01T12:05:00Z", # Formatted timestamp
-                    "links": { # Populated if include_links=True
-                        "outgoing": [ ... ], # Links also have formatted timestamps
-                        "incoming": [ ... ]
-                    }
-                },
-                ...
-            ],
-            "total_matching_count": 42,
-            "success": true,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolInputError: If filter parameters are invalid.
-        ToolError: If the database operation fails.
-    """
+    """Retrieves UMS memories based on structured filters (level, type, tags, importance, etc.) and optional keyword search.
+    Args: workflow_id, filters (level, type, search_text, tags, etc.), sort_by, sort_order, include_content, include_links, limit, offset.
+    Returns: List of matching memory objects and total count."""
     start_time = time.time()
 
     # --- Input Validation ---
@@ -5017,9 +4533,9 @@ async def list_workflows(
     offset: int = 0,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Lists workflows matching specified criteria.
-    Timestamps are returned as ISO 8601 strings.
-    """
+    """Gets a list of existing UMS workflows, with optional status, tag, and date filters.
+    Args: status, tag, after_date, before_date, limit, offset.
+    Returns: List of workflow summary objects and total count."""
     try:
         # Validate status
         if status:
@@ -5159,9 +4675,9 @@ async def get_workflow_details(
     memories_limit: int = 20,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves comprehensive details about a specific workflow, including related items.
-    Timestamps are returned as ISO 8601 strings.
-    """
+    """Retrieves full details of a specific UMS workflow, including its actions, artifacts, and thoughts.
+    Args: workflow_id, include_actions, include_artifacts, include_thoughts, include_memories, memories_limit.
+    Returns: Comprehensive workflow object."""
     if not workflow_id:
         raise ToolInputError("Workflow ID required.", param_name="workflow_id")
 
@@ -5341,51 +4857,9 @@ async def get_recent_actions(
     include_reasoning: bool = True,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves the most recent actions for a workflow, optionally filtered.
-
-    Use this tool to refresh your understanding of what has been done recently in a workflow.
-    This helps maintain context when working on complex tasks or when resuming a workflow
-    after an interruption. By default, includes tool results and reasoning.
-
-    Args:
-        workflow_id: The ID of the workflow.
-        limit: (Optional) Maximum number of actions to return. Default 5.
-        action_type: (Optional) Filter by action type (e.g., 'tool_use', 'reasoning').
-        status: (Optional) Filter by action status (e.g., 'completed', 'failed').
-        include_tool_results: (Optional) Whether to include tool results. Default True.
-        include_reasoning: (Optional) Whether to include reasoning. Default True.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        A dictionary containing the list of recent actions:
-        {
-            "actions": [
-                {
-                    "action_id": "uuid-string",
-                    "action_type": "tool_use",
-                    "title": "Reading customer data",
-                    "tool_name": "read_file",
-                    "tool_args": { "path": "example.txt" },
-                    "tool_result": { "content": "file content..." }, // Included by default
-                    "reasoning": "Reading this file to extract project requirements", // Included by default
-                    "status": "completed",
-                    "started_at": "2025-04-13T12:34:56Z",
-                    "completed_at": "2025-04-13T12:35:01Z",
-                    "sequence_number": 3,
-                    "parent_action_id": null,
-                    "tags": ["data_processing"]
-                },
-                ...
-            ],
-            "workflow_title": "Data Analysis Project",
-            "workflow_id": "uuid-string",
-            "success": true
-        }
-
-    Raises:
-        ToolInputError: If the workflow doesn't exist or parameters are invalid.
-        ToolError: If the database operation fails.
-    """
+    """Fetches a list of the most recent actions for a UMS workflow, with filters.
+    Args: workflow_id, limit, action_type, status, include_tool_results, include_reasoning.
+    Returns: List of action objects."""
     try:
         # --- Validations ---
         if not isinstance(limit, int) or limit < 1:
@@ -5509,9 +4983,9 @@ async def get_artifacts(
     limit: int = 10,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves artifacts created during a workflow, optionally filtered.
-    Timestamps are returned as ISO 8601 strings.
-    """
+    """Lists artifacts associated with a UMS workflow, with optional type, tag, and output filters.
+    Args: workflow_id, artifact_type, tag, is_output, include_content, limit.
+    Returns: List of artifact objects."""
     try:
         # Validations
         if limit < 1:
@@ -5608,9 +5082,9 @@ async def get_artifacts(
 async def get_artifact_by_id(
     artifact_id: str, include_content: bool = True, db_path: str = agent_memory_config.db_path
 ) -> Dict[str, Any]:
-    """Retrieves a specific artifact by its ID.
-    Timestamps are returned as ISO 8601 strings.
-    """
+    """Retrieves a specific UMS artifact by its unique ID.
+    Args: artifact_id, include_content.
+    Returns: Artifact object."""
     if not artifact_id:
         raise ToolInputError("Artifact ID required.", param_name="artifact_id")
     try:
@@ -5698,33 +5172,10 @@ async def create_goal(
     initial_status: str = GoalStatus.ACTIVE.value, # Default to active
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """
-    Creates a new structured goal within a workflow, potentially as a sub-goal.
-
-    Args:
-        workflow_id: The ID of the workflow this goal belongs to.
-        description: A clear, detailed description of the goal.
-        parent_goal_id: (Optional) ID of the parent goal if this is a sub-goal.
-        title: (Optional) A brief, concise title for the goal.
-        priority: (Optional) Priority of the goal (e.g., 1-5, lower is higher). Default 3.
-        reasoning: (Optional) Explanation for why this goal is being pursued.
-        acceptance_criteria: (Optional) List of strings defining conditions for goal completion.
-        metadata: (Optional) Additional structured data about the goal.
-        initial_status: (Optional) Initial status for the goal. Default 'active'.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the full details of the created goal.
-        {
-            "goal": { ... full goal object ... },
-            "success": true,
-            "processing_time": 0.05
-        }
-
-    Raises:
-        ToolInputError: If required parameters are missing, invalid, or referenced entities don't exist.
-        ToolError: If the database operation fails.
-    """
+    """Defines a new UMS goal or sub-goal within a workflow.
+    Agent uses this for planning and goal decomposition.
+    Args: workflow_id, description, parent_goal_id, title, priority, reasoning, acceptance_criteria, metadata, initial_status.
+    Returns: Full created UMS goal object."""
     if not description:
         raise ToolInputError("Goal description is required.", param_name="description")
     try:
@@ -5844,33 +5295,10 @@ async def update_goal_status(
     reason: Optional[str] = None, # Optional reason for status change
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """
-    Updates the status of a specific goal.
-
-    If the new status is terminal (completed, failed, abandoned), the `completed_at`
-    timestamp is also set. Returns the updated goal details, its parent ID,
-    and an indicator if a root goal was terminally finished.
-
-    Args:
-        goal_id: The ID of the goal to update.
-        status: The new status for the goal (e.g., 'completed', 'failed').
-        reason: (Optional) A brief reason or message for the status change.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing:
-        {
-            "updated_goal_details": { ... full updated goal object ... },
-            "parent_goal_id": "parent-uuid" | None, // Parent of the updated goal
-            "is_root_finished": True | False, // If a root goal reached terminal state
-            "success": true,
-            "processing_time": 0.04
-        }
-
-    Raises:
-        ToolInputError: If goal_id not found or status is invalid.
-        ToolError: If database operation fails.
-    """
+    """Changes a UMS goal's status (e.g., active, completed, failed).
+    Agent uses this to mark progress on its objectives.
+    Args: goal_id, status, reason.
+    Returns: Updated UMS goal details, its parent_goal_id, and if a root goal finished."""
     if not goal_id:
         raise ToolInputError("Goal ID is required.", param_name="goal_id")
     try:
@@ -5972,38 +5400,10 @@ async def get_goal_details(
     # Optional: include_parent_details: bool = False, # To fetch immediate parent
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """
-    Retrieves detailed information about a specific goal.
-
-    Args:
-        goal_id: The ID of the goal to retrieve.
-        db_path: Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing goal details:
-        {
-            "goal": {
-                "goal_id": "uuid-string",
-                "workflow_id": "workflow-uuid",
-                "parent_goal_id": "parent-uuid" | None,
-                "description": "Goal description...",
-                "status": "active",
-                "priority": 3,
-                "reasoning": "Why this goal exists...",
-                "acceptance_criteria": ["Criterion 1", "Criterion 2"],
-                "metadata": {"key": "value"},
-                "created_at": "iso-timestampZ",
-                "updated_at": "iso-timestampZ",
-                "completed_at": "iso-timestampZ" | None
-            },
-            "success": true,
-            "processing_time": 0.03
-        }
-
-    Raises:
-        ToolInputError: If goal_id is not provided or goal not found.
-        ToolError: If database operation fails.
-    """
+    """Retrieves detailed information about a specific UMS goal by its ID.
+    Agent uses this to understand current objectives.
+    Args: goal_id.
+    Returns: Full UMS goal object."""
     start_time = time.time()
 
     if not goal_id:
@@ -6087,34 +5487,9 @@ async def create_thought_chain(
     initial_thought_type: str = "goal",
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Creates a new reasoning chain for tracking related thoughts.
-
-    This operation is atomic: the chain and optional initial thought are
-    created within a single database transaction.
-
-    Args:
-        workflow_id: The ID of the workflow this chain belongs to.
-        title: A descriptive title for the thought chain.
-        initial_thought: (Optional) Content for the first thought in the chain.
-        initial_thought_type: (Optional) Type for the initial thought. Default 'goal'.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing information about the created thought chain.
-        Timestamps are returned as ISO 8601 strings.
-        {
-            "thought_chain_id": "uuid-string",
-            "workflow_id": "workflow-uuid",
-            "title": "Reasoning for X",
-            "created_at": "iso-timestampZ",
-            "initial_thought_id": "uuid-string" | None,
-            "success": true
-        }
-
-    Raises:
-        ToolInputError: If title is empty, type is invalid, or workflow not found.
-        ToolError: If the database operation fails.
-    """
+    """Starts a new, distinct line of reasoning or sub-problem analysis in UMS.
+    Args: workflow_id, title, initial_thought, initial_thought_type.
+    Returns: thought_chain_id, initial_thought_id (if created)."""
     try:
         if not title:
             raise ToolInputError("Thought chain title required", param_name="title")
@@ -6199,7 +5574,9 @@ async def create_thought_chain(
 async def get_thought_chain(
     thought_chain_id: str, include_thoughts: bool = True, db_path: str = agent_memory_config.db_path
 ) -> Dict[str, Any]:
-    """Retrieves a thought chain and optionally its thoughts."""
+    """Retrieves a specific UMS thought chain and its thoughts.
+    Args: thought_chain_id, include_thoughts.
+    Returns: Thought chain object with thoughts list."""
     if not thought_chain_id:
         raise ToolInputError("Thought chain ID required.", param_name="thought_chain_id")
     try:
@@ -6413,40 +5790,10 @@ async def get_working_memory(
     include_links: bool = True,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves the current working memory (list of memory IDs and their details) for a given context.
-
-    Working memory holds the information the agent is actively using. This tool fetches
-    the details of memories currently stored in the working_memory list for a specific context ID,
-    including their outgoing links if requested. Access statistics are updated for retrieved memories.
-
-    Args:
-        context_id: The context identifier (maps to state_id in cognitive_states).
-        include_content: (Optional) Whether to include the full content of memories. Default True.
-        include_links: (Optional) Whether to include outgoing links from memories. Default True.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the working memory details:
-        {
-            "context_id": "context-uuid",
-            "workflow_id": "workflow-uuid",
-            "focal_memory_id": "memory-uuid" | None,
-            "working_memories": [
-                {
-                    "memory_id": "...",
-                    ...,
-                    "links": [ { "target_memory_id": "...", "link_type": "...", ... } ] # If include_links=True
-                },
-                ...
-            ],
-            "success": true,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolInputError: If the context ID is not provided or not found.
-        ToolError: If the database operation fails.
-    """
+    """Retrieves current working memory items for a UMS cognitive context.
+    (Agent Note: Main context is typically provided by 'get_rich_context_package').
+    Args: context_id, include_content, include_links.
+    Returns: Working memory details including focal_memory_id and list of memory objects."""
     if not context_id:
         raise ToolInputError("Context ID required.", param_name="context_id")
     start_time = time.time()
@@ -6597,34 +5944,9 @@ async def focus_memory(
     add_to_working: bool = True,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Sets a specific memory as the current focus for a context.
-
-    Marks a memory as the primary item of attention by updating the `focal_memory_id`
-    in the `cognitive_states` table. Optionally adds the memory to the working memory list
-    using the `_add_to_active_memories` helper if not already present.
-
-    Args:
-        memory_id: ID of the memory to focus on.
-        context_id: The context identifier (maps to state_id in cognitive_states).
-        add_to_working: (Optional) If True, add the memory to the working memory list
-                       if it's not already there (may evict another memory). Default True.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary confirming the focus update.
-        {
-            "context_id": "context-uuid",
-            "focused_memory_id": "memory-uuid",
-            "workflow_id": "workflow-uuid",
-            "added_to_working": true | false,
-            "success": true,
-            "processing_time": 0.05
-        }
-
-    Raises:
-        ToolInputError: If memory or context doesn't exist, or if they belong to different workflows.
-        ToolError: If the database operation fails.
-    """
+    """Sets a specific UMS memory as the current primary focus for a cognitive context.
+    Args: memory_id, context_id, add_to_working.
+    Returns: Confirmation with focused_memory_id."""
     if not memory_id:
         raise ToolInputError("Memory ID required.", param_name="memory_id")
     if not context_id:
@@ -6713,50 +6035,10 @@ async def optimize_working_memory(
     strategy: str = "balanced",  # 'balanced', 'importance', 'recency', 'diversity'
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Calculates an optimized working memory set based on relevance and strategy, returning IDs to keep/remove.
-
-    This tool fetches the working memory list associated with a given cognitive state snapshot (`context_id`),
-    analyzes the memories based on the chosen strategy (considering importance, recency, confidence, etc.),
-    and determines which memories should be retained to meet the `target_size`.
-
-    **Crucially, this tool DOES NOT modify the saved cognitive state record.** It only performs the
-    calculation and returns the results. The caller is responsible for using these results
-    to update the agent's *current* working memory context or potentially save a *new*
-    cognitive state reflecting the optimized set.
-
-    Args:
-        context_id: The context identifier (maps to state_id in cognitive_states) representing the
-                    snapshot whose working memory list will be used as the input for optimization.
-        target_size: (Optional) Desired number of memories after optimization. Defaults to
-                     `agent_memory_config.max_working_memory_size`.
-        strategy: (Optional) Optimization strategy:
-                  - 'balanced': Uses overall relevance score (_compute_memory_relevance).
-                  - 'importance': Prioritizes high importance and confidence.
-                  - 'recency': Prioritizes recently accessed/created memories.
-                  - 'diversity': Attempts to keep a mix of memory types (based on relevance within type).
-                  Default 'balanced'.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary detailing the optimization calculation results:
-        {
-            "context_id": "context-uuid", # The ID of the state used as input
-            "workflow_id": "workflow-uuid", # Workflow associated with the input state
-            "strategy_used": "balanced",
-            "target_size": 5,
-            "before_count": 10, # Original number of memories in the state's list
-            "after_count": 5,   # Number of memories identified to be retained
-            "removed_count": 5, # Number of memories identified for removal
-            "retained_memories": ["mem_id_kept1", ...], # List of IDs to keep
-            "removed_memories": ["mem_id_removed1", ...], # List of IDs suggested for removal
-            "success": true,
-            "processing_time": 0.09
-        }
-
-    Raises:
-        ToolInputError: If context_id not found, strategy is invalid, or target_size is negative.
-        ToolError: If the database operation fails during data fetching.
-    """
+    """(Agent Internal) Calculates an optimized UMS working memory set for a cognitive context.
+    Agent loop triggers this periodically, LLM should not call directly.
+    Args: context_id, target_size, strategy.
+    Returns: Lists of memory IDs to retain and remove."""
     # --- Input Validation ---
     if not context_id:
         raise ToolInputError("Context ID required.", param_name="context_id")
@@ -6977,36 +6259,10 @@ async def save_cognitive_state(
     current_goal_thought_ids: Optional[List[str]] = None,  # Assuming goals are thought IDs
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Saves the agent's current cognitive state as a checkpoint for a workflow.
-
-    Creates a snapshot containing active memory IDs, focus memory IDs, relevant action IDs,
-    and current goal thought IDs. Marks previous states for the workflow as not the latest.
-    Validates that all provided IDs exist within the current workflow context.
-
-    Args:
-        workflow_id: The ID of the workflow.
-        title: A descriptive title for this state (e.g., "Before attempting API integration").
-        working_memory_ids: List of memory IDs currently in active working memory.
-        focus_area_ids: (Optional) List of memory IDs representing the agent's current focus.
-        context_action_ids: (Optional) List of recent/relevant action IDs providing context.
-        current_goal_thought_ids: (Optional) List of thought IDs representing current goals.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary confirming the saved state.
-        {
-            "state_id": "state-uuid",
-            "workflow_id": "workflow-uuid",
-            "title": "State title",
-            "created_at": "iso-timestamp",
-            "success": true,
-            "processing_time": 0.08
-        }
-
-    Raises:
-        ToolInputError: If workflow not found, required parameters missing, or any provided IDs do not exist or belong to the workflow.
-        ToolError: If the database operation fails.
-    """
+    """(Agent Internal) Checkpoints the agent's current cognitive state to UMS.
+    Agent loop manages this, LLM should not call directly.
+    Args: workflow_id, title, working_memory_ids, focus_area_ids, context_action_ids, current_goal_thought_ids.
+    Returns: state_id."""
     if not title:
         raise ToolInputError("State title required.", param_name="title")
 
@@ -7162,34 +6418,10 @@ async def load_cognitive_state(
     state_id: Optional[str] = None,  # If None, load latest
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Loads a previously saved cognitive state for a workflow.
-
-    Restores context by retrieving a saved snapshot of working memory, focus, etc.
-
-    Args:
-        workflow_id: The ID of the workflow.
-        state_id: (Optional) The ID of the specific state to load. If None, loads the latest state.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the loaded cognitive state data.
-        {
-            "state_id": "state-uuid",
-            "workflow_id": "workflow-uuid",
-            "title": "State title",
-            "working_memory_ids": ["mem_id1", ...],
-            "focus_areas": ["mem_id_focus", "topic description", ...],
-            "context_action_ids": ["action_id1", ...],
-            "current_goals": ["goal description", "goal_thought_id", ...],
-            "created_at": "iso-timestamp",
-            "success": true,
-            "processing_time": 0.06
-        }
-
-    Raises:
-        ToolInputError: If the workflow or specified state doesn't exist.
-        ToolError: If the database operation fails.
-    """
+    """(Agent Internal) Restores a previously saved UMS cognitive state.
+    Agent loop manages this, LLM should not call directly.
+    Args: workflow_id, state_id (optional, loads latest if None).
+    Returns: Full cognitive state object."""
     if not workflow_id:
         raise ToolInputError("Workflow ID required.", param_name="workflow_id")
     start_time = time.time()
@@ -7269,8 +6501,6 @@ async def load_cognitive_state(
 
 
 # --- 14. Comprehensive Context Retrieval ---
-@with_tool_metrics
-@with_error_handling
 async def get_workflow_context(
     workflow_id: str,
     recent_actions_limit: int = 10,  # Reduced default
@@ -7278,7 +6508,7 @@ async def get_workflow_context(
     key_thoughts_limit: int = 5,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves a comprehensive context summary for a workflow.
+    """Retrieves a comprehensive context summary for a workflow (called internally by get_rich_context_package tool)
 
     Combines the latest cognitive state, recent actions, important memories, and key thoughts
     to provide a snapshot for resuming work or understanding the current situation.
@@ -7488,34 +6718,10 @@ async def auto_update_focus(
     recent_actions_count: int = 3,  # How many recent actions to consider influential
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Automatically updates the focal memory for a context based on relevance and recent activity.
-
-    Analyzes memories currently in the working set for the given context. It scores them based
-    on importance, confidence, recency, usage, type, and linkage to recent actions.
-    The memory with the highest score becomes the new focal memory.
-
-    Args:
-        context_id: The context identifier.
-        recent_actions_count: (Optional) Number of most recent actions to consider for boosting relevance. Default 3.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary indicating the result of the focus update.
-        {
-            "context_id": "context-uuid",
-            "workflow_id": "workflow-uuid",
-            "previous_focal_memory_id": "old-focus-uuid" | None,
-            "new_focal_memory_id": "new-focus-uuid" | None,
-            "focus_changed": true | false,
-            "reason": "Highest score based on relevance and recent activity." | "No suitable memory found." | "Focus unchanged.",
-            "success": true,
-            "processing_time": 0.1
-        }
-
-    Raises:
-        ToolInputError: If context not found.
-        ToolError: If the database operation fails.
-    """
+    """(Agent Internal) Automatically determines and sets the best UMS focal memory for a cognitive context.
+    Agent loop triggers this periodically, LLM should not call directly.
+    Args: context_id, recent_actions_count.
+    Returns: Result of focus update including new_focal_memory_id."""
     if not context_id:
         raise ToolInputError("Context ID required.", param_name="context_id")
     if recent_actions_count < 0:
@@ -7658,39 +6864,10 @@ async def promote_memory_level(
     min_confidence_semantic: float = 0.9,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Attempts to promote a memory to a higher cognitive level based on usage and confidence.
-
-    Checks if a memory meets heuristic criteria for promotion (e.g., high access count,
-    high confidence) to the next logical level (Episodic -> Semantic, Semantic -> Procedural).
-    If criteria are met, the memory's level is updated.
-
-    Args:
-        memory_id: The ID of the memory to potentially promote.
-        target_level: (Optional) Explicitly specify the level to promote TO. If provided,
-                      checks if the memory meets criteria for *that specific level*.
-                      If None, checks for promotion to the *next logical* level.
-        min_access_count_episodic: (Optional) Min access count to promote Episodic->Semantic. Default 5.
-        min_confidence_episodic: (Optional) Min confidence to promote Episodic->Semantic. Default 0.8.
-        min_access_count_semantic: (Optional) Min access count to promote Semantic->Procedural. Default 10.
-        min_confidence_semantic: (Optional) Min confidence to promote Semantic->Procedural. Default 0.9.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary indicating if promotion occurred and the result.
-        {
-            "memory_id": "memory-uuid",
-            "promoted": true | false,
-            "previous_level": "episodic",
-            "new_level": "semantic" | None, # None if not promoted
-            "reason": "Met criteria: access_count >= 5, confidence >= 0.8" | "Criteria not met." | "Already at highest/target level.",
-            "success": true,
-            "processing_time": 0.07
-        }
-
-    Raises:
-        ToolInputError: If memory not found or target level is invalid.
-        ToolError: If the database operation fails.
-    """
+    """(Agent Internal) Attempts to elevate a UMS memory's cognitive level (e.g., episodic to semantic) based on heuristics.
+    Agent loop triggers this periodically, LLM should not call directly.
+    Args: memory_id, target_level, thresholds.
+    Returns: Promotion status and new_level."""
     if not memory_id:
         raise ToolInputError("Memory ID required.", param_name="memory_id")
 
@@ -7853,40 +7030,9 @@ async def update_memory(
     regenerate_embedding: bool = False,  # Explicit flag to trigger re-embedding
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Updates fields of an existing memory entry.
-
-    Allows modification of content, importance, confidence, tags, etc.
-    If content or description is updated and regenerate_embedding=True,
-    the embedding will be recalculated.
-
-    Args:
-        memory_id: ID of the memory to update.
-        content: (Optional) New content for the memory.
-        importance: (Optional) New importance score (1.0-10.0).
-        confidence: (Optional) New confidence score (0.0-1.0).
-        description: (Optional) New description.
-        reasoning: (Optional) New reasoning.
-        tags: (Optional) List of new tags (replaces existing tags).
-        ttl: (Optional) New time-to-live in seconds (0 for permanent).
-        memory_level: (Optional) New memory level.
-        regenerate_embedding: (Optional) Force regeneration of embedding if content or description changes. Default False.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the updated memory details (excluding full content unless changed).
-        {
-            "memory_id": "memory-uuid",
-            "updated_fields": ["importance", "tags"],
-            "embedding_regenerated": true | false,
-            "updated_at_unix": 1678886400,
-            "success": true,
-            "processing_time": 0.15
-        }
-
-    Raises:
-        ToolInputError: If memory not found or parameters are invalid.
-        ToolError: If the database operation fails.
-    """
+    """Modifies fields of an existing UMS memory entry (content, importance, tags, etc.).
+    Args: memory_id, content, importance, confidence, description, reasoning, tags, ttl, memory_level, regenerate_embedding.
+    Returns: Confirmation with updated_at timestamp and embedding_regenerated flag."""
     if not memory_id:
         raise ToolInputError("Memory ID required.", param_name="memory_id")
     start_time = time.time()
@@ -8064,75 +7210,9 @@ async def get_linked_memories(
     include_memory_details: bool = True,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Retrieves memories linked to/from the specified memory.
-
-    Fetches all memories linked to or from a given memory, optionally filtered by link type.
-    Can include basic or detailed information about the linked memories. Timestamps in the
-    returned structure are formatted as ISO 8601 strings with 'Z' timezone indicator.
-
-    Args:
-        memory_id: ID of the memory to get links for
-        direction: Which links to include - "outgoing" (memory_id is the source),
-                  "incoming" (memory_id is the target), or "both" (default)
-        link_type: Optional filter for specific link types (e.g., "related", "supports")
-        limit: Maximum number of links to return per direction (default 10)
-        include_memory_details: Whether to include full details of the linked memories
-        db_path: Path to the SQLite database file
-
-    Returns:
-        Dictionary containing the linked memories organized by direction:
-        {
-            "memory_id": "memory-uuid",
-            "links": {
-                "outgoing": [
-                    {
-                        "link_id": "link-uuid",
-                        "source_memory_id": "memory-uuid",
-                        "target_memory_id": "linked-memory-uuid",
-                        "link_type": "related",
-                        "strength": 0.85,
-                        "description": "Auto-link based on similarity",
-                        "created_at": "2025-01-01T12:00:00Z", # Formatted timestamp
-                        "target_memory": { # Only if include_memory_details=True
-                            "memory_id": "linked-memory-uuid",
-                            "description": "Memory description",
-                            "memory_type": "observation",
-                            "created_at": "2025-01-01T11:59:00Z", # Formatted timestamp
-                            "updated_at": "2025-01-01T11:59:00Z", # Formatted timestamp
-                            ... other memory fields ...
-                        }
-                    },
-                    ...
-                ],
-                "incoming": [
-                    {
-                        "link_id": "link-uuid",
-                        "source_memory_id": "other-memory-uuid",
-                        "target_memory_id": "memory-uuid",
-                        "link_type": "supports",
-                        "strength": 0.7,
-                        "description": "Supporting evidence",
-                        "created_at": "2025-01-01T11:58:00Z", # Formatted timestamp
-                        "source_memory": { # Only if include_memory_details=True
-                            "memory_id": "other-memory-uuid",
-                            "description": "Memory description",
-                            "memory_type": "fact",
-                            "created_at": "2025-01-01T11:57:00Z", # Formatted timestamp
-                            "updated_at": "2025-01-01T11:57:00Z", # Formatted timestamp
-                            ... other memory fields ...
-                        }
-                    },
-                    ...
-                ]
-            },
-            "success": true,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolInputError: If memory_id is not provided or direction is invalid
-        ToolError: If database operation fails
-    """
+    """Retrieves UMS memories linked to or from a specified memory.
+    Args: memory_id, direction, link_type, limit, include_memory_details.
+    Returns: Dictionary of outgoing and incoming linked memories."""
     start_time = time.time()
 
     if not memory_id:
@@ -8561,7 +7641,10 @@ async def consolidate_memories(
     max_tokens: int = 1000,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Consolidates multiple memories using an LLM to generate summaries, insights, etc."""
+    """(Meta-cognition) Uses LLM to synthesize multiple UMS memories into a summary, insight, or procedure.
+    AML prompt guides usage.
+    Args: workflow_id, target_memories (IDs) or query_filter, consolidation_type, max_source_memories, store_result, store_as_level/type, provider, model.
+    Returns: Consolidated content and stored_memory_id (if stored)."""
     start_time = time.time()
     valid_types = ["summary", "insight", "procedural", "question"]
     if consolidation_type not in valid_types:
@@ -8956,20 +8039,10 @@ async def generate_reflection(
     max_tokens: int = 1000,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Generates a reflective analysis of a workflow using an LLM.
-
-    Args:
-        workflow_id: ID of the workflow to reflect on.
-        reflection_type: Type of reflection ('summary', 'progress', 'gaps', 'strengths', 'plan').
-        recent_ops_limit: (Optional) Number of recent operations to analyze. Default 30.
-        provider: (Optional) LLM provider name.
-        model: (Optional) Specific LLM model name.
-        max_tokens: (Optional) Max tokens for LLM response. Default 1000.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the reflection details.
-    """
+    """(Meta-cognition) Uses LLM to analyze UMS workflow progress, gaps, or plan next steps based on recent UMS operations.
+    AML prompt guides usage.
+    Args: workflow_id, reflection_type, recent_ops_limit, provider, model.
+    Returns: Reflection content and reflection_id."""
     start_time = time.time()
     valid_types = ["summary", "progress", "gaps", "strengths", "plan"]
     if reflection_type not in valid_types:
@@ -9110,37 +8183,10 @@ async def summarize_text(
     record_summary: bool = False,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Summarizes text content using an LLM to generate a concise summary.
-
-    Uses the configured LLM provider to generate a summary of the provided text,
-    optimizing for the requested token length. Optionally stores the summary
-    as a memory in the specified workflow.
-
-    Args:
-        text_to_summarize: Text content to summarize
-        target_tokens: Approximate desired length of summary (default 500)
-        prompt_template: Optional custom prompt template for summarization
-        provider: LLM provider to use for summarization (default "openai")
-        model: Specific model to use, or None for provider default
-        workflow_id: Optional workflow ID to store the summary in
-        record_summary: Whether to store the summary as a memory
-        db_path: Path to the SQLite database file
-
-    Returns:
-        Dictionary containing the generated summary:
-        {
-            "summary": "Concise summary text...",
-            "original_length": 2500,  # Approximate character count
-            "summary_length": 350,    # Approximate character count
-            "stored_memory_id": "memory-uuid" | None,  # Only if record_summary=True
-            "success": true,
-            "processing_time": 0.123
-        }
-
-    Raises:
-        ToolInputError: If text_to_summarize is empty or provider/model is invalid
-        ToolError: If summarization fails or database operation fails
-    """
+    """Generates a concise summary of a given text block using an LLM.
+    Can be used for general text summarization tasks.
+    Args: text_to_summarize, target_tokens, prompt_template, provider, model, workflow_id (optional for storing), record_summary.
+    Returns: Summary text and stored_memory_id (if recorded)."""
     start_time = time.time()
 
     if not text_to_summarize:
@@ -9282,7 +8328,9 @@ CONCISE SUMMARY:
 @with_tool_metrics
 @with_error_handling
 async def delete_expired_memories(db_path: str = agent_memory_config.db_path) -> Dict[str, Any]:
-    """Deletes memories that have exceeded their time-to-live (TTL)."""
+    """(Agent Internal) System maintenance: removes UMS memories past their TTL.
+    Agent loop triggers this periodically, LLM should not call directly.
+    Returns: Count of deleted memories."""
     start_time = time.time()
     deleted_count = 0
     workflows_affected = set()
@@ -9377,11 +8425,10 @@ async def get_rich_context_package(
     compression_target_tokens: Optional[int] = None,
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """
-    UMS Tool: Gathers a package of rich context elements for an agent.
-    This tool calls other granular UMS tools to build the context package
-    (excluding agent-specific goal stack, which agent adds itself).
-    """
+    """(Agent Core Internal) Retrieves a UMS context package.
+    Agent loop calls this to gather information for the LLM. LLM should not call this tool directly.
+    Args: workflow_id, context_id, current_plan_step_description, focal_memory_id_hint, fetch_limits, show_limits, include_*, compression_*.
+    Returns: Rich context package dictionary from UMS. (AML processes this for LLM prompt)."""
     start_time = time.time()
     ums_package_retrieval_timestamp = datetime.now(timezone.utc).isoformat()
     # This dictionary will be the main payload under "context_package"
@@ -9752,7 +8799,10 @@ async def compute_memory_statistics(
     workflow_id: Optional[str] = None,  # Optional: If None, compute global stats
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Computes statistics about memories, optionally filtered by workflow."""
+    """(Agent Internal) Gets UMS statistics (memory counts, link counts, etc.) for a workflow or globally.
+    Agent loop may use this for adapting behavior, LLM should not call directly.
+    Args: workflow_id (optional).
+    Returns: Statistics dictionary."""
     start_time = time.time()
     stats: Dict[str, Any] = {"scope": workflow_id or "global"}
 
@@ -10385,7 +9435,9 @@ async def visualize_reasoning_chain(
     output_format: str = "mermaid",  # mermaid, json
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Generates a visualization of a specific thought chain."""
+    """Generates a diagram (Mermaid or JSON) of a specific UMS thought chain.
+    Args: thought_chain_id, output_format.
+    Returns: Visualization content."""
     if not thought_chain_id:
         raise ToolInputError("Thought chain ID required.", param_name="thought_chain_id")
     valid_formats = ["mermaid", "json"]
@@ -11061,38 +10113,9 @@ async def visualize_memory_network(
     output_format: str = "mermaid",  # Only mermaid for now
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
-    """Generates a visualization of the memory network for a workflow or around a specific memory.
-
-    Creates a Mermaid graph showing memories as nodes and links between them as edges.
-    Can be focused around a central memory or show the most relevant memories in a workflow.
-
-    Args:
-        workflow_id: (Optional) ID of the workflow to visualize. Required if center_memory_id is not provided.
-        center_memory_id: (Optional) ID of the memory to center the visualization around.
-        depth: (Optional) If center_memory_id is provided, how many link steps away to include (e.g., 1=immediate neighbors). Default 1.
-        max_nodes: (Optional) Maximum total number of memory nodes to include in the graph. Default 30.
-        memory_level: (Optional) Filter included memories by level (applied after neighbor selection if centered).
-        memory_type: (Optional) Filter included memories by type (applied after neighbor selection if centered).
-        output_format: (Optional) Currently only supports 'mermaid'. Default 'mermaid'.
-        db_path: (Optional) Path to the SQLite database file.
-
-    Returns:
-        Dictionary containing the Mermaid visualization string.
-        {
-            "workflow_id": "workflow-uuid" | None,
-            "center_memory_id": "center-uuid" | None,
-            "visualization": "```mermaid\ngraph TD\n...",
-            "node_count": 25,
-            "link_count": 35,
-            "format": "mermaid",
-            "success": true,
-            "processing_time": 0.25
-        }
-
-    Raises:
-        ToolInputError: If required parameters are missing, invalid, or entities not found.
-        ToolError: If database or visualization generation fails.
-    """
+    """Generates a diagram (Mermaid) of linked UMS memories.
+    Args: workflow_id or center_memory_id, depth, max_nodes, memory_level/type filters.
+    Returns: Visualization content."""
     if not workflow_id and not center_memory_id:
         raise ToolInputError(
             "Either workflow_id or center_memory_id must be provided.", param_name="workflow_id"
@@ -11357,7 +10380,6 @@ __all__ = [
     "optimize_working_memory",
     "save_cognitive_state",
     "load_cognitive_state",
-    "get_workflow_context",
     # Automated Cognitive Management
     "auto_update_focus",
     "promote_memory_level",
