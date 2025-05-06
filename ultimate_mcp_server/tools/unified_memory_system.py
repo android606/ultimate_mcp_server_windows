@@ -48,6 +48,7 @@ from ultimate_mcp_server.exceptions import ToolError, ToolInputError
 from ultimate_mcp_server.services.vector.embeddings import get_embedding_service
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.text import count_tokens
 
 logger = get_logger("ultimate_mcp_server.tools.unified_memory")
 
@@ -70,6 +71,26 @@ except Exception as config_e:
     raise RuntimeError(
         f"Failed to initialize configuration for unified_memory_system: {config_e}"
     ) from config_e
+
+# --- UMS Tool Default Constants (can be overridden by agent via fetch_limits/show_limits) ---
+# These should mirror or be inspired by the agent's CONTEXT_*_FETCH_LIMIT and CONTEXT_*_SHOW_LIMIT
+UMS_DEFAULT_FETCH_LIMIT_RECENT_ACTIONS = 10
+UMS_DEFAULT_FETCH_LIMIT_IMPORTANT_MEMORIES = 7
+UMS_DEFAULT_FETCH_LIMIT_KEY_THOUGHTS = 7
+UMS_DEFAULT_FETCH_LIMIT_PROACTIVE = 5
+UMS_DEFAULT_FETCH_LIMIT_PROCEDURAL = 3
+UMS_DEFAULT_FETCH_LIMIT_LINKS = 5
+UMS_DEFAULT_FETCH_LIMIT_GOAL_DEPTH = 3  # Max parent goals to fetch details for
+UMS_DEFAULT_SHOW_LIMIT_WORKING_MEMORY = 10
+UMS_DEFAULT_SHOW_LIMIT_GOAL_STACK = 5
+UMS_PKG_DEFAULT_FETCH_RECENT_ACTIONS = 10
+UMS_PKG_DEFAULT_FETCH_IMPORTANT_MEMORIES = 7
+UMS_PKG_DEFAULT_FETCH_KEY_THOUGHTS = 7
+UMS_PKG_DEFAULT_FETCH_PROACTIVE = 5
+UMS_PKG_DEFAULT_FETCH_PROCEDURAL = 3
+UMS_PKG_DEFAULT_FETCH_LINKS = 5
+# Show limits are mainly for compression decisions within this tool, or if it were to do truncation.
+UMS_PKG_DEFAULT_SHOW_LINKS_SUMMARY = 3
 
 # ======================================================
 # Enums (Combined & Standardized)
@@ -184,6 +205,14 @@ class LinkType(str, Enum):
     REFERENCES = "references"  # Added for linking thoughts/actions to memories
 
 
+class GoalStatus(str, Enum):
+    ACTIVE = "active"
+    PLANNED = "planned"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+    ABANDONED = "abandoned"
+
 # ======================================================
 # Database Schema (Defined as Individual Statements)
 # ======================================================
@@ -294,6 +323,27 @@ SCHEMA_STATEMENTS = [
                     REFERENCES artifacts(artifact_id)
                     ON DELETE SET NULL
     );""",
+    # ───────────────── goals ───────────────────
+    """CREATE TABLE IF NOT EXISTS goals (
+        goal_id TEXT PRIMARY KEY,
+        workflow_id TEXT NOT NULL
+                        REFERENCES workflows(workflow_id)
+                        ON DELETE CASCADE,
+        parent_goal_id TEXT
+                        REFERENCES goals(goal_id)
+                        ON DELETE SET NULL, -- Or ON DELETE CASCADE if sub-goals should be removed with parent
+        title TEXT, -- Optional brief title, description is main content
+        description TEXT NOT NULL,
+        status TEXT NOT NULL, -- e.g., 'active', 'completed', 'failed', 'paused', 'abandoned'
+        priority INTEGER DEFAULT 3, -- e.g., 1 (high) to 5 (low)
+        reasoning TEXT, -- Why this goal exists or is important
+        acceptance_criteria TEXT, -- JSON list of strings for criteria
+        metadata TEXT, -- JSON for other structured data
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER, -- Timestamp when goal reached a terminal status
+        sequence_number INTEGER -- For ordering sibling goals under a parent (optional but good)
+    );""",
     # Memory Links (Inline FKs are fine)
     """CREATE TABLE IF NOT EXISTS memory_links (
         link_id TEXT PRIMARY KEY, source_memory_id TEXT NOT NULL, target_memory_id TEXT NOT NULL,
@@ -403,6 +453,11 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_dependencies_source ON dependencies(source_action_id);",
     "CREATE INDEX IF NOT EXISTS idx_dependencies_target ON dependencies(target_action_id);",
     "CREATE INDEX IF NOT EXISTS idx_cognitive_states_last_active ON cognitive_states(last_active DESC);",
+    "CREATE INDEX IF NOT EXISTS idx_goals_workflow_id ON goals(workflow_id);",
+    "CREATE INDEX IF NOT EXISTS idx_goals_parent_goal_id ON goals(parent_goal_id);",
+    "CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);",
+    "CREATE INDEX IF NOT EXISTS idx_goals_priority ON goals(priority);",
+    "CREATE INDEX IF NOT EXISTS idx_goals_sequence_number ON goals(parent_goal_id, sequence_number);",
     # Virtual Table
     """CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
         content, description, reasoning, tags,
@@ -4340,20 +4395,24 @@ async def hybrid_search_memories(
                     tags_json_kw = json.dumps([str(tag).lower() for tag in tags])
                     where_clauses_kw.append("json_contains_all(m.tags, ?)")
                     params_kw.append(tags_json_kw)
-                if query: # Check if the original query parameter exists
-                    if "memory_fts" not in joins_kw: # Only add join if FTS search is possible
+                if query:  # Check if the original query parameter exists
+                    if "memory_fts" not in joins_kw:  # Only add join if FTS search is possible
                         joins_kw += " JOIN memory_fts fts ON m.rowid = fts.rowid"
                     # Sanitize the query text for FTS MATCH (remove non-alphanumeric chars except spaces)
                     sanitized_query_for_fts = re.sub(r"[^a-zA-Z0-9\s]", "", query)
                     # Split sanitized query into terms, filter out empty strings
                     fts_terms = [term for term in sanitized_query_for_fts.strip().split() if term]
-                    if fts_terms: # Only add MATCH clause if there are terms left after sanitization
+                    if (
+                        fts_terms
+                    ):  # Only add MATCH clause if there are terms left after sanitization
                         fts_query_term_kw = " OR ".join(fts_terms)
                         where_clauses_kw.append("fts.memory_fts MATCH ?")
                         fts_params_kw.append(fts_query_term_kw)
                     else:
                         # Log if sanitization removed all terms (optional, but helpful)
-                        logger.debug(f"Query '{query[:50]}...' resulted in no valid FTS terms after sanitization.")
+                        logger.debug(
+                            f"Query '{query[:50]}...' resulted in no valid FTS terms after sanitization."
+                        )
                         # Important: DO NOT add the "fts.memory_fts MATCH ?" clause if fts_terms is empty
 
                 where_sql_kw = " WHERE " + " AND ".join(where_clauses_kw)
@@ -5622,6 +5681,401 @@ async def get_artifact_by_id(
         logger.error(f"Error retrieving artifact {artifact_id}: {e}", exc_info=True)
         raise ToolError(f"Failed to retrieve artifact: {str(e)}") from e
 
+# --- 10.5 Goals ---
+
+
+@with_tool_metrics
+@with_error_handling
+async def create_goal(
+    workflow_id: str,
+    description: str,
+    parent_goal_id: Optional[str] = None,
+    title: Optional[str] = None,
+    priority: int = 3,
+    reasoning: Optional[str] = None,
+    acceptance_criteria: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    initial_status: str = GoalStatus.ACTIVE.value, # Default to active
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    Creates a new structured goal within a workflow, potentially as a sub-goal.
+
+    Args:
+        workflow_id: The ID of the workflow this goal belongs to.
+        description: A clear, detailed description of the goal.
+        parent_goal_id: (Optional) ID of the parent goal if this is a sub-goal.
+        title: (Optional) A brief, concise title for the goal.
+        priority: (Optional) Priority of the goal (e.g., 1-5, lower is higher). Default 3.
+        reasoning: (Optional) Explanation for why this goal is being pursued.
+        acceptance_criteria: (Optional) List of strings defining conditions for goal completion.
+        metadata: (Optional) Additional structured data about the goal.
+        initial_status: (Optional) Initial status for the goal. Default 'active'.
+        db_path: (Optional) Path to the SQLite database file.
+
+    Returns:
+        Dictionary containing the full details of the created goal.
+        {
+            "goal": { ... full goal object ... },
+            "success": true,
+            "processing_time": 0.05
+        }
+
+    Raises:
+        ToolInputError: If required parameters are missing, invalid, or referenced entities don't exist.
+        ToolError: If the database operation fails.
+    """
+    if not description:
+        raise ToolInputError("Goal description is required.", param_name="description")
+    try:
+        GoalStatus(initial_status.lower()) # Validate status
+    except ValueError as e:
+        raise ToolInputError(f"Invalid initial_status '{initial_status}'.", param_name="initial_status") from e
+
+    goal_id = MemoryUtils.generate_id()
+    now_unix = int(time.time())
+    start_time = time.time()
+
+    try:
+        async with DBConnection(db_path) as conn:
+            # Validate workflow_id
+            async with conn.execute("SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)) as cursor:
+                if not await cursor.fetchone():
+                    raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
+
+            # Validate parent_goal_id if provided
+            if parent_goal_id:
+                async with conn.execute(
+                    "SELECT 1 FROM goals WHERE goal_id = ? AND workflow_id = ?",
+                    (parent_goal_id, workflow_id) # Ensure parent is in same workflow
+                ) as cursor:
+                    if not await cursor.fetchone():
+                        raise ToolInputError(
+                            f"Parent goal {parent_goal_id} not found or not in workflow {workflow_id}.",
+                            param_name="parent_goal_id",
+                        )
+
+            # Get sequence number for ordering under the same parent
+            seq_params = (parent_goal_id,) if parent_goal_id else (None,) # Use None for root goals if parent_col allows NULL  # noqa: F841
+            # If parent_goal_id column is NOT NULL for roots, this needs adjustment
+            # For now, assume parent_goal_id IS NULL for root goals in this query.
+            # If parent_goal_id is always a string (e.g. special value for root), adjust accordingly.
+            # Assuming parent_goal_id can be NULL for root goals.
+            parent_col_for_seq = "parent_goal_id"  # noqa: F841
+            # If parent_goal_id cannot be NULL, then for root goals, sequence within workflow_id:
+            # parent_col_for_seq = "workflow_id" if not parent_goal_id else "parent_goal_id"
+            # seq_parent_val = workflow_id if not parent_goal_id else parent_goal_id
+
+            # Simplified: sequence based on parent_goal_id being NULL or not
+            if parent_goal_id:
+                 sql_max_seq = "SELECT MAX(sequence_number) FROM goals WHERE parent_goal_id = ?"
+                 params_max_seq = (parent_goal_id,)
+            else: # Root goal, sequence within workflow where parent is NULL
+                 sql_max_seq = "SELECT MAX(sequence_number) FROM goals WHERE workflow_id = ? AND parent_goal_id IS NULL"
+                 params_max_seq = (workflow_id,)
+
+            async with conn.execute(sql_max_seq, params_max_seq) as cursor:
+                row = await cursor.fetchone()
+                max_seq = row[0] if row and row[0] is not None else 0
+                sequence_number = max_seq + 1
+
+            # Serialize complex fields
+            acceptance_criteria_json = await MemoryUtils.serialize(acceptance_criteria or [])
+            metadata_json = await MemoryUtils.serialize(metadata or {})
+
+            await conn.execute(
+                """
+                INSERT INTO goals (
+                    goal_id, workflow_id, parent_goal_id, title, description, status,
+                    priority, reasoning, acceptance_criteria, metadata,
+                    created_at, updated_at, sequence_number
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    goal_id, workflow_id, parent_goal_id, title, description,
+                    initial_status.lower(), priority, reasoning, acceptance_criteria_json,
+                    metadata_json, now_unix, now_unix, sequence_number
+                ),
+            )
+
+            # Fetch the created goal to return it
+            async with conn.execute("SELECT * FROM goals WHERE goal_id = ?", (goal_id,)) as cursor:
+                created_goal_row = await cursor.fetchone()
+                if not created_goal_row:
+                    raise ToolError("Failed to retrieve created goal from database.") # Should not happen
+
+            created_goal_dict = dict(created_goal_row)
+            # Deserialize for return
+            created_goal_dict["acceptance_criteria"] = await MemoryUtils.deserialize(created_goal_dict.get("acceptance_criteria"))
+            created_goal_dict["metadata"] = await MemoryUtils.deserialize(created_goal_dict.get("metadata"))
+            # Format timestamps for return
+            created_goal_dict["created_at"] = safe_format_timestamp(created_goal_dict.get("created_at"))
+            created_goal_dict["updated_at"] = safe_format_timestamp(created_goal_dict.get("updated_at"))
+            created_goal_dict["completed_at"] = safe_format_timestamp(created_goal_dict.get("completed_at"))
+
+
+            # Log operation
+            await MemoryUtils._log_memory_operation(
+                conn, workflow_id, "create_goal", None, None, # memory_id and action_id not directly relevant
+                {"goal_id": goal_id, "description": description[:50], "parent_goal_id": parent_goal_id}
+            )
+            await conn.commit()
+
+            processing_time = time.time() - start_time
+            logger.info(f"Created goal '{description[:50]}...' ({_fmt_id(goal_id)}) in workflow {_fmt_id(workflow_id)}.", time=processing_time)
+            return {
+                "goal": created_goal_dict, # Return the full goal object
+                "success": True,
+                "processing_time": processing_time,
+            }
+
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating goal: {e}", exc_info=True)
+        raise ToolError(f"Failed to create goal: {str(e)}") from e
+
+
+@with_tool_metrics
+@with_error_handling
+async def update_goal_status(
+    goal_id: str,
+    status: str,
+    reason: Optional[str] = None, # Optional reason for status change
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    Updates the status of a specific goal.
+
+    If the new status is terminal (completed, failed, abandoned), the `completed_at`
+    timestamp is also set. Returns the updated goal details, its parent ID,
+    and an indicator if a root goal was terminally finished.
+
+    Args:
+        goal_id: The ID of the goal to update.
+        status: The new status for the goal (e.g., 'completed', 'failed').
+        reason: (Optional) A brief reason or message for the status change.
+        db_path: (Optional) Path to the SQLite database file.
+
+    Returns:
+        Dictionary containing:
+        {
+            "updated_goal_details": { ... full updated goal object ... },
+            "parent_goal_id": "parent-uuid" | None, // Parent of the updated goal
+            "is_root_finished": True | False, // If a root goal reached terminal state
+            "success": true,
+            "processing_time": 0.04
+        }
+
+    Raises:
+        ToolInputError: If goal_id not found or status is invalid.
+        ToolError: If database operation fails.
+    """
+    if not goal_id:
+        raise ToolInputError("Goal ID is required.", param_name="goal_id")
+    try:
+        status_enum = GoalStatus(status.lower())
+    except ValueError as e:
+        raise ToolInputError(f"Invalid goal status '{status}'.", param_name="status") from e
+
+    now_unix = int(time.time())
+    start_time = time.time()
+
+    try:
+        async with DBConnection(db_path) as conn:
+            # Fetch current goal to get workflow_id and parent_goal_id
+            async with conn.execute(
+                "SELECT workflow_id, parent_goal_id FROM goals WHERE goal_id = ?", (goal_id,)
+            ) as cursor:
+                goal_info_row = await cursor.fetchone()
+                if not goal_info_row:
+                    raise ToolInputError(f"Goal {goal_id} not found.", param_name="goal_id")
+                workflow_id = goal_info_row["workflow_id"]
+                parent_goal_id = goal_info_row["parent_goal_id"] # This is what agent needs
+
+            update_fields = ["status = ?", "updated_at = ?"]
+            update_params: List[Any] = [status_enum.value, now_unix]
+
+            is_terminal_status = status_enum in [
+                GoalStatus.COMPLETED, GoalStatus.FAILED, GoalStatus.ABANDONED
+            ]
+            if is_terminal_status:
+                update_fields.append("completed_at = ?")
+                update_params.append(now_unix)
+
+            update_params.append(goal_id) # For WHERE clause
+
+            await conn.execute(
+                f"UPDATE goals SET {', '.join(update_fields)} WHERE goal_id = ?",
+                update_params
+            )
+
+            # Fetch the updated goal details to return
+            async with conn.execute("SELECT * FROM goals WHERE goal_id = ?", (goal_id,)) as cursor:
+                updated_goal_row = await cursor.fetchone() # Should always find it
+                if not updated_goal_row: # Should not happen
+                     raise ToolError("Failed to retrieve updated goal details after update.")
+
+            updated_goal_dict = dict(updated_goal_row)
+            # Deserialize for return
+            updated_goal_dict["acceptance_criteria"] = await MemoryUtils.deserialize(updated_goal_dict.get("acceptance_criteria"))
+            updated_goal_dict["metadata"] = await MemoryUtils.deserialize(updated_goal_dict.get("metadata"))
+            # Format timestamps
+            updated_goal_dict["created_at"] = safe_format_timestamp(updated_goal_dict.get("created_at"))
+            updated_goal_dict["updated_at"] = safe_format_timestamp(updated_goal_dict.get("updated_at"))
+            updated_goal_dict["completed_at"] = safe_format_timestamp(updated_goal_dict.get("completed_at"))
+
+
+            # Determine if a root goal was terminally finished
+            is_root_finished = False
+            if not parent_goal_id and is_terminal_status: # No parent means it's a root goal
+                is_root_finished = True
+
+            # Log operation
+            log_data = {
+                "goal_id": goal_id,
+                "new_status": status_enum.value,
+                "reason": reason,
+                "is_terminal": is_terminal_status,
+                "parent_id_returned": parent_goal_id is not None,
+                "root_finished_flag_returned": is_root_finished,
+            }
+            await MemoryUtils._log_memory_operation(
+                conn, workflow_id, "update_goal_status", None, None, log_data
+            )
+            await conn.commit()
+
+            processing_time = time.time() - start_time
+            logger.info(f"Updated status for goal '{_fmt_id(goal_id)}' to '{status_enum.value}'.", time=processing_time)
+
+            return {
+                "updated_goal_details": updated_goal_dict,
+                "parent_goal_id": parent_goal_id,
+                "is_root_finished": is_root_finished,
+                "success": True,
+                "processing_time": processing_time,
+            }
+
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating goal status for {_fmt_id(goal_id)}: {e}", exc_info=True)
+        raise ToolError(f"Failed to update goal status: {str(e)}") from e
+
+
+
+@with_tool_metrics
+@with_error_handling
+async def get_goal_details(
+    goal_id: str,
+    # Optional: include_sub_goals: bool = False, # To fetch immediate children
+    # Optional: include_parent_details: bool = False, # To fetch immediate parent
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    Retrieves detailed information about a specific goal.
+
+    Args:
+        goal_id: The ID of the goal to retrieve.
+        db_path: Path to the SQLite database file.
+
+    Returns:
+        Dictionary containing goal details:
+        {
+            "goal": {
+                "goal_id": "uuid-string",
+                "workflow_id": "workflow-uuid",
+                "parent_goal_id": "parent-uuid" | None,
+                "description": "Goal description...",
+                "status": "active",
+                "priority": 3,
+                "reasoning": "Why this goal exists...",
+                "acceptance_criteria": ["Criterion 1", "Criterion 2"],
+                "metadata": {"key": "value"},
+                "created_at": "iso-timestampZ",
+                "updated_at": "iso-timestampZ",
+                "completed_at": "iso-timestampZ" | None
+            },
+            "success": true,
+            "processing_time": 0.03
+        }
+
+    Raises:
+        ToolInputError: If goal_id is not provided or goal not found.
+        ToolError: If database operation fails.
+    """
+    start_time = time.time()
+
+    if not goal_id:
+        raise ToolInputError("Goal ID is required.", param_name="goal_id")
+
+    try:
+        async with DBConnection(db_path) as conn:
+            # Fetch the goal
+            # Ensure all relevant columns from your 'goals' table are selected
+            query = """
+                SELECT
+                    goal_id, workflow_id, parent_goal_id, description, status,
+                    created_at, updated_at, completed_at,
+                    priority, reasoning, acceptance_criteria, metadata
+                FROM goals
+                WHERE goal_id = ?
+            """
+            async with conn.execute(query, (goal_id,)) as cursor:
+                goal_row = await cursor.fetchone()
+
+            if not goal_row:
+                raise ToolInputError(f"Goal with ID '{goal_id}' not found.", param_name="goal_id")
+
+            goal_data = dict(goal_row)
+
+            # Deserialize JSON fields
+            try:
+                goal_data["acceptance_criteria"] = (
+                    json.loads(goal_data["acceptance_criteria"])
+                    if goal_data.get("acceptance_criteria")
+                    else []
+                )
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    f"Could not deserialize acceptance_criteria for goal {goal_id}. Raw: {goal_data.get('acceptance_criteria')}"
+                )
+                goal_data["acceptance_criteria"] = []  # Fallback to empty list
+
+            try:
+                goal_data["metadata"] = (
+                    json.loads(goal_data["metadata"]) if goal_data.get("metadata") else {}
+                )
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    f"Could not deserialize metadata for goal {goal_id}. Raw: {goal_data.get('metadata')}"
+                )
+                goal_data["metadata"] = {}  # Fallback to empty dict
+
+            # Format timestamps
+            goal_data["created_at"] = safe_format_timestamp(goal_data.get("created_at"))
+            goal_data["updated_at"] = safe_format_timestamp(goal_data.get("updated_at"))
+            goal_data["completed_at"] = safe_format_timestamp(
+                goal_data.get("completed_at")
+            )  # Will be None if NULL in DB
+
+            processing_time = time.time() - start_time
+            logger.info(f"Retrieved details for goal '{_fmt_id(goal_id)}'.", time=processing_time)
+
+            return {
+                "goal": goal_data,
+                "success": True,
+                "processing_time": processing_time,
+            }
+
+    except ToolInputError:
+        raise
+    except Exception as e:
+        logger.error(
+            f"Error retrieving goal details for ID '{_fmt_id(goal_id)}': {e}", exc_info=True
+        )
+        raise ToolError(f"Failed to retrieve goal details: {str(e)}") from e
+
 
 # --- 11. Thought Details ---
 @with_tool_metrics
@@ -6256,7 +6710,7 @@ async def focus_memory(
 async def optimize_working_memory(
     context_id: str,
     target_size: int = agent_memory_config.max_working_memory_size,
-    strategy: str = "balanced", # 'balanced', 'importance', 'recency', 'diversity'
+    strategy: str = "balanced",  # 'balanced', 'importance', 'recency', 'diversity'
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Calculates an optimized working memory set based on relevance and strategy, returning IDs to keep/remove.
@@ -6307,7 +6761,9 @@ async def optimize_working_memory(
     if not context_id:
         raise ToolInputError("Context ID required.", param_name="context_id")
     if not isinstance(target_size, int) or target_size < 0:
-        raise ToolInputError("Target size must be a non-negative integer.", param_name="target_size")
+        raise ToolInputError(
+            "Target size must be a non-negative integer.", param_name="target_size"
+        )
     valid_strategies = ["balanced", "importance", "recency", "diversity"]
     if strategy not in valid_strategies:
         raise ToolInputError(
@@ -6325,11 +6781,15 @@ async def optimize_working_memory(
             ) as cursor:
                 state_row = await cursor.fetchone()
                 if not state_row:
-                    raise ToolInputError(f"Context state {context_id} not found.", param_name="context_id")
+                    raise ToolInputError(
+                        f"Context state {context_id} not found.", param_name="context_id"
+                    )
 
                 workflow_id = state_row["workflow_id"]
                 # Deserialize the working memory list from the *saved state*
-                current_memory_ids = await MemoryUtils.deserialize(state_row["working_memory"]) or []
+                current_memory_ids = (
+                    await MemoryUtils.deserialize(state_row["working_memory"]) or []
+                )
 
             before_count = len(current_memory_ids)
 
@@ -6346,7 +6806,7 @@ async def optimize_working_memory(
                     "before_count": before_count,
                     "after_count": before_count,
                     "removed_count": 0,
-                    "retained_memories": current_memory_ids, # Return the existing list
+                    "retained_memories": current_memory_ids,  # Return the existing list
                     "removed_memories": [],
                     "success": True,
                     "processing_time": time.time() - start_time,
@@ -6379,8 +6839,8 @@ async def optimize_working_memory(
                     "after_count": 0,
                     "removed_count": before_count,
                     "retained_memories": [],
-                    "removed_memories": current_memory_ids, # Indicate all would be removed
-                    "success": True, # Tool succeeded, but result is empty
+                    "removed_memories": current_memory_ids,  # Indicate all would be removed
+                    "success": True,  # Tool succeeded, but result is empty
                     "processing_time": time.time() - start_time,
                 }
 
@@ -6392,7 +6852,7 @@ async def optimize_working_memory(
                 importance = memory.get("importance", 5.0)
                 confidence = memory.get("confidence", 1.0)
                 created_at = memory.get("created_at", now_unix)
-                last_accessed = memory.get("last_accessed") # Can be None
+                last_accessed = memory.get("last_accessed")  # Can be None
                 access_count = memory.get("access_count", 0)
                 mem_type = memory.get("memory_type")
 
@@ -6406,12 +6866,19 @@ async def optimize_working_memory(
                     score = relevance
                 elif strategy == "importance":
                     # Weighted sum prioritizing importance/confidence
-                    score = (importance * 0.6) + (confidence * 0.2) + (relevance * 0.1) + (recency * 0.1)
+                    score = (
+                        (importance * 0.6)
+                        + (confidence * 0.2)
+                        + (relevance * 0.1)
+                        + (recency * 0.1)
+                    )
                 elif strategy == "recency":
-                     # Weighted sum prioritizing recency/access
-                    score = (recency * 0.5) + (min(1.0, access_count / 5.0) * 0.2) + (relevance * 0.3)
+                    # Weighted sum prioritizing recency/access
+                    score = (
+                        (recency * 0.5) + (min(1.0, access_count / 5.0) * 0.2) + (relevance * 0.3)
+                    )
                 elif strategy == "diversity":
-                    score = relevance # Use relevance as the base score for sorting within types
+                    score = relevance  # Use relevance as the base score for sorting within types
 
                 scored_memories.append({"id": mem_id, "score": score, "type": mem_type})
 
@@ -6429,14 +6896,14 @@ async def optimize_working_memory(
                 group_iters = {mem_type: iter(group) for mem_type, group in type_groups.items()}
                 active_groups = list(group_iters.keys())
                 while len(retained_memory_ids) < target_size and active_groups:
-                    group_type_to_select = active_groups.pop(0) # Take from front
+                    group_type_to_select = active_groups.pop(0)  # Take from front
                     try:
                         selected_mem = next(group_iters[group_type_to_select])
                         retained_memory_ids.append(selected_mem["id"])
-                        active_groups.append(group_type_to_select) # Add back to end for next round
+                        active_groups.append(group_type_to_select)  # Add back to end for next round
                     except StopIteration:
-                        pass # Group exhausted, don't add back
-            else: # Balanced, Importance, Recency strategies
+                        pass  # Group exhausted, don't add back
+            else:  # Balanced, Importance, Recency strategies
                 scored_memories.sort(key=lambda x: x["score"], reverse=True)
                 retained_memory_ids = [m["id"] for m in scored_memories[:target_size]]
 
@@ -6451,17 +6918,21 @@ async def optimize_working_memory(
             await MemoryUtils._log_memory_operation(
                 conn,
                 workflow_id,
-                "calculate_wm_optimization", # Changed operation name
-                None, None,
+                "calculate_wm_optimization",  # Changed operation name
+                None,
+                None,
                 {
-                    "context_id": context_id, "strategy": strategy,
-                    "target_size": target_size, "before_count": before_count,
-                    "after_count": after_count, "removed_count": removed_count,
-                    "retained_ids_sample": retained_memory_ids[:5], # Log sample IDs
+                    "context_id": context_id,
+                    "strategy": strategy,
+                    "target_size": target_size,
+                    "before_count": before_count,
+                    "after_count": after_count,
+                    "removed_count": removed_count,
+                    "retained_ids_sample": retained_memory_ids[:5],  # Log sample IDs
                     "removed_ids_sample": removed_memory_ids[:5],
                 },
             )
-            await conn.commit() # Commit *only* the log entry
+            await conn.commit()  # Commit *only* the log entry
 
             # --- 8. Return the calculated lists ---
             processing_time = time.time() - start_time
@@ -6478,8 +6949,8 @@ async def optimize_working_memory(
                 "before_count": before_count,
                 "after_count": after_count,
                 "removed_count": removed_count,
-                "retained_memories": retained_memory_ids, # The list to keep
-                "removed_memories": removed_memory_ids,   # The list to discard
+                "retained_memories": retained_memory_ids,  # The list to keep
+                "removed_memories": removed_memory_ids,  # The list to discard
                 "success": True,
                 "processing_time": processing_time,
             }
@@ -6487,7 +6958,9 @@ async def optimize_working_memory(
     except ToolInputError:
         raise
     except Exception as e:
-        logger.error(f"Error calculating working memory optimization for {context_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error calculating working memory optimization for {context_id}: {e}", exc_info=True
+        )
         raise ToolError(f"Failed to calculate working memory optimization: {str(e)}") from e
 
 
@@ -6795,7 +7268,7 @@ async def load_cognitive_state(
         raise ToolError(f"Failed to load cognitive state: {str(e)}") from e
 
 
-# --- 14. Comprehensive Context Retrieval (Ported from agent_memory) ---
+# --- 14. Comprehensive Context Retrieval ---
 @with_tool_metrics
 @with_error_handling
 async def get_workflow_context(
@@ -7824,7 +8297,7 @@ async def get_linked_memories(
 
 
 # ======================================================
-# Meta-Cognition Tools (Adapted from cognitive_memory)
+# Meta-Cognition Tools
 # ======================================================
 
 
@@ -8884,7 +9357,395 @@ async def delete_expired_memories(db_path: str = agent_memory_config.db_path) ->
         raise ToolError(f"Failed to delete expired memories: {str(e)}") from e
 
 
-# --- 18. Statistics (Adapted from cognitive_memory) ---
+@with_tool_metrics
+@with_error_handling
+async def get_rich_context_package(
+    workflow_id: str,
+    context_id: Optional[str] = None,
+    current_plan_step_description: Optional[str] = None,
+    focal_memory_id_hint: Optional[str] = None,
+    fetch_limits: Optional[Dict[str, int]] = None,
+    show_limits: Optional[Dict[str, int]] = None,  # For UMS-side truncation/summarization decisions
+    include_core_context: bool = True,
+    include_working_memory: bool = True,
+    include_proactive_memories: bool = True,
+    include_relevant_procedures: bool = True,
+    include_contextual_links: bool = True,
+    # Note: include_goal_details / include_goal_stack_summary are NOT parameters here,
+    # as per Scenario A, the agent handles its own goal stack for context.
+    compression_token_threshold: Optional[int] = None,
+    compression_target_tokens: Optional[int] = None,
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    UMS Tool: Gathers a package of rich context elements for an agent.
+    This tool calls other granular UMS tools to build the context package
+    (excluding agent-specific goal stack, which agent adds itself).
+    """
+    start_time = time.time()
+    ums_package_retrieval_timestamp = datetime.now(timezone.utc).isoformat()
+    # This dictionary will be the main payload under "context_package"
+    assembled_context_package: Dict[str, Any] = {
+        "retrieval_timestamp_ums_package": ums_package_retrieval_timestamp
+    }
+    errors_in_package: List[str] = []
+    focal_mem_id_for_links: Optional[str] = focal_memory_id_hint  # Start with hint
+
+    fetch_limits = fetch_limits or {}
+    show_limits = show_limits or {}
+
+    # Use provided limits or UMS defaults
+    lim_actions = fetch_limits.get("recent_actions", UMS_PKG_DEFAULT_FETCH_RECENT_ACTIONS)
+    lim_imp_mems = fetch_limits.get("important_memories", UMS_PKG_DEFAULT_FETCH_IMPORTANT_MEMORIES)
+    lim_key_thts = fetch_limits.get("key_thoughts", UMS_PKG_DEFAULT_FETCH_KEY_THOUGHTS)
+    lim_proactive = fetch_limits.get("proactive_memories", UMS_PKG_DEFAULT_FETCH_PROACTIVE)
+    lim_procedural = fetch_limits.get("procedural_memories", UMS_PKG_DEFAULT_FETCH_PROCEDURAL)
+    lim_links = fetch_limits.get("link_traversal", UMS_PKG_DEFAULT_FETCH_LINKS)
+
+    lim_show_links_summary = show_limits.get("link_traversal", UMS_PKG_DEFAULT_SHOW_LINKS_SUMMARY)
+
+    # --- 0. Initial Workflow Validation (already done by agent, but good UMS practice) ---
+    try:
+        async with DBConnection(db_path) as conn:
+            async with conn.execute(
+                "SELECT title FROM workflows WHERE workflow_id = ?", (workflow_id,)
+            ) as cursor:
+                if not await cursor.fetchone():
+                    # This case should ideally be caught by the agent before calling,
+                    # but the UMS tool should also validate its inputs.
+                    raise ToolInputError(
+                        f"Target workflow_id '{workflow_id}' not found in UMS.",
+                        param_name="workflow_id",
+                    )
+    except Exception as e:
+        logger.error(
+            f"UMS Package: Workflow ID validation failed for {workflow_id}: {e}", exc_info=True
+        )
+        # Return immediately if workflow is invalid, as other operations depend on it
+        return {
+            "success": False,
+            "error": f"Workflow ID validation failed: {e}",
+            "processing_time": time.time() - start_time,
+        }
+
+    # --- 1. Fetch Core Context (Recent Actions, Important Memories, Key Thoughts) ---
+    if include_core_context:
+        try:
+            core_ctx_result = await get_workflow_context(  # UMS internal call
+                workflow_id=workflow_id,
+                recent_actions_limit=lim_actions,
+                important_memories_limit=lim_imp_mems,
+                key_thoughts_limit=lim_key_thts,
+                db_path=db_path,
+            )
+            if core_ctx_result.get("success"):
+                assembled_context_package["core_context"] = {
+                    # Exclude UMS tool's own success/timing from the nested package
+                    k: v
+                    for k, v in core_ctx_result.items()
+                    if k not in ["success", "processing_time"]
+                }
+                assembled_context_package["core_context"]["retrieved_at"] = (
+                    ums_package_retrieval_timestamp
+                )
+            else:
+                err_msg = (
+                    f"UMS Package: Core context retrieval failed: {core_ctx_result.get('error')}"
+                )
+                errors_in_package.append(err_msg)
+                logger.warning(err_msg)
+        except Exception as e:
+            err_msg = f"UMS Package: Exception in get_core_context: {e}"
+            errors_in_package.append(err_msg)
+            logger.error(f"UMS Package: Core context error for {workflow_id}: {e}", exc_info=True)
+
+    # --- 2. Fetch Working Memory ---
+    if include_working_memory and context_id:
+        try:
+            wm_result = await get_working_memory(  # UMS internal call
+                context_id=context_id,
+                include_content=False,  # Agent usually doesn't need full WM content in context
+                include_links=False,  # Links are handled by contextual_links section below
+                db_path=db_path,
+            )
+            if wm_result.get("success"):
+                assembled_context_package["current_working_memory"] = {
+                    k: v for k, v in wm_result.items() if k not in ["success", "processing_time"]
+                }
+                assembled_context_package["current_working_memory"]["retrieved_at"] = (
+                    ums_package_retrieval_timestamp
+                )
+                if wm_result.get("focal_memory_id"):  # Update focal_mem_id if WM provided it
+                    focal_mem_id_for_links = wm_result.get("focal_memory_id")
+            else:
+                err_msg = f"UMS Package: Working memory retrieval failed: {wm_result.get('error')}"
+                errors_in_package.append(err_msg)
+                logger.warning(err_msg)
+        except Exception as e:
+            err_msg = f"UMS Package: Exception in get_working_memory: {e}"
+            errors_in_package.append(err_msg)
+            logger.error(f"UMS Package: WM error for context {context_id}: {e}", exc_info=True)
+
+    # --- 3. Proactive & Procedural Memory Retrieval ---
+    # Uses current_plan_step_description passed by the agent
+    search_query_source = current_plan_step_description or "current agent objectives"
+
+    if include_proactive_memories:
+        try:
+            proactive_query_text = (
+                f"Information relevant to current task or goal: {search_query_source}"
+            )
+            proactive_res = await hybrid_search_memories(  # UMS internal call
+                query=proactive_query_text,
+                workflow_id=workflow_id,
+                limit=lim_proactive,
+                include_content=False,  # Summaries/descriptions are usually enough for context
+                semantic_weight=0.7,
+                keyword_weight=0.3,
+                db_path=db_path,
+            )
+            if proactive_res.get("success"):
+                assembled_context_package["proactive_memories"] = {
+                    "retrieved_at": ums_package_retrieval_timestamp,
+                    "query_used": proactive_query_text,  # Good for debugging
+                    "memories": proactive_res.get("memories", []),
+                }
+            else:
+                errors_in_package.append(
+                    f"UMS Package: Proactive memory search failed: {proactive_res.get('error')}"
+                )
+        except Exception as e:
+            errors_in_package.append(f"UMS Package: Proactive search exception: {e}")
+            logger.error(f"UMS Package: Proactive err for {workflow_id}: {e}", exc_info=True)
+
+    if include_relevant_procedures:
+        try:
+            procedural_query_text = f"How to accomplish, perform, or execute: {search_query_source}"
+            procedural_res = await hybrid_search_memories(  # UMS internal call
+                query=procedural_query_text,
+                workflow_id=workflow_id,
+                limit=lim_procedural,
+                memory_level=MemoryLevel.PROCEDURAL.value,  # Ensure MemoryLevel is imported/defined
+                include_content=False,
+                db_path=db_path,
+            )
+            if procedural_res.get("success"):
+                assembled_context_package["relevant_procedures"] = {
+                    "retrieved_at": ums_package_retrieval_timestamp,
+                    "query_used": procedural_query_text,
+                    "procedures": procedural_res.get("memories", []),
+                }
+            else:
+                errors_in_package.append(
+                    f"UMS Package: Procedural memory search failed: {procedural_res.get('error')}"
+                )
+        except Exception as e:
+            errors_in_package.append(f"UMS Package: Procedural search exception: {e}")
+            logger.error(f"UMS Package: Procedural err for {workflow_id}: {e}", exc_info=True)
+
+    # --- 4. Contextual Links ---
+    # Uses focal_mem_id_for_links (either passed as hint or derived from WM call)
+    if include_contextual_links:
+        id_for_links_to_check = focal_mem_id_for_links
+        if not id_for_links_to_check:  # Fallback if no focal_mem_id_hint and WM didn't provide one
+            core_mems = assembled_context_package.get("core_context", {}).get(
+                "important_memories", []
+            )
+            if core_mems and isinstance(core_mems, list) and core_mems[0].get("memory_id"):
+                id_for_links_to_check = core_mems[0]["memory_id"]
+                logger.debug(
+                    f"UMS Package: No focal ID for links, using first important memory: {id_for_links_to_check}"
+                )
+
+        if id_for_links_to_check:
+            try:
+                links_res = await get_linked_memories(  # UMS internal call
+                    memory_id=id_for_links_to_check,
+                    direction="both",
+                    limit=lim_links,
+                    include_memory_details=False,  # Keep details light
+                    db_path=db_path,
+                )
+                if links_res.get("success"):
+                    links_payload = links_res.get("links", {})
+                    link_summary_for_agent = {
+                        "source_memory_id": id_for_links_to_check,
+                        "outgoing_count": len(links_payload.get("outgoing", [])),
+                        "incoming_count": len(links_payload.get("incoming", [])),
+                        "top_outgoing_links_summary": [
+                            {
+                                "target_memory_id": _fmt_id(link.get("target_memory_id")),
+                                "link_type": link.get("link_type"),
+                                "description": (link.get("description") or "")[:70] + "...",
+                            }
+                            for link in links_payload.get("outgoing", [])[:lim_show_links_summary]
+                        ],
+                        "top_incoming_links_summary": [
+                            {
+                                "source_memory_id": _fmt_id(link.get("source_memory_id")),
+                                "link_type": link.get("link_type"),
+                                "description": (link.get("description") or "")[:70] + "...",
+                            }
+                            for link in links_payload.get("incoming", [])[:lim_show_links_summary]
+                        ],
+                    }
+                    assembled_context_package["contextual_links"] = {
+                        "retrieved_at": ums_package_retrieval_timestamp,
+                        "summary": link_summary_for_agent,
+                    }
+                else:
+                    errors_in_package.append(
+                        f"UMS Package: Link retrieval failed for {id_for_links_to_check}: {links_res.get('error')}"
+                    )
+            except Exception as e:
+                errors_in_package.append(
+                    f"UMS Package: Link retrieval exception for {id_for_links_to_check}: {e}"
+                )
+                logger.error(
+                    f"UMS Package: Links err for {id_for_links_to_check}: {e}", exc_info=True
+                )
+        else:
+            logger.debug("UMS Package: No suitable memory ID found to initiate link traversal.")
+
+    # --- 5. UMS-Side Context Compression ---
+    # This step uses the accurate `count_tokens` from your server utils.
+    if compression_token_threshold is not None and compression_target_tokens is not None:
+        try:
+            current_package_json = json.dumps(assembled_context_package, default=str)
+            estimated_tokens_before_compress = await count_tokens(
+                current_package_json
+            )  # Uses your accurate counter
+
+            if estimated_tokens_before_compress > compression_token_threshold:
+                logger.info(
+                    f"UMS Package: Context for {workflow_id} ({estimated_tokens_before_compress} tokens) exceeds threshold {compression_token_threshold}. UMS attempting compression."
+                )
+
+                # Identify largest text-heavy component(s) for summarization
+                # More sophisticated: could rank components by token size
+                component_to_summarize_key = None
+                text_for_summarization = ""
+                max_component_tokens = (
+                    compression_target_tokens * 0.5
+                )  # Don't try to summarize tiny blocks
+
+                # Example: Prioritize summarizing raw lists of memories/actions if they are large
+                candidates_for_summarization = {
+                    "core_context.recent_actions": assembled_context_package.get(
+                        "core_context", {}
+                    ).get("recent_actions"),
+                    "core_context.important_memories": assembled_context_package.get(
+                        "core_context", {}
+                    ).get("important_memories"),
+                    "proactive_memories.memories": assembled_context_package.get(
+                        "proactive_memories", {}
+                    ).get("memories"),
+                    "relevant_procedures.procedures": assembled_context_package.get(
+                        "relevant_procedures", {}
+                    ).get("procedures"),
+                }
+
+                for key_path, component_data in candidates_for_summarization.items():
+                    if (
+                        component_data
+                        and isinstance(component_data, list)
+                        and len(component_data) > 3
+                    ):  # Only summarize if reasonably sized list
+                        component_str = json.dumps(component_data, default=str)
+                        component_tok_count = await count_tokens(component_str)
+                        if (
+                            component_tok_count > max_component_tokens
+                        ):  # If this component is largest so far AND worth summarizing
+                            max_component_tokens = component_tok_count
+                            component_to_summarize_key = key_path
+                            text_for_summarization = component_str
+
+                if component_to_summarize_key and text_for_summarization:
+                    logger.debug(
+                        f"UMS Package: Compressing component '{component_to_summarize_key}' ({max_component_tokens} estimated tokens)."
+                    )
+
+                    summary_tool_res = await summarize_text(  # UMS internal call
+                        text_to_summarize=text_for_summarization,
+                        target_tokens=int(
+                            compression_target_tokens * 0.6
+                        ),  # Target slightly less for one block
+                        context_type=f"ums_package_component:{component_to_summarize_key}",
+                        workflow_id=workflow_id,  # For logging within summarize_text
+                        record_summary=False,  # Ephemeral
+                        db_path=db_path,
+                    )
+                    if summary_tool_res.get("success") and summary_tool_res.get("summary"):
+                        compressed_text_block = summary_tool_res["summary"]
+
+                        # Update the context_package by replacing/annotating the summarized component
+                        keys = component_to_summarize_key.split(".")
+                        temp_ref = assembled_context_package
+                        for _k_idx, k_val in enumerate(keys[:-1]):
+                            temp_ref = temp_ref.setdefault(k_val, {})
+
+                        # Get original retrieval time if available
+                        original_retrieval_time = ums_package_retrieval_timestamp
+                        if isinstance(temp_ref.get(keys[-1]), dict):
+                            original_retrieval_time = temp_ref[keys[-1]].get(
+                                "retrieved_at", ums_package_retrieval_timestamp
+                            )
+
+                        temp_ref[keys[-1]] = {  # Replace the component with a summary marker
+                            "retrieved_at": original_retrieval_time,  # Keep original retrieval time
+                            "_ums_compressed_": True,
+                            "original_token_estimate": max_component_tokens,
+                            "summary_preview": compressed_text_block[:150] + "...",
+                        }
+
+                        # Store the full summary in a dedicated section
+                        compression_details = assembled_context_package.setdefault(
+                            "ums_compression_details", {}
+                        )
+                        compression_details[component_to_summarize_key] = {
+                            "summary_content": compressed_text_block,
+                            "retrieved_at": ums_package_retrieval_timestamp,  # When summary was made
+                        }
+                        logger.info(
+                            f"UMS Package: Successfully compressed '{component_to_summarize_key}' for context {workflow_id}."
+                        )
+                    else:
+                        errors_in_package.append(
+                            f"UMS Package: Compression of '{component_to_summarize_key}' failed: {summary_tool_res.get('error')}"
+                        )
+                else:
+                    logger.info(
+                        f"UMS Package: No single large component identified for targeted compression for {workflow_id}, or strategy not met."
+                    )
+            else:
+                logger.debug(
+                    f"UMS Package: Context ({estimated_tokens_before_compress} tokens) for {workflow_id} is within UMS compression threshold."
+                )
+        except Exception as e:
+            errors_in_package.append(f"UMS Package: Exception during context compression: {e}")
+            logger.error(
+                f"UMS Package: Error during context compression for {workflow_id}: {e}",
+                exc_info=True,
+            )
+
+    # --- Final Return ---
+    final_response = {
+        "success": not bool(errors_in_package),
+        "context_package": assembled_context_package,  # This is the payload for the agent
+        "errors": errors_in_package if errors_in_package else None,
+        "processing_time": time.time() - start_time,
+    }
+
+    if errors_in_package:
+        logger.warning(
+            f"UMS: get_rich_context_package for {workflow_id} completed with {len(errors_in_package)} errors."
+        )
+    else:
+        logger.info(f"UMS: Successfully assembled rich context package for {workflow_id}.")
+    return final_response
+
+
+# --- 18. Statistics ---
 @with_tool_metrics
 @with_error_handling
 async def compute_memory_statistics(
@@ -9313,7 +10174,7 @@ async def _generate_thought_chain_mermaid(thought_chain: Dict[str, Any]) -> str:
     return "\n".join(diagram)
 
 
-# --- 19. Reporting (Corrected Port from agent_memory) ---
+# --- 19. Reporting ---
 @with_tool_metrics
 @with_error_handling
 async def generate_workflow_report(
@@ -10503,6 +11364,10 @@ __all__ = [
     # Meta-Cognition & Maintenance
     "consolidate_memories",
     "generate_reflection",
+    "get_rich_context_package",
+    "get_goal_details",
+    "create_goal",
+    "update_goal_status",
     "summarize_text",
     "delete_expired_memories",
     "compute_memory_statistics",
@@ -10513,101 +11378,3 @@ __all__ = [
     "visualize_memory_network",
 ]
 
-
-# Example Usage (for testing)
-async def _example():
-    db = "test_unified_memory.db"
-    if os.path.exists(db):
-        os.remove(db)
-
-    init_result = await initialize_memory_system(db_path=db)
-    print("Init Result:", init_result)
-
-    wf_result = await create_workflow(
-        title="Test Analysis Workflow",
-        goal="Analyze test data",
-        tags=["testing", "example"],
-        db_path=db,
-    )
-    wf_id = wf_result["workflow_id"]
-    print("\nWorkflow Created:", wf_result)
-
-    thought1 = await record_thought(
-        workflow_id=wf_id, content="Need to load the data first.", thought_type="plan", db_path=db
-    )
-    print("\nThought Recorded:", thought1)
-
-    action1_start = await record_action_start(
-        workflow_id=wf_id,
-        action_type="tool_use",
-        reasoning="Load data from file.",
-        tool_name="load_data",
-        tool_args={"file": "data.csv"},
-        title="Load Data",
-        tags=["io"],
-        related_thought_id=thought1["thought_id"],
-        db_path=db,
-    )
-    action1_id = action1_start["action_id"]
-    print("\nAction Started:", action1_start)
-
-    # Simulate tool execution
-    await asyncio.sleep(0.1)
-    tool_output = {"rows_loaded": 100, "columns": ["A", "B"]}
-
-    action1_end = await record_action_completion(
-        action_id=action1_id,
-        tool_result=tool_output,
-        summary="Data loaded successfully.",
-        db_path=db,
-    )
-    print("\nAction Completed:", action1_end)
-
-    artifact1 = await record_artifact(
-        workflow_id=wf_id,
-        action_id=action1_id,
-        name="Loaded Data Sample",
-        artifact_type="json",
-        content=json.dumps(tool_output),
-        description="Sample of loaded data structure",
-        tags=["data"],
-        db_path=db,
-    )
-    print("\nArtifact Recorded:", artifact1)
-
-    mem1 = await store_memory(
-        workflow_id=wf_id,
-        content="Column A seems to be numerical.",
-        memory_type="observation",
-        importance=6.0,
-        action_id=action1_id,
-        db_path=db,
-    )
-    print("\nMemory Stored:", mem1)
-    mem2 = await store_memory(
-        workflow_id=wf_id,
-        content="Column B looks categorical.",
-        memory_type="observation",
-        importance=6.0,
-        action_id=action1_id,
-        db_path=db,
-    )
-    print("\nMemory Stored:", mem2)
-
-    link1 = await create_memory_link(
-        source_memory_id=mem1["memory_id"],
-        target_memory_id=mem2["memory_id"],
-        link_type="related",
-        db_path=db,
-    )
-    print("\nMemory Link Created:", link1)
-
-    mem_get = await get_memory_by_id(memory_id=mem1["memory_id"], include_links=True, db_path=db)
-    print("\nGet Memory By ID:", mem_get)
-
-    # Close the connection on app shutdown
-    await DBConnection.close_connection()
-
-
-# if __name__ == "__main__":
-#     asyncio.run(_example())
