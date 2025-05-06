@@ -1,4 +1,5 @@
 import asyncio
+import base64  # Added base64
 import json
 import os
 import re
@@ -10,6 +11,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import Optional, Tuple
+from urllib.parse import parse_qs, unquote_plus, urlparse
 
 # --- Configuration & Path Setup ---
 # (Keep the existing path setup logic - ensures project root is added and env vars set)
@@ -230,6 +232,96 @@ _main_task = None
 
 
 # --- Helper Functions ---
+
+# Helper function to extract real URL from search engine redirects
+def _extract_real_url(redirect_url: Optional[str]) -> Optional[str]:
+    """Attempts to extract the target URL from common search engine redirect links."""
+    if not redirect_url:
+        return None
+    try:
+        parsed_url = urlparse(redirect_url)
+        # Bing uses 'u='
+        if "bing.com" in parsed_url.netloc:
+            query_params = parse_qs(parsed_url.query)
+            if "u" in query_params and query_params["u"]:
+                b64_param_raw = query_params["u"][0]
+                # Clean the parameter: remove potential problematic chars (like null bytes) and whitespace
+                b64_param_cleaned = re.sub(r'[\x00-\x1f\s]+', '', b64_param_raw).strip()
+                if not b64_param_cleaned:
+                    logger.warning(f"Bing URL parameter 'u' was empty after cleaning: {b64_param_raw}")
+                    return None
+
+                # Remove Bing's "aX" prefix (where X is a digit) before decoding
+                if b64_param_cleaned.startswith(("a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9")):
+                    b64_param_cleaned = b64_param_cleaned[2:]
+                    logger.debug("Removed 'aX' prefix from Bing URL parameter")
+
+                decoded_bytes = None
+                # Try decoding (standard and urlsafe) with padding logic
+                for decoder in [base64.b64decode, base64.urlsafe_b64decode]:
+                    try:
+                        b64_to_decode = b64_param_cleaned
+                        missing_padding = len(b64_to_decode) % 4
+                        if missing_padding:
+                            b64_to_decode += '=' * (4 - missing_padding)
+                        decoded_bytes = decoder(b64_to_decode)
+                        # If decode succeeded, break the loop
+                        break
+                    except (base64.binascii.Error, ValueError):
+                        # Ignore error here, try next decoder
+                        continue 
+
+                if decoded_bytes is None:
+                    logger.warning(f"Failed to Base64 decode Bing URL parameter after cleaning and padding: {b64_param_cleaned}")
+                    return None
+
+                # Now try to decode bytes to string
+                try:
+                    # Try strict UTF-8 first
+                    decoded_url = decoded_bytes.decode('utf-8', errors='strict')
+                except UnicodeDecodeError:
+                    logger.warning(f"UTF-8 strict decode failed for bytes from {b64_param_cleaned}. Trying errors='replace'.")
+                    try:
+                        # Fallback with replacement characters
+                        decoded_url = decoded_bytes.decode('utf-8', errors='replace')
+                    except Exception as final_decode_err:
+                        logger.error(f"Final string decode failed even with replace: {final_decode_err}")
+                        return None
+
+                # Final validation: Does it look like a URL?
+                if decoded_url and decoded_url.startswith("http"):
+                    logger.debug(f"Successfully decoded Bing URL: {decoded_url}")
+                    return decoded_url
+                else:
+                    logger.warning(f"Decoded string doesn't look like a valid URL: '{decoded_url[:100]}...'")
+                    return None
+
+        # Google uses 'url=' (less common now, but maybe?)
+        elif "google.com" in parsed_url.netloc:
+            query_params = parse_qs(parsed_url.query)
+            if "url" in query_params and query_params["url"]:
+                 google_url = unquote_plus(query_params["url"][0])
+                 # Validate Google URL as well
+                 if google_url and google_url.startswith("http"):
+                     return google_url
+                 else:
+                     logger.warning(f"Extracted Google URL param is invalid: {google_url}")
+                     return None
+
+        # If no known redirect pattern, return the original URL if it looks valid
+        if redirect_url.startswith("http"):
+            logger.debug(f"Returning original non-redirect URL: {redirect_url}")
+            return redirect_url
+        else:
+            # If original doesn't look like a URL either, return None
+            logger.debug(f"Non-HTTP or non-redirect URL found and skipped: {redirect_url}")
+            return None
+
+    except Exception as e:
+        # If parsing fails for any reason, return None
+        logger.warning(f"Error parsing or processing redirect URL {redirect_url}: {e}", exc_info=True)
+        return None
+
 
 # Helper function to ensure all UMS tool calls use the same database path
 def with_current_db_path(params: dict) -> dict:
@@ -530,6 +622,7 @@ async def run_scenario_1_investor_relations():
     pdf_artifact_id = None
     md_artifact_id = None
     analysis_artifact_id = None
+    llm_provider, llm_model = await _get_llm_config("InvestorRelations") # Get LLM config early
 
     company_name = "Apple"
     ticker = "AAPL"
@@ -597,18 +690,61 @@ async def run_scenario_1_investor_relations():
             "Complete: Find IR Page",
         )
         assert search_res and search_res.get("success"), f"Web search for {company_name} IR failed"
-        search_results_list = search_res.get("results", [])
+        # Fix: Process search results more robustly and extract real URLs
+        search_results_list = search_res.get("result", {}).get("results", [])
         if not search_results_list:
             raise ToolError("Web search returned no results for IR page.")
+
+        potential_ir_urls = []
         for result in search_results_list:
-            url = result.get("link", "").lower()
-            if "investor.apple.com" in url:
-                ir_url = result.get("link")
-                break
-        if not ir_url:
-            ir_url = search_results_list[0].get("link")
-        assert ir_url, "Could not determine IR URL"
-        console.print(f"[cyan]   -> Identified Potential IR URL:[/cyan] {ir_url}")
+            redirect_link = result.get("link")
+            real_url = _extract_real_url(redirect_link)
+            if real_url:
+                potential_ir_urls.append(
+                    {"title": result.get("title"), "snippet": result.get("snippet"), "url": real_url}
+                )
+                # Check if the *real* URL matches
+                if "investor.apple.com" in real_url.lower():
+                    ir_url = real_url
+                    break # Found the likely target
+
+        # Fallback if simple check fails: Use LLM to pick the best URL
+        if not ir_url and potential_ir_urls:
+            console.print("[yellow]   -> Direct URL match failed, asking LLM to choose best IR URL...[/yellow]")
+            url_options_str = json.dumps(potential_ir_urls, indent=2)
+            pick_url_prompt = f"""From the following search results, choose the SINGLE most likely OFFICIAL Investor Relations homepage URL for {company_name}. Respond ONLY with the chosen URL.
+Search Results:
+```json
+{url_options_str}
+```
+Chosen URL:"""
+            llm_pick_res = await safe_tool_call(
+                chat_completion,
+                {
+                    "provider": llm_provider,
+                    "model": llm_model,
+                    "messages": [{"role": "user", "content": pick_url_prompt}],
+                    "max_tokens": 200,
+                    "temperature": 0.0,
+                },
+                "Execute: LLM Choose IR URL",
+            )
+            if llm_pick_res and llm_pick_res.get("success"):
+                chosen_url_raw = llm_pick_res.get("message", {}).get("content", "").strip()
+                # Basic validation
+                if chosen_url_raw.startswith("http"):
+                   ir_url = chosen_url_raw
+                else:
+                   logger.warning(f"LLM returned non-URL: {chosen_url_raw}")
+
+        # Final fallback: use the first extracted URL
+        if not ir_url and potential_ir_urls:
+            ir_url = potential_ir_urls[0]["url"]
+            console.print(f"[yellow]   -> LLM fallback failed or skipped, using first extracted URL: {ir_url}[/yellow]")
+
+        assert ir_url, "Could not determine IR URL even with fallbacks"
+        console.print(f"[cyan]   -> Identified IR URL:[/cyan] {ir_url}")
+
         mem_res = await safe_tool_call(
             store_memory,
             with_current_db_path(
@@ -953,17 +1089,22 @@ Respond ONLY with JSON: `{{"action": "...", "args": {{...}}}}` (e.g., `{{"action
         )
         md_artifact_id = art_res.get("artifact_id") if art_res.get("success") else None
         if pdf_artifact_id and md_artifact_id:
-            await safe_tool_call(
-                create_memory_link,
-                with_current_db_path(
-                    {
-                        "source_memory_id": md_artifact_id,
-                        "target_memory_id": pdf_artifact_id,
-                        "link_type": LinkType.DERIVED_FROM.value,
-                    }
-                ),
-                "Link MD Artifact to PDF Artifact",
-            )
+            # Check that we're linking memory IDs, not artifact IDs
+            if isinstance(pdf_artifact_id, str) and pdf_artifact_id.startswith("mem_") and \
+               isinstance(md_artifact_id, str) and md_artifact_id.startswith("mem_"):
+                await safe_tool_call(
+                    create_memory_link,
+                    with_current_db_path(
+                        {
+                            "source_memory_id": md_artifact_id,
+                            "target_memory_id": pdf_artifact_id,
+                            "link_type": LinkType.DERIVED_FROM.value,
+                        }
+                    ),
+                    "Link MD Artifact to PDF Artifact",
+                )
+            else:
+                logger.warning(f"Skipping memory link: IDs do not appear to be memory IDs - pdf:{pdf_artifact_id}, md:{md_artifact_id}")
         if download_action_id and convert_action_id:
             await safe_tool_call(
                 add_action_dependency,
@@ -990,8 +1131,8 @@ Respond ONLY with JSON: `{{"action": "...", "args": {{...}}}}` (e.g., `{{"action
             }),
             "Start: Ripgrep Extract Financials",
         )
-        revenue_pattern_rg = r"Revenue.*?\$(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*([BM])"
-        net_income_pattern_rg = r"Net\s+Income.*?\$(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*([BM])"
+        revenue_pattern_rg = r"Revenue[^$]*\$(\d[\d,]*(?:\.\d+)?)(?:\s*([BM]))?"
+        net_income_pattern_rg = r"Net\s+Income[^$]*\$(\d[\d,]*(?:\.\d+)?)(?:\s*([BM]))?"
         rg_args_rev = (
             f"-oNi --threads=2 '{revenue_pattern_rg}' {shlex.quote(str(markdown_path_for_rg))}"
         )
@@ -1033,8 +1174,8 @@ Respond ONLY with JSON: `{{"action": "...", "args": {{...}}}}` (e.g., `{{"action
                     if scale and scale.upper() == "B"
                     else num * 1e6
                     if scale and scale.upper() == "M"
-                    else num * 1e6
-                )  # Guess millions
+                    else num
+                )  # No default scaling
             except ValueError:
                 return None
 
@@ -1377,93 +1518,127 @@ async def run_scenario_2_web_research():
         for i, search_result in enumerate(search_results_list[:max_results_to_process]):
             # (Keep browse -> summarize -> store_memory -> link logic as before)
             # ... [Browse, Summarize, Store Memory, Create Link code] ...
-            url = search_result.get("link")
+            redirect_url = search_result.get("link")
             title = search_result.get("title")
+            # Fix: Extract real URL before processing
+            url = _extract_real_url(redirect_url)
+
             if not url:
+                logger.warning(f"Could not extract real URL from result {i + 1}: {redirect_url}")
                 continue
+
             console.print(
-                Rule(f"Processing Result {i + 1}/{max_results_to_process}: {title}", style="cyan")
+                Rule(f"Processing Result {i + 1}/{max_results_to_process}: {title} ({url})", style="cyan")
             )
-            action_browse_start = await safe_tool_call(
-                record_action_start,
-                with_current_db_path({
-                    "workflow_id": wf_id,
-                    "action_type": ActionType.RESEARCH.value,
-                    "title": f"Browse: {title}",
-                    "reasoning": "Access content.",
-                }),
-                f"Start: Browse {i + 1}",
-            )
-            browse_res = await safe_tool_call(browse, {"url": url}, f"Execute: Browse URL {i + 1}")
-            browse_action_id = _get_action_id_from_response(action_browse_start)
-            await safe_tool_call(
-                record_action_completion,
-                with_current_db_path({
-                    "action_id": browse_action_id,
-                    "status": ActionStatus.COMPLETED.value
-                    if browse_res.get("success")
-                    else ActionStatus.FAILED.value,
-                    "tool_result": {"page_title": browse_res.get("page_state", {}).get("title")},
-                    "summary": "Page browsed.",
-                }),
-                f"Complete: Browse {i + 1}",
-            )
-            if not browse_res or not browse_res.get("success"):
-                logger.warning(f"Failed browse {url}")
-                continue
-            page_state = browse_res.get("page_state")
-            page_content = page_state.get("main_text", "") if page_state else ""
-            if not page_content:
-                logger.warning(f"No main text from {url}")
-                continue
-            action_summarize_start = await safe_tool_call(
-                record_action_start,
-                with_current_db_path({
-                    "workflow_id": wf_id,
-                    "action_type": ActionType.ANALYSIS.value,
-                    "title": f"Summarize: {title}",
-                    "reasoning": "Extract key points.",
-                }),
-                f"Start: Summarize {i + 1}",
-            )
-            summary_res = await safe_tool_call(
-                summarize_text,
-                with_current_db_path({
-                    "text_to_summarize": page_content,
-                    "target_tokens": 250,
-                    "workflow_id": wf_id,
-                    "record_summary": True,
-                }),
-                f"Execute: Summarize {i + 1}",
-            )
-            summarize_action_id = _get_action_id_from_response(action_summarize_start)
-            await safe_tool_call(
-                record_action_completion,
-                with_current_db_path({
-                    "action_id": summarize_action_id,
-                    "status": ActionStatus.COMPLETED.value
-                    if summary_res.get("success")
-                    else ActionStatus.FAILED.value,
-                    "tool_result": summary_res,
-                    "summary": "Content summarized.",
-                }),
-                f"Complete: Summarize {i + 1}",
-            )
-            if summary_res and summary_res.get("success") and summary_res.get("stored_memory_id"):
-                summary_mem_id = summary_res["stored_memory_id"]
-                collected_summaries_mem_ids.append(summary_mem_id)
-                if browse_action_id:
-                    await safe_tool_call(
-                        create_memory_link,
-                        with_current_db_path(
-                            {
-                                "source_memory_id": summary_mem_id,
-                                "target_memory_id": browse_action_id,
-                                "link_type": LinkType.DERIVED_FROM.value,
-                            }
-                        ),
-                        "Link Summary Memory to Browse Action",
-                    )
+
+            # Fix: Add try/except around browse and summarize
+            try:
+                action_browse_start = await safe_tool_call(
+                    record_action_start,
+                    with_current_db_path({
+                        "workflow_id": wf_id,
+                        "action_type": ActionType.RESEARCH.value,
+                        "title": f"Browse: {title}",
+                        "reasoning": f"Access content from {url}.", # Include real URL
+                    }),
+                    f"Start: Browse {i + 1}",
+                )
+                browse_res = await safe_tool_call(browse, {"url": url}, f"Execute: Browse URL {i + 1}")
+                browse_action_id = _get_action_id_from_response(action_browse_start)
+                await safe_tool_call(
+                    record_action_completion,
+                    with_current_db_path({
+                        "action_id": browse_action_id,
+                        "status": ActionStatus.COMPLETED.value
+                        if browse_res.get("success")
+                        else ActionStatus.FAILED.value,
+                        "tool_result": {"page_title": browse_res.get("page_state", {}).get("title")},
+                        "summary": "Page browsed.",
+                    }),
+                    f"Complete: Browse {i + 1}",
+                )
+                if not browse_res or not browse_res.get("success"):
+                    raise ToolError(f"Failed browse {url}", error_code="BROWSE_FAILED") # Raise to be caught
+
+                page_state = browse_res.get("page_state")
+                page_content = page_state.get("main_text", "") if page_state else ""
+                # Fix: Check if content was actually extracted
+                if not page_content:
+                    logger.warning(f"No main text extracted from {url}")
+                    continue # Skip summarization if no text
+
+                action_summarize_start = await safe_tool_call(
+                    record_action_start,
+                    with_current_db_path({
+                        "workflow_id": wf_id,
+                        "action_type": ActionType.ANALYSIS.value,
+                        "title": f"Summarize: {title}",
+                        "reasoning": "Extract key points.",
+                    }),
+                    f"Start: Summarize {i + 1}",
+                )
+                summary_res = await safe_tool_call(
+                    summarize_text,
+                    with_current_db_path({
+                        "text_to_summarize": page_content,
+                        "target_tokens": 250,
+                        "workflow_id": wf_id,
+                        "record_summary": True,
+                        # Add source URL to summary metadata
+                        "metadata": {"source_url": url}
+                    }),
+                    f"Execute: Summarize {i + 1}",
+                )
+                summarize_action_id = _get_action_id_from_response(action_summarize_start)
+                await safe_tool_call(
+                    record_action_completion,
+                    with_current_db_path({
+                        "action_id": summarize_action_id,
+                        "status": ActionStatus.COMPLETED.value
+                        if summary_res.get("success")
+                        else ActionStatus.FAILED.value,
+                        "tool_result": summary_res,
+                        "summary": "Content summarized.",
+                    }),
+                    f"Complete: Summarize {i + 1}",
+                )
+                if summary_res and summary_res.get("success") and summary_res.get("stored_memory_id"):
+                    summary_mem_id = summary_res["stored_memory_id"]
+                    collected_summaries_mem_ids.append(summary_mem_id)
+                    if browse_action_id:
+                        await safe_tool_call(
+                            create_memory_link,
+                            with_current_db_path(
+                                {
+                                    # Link the summary memory to the browse action's *log* memory
+                                    "source_memory_id": summary_mem_id,
+                                    "target_memory_id": (await get_action_details(with_current_db_path({"action_id": browse_action_id}))).get("actions", [{}])[0].get("linked_memory_id"),
+                                    "link_type": LinkType.DERIVED_FROM.value,
+                                }
+                            ),
+                            "Link Summary Memory to Browse Action Log Memory", # Clarify link target
+                        )
+            except ToolError as e:
+                logger.warning(f"Skipping result {i + 1} due to ToolError: {e}")
+                console.print(f"[yellow]   -> Skipped processing result {i + 1} due to error: {e}[/yellow]")
+                # Ensure action completion is recorded even on error within the loop
+                failed_action_id = None
+                if 'action_browse_start' in locals() and _get_action_id_from_response(action_browse_start):
+                     failed_action_id = _get_action_id_from_response(action_browse_start)
+                elif 'action_summarize_start' in locals() and _get_action_id_from_response(action_summarize_start):
+                     failed_action_id = _get_action_id_from_response(action_summarize_start)
+
+                if failed_action_id:
+                     await safe_tool_call(
+                         record_action_completion,
+                         with_current_db_path({
+                             "action_id": failed_action_id,
+                             "status": ActionStatus.FAILED.value,
+                             "summary": f"Failed due to: {e}",
+                         }),
+                         f"Record Failure for Action {failed_action_id[:8]}",
+                     )
+                continue # Move to the next search result
 
         # --- 5. Consolidate Findings ---
         all_ids_to_consolidate = list(set(collected_summaries_mem_ids + initial_mem_ids))
@@ -1572,7 +1747,7 @@ async def run_scenario_2_web_research():
             }),
             "Complete: Save State",
         )
-        state_id = save_res.get("state_id") if save_res and save_res.get("success") else None
+        state_id = extract_id_or_fallback(save_res, "state_id") if save_res and save_res.get("success") else None
 
         if state_id:
             # Get working memory for the saved state

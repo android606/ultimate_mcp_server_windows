@@ -10,7 +10,6 @@ import datetime
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -23,7 +22,8 @@ from typing import Any, Dict, List, Optional
 import aiofiles
 import httpx
 from docx import Document
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
+from pydantic.functional_validators import field_validator
 
 from ultimate_mcp_server.constants import Provider, TaskType
 from ultimate_mcp_server.core.providers.base import get_provider
@@ -780,21 +780,9 @@ def parse_options(options: Dict[str, Any]) -> TranscriptionOptions:
     try:
         return TranscriptionOptions(**options)
     except Exception as e:
-        logger.warning(f"Error parsing options: {e}, using defaults with valid values")
-        # Try to salvage valid parts of the options
-        valid_options = {}
-        for key, value in options.items():
-            if key in TranscriptionOptions.__fields__:
-                try:
-                    # Try to validate just this field
-                    field_type = TranscriptionOptions.__fields__[key].type_
-                    field_type(value)
-                    valid_options[key] = value
-                except Exception:
-                    pass
-        
-        # Create with valid options, rest will be defaults
-        return TranscriptionOptions(**valid_options)
+        logger.warning(f"Error parsing options: {e}, using defaults with valid values", emoji_key="warning")
+        # Create with default options
+        return TranscriptionOptions()
 
 
 def _get_audio_profile_params(profile: AudioEnhancementProfile) -> Dict[str, Any]:
@@ -894,10 +882,17 @@ def _get_whisper_quality_params(quality: TranscriptionQuality) -> Dict[str, Any]
 def _update_parameters_from_audio_info(context: ProcessingContext, audio_info: Dict[str, Any]) -> None:
     """Update processing parameters based on audio file analysis."""
     # If mono audio, adjust enhancement params
+    audio_params = context.options.audio_params
+    updated_params = False
+
     if audio_info.get("channels", 0) == 1:
         # Set output channels to match input if not explicitly set
         if "output_channels" not in context.options.audio_params.dict():
-            context.options.audio_params.output_channels = 1
+            # Create a copy with the updated parameter
+            audio_params = AudioEnhancementParams(
+                **{**audio_params.dict(), "output_channels": 1}
+            )
+            updated_params = True
     
     # If low-quality audio, adjust enhancement profile
     sample_rate = audio_info.get("sample_rate", 0)
@@ -905,16 +900,30 @@ def _update_parameters_from_audio_info(context: ProcessingContext, audio_info: D
         logger.info(f"Detected low sample rate ({sample_rate} Hz), adjusting enhancement profile", emoji_key="audio")
         # Use phone_call profile for low sample rate audio
         params = _get_audio_profile_params(AudioEnhancementProfile.PHONE_CALL)
-        # Update audio parameters
-        for k, v in params.items():
-            setattr(context.options.audio_params, k, v)
+        # Create a copy with the updated parameters
+        audio_params = AudioEnhancementParams(
+            **{**audio_params.dict(), **params}
+        )
+        updated_params = True
+    
+    # If params were updated, create a new options object with the updated audio_params
+    if updated_params:
+        context.options = TranscriptionOptions(
+            **{**context.options.dict(), "audio_params": audio_params}
+        )
     
     # If very short audio (<10 seconds), adjust transcription quality
     duration = audio_info.get("duration", 0)
     if duration < 10 and context.options.whisper_params.quality != TranscriptionQuality.MAXIMUM:
         logger.info(f"Short audio detected ({duration:.1f}s), increasing transcription quality", emoji_key="audio")
-        # Use enhanced quality for short audio
-        context.options.whisper_params.quality = TranscriptionQuality.ENHANCED
+        # Create a new whisper_params with enhanced quality
+        whisper_params = WhisperParams(
+            **{**context.options.whisper_params.dict(), "quality": TranscriptionQuality.ENHANCED}
+        )
+        # Update options with new whisper_params
+        context.options = TranscriptionOptions(
+            **{**context.options.dict(), "whisper_params": whisper_params}
+        )
 
 
 # --- Dependency and Audio Processing Functions ---
@@ -933,7 +942,8 @@ async def download_whisper_model(model_name: str, output_path: str) -> bool:
     logger.info(f"Downloading Whisper model '{model_name}' from {url}", emoji_key="download")
     
     # Expected model size
-    expected_min_size = WHISPER_MODEL_SIZES.get(model_name, 100000000)  # Default to 100MB minimum if unknown
+    min_size_bytes = WHISPER_MODEL_SIZES.get(model_name, 100000000)  # Default to 100MB minimum if unknown
+    expected_size_bytes = min_size_bytes  # Initialize with minimum size
     
     try:
         async with httpx.AsyncClient(timeout=None) as client:
@@ -951,8 +961,8 @@ async def download_whisper_model(model_name: str, output_path: str) -> bool:
                     logger.info(f"Expected model size: {expected_size_mb:.1f} MB", emoji_key="info")
                     
                     # Update expected size if it's larger than our preset minimum
-                    if content_length > expected_min_size:
-                        expected_min_size = content_length * 0.95  # Allow 5% tolerance
+                    if content_length > min_size_bytes:
+                        expected_size_bytes = int(content_length * 0.95)  # Allow 5% tolerance
             except Exception as e:
                 logger.warning(f"Failed to validate model URL: {url} - Error: {str(e)}", emoji_key="warning")
                 # Continue anyway, the GET might still work
@@ -1010,10 +1020,10 @@ async def download_whisper_model(model_name: str, output_path: str) -> bool:
         
         # Verify file size meets expectations
         actual_size_mb = actual_size / (1024 * 1024)
-        if actual_size < expected_min_size:
+        if actual_size < expected_size_bytes:
             logger.warning(
                 f"Model file size ({actual_size_mb:.1f} MB) is smaller than expected minimum size "
-                f"({expected_min_size/(1024*1024):.1f} MB). File may be corrupted or incomplete.", 
+                f"({expected_size_bytes/(1024*1024):.1f} MB). File may be corrupted or incomplete.", 
                 emoji_key="warning"
             )
             return False
@@ -1054,11 +1064,7 @@ async def check_dependencies(context: ProcessingContext) -> bool:
     # Check whisper.cpp
     whisper_path = os.path.expanduser("~/whisper.cpp")
     
-    # Ensure we're always using large-v3-turbo
-    if context.options.whisper_params.model != "large-v3-turbo":
-        logger.info(f"Overriding model '{context.options.whisper_params.model}' with 'large-v3-turbo'", emoji_key="info")
-        context.options.whisper_params.model = "large-v3-turbo"
-    
+    # Use user-supplied model
     model = context.options.whisper_params.model
     model_path = os.path.join(whisper_path, "models", f"ggml-{model}.bin")
     
@@ -1157,8 +1163,7 @@ async def check_dependencies(context: ProcessingContext) -> bool:
     
     # Check if whisper binary is available in PATH using shlex for command safety
     try:
-        whisper_cmd = shlex.split("which whisper-cli")
-        result = subprocess.run(whisper_cmd, capture_output=True, text=True)
+        result = subprocess.run(["which", "whisper-cli"], capture_output=True, text=True)
         if result.returncode == 0:
             whisper_path_found = result.stdout.strip()
             logger.debug(f"Found whisper-cli in PATH: {whisper_path_found}", emoji_key="dependency")
@@ -1349,14 +1354,16 @@ async def transcribe_with_whisper(context: ProcessingContext) -> Dict[str, Any]:
             emoji_key="warning"
         )
     
-    if not os.path.exists(context.enhanced_audio_path):
-        logger.error(f"Audio file not found at {context.enhanced_audio_path}", emoji_key="error")
-        raise ToolError(f"Audio file not found at {context.enhanced_audio_path}")
+    # Use file_path as fallback if enhanced_audio_path is None
+    audio_path = context.enhanced_audio_path or context.file_path
+    if not os.path.exists(audio_path):
+        logger.error(f"Audio file not found at {audio_path}", emoji_key="error")
+        raise ToolError(f"Audio file not found at {audio_path}")
     
     cmd = [
         whisper_bin,
         "-m", model_path,
-        "-f", context.enhanced_audio_path,
+        "-f", audio_path,
         "-of", output_base,
         "-oj"  # Always output JSON for post-processing
     ]
@@ -1875,20 +1882,24 @@ async def process_chunks_parallel(
 ) -> List[Dict[str, Any]]:
     """Process transcript chunks in parallel for better performance."""
     # Limit max workers to CPU count or specified max
-    max_workers = min(context.options.max_workers, os.cpu_count() or 4, len(chunks))  # noqa: F841
+    max_workers = min(context.options.max_workers, os.cpu_count() or 4, len(chunks))
+    
+    # Create a semaphore to limit concurrency
+    sem = asyncio.Semaphore(max_workers)
     
     # Create a thread pool for parallel processing
     chunk_results = []
     
     async def process_chunk(i, chunk):
         """Process an individual chunk."""
-        logger.info(f"Enhancing chunk {i+1}/{len(chunks)}", emoji_key="enhance")
-        try:
-            result = await enhance_chunk(chunk, context_info, params, i, len(chunks))
-            return result
-        except Exception as e:
-            logger.error(f"Error enhancing chunk {i+1}: {e}", emoji_key="error", exc_info=True)
-            return {"text": chunk, "tokens": {"input": 0, "output": 0, "total": 0}, "cost": 0.0}
+        async with sem:  # Use semaphore to limit concurrency
+            logger.info(f"Enhancing chunk {i+1}/{len(chunks)}", emoji_key="enhance")
+            try:
+                result = await enhance_chunk(chunk, context_info, params, i, len(chunks))
+                return result
+            except Exception as e:
+                logger.error(f"Error enhancing chunk {i+1}: {e}", emoji_key="error", exc_info=True)
+                return {"text": chunk, "tokens": {"input": 0, "output": 0, "total": 0}, "cost": 0.0}
     
     # Create tasks for parallel execution
     tasks = [process_chunk(i, chunk) for i, chunk in enumerate(chunks)]
@@ -2166,7 +2177,7 @@ async def generate_output_files(
         }
         
         # Write JSON file
-        async with aiofiles.open(json_path, 'w') as f:
+        async with aiofiles.open(str(json_path), 'w') as f:
             await f.write(json.dumps(json_data, indent=2))
             
         artifact_paths["output_files"]["json"] = json_path
@@ -2176,7 +2187,7 @@ async def generate_output_files(
         text_path = output_dir / f"{context.base_filename}_transcript_{timestamp}.txt"
         
         # Create plain text file
-        async with aiofiles.open(text_path, 'w') as f:
+        async with aiofiles.open(str(text_path), 'w') as f:
             # Add metadata header if available
             if metadata:
                 if "title" in metadata and metadata["title"]:
@@ -2188,8 +2199,8 @@ async def generate_output_files(
                     await f.write(f"Topics: {topics_str}\n")
                 await f.write("\n")
             
-            # Write raw transcript instead of enhanced transcript
-            await f.write(raw_transcript)
+            # Write enhanced transcript if available, otherwise use raw transcript
+            await f.write(enhanced_transcript or raw_transcript)
         
         artifact_paths["output_files"]["text"] = text_path
     
@@ -2201,7 +2212,7 @@ async def generate_output_files(
         srt_content = generate_srt(segments)
         
         # Write SRT file
-        async with aiofiles.open(srt_path, 'w') as f:
+        async with aiofiles.open(str(srt_path), 'w') as f:
             await f.write(srt_content)
             
         artifact_paths["output_files"]["srt"] = srt_path
@@ -2214,7 +2225,7 @@ async def generate_output_files(
         vtt_content = generate_vtt(segments)
         
         # Write VTT file
-        async with aiofiles.open(vtt_path, 'w') as f:
+        async with aiofiles.open(str(vtt_path), 'w') as f:
             await f.write(vtt_content)
             
         artifact_paths["output_files"]["vtt"] = vtt_path
@@ -2227,7 +2238,7 @@ async def generate_output_files(
         md_content = generate_markdown(enhanced_transcript, metadata)
         
         # Write markdown file
-        async with aiofiles.open(md_path, 'w') as f:
+        async with aiofiles.open(str(md_path), 'w') as f:
             await f.write(md_content)
             
         artifact_paths["output_files"]["markdown"] = md_path
@@ -2286,8 +2297,9 @@ def format_srt_time(seconds: float) -> str:
     """Format seconds as SRT time: HH:MM:SS,mmm."""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
-    seconds = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{int(seconds):02d},{int((seconds % 1) * 1000):03d}"
+    sec_int = int(seconds % 60)
+    ms = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{sec_int:02d},{ms:03d}"
 
 
 def generate_vtt(segments: List[Dict[str, Any]]) -> str:
@@ -2321,8 +2333,8 @@ def format_vtt_time(seconds: float) -> str:
     """Format seconds as WebVTT time: HH:MM:SS.mmm."""
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
-    seconds = seconds % 60
-    return f"{hours:02d}:{minutes:02d}:{seconds:.3f}".replace(".", ".")
+    sec_fractional = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{sec_fractional:06.3f}"
 
 
 def generate_markdown(transcript: str, metadata: Dict[str, Any]) -> str:
@@ -2683,30 +2695,34 @@ def _extract_key_points_with_regex(text: str) -> Dict[str, Any]:
     key_points_match = re.search(key_points_pattern, text, re.IGNORECASE | re.DOTALL)
     if key_points_match:
         point_list = re.findall(r'"([^"]+)"', key_points_match.group(0))
-        result["key_points"] = point_list
+        # Filter out empty strings
+        result["key_points"] = [p for p in point_list if p.strip()]
     else:
         # Try alternative pattern for non-JSON format
-        point_list = re.findall(r'(?:^|\n)(?:•|\*|-|[0-9]+\.)\s*(.+?)(?:\n|$)', text)
-        result["key_points"] = point_list[:10]  # Limit to 10 points
+        point_list = re.findall(r'(?:^|\n)(?:•|\*|-|[0-9]+\.)\s*([^\n]+?)(?:\n|$)', text)
+        # Filter out empty strings
+        result["key_points"] = [p.strip() for p in point_list if p.strip()][:10]  # Limit to 10 points
     
     # Extract topics
     topics_pattern = r'topics"?\s*:?\s*\[\s*"([^"]+)"(?:\s*,\s*"([^"]+)")*\s*\]'
     topics_match = re.search(topics_pattern, text, re.IGNORECASE | re.DOTALL)
     if topics_match:
         topic_list = re.findall(r'"([^"]+)"', topics_match.group(0))
-        result["topics"] = topic_list
+        # Filter out empty strings
+        result["topics"] = [t for t in topic_list if t.strip()]
     
     # Extract speakers
     speakers_pattern = r'speakers"?\s*:?\s*\[\s*"([^"]+)"(?:\s*,\s*"([^"]+)")*\s*\]'
     speakers_match = re.search(speakers_pattern, text, re.IGNORECASE | re.DOTALL)
     if speakers_match:
         speaker_list = re.findall(r'"([^"]+)"', speakers_match.group(0))
-        result["speakers"] = speaker_list
+        # Filter out empty strings
+        result["speakers"] = [s for s in speaker_list if s.strip()]
     
     # Extract summary
     summary_pattern = r'summary"?\s*:?\s*"([^"]+)"'
     summary_match = re.search(summary_pattern, text, re.IGNORECASE)
-    if summary_match:
-        result["summary"] = summary_match.group(1)
+    if summary_match and summary_match.group(1).strip():
+        result["summary"] = summary_match.group(1).strip()
     
     return result

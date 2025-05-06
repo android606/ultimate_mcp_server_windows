@@ -232,3 +232,7 @@ unified_agent_memory.db
 advanced_demo_memory.db
 output.txt
 advanced_agent_flow_memory.db
+debug_mod_tree_with_ids.xml
+debug_orig_tree_with_ids.xml
+redline.css
+tailwind.config.js

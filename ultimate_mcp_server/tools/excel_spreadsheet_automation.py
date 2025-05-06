@@ -413,7 +413,7 @@ class ExcelSpreadsheetTools(BaseTool):
             session = await self._get_or_create_excel_session(show_excel, get_state, set_state)
             
             # First, learn the template structure
-            template_analysis = await self._analyze_excel_template(
+            template_analysis = await self._analyze_excel_template(  # noqa: F841
                 session=session,
                 exemplar_path=validated_exemplar_path,
                 parameters=parameters
@@ -422,9 +422,9 @@ class ExcelSpreadsheetTools(BaseTool):
             # Apply the learned template to the new context
             result = await self._apply_excel_template(
                 session=session,
-                template_analysis=template_analysis,
+                exemplar_path=validated_exemplar_path,
                 output_path=validated_output_path,
-                adaptation_context=adaptation_context,
+                data={"mappings": [], "adaptation_context": adaptation_context},
                 parameters=parameters
             )
             
@@ -669,11 +669,11 @@ class ExcelSpreadsheetTools(BaseTool):
         else:
             # Validate the output path
             try:
-                validated_output_path = await validate_path(output_path, check_exists=False, check_parent_writable=True)
-                output_path = validated_output_path
+                temp_validated_path = await validate_path(output_path, check_exists=False, check_parent_writable=True)
+                output_path = temp_validated_path
                 
                 # Ensure parent directory exists
-                parent_dir = os.path.dirname(validated_output_path)
+                parent_dir = os.path.dirname(temp_validated_path)
                 if parent_dir:
                     await create_directory(parent_dir)
             except Exception as e:
@@ -960,7 +960,7 @@ class ExcelSpreadsheetTools(BaseTool):
         # Try to get session from state
         session_data = await get_state("excel_session")
         
-        if session_data:
+        if session_data and getattr(session_data, "status", "") != "closed":
             logger.info("Using existing Excel session from state")
             return session_data
         
@@ -1072,6 +1072,9 @@ class ExcelSpreadsheetTools(BaseTool):
             else:
                 # Create a new workbook
                 wb = session.create_workbook()
+                # If file_path is provided, immediately save it
+                if file_path:
+                    session.save_workbook(wb, validated_file_path)
             
             # Apply the instruction to the workbook
             operations_performed = await self._apply_instruction_to_workbook(
@@ -1203,7 +1206,7 @@ class ExcelSpreadsheetTools(BaseTool):
                         sheet_name = match[0] or match[1] or match[2]
                         if sheet_name:
                             # Split by commas and/or 'and', then clean up
-                            for name in re.split(r',|\sand\s', sheet_name):
+                            for name in re.split(r',|\s+and\s+', sheet_name):
                                 clean_name = name.strip("' \"").strip()
                                 if clean_name:
                                     sheet_names.append(clean_name)
@@ -1242,7 +1245,7 @@ class ExcelSpreadsheetTools(BaseTool):
                     # Parse the header text
                     header_text = header_match.group(1).strip()
                     # Split by commas and/or 'and'
-                    header_data = [h.strip("' \"").strip() for h in re.split(r',|\sand\s', header_text) if h.strip()]
+                    header_data = [h.strip("' \"").strip() for h in re.split(r',|\s+and\s+', header_text) if h.strip()]
             
             if header_data:
                 # Determine target sheet
@@ -1422,12 +1425,31 @@ class ExcelSpreadsheetTools(BaseTool):
         if "chart" in instruction_lower or "graph" in instruction_lower:
             chart_type = None
             
+            # Chart type mapping
+            CHART_TYPES = {
+                "column": win32c.xlColumnClustered,
+                "bar": win32c.xlBarClustered,
+                "line": win32c.xlLine,
+                "pie": win32c.xlPie,
+                "area": win32c.xlArea,
+                "scatter": win32c.xlXYScatter,
+                "radar": win32c.xlRadar,
+                "stock": win32c.xlStockHLC,
+                "surface": win32c.xlSurface,
+                "doughnut": win32c.xlDoughnut,
+                "bubble": win32c.xlBubble,
+                "combo": win32c.xl3DColumn
+            }
+            
             # Check parameters first
             if parameters and "chart" in parameters:
                 chart_info = parameters["chart"]
-                chart_type = chart_info.get("type", "column")
+                chart_type_str = chart_info.get("type", "column").lower()
                 data_range = chart_info.get("data_range")
                 chart_title = chart_info.get("title", "Chart")
+                
+                # Get chart type constant
+                chart_type = CHART_TYPES.get(chart_type_str, win32c.xlColumnClustered)
                 
                 if data_range:
                     # Determine target sheet
@@ -1448,7 +1470,7 @@ class ExcelSpreadsheetTools(BaseTool):
                         worksheet = workbook.Worksheets(1)
                     
                     # Create the chart
-                    chart = worksheet.Shapes.AddChart2(-1, getattr(win32c, f"xl{chart_type.capitalize()}")).Chart
+                    chart = worksheet.Shapes.AddChart2(-1, chart_type).Chart
                     chart.SetSourceData(worksheet.Range(data_range))
                     chart.HasTitle = True
                     chart.ChartTitle.Text = chart_title
@@ -1456,7 +1478,7 @@ class ExcelSpreadsheetTools(BaseTool):
                     operations_performed.append({
                         "operation": "create_chart",
                         "sheet_name": worksheet.Name,
-                        "chart_type": chart_type,
+                        "chart_type": chart_type_str,
                         "data_range": data_range
                     })
         
@@ -1513,10 +1535,16 @@ class ExcelSpreadsheetTools(BaseTool):
                 "has_formulas": False,
                 "formula_count": 0,
                 "data_tables": False,
-                "has_charts": len(sheet.ChartObjects()) > 0,
-                "chart_count": len(sheet.ChartObjects()),
+                "has_charts": False,
+                "chart_count": 0,
                 "named_ranges": []
             }
+            
+            # Check for charts
+            chart_objects = sheet.ChartObjects()
+            chart_count = chart_objects.Count
+            sheet_info["has_charts"] = chart_count > 0
+            sheet_info["chart_count"] = chart_count
             
             # Look for formulas
             formula_cells = []
@@ -1646,7 +1674,7 @@ class ExcelSpreadsheetTools(BaseTool):
                             r = int(color_code[1:3], 16)
                             g = int(color_code[3:5], 16)
                             b = int(color_code[5:7], 16)
-                            range_obj.Font.Color = r + (g << 8) + (b << 16)
+                            range_obj.Font.Color = b + (g << 8) + (r << 16)
                         else:
                             # Try to set color directly
                             range_obj.Font.Color = cell_format["color"]
@@ -1659,7 +1687,7 @@ class ExcelSpreadsheetTools(BaseTool):
                             r = int(color_code[1:3], 16)
                             g = int(color_code[3:5], 16)
                             b = int(color_code[5:7], 16)
-                            range_obj.Interior.Color = r + (g << 8) + (b << 16)
+                            range_obj.Interior.Color = b + (g << 8) + (r << 16)
                         else:
                             # Try to set color directly
                             range_obj.Interior.Color = cell_format["bg_color"]
@@ -1757,7 +1785,7 @@ class ExcelSpreadsheetTools(BaseTool):
                             r = int(color[1:3], 16)
                             g = int(color[3:5], 16)
                             b = int(color[5:7], 16)
-                            color = r + (g << 8) + (b << 16)
+                            color = b + (g << 8) + (r << 16)
                         
                         cf = range_obj.FormatConditions.AddDatabar()
                         cf.BarColor.Color = color
@@ -1804,7 +1832,7 @@ class ExcelSpreadsheetTools(BaseTool):
                                 r = int(color_code[1:3], 16)
                                 g = int(color_code[3:5], 16)
                                 b = int(color_code[5:7], 16)
-                                cf.Font.Color = r + (g << 8) + (b << 16)
+                                cf.Font.Color = b + (g << 8) + (r << 16)
                             else:
                                 cf.Font.Color = cf_format["color"]
                         
@@ -1816,7 +1844,7 @@ class ExcelSpreadsheetTools(BaseTool):
                                 r = int(color_code[1:3], 16)
                                 g = int(color_code[3:5], 16)
                                 b = int(color_code[5:7], 16)
-                                cf.Interior.Color = r + (g << 8) + (b << 16)
+                                cf.Interior.Color = b + (g << 8) + (r << 16)
                             else:
                                 cf.Interior.Color = cf_format["bg_color"]
                     
@@ -1827,8 +1855,8 @@ class ExcelSpreadsheetTools(BaseTool):
                         "type": cf_type
                     })
         
-        # Apply default formatting based on instruction
-        else:
+        # Apply default formatting based on instruction if no specific formatting provided
+        elif not parameters or "formatting" not in parameters:
             instruction_lower = instruction.lower()
             
             # Extract target sheet(s)
@@ -1838,7 +1866,7 @@ class ExcelSpreadsheetTools(BaseTool):
             if sheet_match:
                 sheet_names_str = sheet_match.group(1) or sheet_match.group(2) or sheet_match.group(3)
                 # Split by commas and/or 'and'
-                for name in re.split(r',|\sand\s', sheet_names_str):
+                for name in re.split(r',|\s+and\s+', sheet_names_str):
                     clean_name = name.strip("' \"").strip()
                     if clean_name:
                         sheet_names.append(clean_name)
@@ -2385,7 +2413,7 @@ class ExcelSpreadsheetTools(BaseTool):
             String indicating the template category
         """
         # Extract relevant information from analysis
-        sheets = template_analysis.get("sheets", [])
+        sheets = template_analysis.get("worksheets", [])
         sheet_names = [s.get("name", "").lower() for s in sheets]
         
         # Look for common sheet patterns
@@ -2834,10 +2862,10 @@ class ExcelSpreadsheetTools(BaseTool):
                 result["template_source"] = "file"
             except Exception as e:
                 logger.warning(f"Failed to read template file: {str(e)}")
-                template_code = template
+                template_code = template or ""
                 result["template_source"] = "text"
         else:
-            template_code = template
+            template_code = template or ""
             result["template_source"] = "text"
         
         # Generate the macro code based on instruction
