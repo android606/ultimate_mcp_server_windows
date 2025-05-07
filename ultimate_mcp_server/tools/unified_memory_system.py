@@ -154,6 +154,7 @@ class ThoughtType(str, Enum):
     REFLECTION = "reflection"
     CRITIQUE = "critique"
     SUMMARY = "summary"
+    USER_GUIDANCE = "user_guidance"
     INSIGHT = "insight"
 
 
@@ -185,6 +186,7 @@ class MemoryType(str, Enum):
     CODE = "code"  # Code snippet
     JSON = "json"  # Structured JSON data
     URL = "url"  # A web URL
+    USER_INPUT = "user_input"
     TEXT = "text"  # Generic text block (fallback)
     # Retain IMAGE? Needs blob storage/linking capability. Deferred.
 

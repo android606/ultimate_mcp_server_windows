@@ -13,11 +13,11 @@ from ultimate_mcp_server.tools.base import (
 )
 from ultimate_mcp_server.utils import get_logger
 
-from .audio_transcription import (
-    chat_with_transcript,
-    extract_audio_transcript_key_points,
-    transcribe_audio,
-)
+# from .audio_transcription import (
+#     chat_with_transcript,
+#     extract_audio_transcript_key_points,
+#     transcribe_audio,
+# )
 
 # Import base decorators/classes that might be used by other tool modules
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
@@ -44,13 +44,13 @@ from .document_conversion_and_processing import (
 
 # from .docstring_refiner import refine_tool_documentation
 # from .entity_relation_graph import extract_entity_graph
-from .extraction import (
-    extract_code_from_response,
-    extract_json,
-    extract_key_value_pairs,
-    extract_semantic_schema,
-    extract_table,
-)
+# from .extraction import (
+#     extract_code_from_response,
+#     extract_json,
+#     extract_key_value_pairs,
+#     extract_semantic_schema,
+#     extract_table,
+# )
 from .filesystem import (
     create_directory,
     directory_tree,
@@ -77,7 +77,7 @@ from .local_text_tools import (
     run_sed_stream,
 )
 from .marqo_fused_search import marqo_fused_search
-from .meta_api_tool import register_api_meta_tools
+# from .meta_api_tool import register_api_meta_tools
 from .optimization import (
     compare_models,
     estimate_cost,
@@ -89,14 +89,14 @@ from .python_sandbox import (
     execute_python,
     repl_python,
 )
-from .rag import (
-    add_documents,
-    create_knowledge_base,
-    delete_knowledge_base,
-    generate_with_rag,
-    list_knowledge_bases,
-    retrieve_context,
-)
+# from .rag import (
+#     add_documents,
+#     create_knowledge_base,
+#     delete_knowledge_base,
+#     generate_with_rag,
+#     list_knowledge_bases,
+#     retrieve_context,
+# )
 from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
 from .smart_browser import (
     autopilot,
@@ -110,19 +110,19 @@ from .smart_browser import (
     search,
     type_text,
 )
-from .sql_databases import access_audit_log, execute_sql, explore_database, manage_database
-from .text_classification import text_classification
-from .text_redline_tools import (
-    compare_documents_redline,
-    create_html_redline,
-)
-from .tournament import (
-    cancel_tournament,
-    create_tournament,
-    get_tournament_results,
-    get_tournament_status,
-    list_tournaments,
-)
+# from .sql_databases import access_audit_log, execute_sql, explore_database, manage_database
+# from .text_classification import text_classification
+# from .text_redline_tools import (
+#     compare_documents_redline,
+#     create_html_redline,
+# )
+# from .tournament import (
+#     cancel_tournament,
+#     create_tournament,
+#     get_tournament_results,
+#     get_tournament_status,
+#     list_tournaments,
+# )
 from .unified_memory_system import (
     add_action_dependency,
     auto_update_focus,
@@ -188,20 +188,21 @@ __all__ = [
     "list_models",
 
     # Extraction tools
-    "extract_json",
-    "extract_table",
-    "extract_key_value_pairs",
-    "extract_semantic_schema",
+    # "extract_json",
+    # "extract_table",
+    # "extract_key_value_pairs",
+    # "extract_semantic_schema",
     # "extract_entity_graph",
+    # "extract_code_from_response",
 
     # Knowledge base tools
-    "create_knowledge_base",
-    "list_knowledge_bases",
-    "delete_knowledge_base",
-    "add_documents",
-    "retrieve_context",
-    "generate_with_rag",
-    "text_classification",
+    # "create_knowledge_base",
+    # "list_knowledge_bases",
+    # "delete_knowledge_base",
+    # "add_documents",
+    # "retrieve_context",
+    # "generate_with_rag",
+    # "text_classification",
 
     # Cost optimization tools
     "estimate_cost",
@@ -236,10 +237,10 @@ __all__ = [
     "get_workspace_dir",
 
     # SQL databases tools
-    "manage_database",
-    "execute_sql",
-    "explore_database",
-    "access_audit_log",
+    # "manage_database",
+    # "execute_sql",
+    # "explore_database",
+    # "access_audit_log",
 
     # Python sandbox tools
     "execute_python",
@@ -265,7 +266,6 @@ __all__ = [
     "batch_format_texts",
     "optimize_markdown_formatting",
     "identify_sections",
-    "extract_entities",
     "generate_qa_pairs",
     "summarize_document",
     "extract_metrics",
@@ -274,33 +274,31 @@ __all__ = [
     "ocr_image",
     "enhance_ocr_text",
     "analyze_pdf_structure",
-    "extract_tables",
     "process_document_batch",
+    "extract_entities",
+    "extract_tables",
 
     # Text Redline tools
-    "compare_documents_redline",
-    "create_html_redline",
+    # "compare_documents_redline",
+    # "create_html_redline",
 
-    # Utility functions
-    "extract_code_from_response",
-    
     # Meta API tools
-    "register_api_meta_tools",
+    # "register_api_meta_tools",
 
     # Marqo tool
     "marqo_fused_search",
 
     # Tournament tools
-    "create_tournament",
-    "get_tournament_status",
-    "list_tournaments",
-    "get_tournament_results",
-    "cancel_tournament",
+    # "create_tournament",
+    # "get_tournament_status",
+    # "list_tournaments",
+    # "get_tournament_results",
+    # "cancel_tournament",
 
     # Audio tools
-    "transcribe_audio",
-    "extract_audio_transcript_key_points",
-    "chat_with_transcript",
+    # "transcribe_audio",
+    # "extract_audio_transcript_key_points",
+    # "chat_with_transcript",
     
     # Sentiment analysis tool
     "analyze_business_sentiment",
