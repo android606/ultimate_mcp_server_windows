@@ -15,6 +15,12 @@ from ultimate_mcp_server.core.models.tournament import (
     TournamentData,
     TournamentStatus,
 )
+from ultimate_mcp_server.core.models.tournament import (
+    EvaluatorConfig as InputEvaluatorConfig,
+)
+from ultimate_mcp_server.core.models.tournament import (
+    ModelConfig as InputModelConfig,
+)
 from ultimate_mcp_server.core.tournaments.manager import tournament_manager
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
@@ -28,27 +34,35 @@ logger = get_logger("ultimate_mcp_server.tools.tournament")
 async def create_tournament(
     name: str,
     prompt: str,
-    model_ids: List[str],
+    models: List[Dict[str, Any]],
     rounds: int = 3,
     tournament_type: str = "code",
-    extraction_model: Optional[str] = None
+    extraction_model_id: Optional[str] = "anthropic/claude-3-5-haiku-20241022",
+    evaluators: Optional[List[Dict[str, Any]]] = None,
+    max_retries_per_model_call: int = 3,
+    retry_backoff_base_seconds: float = 1.0,
+    max_concurrent_model_calls: int = 5
 ) -> Dict[str, Any]:
-    """Creates and starts a new LLM competition (tournament) based on a prompt and model configurations.
-
-    A tournament is a competitive evaluation where multiple LLM models generate responses
-    to the same prompt across multiple rounds. The system compares results (e.g., code correctness,
-    text quality) to determine which model performs best for the given task and prompt.
+    """
+    Creates and starts a new LLM competition (tournament) based on a prompt and model configurations.
 
     Args:
         name: Human-readable name for the tournament (e.g., "Essay Refinement Contest", "Python Sorting Challenge").
         prompt: The task prompt provided to all participating LLM models.
-        model_ids: List of model identifiers (e.g., 'openai/gpt-4o', 'anthropic/claude-3-5-haiku-20241022') to include.
+        models: List of model configurations (external key is "models"). Each config is a dictionary specifying:
+            - model_id (str, required): e.g., 'openai/gpt-4o'.
+            - diversity_count (int, optional, default 1): Number of variants per model.
+            # ... (rest of ModelConfig fields) ...
         rounds: Number of tournament rounds. Each round allows models to refine their previous output (if applicable to the tournament type). Default is 3.
         tournament_type: The type of tournament defining the task and evaluation method. Supported types include:
                          - "code": For evaluating code generation based on correctness and potentially style/efficiency.
                          - "text": For general text generation, improvement, or refinement tasks.
                          Default is "code".
-        extraction_model: (Optional, primarily for 'code' type) Specific LLM model to use for extracting and evaluating results like code blocks. If None, a default is used.
+        extraction_model_id: (Optional, primarily for 'code' type) Specific LLM model to use for extracting and evaluating results like code blocks. If None, a default is used.
+        evaluators: (Optional) List of evaluator configurations as dicts.
+        max_retries_per_model_call: Maximum retries per model call.
+        retry_backoff_base_seconds: Base seconds for retry backoff.
+        max_concurrent_model_calls: Maximum concurrent model calls.
 
     Returns:
         Dictionary with tournament creation status containing:
@@ -66,15 +80,21 @@ async def create_tournament(
     Raises:
         ToolError: If input is invalid, tournament creation fails, or scheduling fails.
     """
-    logger.info(f"Received request to create tournament: {name}")
+    logger.info(f"Tool 'create_tournament' invoked for: {name}")
     try:
+        parsed_model_configs = [InputModelConfig(**mc) for mc in models]
+        parsed_evaluators = [InputEvaluatorConfig(**ev) for ev in (evaluators or [])]
         input_data = CreateTournamentInput(
             name=name,
             prompt=prompt,
-            model_ids=model_ids,
+            models=parsed_model_configs,
             rounds=rounds,
             tournament_type=tournament_type,
-            extraction_model=extraction_model
+            extraction_model_id=extraction_model_id,
+            evaluators=parsed_evaluators,
+            max_retries_per_model_call=max_retries_per_model_call,
+            retry_backoff_base_seconds=retry_backoff_base_seconds,
+            max_concurrent_model_calls=max_concurrent_model_calls
         )
 
         tournament = tournament_manager.create_tournament(input_data)
@@ -97,7 +117,8 @@ async def create_tournament(
         output = CreateTournamentOutput(
             tournament_id=tournament.tournament_id,
             status=tournament.status,
-            storage_path=tournament.storage_path # Add storage path here
+            storage_path=tournament.storage_path,
+            message=f"Tournament '{tournament.name}' created successfully and execution started."
         )
         return output.dict()
 
@@ -167,7 +188,7 @@ async def get_tournament_status(
                 detail=f"Invalid tournament ID: {str(ve)}"
             ) from ve
 
-        tournament = tournament_manager.get_tournament(input_data.tournament_id)
+        tournament = tournament_manager.get_tournament(input_data.tournament_id, force_reload=True)
         if not tournament:
             raise ToolError(
                 status_code=404,
@@ -272,7 +293,7 @@ async def list_tournaments(
 @with_error_handling
 async def get_tournament_results(
     tournament_id: str
-) -> Dict[str, Any]:
+) -> List[Dict[str, str]]:
     """Retrieves the complete results and configuration for a specific tournament.
 
     Provides comprehensive details including configuration, final scores (if applicable),
@@ -341,8 +362,10 @@ async def get_tournament_results(
                     detail=f"Tournament not found: {tournament_id}. Cannot retrieve results."
                 )
 
-        # Convert the TournamentData Pydantic model to a dict for the tool response
-        return tournament_data.dict()
+        # NEW: Return a structure that FastMCP might recognize as a pre-formatted content list
+        json_string = tournament_data.json()
+        logger.info(f"[DEBUG_GET_RESULTS] Returning pre-formatted TextContent list. JSON Snippet: {json_string[:150]}")
+        return [{ "type": "text", "text": json_string }]
 
     except ToolError:
         raise
@@ -399,10 +422,14 @@ async def cancel_tournament(
         if not success:
             # Log the failure but return the status/message from the manager
             logger.warning(f"Cancellation attempt for tournament {tournament_id} reported failure: {message}")
-            # Optionally raise ToolError if the status implies a client error (e.g., not found)
-            if final_status == TournamentStatus.UNKNOWN or "not found" in message.lower():
-                 raise ToolError(status_code=404, detail=message)
-            # Otherwise, return the potentially unchanged status (e.g. COMPLETED)
+            # Raise ToolError if the status implies a client error (e.g., not found)
+            if "not found" in message.lower():
+                raise ToolError(status_code=404, detail=message)
+            elif final_status in [TournamentStatus.COMPLETED, TournamentStatus.FAILED, TournamentStatus.CANCELLED] and "already" in message.lower():
+                raise ToolError(status_code=409, detail=message)
+            # Optionally handle other errors as 500
+            # else:
+            #     raise ToolError(status_code=500, detail=f"Cancellation failed: {message}")
         else:
             logger.info(f"Cancellation attempt for tournament {tournament_id} successful. Final status: {final_status}")
 

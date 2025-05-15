@@ -1659,6 +1659,14 @@ async def shutdown():  # Uses MANY globals
 
     logger.info("Initiating graceful shutdown for Smart Browser...")
 
+    # Set a global shutdown timeout to prevent hanging
+    shutdown_timeout = 10.0  # 10 seconds to complete shutdown or we'll force through
+    shutdown_start_time = time.monotonic()
+    
+    # Function to check if shutdown is taking too long
+    def is_shutdown_timeout():
+        return (time.monotonic() - shutdown_start_time) > shutdown_timeout
+    
     # 1. Cancel Background Tasks First
     tasks_to_cancel = [
         (_locator_cache_cleanup_task_handle, "Locator Cache Cleanup Task"),
@@ -1693,12 +1701,18 @@ async def shutdown():  # Uses MANY globals
         ctx_to_close = _ctx
         _ctx = None # Immediately unset global reference
 
+        # Skip state saving if we're already at the timeout
+        if is_shutdown_timeout():
+            logger.warning("Skipping state saving due to shutdown timeout")
         # --- Robust Check and Save State ---
-        if ctx_to_close and ctx_to_close.browser and ctx_to_close.browser.is_connected():
+        elif ctx_to_close and ctx_to_close.browser and ctx_to_close.browser.is_connected():
             logger.info("Attempting to save state for shared browser context...")
             try:
-                await _save_state(ctx_to_close) # _save_state handles internal errors gracefully now
+                # Add timeout for state saving
+                await asyncio.wait_for(_save_state(ctx_to_close), timeout=3.0)
                 logger.info("State saving attempted for shared context.") # Log attempt, success logged within _save_state
+            except asyncio.TimeoutError:
+                logger.warning("State saving timed out after 3 seconds")
             except Exception as e:
                 # Catch any unexpected error from _save_state itself (should be rare now)
                 logger.error(f"Unexpected error during final state save attempt: {e}", exc_info=True)
@@ -1709,53 +1723,113 @@ async def shutdown():  # Uses MANY globals
         # --- End Robust Check and Save State ---
 
         # Close the context object itself
-        if ctx_to_close:
+        if ctx_to_close and not is_shutdown_timeout():
             logger.info("Closing shared browser context object...")
             try:
-                await ctx_to_close.close()
+                # Add timeout for context closing
+                await asyncio.wait_for(ctx_to_close.close(), timeout=3.0)
                 await _log("browser_context_close_shared")
                 logger.info("Shared browser context closed.")
+            except asyncio.TimeoutError:
+                logger.warning("Browser context close timed out after 3 seconds")
             except Exception as e:
                 # Log error but continue shutdown
                 logger.error(f"Error closing shared context object: {e}", exc_info=False) # Keep log less verbose
+        elif ctx_to_close:
+            logger.warning("Skipping browser context close due to shutdown timeout")
 
         # Close Browser
         browser_to_close = _browser
         _browser = None # Immediately unset global reference
-        if browser_to_close and browser_to_close.is_connected():
+        if browser_to_close and browser_to_close.is_connected() and not is_shutdown_timeout():
             logger.info("Closing browser instance...")
             try:
-                await browser_to_close.close()
+                # Add timeout for browser closing - shorter timeout to avoid hanging
+                await asyncio.wait_for(browser_to_close.close(), timeout=3.0)
                 await _log("browser_close")
                 logger.info("Browser instance closed.")
+            except asyncio.TimeoutError:
+                logger.warning("Browser close timed out after 3 seconds")
             except Exception as e:
                 logger.error(f"Error closing browser: {e}", exc_info=False) # Keep log less verbose
+        elif browser_to_close and browser_to_close.is_connected():
+            logger.warning("Skipping browser close due to shutdown timeout")
 
         # Stop Playwright
         pw_to_stop = _pw
         _pw = None # Immediately unset global reference
-        if pw_to_stop:
+        if pw_to_stop and not is_shutdown_timeout():
             logger.info("Stopping Playwright...")
             try:
-                await pw_to_stop.stop()
+                # Add timeout for playwright stop - shorter timeout
+                await asyncio.wait_for(pw_to_stop.stop(), timeout=2.0)
                 logger.info("Playwright stopped.")
+            except asyncio.TimeoutError:
+                logger.warning("Playwright stop timed out after 2 seconds")
             except Exception as e:
                 logger.error(f"Error stopping Playwright: {e}", exc_info=False) # Keep log less verbose
+        elif pw_to_stop:
+            logger.warning("Skipping Playwright stop due to shutdown timeout")
 
-    # 4. Cleanup Synchronous Resources
+    # 4. Cleanup Synchronous Resources - always do this regardless of timeout
     _cleanup_vnc()
     _close_db_connection()
 
     # 5. Log completion and reset flags
     await _log("browser_shutdown_complete")
-    logger.info("Smart Browser graceful shutdown complete.")
+    if is_shutdown_timeout():
+        logger.warning("Smart Browser shutdown reached timeout limit - some resources may not be fully released")
+    else:
+        logger.info("Smart Browser graceful shutdown complete.")
     _is_initialized = False
 
     # 6. Shutdown Thread Pool (MOVED TO THE VERY END)
     logger.info("Shutting down thread pool...")
     pool_to_shutdown = _get_pool()
-    pool_to_shutdown.shutdown(wait=True) # Wait for tasks to complete
-    logger.info("Thread pool shut down.")
+    # Don't wait for tasks if we're already at timeout
+    if is_shutdown_timeout():
+        try:
+            pool_to_shutdown.shutdown(wait=False)
+            logger.info("Thread pool shutdown initiated without waiting")
+        except Exception as e:
+            logger.error(f"Error during thread pool non-waiting shutdown: {e}")
+    else:
+        # Give the pool a short timeout to avoid hanging
+        try:
+            time_left = max(0, shutdown_timeout - (time.monotonic() - shutdown_start_time))
+            # Use the minimum of 3 seconds or remaining time
+            wait_time = min(3.0, time_left)
+            
+            # Create a separate thread to shut down the pool with a timeout
+            import threading
+            shutdown_complete = threading.Event()
+            
+            def shutdown_pool_with_timeout():
+                try:
+                    pool_to_shutdown.shutdown(wait=True)
+                    shutdown_complete.set()
+                except Exception as e:
+                    logger.error(f"Error in thread pool shutdown thread: {e}")
+            
+            # Start the shutdown in a separate thread
+            thread = threading.Thread(target=shutdown_pool_with_timeout)
+            thread.daemon = True
+            thread.start()
+            
+            # Wait for completion or timeout
+            if shutdown_complete.wait(wait_time):
+                logger.info("Thread pool shut down successfully.")
+            else:
+                logger.warning(f"Thread pool shutdown timed out after {wait_time} seconds")
+                # Try non-waiting shutdown as fallback
+                try:
+                    pool_to_shutdown.shutdown(wait=False)
+                except Exception:
+                    pass  # Already logged above
+        except Exception as e:
+            logger.error(f"Error setting up thread pool shutdown: {e}")
+            # Fallback to non-waiting shutdown
+            pool_to_shutdown.shutdown(wait=False)
 
 
 async def _initiate_shutdown():  # Uses global _shutdown_initiated, _shutdown_lock

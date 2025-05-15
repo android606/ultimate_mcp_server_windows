@@ -500,7 +500,7 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
     models_to_include = [
         "claude-3-7-sonnet-20250219",
         "gpt-4.1",
-        "gemini-2.5-pro-exp-03-25",
+        "gemini-2.5-pro-preview-03-25",
         "grok-3-latest"
     ]
     

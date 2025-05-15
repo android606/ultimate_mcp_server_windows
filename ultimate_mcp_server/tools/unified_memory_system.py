@@ -231,6 +231,11 @@ SCHEMA_STATEMENTS = [
     "PRAGMA mmap_size=2147483647;",
     "PRAGMA busy_timeout=30000;",
     # Tables (in an order that respects simple inline FKs)
+    """CREATE TABLE IF NOT EXISTS ums_internal_metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at INTEGER
+    );""",
     """CREATE TABLE IF NOT EXISTS workflows (
         workflow_id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT, goal TEXT, status TEXT NOT NULL,
         created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, completed_at INTEGER,
@@ -461,6 +466,7 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_goals_status ON goals(status);",
     "CREATE INDEX IF NOT EXISTS idx_goals_priority ON goals(priority);",
     "CREATE INDEX IF NOT EXISTS idx_goals_sequence_number ON goals(parent_goal_id, sequence_number);",
+    "CREATE INDEX IF NOT EXISTS idx_ums_internal_metadata_key ON ums_internal_metadata(key);",
     # Virtual Table
     """CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
         content, description, reasoning, tags,
@@ -476,9 +482,11 @@ SCHEMA_STATEMENTS = [
         INSERT INTO memory_fts(memory_fts, rowid, content, description, reasoning, tags, workflow_id, memory_id)
         VALUES ('delete', old.rowid, old.content, old.description, old.reasoning, old.tags, old.workflow_id, old.memory_id);
     END;""",
-    """CREATE TRIGGER IF NOT EXISTS memories_after_update AFTER UPDATE ON memories BEGIN
+    """CREATE TRIGGER IF NOT EXISTS memories_after_update_delete AFTER UPDATE ON memories BEGIN
         INSERT INTO memory_fts(memory_fts, rowid, content, description, reasoning, tags, workflow_id, memory_id)
         VALUES ('delete', old.rowid, old.content, old.description, old.reasoning, old.tags, old.workflow_id, old.memory_id);
+    END;""",
+    """CREATE TRIGGER IF NOT EXISTS memories_after_update_insert AFTER UPDATE ON memories BEGIN
         INSERT INTO memory_fts(rowid, content, description, reasoning, tags, workflow_id, memory_id)
         VALUES (new.rowid, new.content, new.description, new.reasoning, new.tags, new.workflow_id, new.memory_id);
     END;""",
@@ -536,42 +544,109 @@ class DBConnection:
             "compute_memory_relevance", 5, _compute_memory_relevance, deterministic=True
         )
 
-        # Check if DB needs initialization
-        cursor = await conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='workflows'"
-        )
-        table_exists = await cursor.fetchone()
-        await cursor.close()
+        logger.info("Applying/Verifying database schema step-by-step using 'IF NOT EXISTS'...", emoji_key="gear")
+        try:
+            # Use a single transaction for all schema modifications
+            # Note: Some PRAGMAs (like journal_mode) might need to be outside a transaction
+            # or be the first statements. We've already set them.
+            await conn.execute("BEGIN TRANSACTION;")
 
-        if not table_exists:
-            logger.info("Database schema not found. Initializing step-by-step...", emoji_key="gear")
-            # --- Execute schema statements one by one within a transaction ---
-            try:
-                await conn.execute("BEGIN TRANSACTION;")  # Start transaction for CREATEs
-                # Iterate through SCHEMA_STATEMENTS, *skipping* the PRAGMAs we already executed
-                for i, stmt in enumerate(SCHEMA_STATEMENTS):
-                    # Skip pragmas already set
-                    if stmt.strip().upper().startswith("PRAGMA"):
-                        continue
-                    logger.debug(
-                        f"Executing schema statement {i + 1}/{len(SCHEMA_STATEMENTS)}: {stmt[:100]}..."
-                    )
+            # Execute all schema statements. 'IF NOT EXISTS' handles existing items.
+            # Pragmas in SCHEMA_STATEMENTS will be skipped if already set, or re-applied if safe.
+            for i, stmt in enumerate(SCHEMA_STATEMENTS):
+                # Skip PRAGMAs we've already definitively set above.
+                # Allow other PRAGMAs (like foreign_keys=ON again) as they are session-specific or idempotent.
+                stripped_stmt_upper = stmt.strip().upper()
+                if stripped_stmt_upper.startswith("PRAGMA JOURNAL_MODE") or \
+                   stripped_stmt_upper.startswith("PRAGMA SYNCHRONOUS") or \
+                   stripped_stmt_upper.startswith("PRAGMA TEMP_STORE") or \
+                   stripped_stmt_upper.startswith("PRAGMA CACHE_SIZE") or \
+                   stripped_stmt_upper.startswith("PRAGMA MMAP_SIZE") or \
+                   stripped_stmt_upper.startswith("PRAGMA BUSY_TIMEOUT"):
+                    logger.debug(f"Skipping pre-applied PRAGMA: {stmt[:100]}...")
+                    continue
+
+                try:
                     await conn.execute(stmt)
-                await conn.commit()  # Commit base schema creation
-                logger.info("Base schema created successfully.")
-            except aiosqlite.Error as e:
-                logger.error(f"FAILED during base schema creation: {e}", exc_info=True)
-                await conn.rollback()
-                raise ToolError(f"Failed to create base database schema: {e}") from e
+                except aiosqlite.ProgrammingError as e_prog:
+                    print(f"DEBUG: FAILING Statement {i+1} (ProgrammingError):")
+                    print(f"DEBUG: STATEMENT CONTENT:\n```sql\n{stmt}\n```")
+                    print(f"DEBUG: ERROR: {e_prog}")
+                    logger.error(f"ProgrammingError on STMT {i+1}: {stmt}", exc_info=True)
+                    raise
+                except Exception as e_gen:
+                    print(f"!!!!!!!!!!!!!!!!! GENERIC ERROR DETECTED !!!!!!!!!!!!!!!!!")
+                    print(f"DEBUG: FAILING Statement {i+1} (General Exception):")
+                    print(f"DEBUG: STATEMENT CONTENT:\n```sql\n{stmt}\n```")
+                    print(f"DEBUG: ERROR: {e_gen}")
+                    logger.error(f"General error on STMT {i+1}: {stmt}", exc_info=True)
+                    raise
 
-            logger.success(
-                "Full database schema initialized successfully.", emoji_key="white_check_mark"
-            )
-        else:
-            logger.info("Database schema already exists.", emoji_key="database")
-            # Ensure FKs are on for existing connections too (redundant but safe)
-            await conn.execute("PRAGMA foreign_keys = ON;")
+            await conn.commit() # Commit all schema changes
+            logger.success("Database schema successfully applied/verified.", emoji_key="white_check_mark")
 
+            db_instance_id_key = "ums_db_instance_id"
+            db_instance_id_file = Path(self.db_path).parent / ".ums_db_instance_id"
+            expected_db_id = None
+
+            if db_instance_id_file.exists():
+                try:
+                    expected_db_id = db_instance_id_file.read_text().strip()
+                except Exception as e:
+                    logger.warning(f"Could not read expected DB instance ID from {db_instance_id_file}: {e}")
+            
+            current_db_id_from_table = None
+            async with conn.execute("SELECT value FROM ums_internal_metadata WHERE key = ?", (db_instance_id_key,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    current_db_id_from_table = row["value"]
+
+            if current_db_id_from_table and expected_db_id and current_db_id_from_table != expected_db_id:
+                logger.error(f"CRITICAL DB PERSISTENCE MISMATCH: DB instance ID in table ('{current_db_id_from_table[:8]}...') "
+                            f"does not match expected ID from marker file ('{expected_db_id[:8]}...'). "
+                            "The database file may have been replaced or reset unexpectedly!")
+                # Depending on severity, you could raise an error here
+                raise ToolError("UMS Database persistence mismatch detected!")
+            elif current_db_id_from_table and not expected_db_id:
+                logger.warning(f"DB instance ID ('{current_db_id_from_table[:8]}...') found in table, but no marker file. Creating marker file.")
+                try:
+                    db_instance_id_file.write_text(current_db_id_from_table)
+                except Exception as e:
+                    logger.error(f"Could not write DB instance ID marker file {db_instance_id_file}: {e}")
+            elif not current_db_id_from_table:
+                new_db_id = str(uuid.uuid4())
+                logger.info(f"No DB instance ID found in ums_internal_metadata. Generating new ID: {new_db_id[:8]}...")
+                await conn.execute("INSERT OR REPLACE INTO ums_internal_metadata (key, value, updated_at) VALUES (?, ?, ?)",
+                                (db_instance_id_key, new_db_id, int(time.time())))
+                await conn.commit() # Commit this new marker
+                try:
+                    db_instance_id_file.write_text(new_db_id)
+                    logger.info(f"Wrote new DB instance ID to marker file: {db_instance_id_file}")
+                except Exception as e:
+                    logger.error(f"Could not write new DB instance ID marker file {db_instance_id_file}: {e}")
+            else: # Both exist and match, or marker file created from table
+                logger.info(f"DB instance ID ('{expected_db_id[:8]}...') confirmed consistent between marker file and table.")
+            
+        except aiosqlite.Error as e:
+            logger.error(f"FAILED during schema application/verification: {e}", exc_info=True)
+            await conn.rollback() # Rollback on any schema error
+            raise ToolError(f"Failed to apply/verify database schema: {e}") from e
+
+        last_shutdown_key = "last_clean_shutdown_timestamp"
+        async with conn.execute("SELECT value FROM ums_internal_metadata WHERE key = ?", (last_shutdown_key,)) as cursor:
+            row = await cursor.fetchone()
+            if row and row["value"]:
+                try:
+                    shutdown_ts = int(row["value"])
+                    time_since_shutdown = int(time.time()) - shutdown_ts
+                    logger.info(f"Last clean UMS shutdown detected {time_since_shutdown} seconds ago (at timestamp {shutdown_ts}).")
+                    # Remove the marker so it's only present if the *previous* shutdown was clean
+                    await conn.execute("DELETE FROM ums_internal_metadata WHERE key = ?", (last_shutdown_key,))
+                    await conn.commit()
+                except ValueError:
+                    logger.warning(f"Invalid timestamp for last_clean_shutdown_timestamp: {row['value']}")
+            else:
+                logger.warning("No clean shutdown marker found. The previous UMS shutdown might not have been graceful, or this is a new/reset database.")
         DBConnection._db_path_used = self.db_path
         return conn
 
@@ -664,6 +739,16 @@ class DBConnection:
                 if cls._instance:  # Double check after lock
                     logger.info("Attempting to close database connection.", emoji_key="lock")
                     try:
+                        if cls._instance: # Ensure instance still exists
+                            try:
+                                await cls._instance.execute(
+                                    "INSERT OR REPLACE INTO ums_internal_metadata (key, value, updated_at) VALUES (?, ?, ?)",
+                                    ("last_clean_shutdown_timestamp", str(int(time.time())), int(time.time()))
+                                )
+                                await cls._instance.commit()
+                                logger.info("Wrote clean shutdown marker to UMS database.")
+                            except Exception as marker_err:
+                                logger.warning(f"Failed to write clean shutdown marker: {marker_err}")
                         await cls._instance.close()
                         logger.success(
                             "Database connection closed successfully.", emoji_key="white_check_mark"
@@ -8661,7 +8746,7 @@ async def get_rich_context_package(
     if compression_token_threshold is not None and compression_target_tokens is not None:
         try:
             current_package_json = json.dumps(assembled_context_package, default=str)
-            estimated_tokens_before_compress = await count_tokens(
+            estimated_tokens_before_compress = count_tokens(
                 current_package_json
             )  # Uses your accurate counter
 
@@ -8701,7 +8786,7 @@ async def get_rich_context_package(
                         and len(component_data) > 3
                     ):  # Only summarize if reasonably sized list
                         component_str = json.dumps(component_data, default=str)
-                        component_tok_count = await count_tokens(component_str)
+                        component_tok_count = count_tokens(component_str)
                         if (
                             component_tok_count > max_component_tokens
                         ):  # If this component is largest so far AND worth summarizing
@@ -10394,7 +10479,6 @@ __all__ = [
     "update_goal_status",
     "summarize_text",
     "delete_expired_memories",
-    "compute_memory_statistics",
     "compute_memory_statistics",
     # Reporting & Visualization
     "generate_workflow_report",

@@ -210,7 +210,10 @@ class ConnectionManager:
         if cleanup_task:
             cleanup_task.cancel()
             try:
-                await cleanup_task
+                # Add timeout for task cancellation
+                await asyncio.wait_for(cleanup_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                logger.warning("Cleanup task cancellation timed out after 2 seconds")
             except asyncio.CancelledError:
                 logger.info("Cleanup task cancelled.")
             except Exception as e:
@@ -224,8 +227,23 @@ class ConnectionManager:
             num_conns = len(conn_ids)
             logger.info(f"Closing {num_conns} active connections...")
             # Call close_connection which handles locking and removal
-            close_tasks = [self.close_connection(conn_id) for conn_id in conn_ids]
-            await asyncio.gather(*close_tasks)
+            close_tasks = []
+            for conn_id in conn_ids:
+                # Create a task that times out for each connection
+                async def close_with_timeout(conn_id):
+                    try:
+                        await asyncio.wait_for(self.close_connection(conn_id), timeout=2.0)
+                        return True
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Connection {conn_id} close timed out after 2 seconds")
+                        return False
+                close_tasks.append(close_with_timeout(conn_id))
+            
+            # Wait for all connections to close with an overall timeout
+            try:
+                await asyncio.wait_for(asyncio.gather(*close_tasks, return_exceptions=True), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("Some connections did not close within the 5 second timeout")
 
         async with self._lock:
             # Final check
@@ -378,7 +396,11 @@ async def initialize_sql_tools():
 async def shutdown_sql_tools():
     """Gracefully shut down SQL tool resources, like the connection manager."""
     logger.info("Shutting down SQL Tools module...")
-    await _connection_manager.shutdown()
+    try:
+        # Add timeout to connection manager shutdown
+        await asyncio.wait_for(_connection_manager.shutdown(), timeout=8.0)
+    except asyncio.TimeoutError:
+        logger.warning("Connection Manager shutdown timed out after 8 seconds")
     # Clear other global state if necessary (e.g., save audit log)
     logger.info("SQL Tools module shutdown complete.")
 

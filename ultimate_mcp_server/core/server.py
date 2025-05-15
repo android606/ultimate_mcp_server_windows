@@ -200,7 +200,7 @@ class Gateway:
         name: str = "main", 
         register_tools: bool = True,
         provider_exclusions: List[str] = None,
-        load_all_tools: bool = False  # Added: Flag to control tool loading
+        load_all_tools: bool = False  # Remove result_serialization_mode
     ):
         """
         Initialize the MCP Gateway with configured providers and tools.
@@ -2301,59 +2301,50 @@ def start_server(
         # Create a shutdown handler for gateway cleanup
         async def cleanup_resources():
             """Performs cleanup for various components during shutdown."""
-            global _gateway_instance
-            gateway = _gateway_instance # Capture instance at time of call
-
-            if gateway:
-                logger.info("Cleaning up Gateway instance and associated resources...")
-                try:
-                    # 1. Shutdown SQL Tools (if initialized)
-                    try:
-                        await shutdown_sql_tools()
-                        logger.info("SQL tools state shut down successfully.")
-                    except Exception as e:
-                        logger.error(f"Error shutting down SQL tools state: {e}", exc_info=True)
-
-                    # 2. Shutdown Smart Browser explicitly
-                    try:
-                        logger.info("Initiating explicit Smart Browser shutdown...")
-                        await smart_browser_shutdown() # Call the imported function
-                        logger.info("Smart Browser shutdown completed successfully.")
-                    except Exception as e:
-                        logger.error(f"Error during explicit Smart Browser shutdown: {e}", exc_info=True)
-
-                    # 3. Teardown for *other* class-based tools (if any registered)
-                    logger.debug("Checking for other class-based tools with async_teardown...")
-                    if hasattr(gateway.mcp, '_tools'):
-                        processed_instances = set() # Avoid calling teardown multiple times for same instance
-                        for _tool_name, tool_callable in gateway.mcp._tools.items():
-                            # Check if it's a bound method and get the instance
-                            instance = getattr(tool_callable, "__self__", None)
-                            if instance and id(instance) not in processed_instances:
-                                processed_instances.add(id(instance))
-                                # Check if the instance has the teardown method
-                                if hasattr(instance, "async_teardown") and callable(instance.async_teardown):
-                                    # Check if it's NOT related to smart_browser module to avoid double cleanup
-                                    # (This relies on the type string, might need adjustment if class still exists)
-                                    instance_type_str = str(type(instance))
-                                    if "smart_browser" not in instance_type_str.lower(): # Check lowercase for safety
-                                        try:
-                                            tool_class_name = type(instance).__name__
-                                            logger.info(f"Running async_teardown for tool instance: {tool_class_name}")
-                                            await instance.async_teardown()
-                                        except Exception as e:
-                                            logger.error(f"Error during teardown of tool {tool_class_name}: {e}", exc_info=True)
-
-                    # 4. Clear global gateway instance *last*
-                    _gateway_instance = None # Clear reference
-                    logger.info("Global gateway instance cleared.")
-                    print("Shutting down Ultimate MCP Server", file=sys.stderr) # Final message to console
-
-                except Exception as e:
-                    logger.error(f"Error during overall gateway cleanup: {e}", exc_info=True)
-            else:
-                logger.info("Shutdown cleanup: Gateway instance already cleared.")
-                
+            
+            # First attempt quick tasks then long tasks with timeouts
+            logger.info("Cleaning up Gateway instance and associated resources...")
+            
+            # Shutdown SQL Tools with timeout
+            logger.info("Shutting down SQL Tools module...")
+            try:
+                # Add a timeout to SQL tools shutdown
+                await asyncio.wait_for(shutdown_sql_tools(), timeout=5.0)
+                logger.info("SQL Tools module shutdown complete.")
+            except asyncio.TimeoutError:
+                logger.warning("SQL Tools shutdown timed out after 5 seconds")
+            except Exception as e:
+                logger.error(f"Error during SQL Tools shutdown: {e}")
+            
+            # Shutdown Connection Manager with timeout
+            logger.info("Shutting down Connection Manager...")
+            try:
+                # Get connection manager from global state
+                from ultimate_mcp_server.tools.sql_databases import _connection_manager
+                await asyncio.wait_for(_connection_manager.shutdown(), timeout=3.0)
+                logger.info("Connection Manager shutdown complete.")
+            except asyncio.TimeoutError:
+                logger.warning("Connection Manager shutdown timed out after 3 seconds")
+            except Exception as e:
+                logger.error(f"Error during Connection Manager shutdown: {e}")
+            
+            # Shutdown Smart Browser with timeout
+            logger.info("Initiating explicit Smart Browser shutdown...")
+            try:
+                await asyncio.wait_for(smart_browser_shutdown(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Smart Browser shutdown timed out after 10 seconds!")
+            except Exception as e:
+                logger.error(f"Error during Smart Browser shutdown: {e}")
+            
+            # Give a very short window for connections to drain
+            try:
+                logger.info("Waiting for connections to close. (CTRL+C to force quit)")
+                await asyncio.wait_for(asyncio.sleep(2), timeout=2)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # This is expected - we're just giving a short grace period
+                pass
+        
         # Register our shutdown handler
         register_shutdown_handler(cleanup_resources)
         
@@ -2368,11 +2359,19 @@ def start_server(
                 # Set up signal handlers with our custom logic
                 setup_signal_handlers(loop)
                 
-                # Redirect stderr during shutdown to reduce error spam
+                                # Redirect stderr during shutdown to reduce error spam
                 register_shutdown_handler(redirect_stderr_during_shutdown)
                 
-                # Run the server
-                return loop.run_until_complete(self.serve(sockets=sockets))
+                # Run the server with better exception handling
+                try:
+                    return loop.run_until_complete(self.serve(sockets=sockets))
+                except RuntimeError as e:
+                    # Handle "Event loop stopped before Future completed" gracefully
+                    if "Event loop stopped before Future completed" in str(e):
+                        logger.warning("Event loop stopped during shutdown - this is expected during forced exit")
+                        return None
+                    # Re-raise other runtime errors
+                    raise
         
         # Create and run the server with our custom configuration
         config = uvicorn.Config(

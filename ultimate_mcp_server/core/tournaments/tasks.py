@@ -3,15 +3,16 @@ Tournament task implementations for asynchronous tournament execution.
 """
 # Standard Library Imports
 import asyncio
-import json
-import logging
+import random
 import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ultimate_mcp_server.core.evaluation.base import EvaluationScore
 from ultimate_mcp_server.core.models.tournament import (
+    ModelConfig,
     ModelResponseData,
     TournamentData,
     TournamentRoundResult,
@@ -19,235 +20,359 @@ from ultimate_mcp_server.core.models.tournament import (
 )
 from ultimate_mcp_server.core.tournaments.manager import tournament_manager
 from ultimate_mcp_server.core.tournaments.utils import (
+    calculate_weighted_score,
     create_round_prompt,
     extract_thinking,
-    generate_comparison_file,
-    generate_synthesis_prompt,
-    get_word_count,
-    save_model_response,
+    generate_comparison_file_content,
+    generate_leaderboard_file_content,
+    save_model_response_content,
+    update_overall_best_response,
 )
-
-# Import the tool function
 from ultimate_mcp_server.tools.completion import generate_completion
+from ultimate_mcp_server.tools.extraction import extract_code_from_response
+from ultimate_mcp_server.utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("ultimate_mcp_server.tournaments.tasks")
+
+# --- Global semaphore for concurrent model calls ---
+MODEL_CALL_SEMAPHORE: Optional[asyncio.Semaphore] = None
+
+def initialize_semaphore(max_concurrent_calls: int):
+    global MODEL_CALL_SEMAPHORE
+    MODEL_CALL_SEMAPHORE = asyncio.Semaphore(max_concurrent_calls)
+    logger.info(f"Tournament task semaphore initialized with concurrency: {max_concurrent_calls}")
 
 async def run_tournament_async(tournament_id: str):
-    """
-    Asynchronous task orchestrating the tournament rounds.
-    """
-    # Add a small delay to mitigate potential race conditions on startup
-    await asyncio.sleep(0.1) 
+    """Main async task to orchestrate the entire tournament."""
+    await asyncio.sleep(0.1) # Small delay for state propagation
     
-    logger.info(f"[TASK START] Starting execution for tournament {tournament_id}")
-    # Ensure we load the latest state from disk
-    logger.debug(f"[TASK DEBUG] Force reloading tournament {tournament_id} from disk")
     tournament = tournament_manager.get_tournament(tournament_id, force_reload=True)
-    
-    # Debug logging for tournament status
-    if tournament:
-        logger.debug(f"[TASK DEBUG] Tournament loaded successfully. ID: {tournament.tournament_id}")
-        logger.debug(f"[TASK DEBUG] Tournament state: {tournament.status}, Round: {tournament.current_round}/{tournament.config.rounds}")
-        logger.debug(f"[TASK DEBUG] Tournament config: {tournament.config.model_dump_json()}")
-    else:
-        logger.error(f"[TASK ERROR] Tournament {tournament_id} not found after reload")
-        # Try to find the tournament by scanning all tournament directories
-        storage_base = Path(__file__).parent.parent.parent.parent / "storage" / "tournaments"
-        logger.debug(f"[TASK DEBUG] Scanning all tournament directories in: {storage_base}")
-        
-        # Look for the tournament in all subdirectories
-        if storage_base.exists():
-            for dir_path in storage_base.iterdir():
-                if dir_path.is_dir():
-                    state_file = dir_path / "tournament_state.json"
-                    if state_file.exists():
-                        try:
-                            with open(state_file, 'r') as f:
-                                data = json.load(f)
-                                if data.get("tournament_id") == tournament_id:
-                                    logger.info(f"[TASK INFO] Found tournament {tournament_id} in directory: {dir_path}")
-                                    # Load the tournament properly through the manager
-                                    tournament = tournament_manager.get_tournament(tournament_id, force_reload=True)
-                                    if tournament:
-                                        break
-                        except (IOError, json.JSONDecodeError) as e:
-                            logger.debug(f"[TASK DEBUG] Error reading {state_file}: {e}")
-        
-        # If we still haven't found the tournament, exit
-        if not tournament:
-            logger.error(f"[TASK ERROR] Tournament {tournament_id} not found in any directory. Exiting.")
-            return
-    
-    logger.info(f"[TASK DEBUG] Tournament loaded successfully. Type: {tournament.config.tournament_type}, Rounds: {tournament.config.rounds}")
-    
+    if not tournament:
+        logger.error(f"[TASK_ERROR] Tournament {tournament_id} not found for execution.")
+        return
+
+    if tournament.status != TournamentStatus.RUNNING: # Check if it was set to RUNNING
+        logger.warning(f"[TASK_WARN] Tournament {tournament_id} not in RUNNING state ({tournament.status}). Aborting task.")
+        return
+
+    # --- Initialize semaphore based on tournament config ---
+    if MODEL_CALL_SEMAPHORE is None or MODEL_CALL_SEMAPHORE._value != tournament.config.max_concurrent_model_calls:
+        initialize_semaphore(tournament.config.max_concurrent_model_calls)
+
+    logger.info(f"[TASK_START] Starting execution for tournament '{tournament.name}' (ID: {tournament_id})")
+
     try:
-        # Initialize tournament state  
-        if tournament.current_round < 0:  # Not started yet
-            logger.debug("[TASK DEBUG] Initializing tournament state for round 0")
-            tournament.current_round = 0
-            tournament.rounds_results = []  # Ensure we have an empty list
-            # Make sure tournament is marked as running (should already be set, but just in case)
-            tournament.status = TournamentStatus.RUNNING
-            logger.info(f"[TASK DEBUG] Tournament initialized with {len(tournament.config.models)} models")
-            tournament_manager._save_tournament_state(tournament)
-            logger.debug("[TASK DEBUG] Tournament state saved after initialization")
+        if tournament.current_round < 0: # If just started
+            tournament.current_round = 0 
         
-        # Process each round
         while tournament.current_round < tournament.config.rounds:
-            current_round = tournament.current_round
-            logger.info(f"[TASK DEBUG] Starting round {current_round}")
-            
-            # Initialize the round if it doesn't exist
-            if len(tournament.rounds_results) <= current_round:
-                logger.info(f"[TASK DEBUG] Initializing round {current_round} results")
-                tournament.rounds_results.append(TournamentRoundResult(
-                    round_num=current_round,
-                    responses={}
-                ))
-                tournament_manager._save_tournament_state(tournament)
-                logger.debug("[TASK DEBUG] Tournament state saved after round initialization")
-            
-            # Process this round
-            logger.info(f"[TASK DEBUG] Processing round {current_round}")
-            try:
-                await process_round(tournament, current_round)
-                logger.info(f"[TASK DEBUG] Round {current_round} processing completed")
-            except Exception as e:
-                logger.error(f"Error in round {current_round}: {e}", exc_info=True)
-                tournament.status = TournamentStatus.FAILED
-                tournament.error_message = f"Failed during round {current_round}: {str(e)}"
-                tournament_manager._save_tournament_state(tournament)
-                logger.debug("[TASK DEBUG] Tournament state saved after round failure")
+            # --- Check for cancellation before starting a round ---
+            current_tournament_state = tournament_manager.get_tournament(tournament_id, force_reload=True)
+            if not current_tournament_state or current_tournament_state.status == TournamentStatus.CANCELLED:
+                logger.info(f"[TASK_CANCEL] Tournament {tournament_id} cancelled. Halting execution.")
+                if current_tournament_state and current_tournament_state.status != TournamentStatus.CANCELLED: # Ensure it's marked
+                     tournament_manager.update_tournament_status(tournament_id, TournamentStatus.CANCELLED, "Cancelled during execution.")
                 return
-                
-            # Save tournament state after round completes
-            tournament_manager._save_tournament_state(tournament)
-            logger.debug("[TASK DEBUG] Tournament state saved after round completion")
+
+            round_num = tournament.current_round
+            logger.info(f"[ROUND_START] Processing Round {round_num}/{tournament.config.rounds -1 } for '{tournament.name}'")
             
-            # Move to next round
-            logger.info(f"[TASK DEBUG] Advancing to round {current_round + 1}")
-            tournament.current_round += 1
+            round_result_obj = tournament.rounds_results[round_num] # Assumes initialized by manager
+            round_result_obj.status = TournamentStatus.RUNNING
+            round_result_obj.start_time = datetime.now(timezone.utc)
             tournament_manager._save_tournament_state(tournament)
-            logger.debug("[TASK DEBUG] Tournament state saved after advancing to next round")
-        
-        # All rounds completed
-        logger.info(f"[TASK DEBUG] All {tournament.config.rounds} rounds completed")
+
+            await process_single_round(tournament, round_num, round_result_obj)
+
+            round_result_obj.status = TournamentStatus.COMPLETED # Mark round as completed
+            round_result_obj.end_time = datetime.now(timezone.utc)
+            tournament_manager._save_tournament_state(tournament)
+            logger.info(f"[ROUND_END] Round {round_num} for '{tournament.name}' completed.")
+
+            # --- Update overall best response after each round ---
+            update_overall_best_response(tournament) # Utility function to find and set best
+            tournament_manager._save_tournament_state(tournament)
+
+            tournament.current_round += 1
+            tournament_manager._save_tournament_state(tournament) # Save progress
+
         tournament.status = TournamentStatus.COMPLETED
-        tournament.end_time = datetime.now(timezone.utc)
-        tournament_manager._save_tournament_state(tournament)
-        logger.debug("[TASK DEBUG] Tournament state saved after completion")
-        logger.info(f"Tournament {tournament_id} completed successfully")
-        
+        logger.info(f"[TASK_COMPLETE] Tournament '{tournament.name}' (ID: {tournament_id}) completed successfully.")
+
     except Exception as e:
-        logger.error(f"Error executing tournament: {e}", exc_info=True)
+        logger.error(f"[TASK_FAILURE] Tournament '{tournament.name}' failed: {e}", exc_info=True)
         tournament.status = TournamentStatus.FAILED
         tournament.error_message = str(e)
+    finally:
         tournament.end_time = datetime.now(timezone.utc)
         tournament_manager._save_tournament_state(tournament)
-        logger.debug("[TASK DEBUG] Tournament state saved after error")
-        
-async def process_round(tournament: TournamentData, current_round: int) -> None:
-    """
-    Processes a single round of the tournament, running all tasks in parallel.
-    """
-    logger.info(f"[PROCESS ROUND] Starting round {current_round} for tournament {tournament.tournament_id}")
+        logger.info(f"Final state saved for tournament {tournament_id}. Status: {tournament.status}")
+
+
+async def process_single_round(tournament: TournamentData, round_num: int, round_result_obj: TournamentRoundResult):
+    """Processes all model variants for a single round."""
+    
+    # Determine previous responses for synthesis rounds > 0
+    previous_round_variant_responses: Dict[str, ModelResponseData] = {}
+    if round_num > 0:
+        prev_round_idx = round_num - 1
+        if prev_round_idx < len(tournament.rounds_results):
+            previous_round_result = tournament.rounds_results[prev_round_idx]
+            previous_round_variant_responses = previous_round_result.responses # These are already ModelResponseData objects
+        else:
+            logger.warning(f"Could not find previous round {prev_round_idx} data for round {round_num}. Proceeding without it.")
+    
+    tasks = []
+    for model_cfg in tournament.config.models:
+        for i in range(model_cfg.diversity_count):
+            variant_id = f"{model_cfg.model_id}/v{i}"
+            
+            # --- Check for cancellation before each model task ---
+            current_tournament_state = tournament_manager.get_tournament(tournament.tournament_id, force_reload=True)
+            if not current_tournament_state or current_tournament_state.status == TournamentStatus.CANCELLED:
+                logger.info(f"[MODEL_TASK_CANCEL] Cancellation detected for tournament {tournament.tournament_id}. Skipping variant {variant_id}.")
+                continue # Skip remaining tasks in this round
+
+            # Skip if already processed (e.g., resuming a failed round)
+            if variant_id in round_result_obj.responses and round_result_obj.responses[variant_id].response_text:
+                logger.info(f"Variant {variant_id} for round {round_num} already processed. Skipping.")
+                continue
+
+            tasks.append(
+                process_single_model_variant(
+                    tournament,
+                    model_cfg,
+                    variant_id, # Pass the unique variant ID
+                    round_num,
+                    round_result_obj,
+                    previous_round_variant_responses # Pass full ModelResponseData dict
+                )
+            )
+    
+    if not tasks:
+        logger.info(f"No new model variants to process for round {round_num}.")
+        round_result_obj.status = TournamentStatus.COMPLETED
+        return
+
+    logger.info(f"Gathering {len(tasks)} model variant tasks for round {round_num}.")
+    # Await all tasks and catch any unhandled exceptions
+    try:
+        await asyncio.gather(*tasks)
+    except Exception as e:
+        logger.error(f"An error occurred during asyncio.gather in round {round_num}: {e}", exc_info=True)
+        round_result_obj.error_message = (getattr(round_result_obj, 'error_message', '') or "") + f"; Error during task gathering: {str(e)}"
+        round_result_obj.status = TournamentStatus.FAILED # Mark round as failed if gather fails
+        # Individual task errors are handled within process_single_model_variant
+        return
+
+    # --- Generate comparison and leaderboard files ---
+    # (Ensure these utils exist and are updated)
+    comparison_md = generate_comparison_file_content(tournament, round_num)
+    leaderboard_md = generate_leaderboard_file_content(tournament, round_num) # New utility
+
+    round_storage_path = Path(tournament.storage_path) / f"round_{round_num}"
+    round_storage_path.mkdir(parents=True, exist_ok=True)
+
+    if comparison_md:
+        comp_path = round_storage_path / "round_comparison_report.md"
+        comp_path.write_text(comparison_md, encoding='utf-8')
+        round_result_obj.comparison_file_path = str(comp_path)
+    if leaderboard_md:
+        lead_path = round_storage_path / "round_leaderboard.md"
+        lead_path.write_text(leaderboard_md, encoding='utf-8')
+        round_result_obj.leaderboard_file_path = str(lead_path)
+    
+    # Save state after generating reports
+    tournament_manager._save_tournament_state(tournament)
+
+
+async def process_single_model_variant(
+    tournament: TournamentData,
+    model_config: "ModelConfig", # Forward ref as string, ModelConfig is imported
+    variant_id: str, # e.g., "openai/gpt-4o/v0"
+    round_num: int,
+    round_result_obj: TournamentRoundResult,
+    previous_round_variant_responses: Dict[str, ModelResponseData]
+):
+    """Processes a single model variant (handles diversity), including retries and evaluation."""
+    
+    # --- Acquire semaphore ---
+    if MODEL_CALL_SEMAPHORE: # Should always be initialized
+      await MODEL_CALL_SEMAPHORE.acquire()
+    
+    response_data = ModelResponseData(
+        model_id_original=model_config.model_id,
+        model_id_variant=variant_id,
+        round_num=round_num
+    )
+    task_start_time = time.monotonic()
+    
+    # --- Prepare storage paths if needed (handled in save_model_response_content) ---
     
     try:
-        # Get round results
-        if current_round >= len(tournament.rounds_results):
-            raise ValueError(f"Invalid round number: {current_round}")
-        
-        round_results = tournament.rounds_results[current_round]
-        
-        # Configure tournament type
-        is_code_tournament = tournament.config.tournament_type == "code"  # noqa: F841
-        extraction_model_id = tournament.config.extraction_model_id  # noqa: F841
-        
-        # Create tasks for all models
-        model_tasks = []
-        
-        # Get previous round responses if this isn't the first round
-        previous_round_responses = None
-        if current_round > 0:
-            previous_round = tournament.rounds_results[current_round - 1]
-            previous_round_responses = {
-                model_id: response.response_text 
-                for model_id, response in previous_round.responses.items()
-                if response.response_text
-            }
-        
-        for model_config in tournament.config.models:
-            model_id = model_config.model_id
-            
-            # Skip if already processed
-            if model_id in round_results.responses:
-                logger.info(f"[PROCESS ROUND] Skipping already processed model {model_id}")
-                continue
+        # --- Check for cancellation ---
+        current_tournament_state = tournament_manager.get_tournament(tournament.tournament_id, force_reload=True)
+        if not current_tournament_state or current_tournament_state.status == TournamentStatus.CANCELLED:
+            response_data.error = "Tournament cancelled before model execution."
+            logger.info(f"Model task {variant_id} skipped due to tournament cancellation.")
+            raise asyncio.CancelledError("Tournament cancelled")
+
+
+        prompt = create_round_prompt(
+            tournament, 
+            round_num, 
+            previous_round_variant_responses,
+            target_model_variant_id=variant_id # For personalized prompts if needed
+        )
+
+        # --- LLM Call with Retries ---
+        current_attempt = 0
+        llm_response_dict = None
+        while current_attempt <= tournament.config.max_retries_per_model_call:
+            try:
+                logger.info(f"[MODEL_CALL_START] Attempt {current_attempt+1}/{tournament.config.max_retries_per_model_call+1} for {variant_id}, Round {round_num}")
                 
-            # Add the task
-            task = process_model_task(
-                tournament=tournament,
-                model_id=model_id,
-                round_num=current_round,
-                previous_round_responses=previous_round_responses
+                provider_id = model_config.model_id.split('/')[0] if '/' in model_config.model_id else None
+                
+                # Parameters that are direct arguments to the generate_completion tool
+                tool_direct_params = {
+                    "prompt": prompt,
+                    "model": model_config.model_id, # Use original model_id for API call
+                    "provider": provider_id,
+                    "temperature": model_config.temperature,
+                    # max_tokens is added conditionally below
+                }
+                if model_config.max_tokens is not None:
+                    tool_direct_params["max_tokens"] = model_config.max_tokens
+
+                # Parameters that should be passed via the 'additional_params' argument of the tool
+                tool_additional_params = {}
+                if model_config.system_prompt is not None:
+                    tool_additional_params["system_prompt"] = model_config.system_prompt
+                if model_config.seed is not None:
+                    tool_additional_params["seed"] = model_config.seed
+                # Example: if model_config had top_p, it would be added here too:
+                # if hasattr(model_config, 'top_p') and model_config.top_p is not None:
+                #    tool_additional_params["top_p"] = model_config.top_p
+
+                llm_response_dict = await generate_completion(
+                    **tool_direct_params,
+                    additional_params=tool_additional_params
+                )
+                
+                if llm_response_dict.get("success"):
+                    logger.info(f"[MODEL_CALL_SUCCESS] {variant_id} successful on attempt {current_attempt+1}")
+                    break # Success, exit retry loop
+                else:
+                    error_msg = llm_response_dict.get("error", "Unknown LLM error")
+                    logger.warning(f"Attempt {current_attempt+1} for {variant_id} failed: {error_msg}")
+                    if current_attempt == tournament.config.max_retries_per_model_call:
+                        raise RuntimeError(f"LLM call failed after max retries: {error_msg}")
+            
+            except Exception as e: # Catch exceptions from generate_completion itself
+                logger.warning(f"Exception on attempt {current_attempt+1} for {variant_id}: {e}")
+                if current_attempt == tournament.config.max_retries_per_model_call:
+                    raise RuntimeError(f"LLM call failed after max retries (exception): {e}") from e
+            
+            current_attempt += 1
+            # Decorrelated jitter backoff
+            sleep_time = random.uniform(
+                tournament.config.retry_backoff_base_seconds, 
+                tournament.config.retry_backoff_base_seconds * 1.5 * (2 ** (current_attempt -1))
             )
-            model_tasks.append(task)
-            logger.info(f"[PROCESS ROUND] Added task for model {model_id}")
+            # Max sleep to prevent overly long waits
+            sleep_time = min(sleep_time, 30.0) # e.g., max 30s backoff
+            logger.info(f"Retrying {variant_id} in {sleep_time:.2f} seconds...")
+            await asyncio.sleep(sleep_time)
         
-        # Exit if no tasks to run
-        if not model_tasks:
-            logger.info(f"[PROCESS ROUND] No models to process for round {current_round}")
-            return
-            
-        # Run all tasks in parallel
-        logger.info(f"[PROCESS ROUND] Running {len(model_tasks)} model tasks in parallel")
-        results = await asyncio.gather(*model_tasks, return_exceptions=True)
+        # --- Process Successful LLM Response ---
+        response_data.response_text = llm_response_dict.get("text", "")
+        response_data.metrics.update({
+            "input_tokens": llm_response_dict.get("tokens", {}).get("input"),
+            "output_tokens": llm_response_dict.get("tokens", {}).get("output"),
+            "cost": llm_response_dict.get("cost", 0.0),
+            "latency_ms": int(llm_response_dict.get("processing_time", 0) * 1000),
+            "api_model_id_used": llm_response_dict.get("model", model_config.model_id)
+        })
+
+        response_data.thinking_process = await extract_thinking(response_data.response_text)
         
-        # Process results
-        for i, result in enumerate(results):
-            model_config = tournament.config.models[i]
-            model_id = model_config.model_id
-            
-            # Handle exceptions
-            if isinstance(result, Exception):
-                logger.error(f"Error processing model {model_id}: {result}", exc_info=True)
-                continue
-                
-            # Store result in the proper format
-            response_data = ModelResponseData(
-                model_id=model_id,
-                round_num=current_round,
-                response_text=result.get("response_text", ""),
-                thinking_process=result.get("thinking", ""),
-                metrics=result.get("metrics", {}),
-                response_file_path=result.get("response_file", ""),
-                timestamp=datetime.now(timezone.utc)
+        if tournament.config.tournament_type == "code":
+            # Use the tool function for extraction
+            extracted_code_string = await extract_code_from_response(
+                response_text=response_data.response_text,
+                model=tournament.config.extraction_model_id # Pass extraction_model_id as the model for extraction
+                # timeout parameter uses its default from extract_code_from_response
             )
+            if extracted_code_string: # Check if a non-empty string was returned
+                 response_data.extracted_code = extracted_code_string.strip()
+            else:
+                 logger.warning(f"Code extraction returned empty or failed for {variant_id}. Original response length: {len(response_data.response_text or '')}")
+                 response_data.extracted_code = None # Explicitly set to None on failure or empty string
+
+        # --- Save response content ---
+        # (This util saves the main readable MD and potentially the raw code file)
+        saved_paths = await save_model_response_content(
+            tournament_storage_path=Path(tournament.storage_path),
+            round_num=round_num,
+            variant_id=variant_id, # Use variant_id for unique filenames
+            response_text=response_data.response_text,
+            extracted_code=response_data.extracted_code,
+            thinking_process=response_data.thinking_process,
+            metrics=response_data.metrics,
+            tournament_type=tournament.config.tournament_type
+        )
+        response_data.response_file_path = saved_paths.get("markdown_file")
+        response_data.extracted_code_file_path = saved_paths.get("code_file")
+
+        # --- Run Evaluations ---
+        evaluators = tournament_manager.get_evaluators_for_tournament(tournament.tournament_id)
+        if evaluators:
+            logger.info(f"Running {len(evaluators)} evaluators for {variant_id}...")
+            for evaluator_instance in evaluators:
+                eval_config = next((e for e in tournament.config.evaluators if e.evaluator_id == evaluator_instance.config.get("evaluator_id_ref", evaluator_instance.evaluator_type)), None) # Find original config for ID
+
+                eval_id_for_scores = eval_config.evaluator_id if eval_config else evaluator_instance.evaluator_type
+
+                try:
+                    eval_score_obj = await evaluator_instance.score(
+                        response_data, # Pass the full ModelResponseData
+                        tournament.config.prompt,
+                        tournament.config.tournament_type
+                    )
+                    response_data.scores[eval_id_for_scores] = eval_score_obj.model_dump() # Store full score object
+                    logger.debug(f"Evaluator '{eval_id_for_scores}' score for {variant_id}: {eval_score_obj.score}")
+                except Exception as eval_e:
+                    logger.error(f"Evaluator '{eval_id_for_scores}' failed for {variant_id}: {eval_e}", exc_info=True)
+                    response_data.scores[eval_id_for_scores] = EvaluationScore(score=0.0, details=f"Evaluation error: {str(eval_e)}").model_dump()
             
-            # Add response
-            round_results.responses[model_id] = response_data
-            tournament_manager._save_tournament_state(tournament)
-            
-        # Create comparison file for round
-        comparison_content = generate_comparison_file(tournament, current_round)
-        if comparison_content:
-            round_dir = Path(tournament.storage_path) / f"round_{current_round}"
-            round_dir.mkdir(exist_ok=True)
-            comparison_file = round_dir / "model_comparison.md"
-            
-            with open(comparison_file, 'w', encoding='utf-8') as f:
-                f.write(comparison_content)
-                
-            # Store the path back to the round results  
-            round_results.comparison_file_path = str(comparison_file)
-            tournament_manager._save_tournament_state(tournament)
-            
-        # Round successfully completed    
-        logger.info(f"[PROCESS ROUND] Round {current_round} completed successfully")
-        
+            # Calculate overall weighted score
+            response_data.overall_score = calculate_weighted_score(response_data.scores, tournament.config.evaluators)
+
+
+    except asyncio.CancelledError: # Handle task cancellation gracefully
+        logger.info(f"Task for {variant_id} in round {round_num} was cancelled.")
+        response_data.error = "Task cancelled."
+        response_data.metrics["final_status"] = "cancelled"
     except Exception as e:
-        logger.error(f"[PROCESS ROUND] Error processing round {current_round}: {e}", exc_info=True)
-        raise
+        logger.error(f"[MODEL_TASK_FAILURE] Error processing {variant_id}: {e}", exc_info=True)
+        response_data.error = str(e)
+        response_data.metrics["final_status"] = "failed"
+    finally:
+        response_data.metrics["total_task_time_ms"] = int((time.monotonic() - task_start_time) * 1000)
+        # --- Add response to the round_result_obj (which is part of tournament state) ---
+        # This needs to be thread-safe if multiple tasks could update this concurrently,
+        # but asyncio tasks run on a single thread, so direct assignment is fine here.
+        # The `tournament` object itself is shared, so saving it needs care.
+        round_result_obj.responses[variant_id] = response_data
+        
+        # Defer saving the full tournament state to the calling round processor
+        # to batch saves, but log that this variant is done.
+        logger.info(f"Finished processing variant {variant_id}. Error: {response_data.error is not None}")
+        
+        # --- Release semaphore ---
+        if MODEL_CALL_SEMAPHORE:
+          MODEL_CALL_SEMAPHORE.release()
 
 async def process_single_model(
     model_id: str,
@@ -272,7 +397,11 @@ async def process_single_model(
     round_storage_path = Path(tournament.storage_path) / f"round_{round_num}"
     round_storage_path.mkdir(exist_ok=True, parents=True)
     
-    response_data = ModelResponseData(model_id=model_id, round_num=round_num)
+    response_data = ModelResponseData(
+        model_id_original=model_id,
+        model_id_variant=model_id, # In this context, variant is the same as original
+        round_num=round_num
+    )
     extracted_code: Optional[str] = None  # noqa: F841
     file_extension = ".py" if is_code_tournament else ".md"
     
@@ -319,7 +448,8 @@ async def process_single_model(
             "input_tokens": token_info.get("input"),
             "output_tokens": token_info.get("output"),
             "cost": cost,
-            "latency_ms": latency_ms # Use processing_time from tool
+            "latency_ms": latency_ms, # Use processing_time from tool
+            "api_model_id_used": actual_model_used # Store the actual model ID used by the API
         }
 
         # Process response - use async extract_thinking
@@ -340,7 +470,8 @@ async def process_single_model(
         readable_content = f"""# Tournament Response
 **Tournament ID:** {tournament_id}
 **Round:** {round_num}
-**Model:** {actual_model_used}
+**Model (Configured):** {model_id}
+**Model (Actual API):** {actual_model_used}
 **Timestamp:** {datetime.now().isoformat()}
 **Tokens:** {completion_metrics.get('input_tokens', 'N/A')} in, {completion_metrics.get('output_tokens', 'N/A')} out
 **Cost:** ${completion_metrics.get('cost', 0.0):.6f}
@@ -362,7 +493,7 @@ async def process_single_model(
         logger.info(f"[MODEL TASK] Saved response to: {readable_path}")
 
         # Populate response data
-        response_data.model_id = actual_model_used # Store the actual model used
+        # model_id_original and model_id_variant are already set
         response_data.response_text = response_text
         response_data.thinking_process = thinking
         response_data.metrics = {**completion_metrics, **code_metrics}
@@ -470,7 +601,7 @@ async def run_single_round_task(tournament_id: str, round_num: int):
             tournament_manager._save_tournament_state(tournament)
         
         # Create comparison file
-        comparison_content = generate_comparison_file(tournament, round_num)
+        comparison_content = generate_comparison_file_content(tournament, round_num)
         if comparison_content:
             round_dir = Path(tournament.storage_path) / f"round_{round_num}"
             round_dir.mkdir(exist_ok=True)
@@ -544,7 +675,7 @@ async def process_model_task(
         if round_num == 0:
             prompt = tournament.config.prompt
         else:
-            prompt = generate_synthesis_prompt(tournament, previous_round_responses)
+            prompt = create_round_prompt(tournament, round_num, previous_round_responses)
         
         # Generate completion using the tool
         logger.info(f"[MODEL TASK] Calling generate_completion for model {model_id} with prompt length {len(prompt)}")
@@ -587,12 +718,15 @@ async def process_model_task(
         thinking = await extract_thinking(response_text)
         
         # Save response to a file with timestamp - use async save_model_response
-        response_file = await save_model_response(
-            tournament=tournament,
+        response_file = await save_model_response_content(
+            tournament_storage_path=Path(tournament.storage_path),
             round_num=round_num,
-            model_id=actual_model_used, # Use actual model name
+            variant_id=model_id, # Use model_id for unique filenames
             response_text=response_text,
-            thinking=thinking
+            extracted_code=None, # No extracted code for this task
+            thinking_process=thinking,
+            metrics=completion_metrics,
+            tournament_type=tournament.config.tournament_type
         )
         
         total_task_time_ms = int((time.monotonic() - start_task_time) * 1000)
@@ -604,9 +738,8 @@ async def process_model_task(
             "model_id": actual_model_used, # Return actual model used
             "response_text": response_text,
             "thinking": thinking,
-            "word_count": get_word_count(response_text),
             "metrics": completion_metrics,
-            "response_file": str(response_file) # Ensure path is string
+            "response_file": str(response_file.get("markdown_file")) if isinstance(response_file, dict) else str(response_file) # Ensure path is string
         }
     except Exception as e:
         logger.error(f"[MODEL TASK] Error processing model {model_id}: {str(e)}", exc_info=True)
@@ -616,7 +749,6 @@ async def process_model_task(
             "error": str(e),
             "response_text": f"Error generating response: {str(e)}",
             "thinking": None,
-            "word_count": 0,
             "metrics": {
                 "error": str(e), 
                 "total_task_time_ms": total_task_time_ms,

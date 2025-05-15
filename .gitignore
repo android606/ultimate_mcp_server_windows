@@ -236,3 +236,4 @@ debug_mod_tree_with_ids.xml
 debug_orig_tree_with_ids.xml
 redline.css
 tailwind.config.js
+storage/single_shot_synthesis

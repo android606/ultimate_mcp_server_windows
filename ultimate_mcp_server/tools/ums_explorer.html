@@ -1,0 +1,2756 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ultimate UMS Explorer</title>
+    
+    <!-- Tailwind CSS and DaisyUI -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4.10.1/dist/full.min.css" rel="stylesheet" type="text/css" />
+    
+    <!-- Alpine.js -->
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.8/dist/cdn.min.js"></script>
+    
+    <!-- SQL.js for SQLite -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
+    
+    <!-- Vis.js for network visualization -->
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    
+    <!-- Chart.js for data visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+    
+    <!-- Mermaid.js -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+    
+    <style>
+        [x-cloak] { display: none !important; }
+        .vis-network { outline: none; border: 1px solid hsl(var(--b3)); border-radius: var(--rounded-box, 1rem); }
+        .memory-card { transition: all 0.3s ease; }
+        .memory-card:hover { transform: translateY(-4px); box-shadow: 0 10px 25px hsl(var(--bc) / 0.1); }
+        .tag-badge { transition: all 0.2s ease; }
+        .tag-badge:hover { transform: scale(1.05); }
+        .sidebar-item.active { background-color: hsl(var(--p)/0.2); color:hsl(var(--pc)); border-left: 3px solid hsl(var(--p));}
+        .sidebar-item:hover { background-color: hsl(var(--b2)); }
+        .table th { position: sticky; top: 0; z-index: 10; background-color: hsl(var(--b2)); } /* Ensure table headers are sticky */
+        .modal-box { max-height: 90vh; display: flex; flex-direction: column; }
+        .modal-content { flex-grow: 1; overflow-y: auto; }
+        .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+        .mermaid svg { max-width: 100%; height: auto; } /* Responsive mermaid */
+    </style>
+</head>
+<body class="bg-base-200 min-h-screen antialiased" x-data="umsExplorer()" x-cloak>
+
+    <!-- Toast Notifications -->
+    <div x-show="toast.show" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 transform translate-y-2" x-transition:enter-end="opacity-100 transform translate-y-0" x-transition:leave="transition ease-in duration-300" x-transition:leave-start="opacity-100 transform translate-y-0" x-transition:leave-end="opacity-0 transform translate-y-2"
+         class="fixed bottom-5 right-5 z-[100] p-4 rounded-md shadow-lg max-w-sm"
+         :class="{ 'bg-success text-success-content': toast.type === 'success', 'bg-error text-error-content': toast.type === 'error', 'bg-warning text-warning-content': toast.type === 'warning', 'bg-info text-info-content': toast.type === 'info' }">
+        <div class="flex items-center">
+            <i :data-lucide="toast.type === 'success' ? 'check-circle' : (toast.type === 'error' ? 'alert-octagon' : (toast.type === 'warning' ? 'alert-triangle' : 'info'))" class="mr-2 h-5 w-5"></i>
+            <span class="text-sm" x-text="toast.message"></span>
+            <button @click="toast.show = false" class="ml-auto btn btn-xs btn-ghost">
+                <i data-lucide="x" class="h-4 w-4"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Layout (Drawer for Sidebar) -->
+    <div class="drawer lg:drawer-open">
+        <input id="sidebar-drawer" type="checkbox" class="drawer-toggle" />
+        <div class="drawer-content flex flex-col h-screen">
+            <!-- Navbar -->
+            <nav class="navbar bg-base-100 shadow-md sticky top-0 z-30 print:hidden">
+                <div class="navbar-start">
+                    <label for="sidebar-drawer" aria-label="open sidebar" class="btn btn-square btn-ghost lg:hidden">
+                        <i data-lucide="menu" class="w-6 h-6"></i>
+                    </label>
+                    <div class="flex items-center gap-2 ml-2">
+                        <i data-lucide="brain-circuit" class="w-7 h-7 text-primary hidden md:inline-block"></i>
+                        <h1 class="text-xl font-bold">UMS Explorer</h1>
+                    </div>
+                </div>
+                <div class="navbar-center hidden md:flex">
+                    <div x-show="dbLoaded" class="stats stats-horizontal bg-base-100 shadow-none text-xs py-0 my-0 h-12">
+                        <div class="stat p-1 md:p-2">
+                            <div class="stat-title text-xs">Memories</div>
+                            <div class="stat-value text-base" x-text="stats.totalMemories || 0"></div>
+                        </div>
+                        <div class="stat p-1 md:p-2">
+                            <div class="stat-title text-xs">Links</div>
+                            <div class="stat-value text-base text-secondary" x-text="stats.totalLinks || 0"></div>
+                        </div>
+                        <div class="stat p-1 md:p-2">
+                            <div class="stat-title text-xs">Workflows</div>
+                            <div class="stat-value text-base text-accent" x-text="stats.totalWorkflows || 0"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="navbar-end">
+                    <div class="tooltip tooltip-bottom mr-2" data-tip="Global Search (Memories, Workflows)">
+                        <input type="text" x-model.debounce.500ms="globalSearchTerm" @input="handleGlobalSearch" placeholder="Search all..." class="input input-sm input-bordered w-32 md:w-auto" x-show="dbLoaded"/>
+                    </div>
+                    <div x-show="!dbLoaded" class="tooltip tooltip-bottom" data-tip="Load UMS Database File">
+                         <label for="db-file-input-navbar" class="btn btn-primary btn-sm">
+                            <i data-lucide="database" class="w-4 h-4 mr-1"></i> Load DB
+                        </label>
+                        <input id="db-file-input-navbar" type="file" @change="loadDB($event, $refs.walFileNavbar)" accept=".sqlite,.db,.sqlite3" class="hidden" x-ref="dbFileMain" />
+                        <input type="file" x-ref="walFileNavbar" accept=".sqlite-wal" class="hidden" @change="loadDB($refs.dbFileMain.files.length > 0 ? {target: $refs.dbFileMain} : null, $event)" />
+                    </div>
+                     <div x-show="dbLoaded" class="dropdown dropdown-end mr-1">
+                        <button tabindex="0" role="button" class="btn btn-ghost btn-sm">
+                            <i data-lucide="download" class="h-4 w-4"></i> Export
+                        </button>
+                        <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[20] p-2 shadow bg-base-200 rounded-box w-40">
+                            <li><a @click="exportAllData('json')"><i data-lucide="file-json" class="h-4 w-4 mr-1"></i> All (JSON)</a></li>
+                            <li><a @click="exportVisibleMemories('csv')"><i data-lucide="file-spreadsheet" class="h-4 w-4 mr-1"></i> Visible Memories (CSV)</a></li>
+                        </ul>
+                    </div>
+                    <div class="dropdown dropdown-end">
+                        <button tabindex="0" role="button" class="btn btn-ghost btn-circle btn-sm">
+                            <i data-lucide="sun" class="w-5 h-5" x-show="theme === 'light'"></i>
+                            <i data-lucide="moon" class="w-5 h-5" x-show="theme === 'dark'"></i>
+                        </button>
+                        <ul tabindex="0" class="menu menu-sm dropdown-content mt-3 z-[20] p-2 shadow bg-base-200 rounded-box w-32">
+                            <li><a @click="setTheme('light')">Light</a></li>
+                            <li><a @click="setTheme('dark')">Dark</a></li>
+                            <li><a @click="setTheme('cupcake')">Cupcake</a></li>
+                            <li><a @click="setTheme('bumblebee')">Bumblebee</a></li>
+                            <li><a @click="setTheme('emerald')">Emerald</a></li>
+                            <li><a @click="setTheme('synthwave')">Synthwave</a></li>
+                            <li><a @click="setTheme('dracula')">Dracula</a></li>
+                        </ul>
+                    </div>
+                </div>
+            </nav>
+
+            <!-- Page content here -->
+            <main class="flex-1 p-3 md:p-4 lg:p-6 overflow-y-auto bg-base-200 print:p-0">
+                <!-- DB Loader View (Rendered by x-html from template) -->
+                <div x-show="!dbLoaded && !isLoading" x-html="getTemplate('dbLoaderTemplate')"></div>
+
+                <!-- Loading Indicator -->
+                <div x-show="isLoading" class="flex flex-col items-center justify-center min-h-[calc(100vh-200px)]">
+                    <span class="loading loading-spinner loading-lg text-primary"></span>
+                    <p class="mt-4 text-lg" x-text="loadingMessage || 'Loading...'"></p>
+                </div>
+
+                <!-- Main Content Area (Conditional Views from Templates) -->
+                <div x-show="dbLoaded && !isLoading">
+                    <template x-if="currentView === 'dashboard'">
+                        <div x-html="getTemplate('dashboardViewTemplate')"></div>
+                    </template>
+                    <template x-if="currentView === 'workflows'">
+                        <div x-html="getTemplate('workflowsViewTemplate')"></div>
+                    </template>
+                    <template x-if="currentView === 'workflowDetail'">
+                        <div x-html="getTemplate('workflowDetailViewTemplate')" 
+                             x-init="$nextTick(() => { if (activeWorkflow && activeWorkflow.mermaidDiagram) renderMermaidDiagram(activeWorkflow.mermaidDiagram, $root.querySelector('[x-ref=\'workflowDiagramTarget\']'), 'workflow') })">
+                        </div>
+                    </template>
+                    <template x-if="currentView === 'memories'">
+                        <div x-html="getTemplate('memoriesViewTemplate')"></div>
+                    </template>
+                     <template x-if="currentView === 'actions'">
+                        <div x-html="getTemplate('actionsViewTemplate')"></div>
+                    </template>
+                     <template x-if="currentView === 'artifacts'">
+                        <div x-html="getTemplate('artifactsViewTemplate')"></div>
+                    </template>
+                     <template x-if="currentView === 'thoughts'">
+                        <div x-html="getTemplate('thoughtsViewTemplate')"></div>
+                    </template>
+                     <template x-if="currentView === 'goals'">
+                        <div x-html="getTemplate('goalsViewTemplate')"></div>
+                    </template>
+                    <!-- Add other views as needed -->
+                    <template x-if="!isValidView(currentView) && dbLoaded">
+                         <div x-html="getTemplate('dashboardViewTemplate')"></div> <!-- Fallback to dashboard -->
+                    </template>
+                </div>
+            </main>
+        </div>
+        <aside class="drawer-side z-40 print:hidden">
+            <label for="sidebar-drawer" aria-label="close sidebar" class="drawer-overlay"></label>
+            <nav class="menu p-4 w-64 md:w-72 min-h-full bg-base-100 text-base-content">
+                <div class="text-lg font-semibold p-4 flex items-center gap-2 border-b border-base-300 mb-2">
+                     <i data-lucide="brain" class="w-6 h-6 text-primary"></i> Ultimate UMS Explorer
+                </div>
+                <ul x-show="!dbLoaded">
+                    <li class="sidebar-item"><label for="db-file-input-navbar" class="cursor-pointer"><i data-lucide="database-zap" class="mr-2"></i> Load Database</label></li>
+                </ul>
+                <ul x-show="dbLoaded">
+                    <li class="menu-title text-xs">Main Views</li>
+                    <li class="sidebar-item" :class="{'active': currentView === 'dashboard'}"><a @click="setView('dashboard')"><i data-lucide="layout-dashboard" class="mr-2"></i> Dashboard</a></li>
+                    <li class="sidebar-item" :class="{'active': currentView === 'workflows'}"><a @click="setView('workflows')"><i data-lucide="git-fork" class="mr-2"></i> Workflows</a></li>
+                    <li class="sidebar-item" :class="{'active': currentView === 'memories'}"><a @click="setView('memories')"><i data-lucide="brain" class="mr-2"></i> Memories</a></li>
+                    <li class="menu-title text-xs mt-2">Detailed Entities</li>
+                    <li class="sidebar-item" :class="{'active': currentView === 'actions'}"><a @click="setView('actions')"><i data-lucide="zap" class="mr-2"></i> Actions Log</a></li>
+                    <li class="sidebar-item" :class="{'active': currentView === 'artifacts'}"><a @click="setView('artifacts')"><i data-lucide="file-text" class="mr-2"></i> Artifacts Log</a></li>
+                    <li class="sidebar-item" :class="{'active': currentView === 'thoughts'}"><a @click="setView('thoughts')"><i data-lucide="message-circle" class="mr-2"></i> Thoughts Log</a></li>
+                    <li class="sidebar-item" :class="{'active': currentView === 'goals'}"><a @click="setView('goals')"><i data-lucide="target" class="mr-2"></i> Goals Log</a></li>
+                    <li class="menu-title text-xs mt-2">System</li>
+                    <li class="sidebar-item"><a @click="showStatsModal = true"><i data-lucide="bar-chart-3" class="mr-2"></i> Statistics</a></li>
+                </ul>
+                <div x-show="dbLoaded" class="mt-auto p-4 border-t border-base-300">
+                    <button class="btn btn-sm btn-outline btn-error w-full" @click="closeDB()">
+                        <i data-lucide="database-backup" class="mr-1"></i> Close Database
+                    </button>
+                </div>
+            </nav>
+        </aside>
+    </div>
+
+    <!-- Modals (Templates for these will be defined below) -->
+    <div x-html="getTemplate('memoryDetailModalTemplate')"></div>
+    <div x-html="getTemplate('deleteConfirmModalTemplate')"></div>
+    <div x-html="getTemplate('statsModalTemplate')"></div>
+    <div x-html="getTemplate('linksModalTemplate')"></div>
+    <div x-html="getTemplate('diagramModalTemplate')"></div>
+    <div x-html="getTemplate('actionDetailModalTemplate')"></div>
+    <div x-html="getTemplate('artifactDetailModalTemplate')"></div>
+    <div x-html="getTemplate('thoughtDetailModalTemplate')"></div>
+    <div x-html="getTemplate('goalDetailModalTemplate')"></div>
+
+
+    <!-- ======================================================================= -->
+    <!-- TEMPLATES for Views and Modals -->
+    <!-- ======================================================================= -->
+
+    <template id="dbLoaderTemplate">
+        <div class="hero min-h-[calc(100vh-10rem)]">
+            <div class="hero-content text-center">
+                <div class="max-w-md p-6 bg-base-100 rounded-lg shadow-xl">
+                    <i data-lucide="database-zap" class="w-16 h-16 mx-auto text-primary mb-4"></i>
+                    <h2 class="text-3xl font-bold mb-4">Load UMS Database</h2>
+                    <div class="alert alert-info mb-4 text-left text-sm">
+                        <i data-lucide="info" class="w-5 h-5"></i>
+                        <span>For best results, ensure the Python UMS application is closed cleanly before selecting the database file. This helps checkpoint any pending WAL data.</span>
+                    </div>
+                    <div class="form-control mb-4">
+                        <label class="label"><span class="label-text">Select SQLite Database File (.sqlite, .db)</span></label>
+                        <input type="file" @change="loadDB($event, $refs.walFileLoader)" accept=".sqlite,.db,.sqlite3" class="file-input file-input-bordered file-input-primary w-full" x-ref="dbFileLoaderInput" />
+                    </div>
+                    <div class="form-control mb-4">
+                        <label class="label"><span class="label-text">Optional: Select WAL File (.sqlite-wal)</span></label>
+                        <input type="file" x-ref="walFileLoader" @change="loadDB($refs.dbFileLoaderInput.files.length > 0 ? {target: $refs.dbFileLoaderInput} : null, $event)" accept=".sqlite-wal" class="file-input file-input-bordered w-full" />
+                         <label class="label">
+                            <span class="label-text-alt text-xs">If your database uses WAL mode and wasn't fully checkpointed, provide the WAL file. It must correspond to the main DB file.</span>
+                        </label>
+                    </div>
+                    <p class="text-xs text-center text-base-content/70 mt-4">
+                        All processing is done locally in your browser. Your database file is not uploaded.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="dashboardViewTemplate">
+       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Key Stats Cards -->
+            <div class="stats shadow col-span-1 md:col-span-2 lg:col-span-4 bg-base-100">
+                <div class="stat">
+                    <div class="stat-figure text-primary"><i data-lucide="brain" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Total Memories</div>
+                    <div class="stat-value text-primary" x-text="stats.totalMemories || 0"></div>
+                </div>
+                <div class="stat">
+                    <div class="stat-figure text-secondary"><i data-lucide="git-fork" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Workflows</div>
+                    <div class="stat-value text-secondary" x-text="stats.totalWorkflows || 0"></div>
+                </div>
+                 <div class="stat">
+                    <div class="stat-figure text-accent"><i data-lucide="zap" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Actions</div>
+                    <div class="stat-value text-accent" x-text="stats.totalActions || 0"></div>
+                </div>
+                <div class="stat">
+                    <div class="stat-figure text-info"><i data-lucide="file-text" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Artifacts</div>
+                    <div class="stat-value text-info" x-text="stats.totalArtifacts || 0"></div>
+                </div>
+            </div>
+
+            <!-- Recent Workflows Card -->
+            <div class="card bg-base-100 shadow-xl lg:col-span-2">
+                <div class="card-body">
+                    <h2 class="card-title">
+                        <i data-lucide="history" class="w-5 h-5 mr-1"></i> Recent Workflows
+                        <button class="btn btn-xs btn-ghost ml-auto" @click="setView('workflows')">View All</button>
+                    </h2>
+                     <div class="overflow-x-auto max-h-72">
+                        <table class="table table-sm">
+                            <thead><tr><th>Title</th><th>Status</th><th>Goal Preview</th><th>Last Updated</th></tr></thead>
+                            <tbody>
+                                <template x-if="!workflows.length && !isLoading"><td colspan="4" class="text-center p-4">No workflows loaded.</td></template>
+                                <template x-for="wf in workflows.slice().sort((a,b) => b.updated_at_raw - a.updated_at_raw).slice(0,5)" :key="wf.workflow_id">
+                                    <tr class="hover">
+                                        <td><a class="link link-hover" @click="setView('workflowDetail', wf.workflow_id)" x-text="truncateText(wf.title, 30)"></a></td>
+                                        <td><span class="badge badge-sm" :class="getWorkflowStatusClass(wf.status)" x-text="wf.status"></span></td>
+                                        <td class="text-xs" x-text="truncateText(wf.goal, 40)"></td>
+                                        <td class="text-xs" x-text="formatRelativeTime(wf.updated_at_raw)"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Memory Level Distribution Card -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body">
+                    <h2 class="card-title"><i data-lucide="layers-3" class="w-5 h-5 mr-1"></i> Memories by Level</h2>
+                    <div class="max-h-72 overflow-y-auto">
+                    <template x-for="(count, level) in stats.byLevel" :key="level">
+                        <div class="flex justify-between items-center py-1 border-b border-base-300 last:border-b-0">
+                            <span x-text="capitalize(level)" class="text-sm"></span>
+                            <span class="badge" :class="getMemoryLevelColor(level)" x-text="count"></span>
+                        </div>
+                    </template>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Quick Actions Card -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body">
+                    <h2 class="card-title"><i data-lucide="mouse-pointer-square" class="w-5 h-5 mr-1"></i> Quick Actions</h2>
+                    <button class="btn btn-sm btn-outline btn-primary w-full mb-2" @click="setView('memories')">Explore All Memories</button>
+                    <button class="btn btn-sm btn-outline btn-secondary w-full mb-2" @click="setView('memories', { viewMode: 'graph' })">View Memory Graph</button>
+                    <button class="btn btn-sm btn-outline w-full" @click="showStatsModal = true">View Full Statistics</button>
+                </div>
+            </div>
+       </div>
+    </template>
+    
+    <!-- ... (Other templates: workflowsViewTemplate, workflowDetailViewTemplate, memoriesViewTemplate, etc.) ... -->
+    <!-- ... (Modal templates: memoryDetailModalTemplate, deleteConfirmModalTemplate, etc.) ... -->
+    <!-- All templates will be defined fully in the script part, this is just to show structure -->
+
+    <script>
+        // Initialize Mermaid & Lucide (Mermaid theme handled in Alpine init)
+        mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' });
+        function initLucide() { if (window.lucide) { lucide.createIcons(); } }
+
+        // SQL.js configuration
+        let SQL; // Will be initialized in Alpine
+        const sqlJsConfig = {
+            locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
+        };
+
+        function umsExplorer() {
+            return {
+                // Core State
+                db: null,
+                dbLoaded: false,
+                isLoading: false,
+                loadingMessage: '',
+                currentView: 'dashboard', // Default view after DB load
+                theme: 'light',
+                toast: { show: false, message: '', type: 'success' }, // types: success, error, warning, info
+
+                // Data Stores
+                workflows: [],
+                memories: [],
+                actions: [],
+                artifacts: [],
+                thoughts: [], // Individual thoughts
+                thoughtChains: [], // Thought chains with their thoughts nested
+                goals: [],
+                memoryLinks: [],
+                tags: [], // All unique tags
+                
+                stats: { // Populated by fetchStatistics
+                    totalMemories: 0, totalLinks: 0, totalWorkflows: 0, totalActions: 0, totalArtifacts: 0, totalThoughts: 0, totalGoals: 0,
+                    byLevel: {}, byType: {}, byWorkflowStatus: {}, topTags: []
+                },
+
+                // Active items for detail views/modals
+                activeWorkflowId: null,
+                activeWorkflow: null, // Holds full data for workflow detail view
+                activeMemoryId: null,
+                activeMemory: null, // Holds full data for memory detail modal
+                activeActionId: null, activeAction: null,
+                activeArtifactId: null, activeArtifact: null,
+                activeThoughtId: null, activeThought: null, // For individual thought detail
+                activeThoughtChainId: null, activeThoughtChain: null, // For thought chain specific view/modal
+                activeGoalId: null, activeGoal: null,
+
+                // Diagram related
+                activeDiagramTitle: '',
+                activeDiagramContent: '', // Mermaid definition string
+                memoryNetwork: null, // Vis.js network instance
+
+                // Search & Filters
+                globalSearchTerm: '',
+                // Specific view filters
+                memoryFilters: { 
+                    workflowId: '', memoryLevel: '', memoryType: '', searchTextFTS: '', tags: [], 
+                    minImportance: null, maxImportance: null, minConfidence: null,
+                    dateRange: { start: null, end: null } // For created_at
+                },
+                workflowFilters: { status: '', tag: '', titleSearch: '' },
+                actionFilters: { workflowId: '', type: '', status: '', toolNameSearch: '' },
+                // ... other entity filters
+
+                // Memories View Specifics
+                memoriesViewMode: 'card', // 'card' or 'table'
+                
+                // Pagination (example for memories)
+                pagination: {
+                    memories: { currentPage: 1, itemsPerPage: 12, totalItems: 0, totalPages: 1 },
+                    workflows: { currentPage: 1, itemsPerPage: 10, totalItems: 0, totalPages: 1 },
+                    actions: { currentPage: 1, itemsPerPage: 15, totalItems: 0, totalPages: 1 },
+                    artifacts: { currentPage: 1, itemsPerPage: 15, totalItems: 0, totalPages: 1 },
+                    thoughts: { currentPage: 1, itemsPerPage: 20, totalItems: 0, totalPages: 1 },
+                    goals: { currentPage: 1, itemsPerPage: 15, totalItems: 0, totalPages: 1 },
+                },
+                // Sorting (example for memories)
+                sorting: {
+                    memories: { column: 'created_at_raw', direction: 'desc' }, // Use raw for sorting
+                    workflows: { column: 'updated_at_raw', direction: 'desc' },
+                    actions: { column: 'started_at_raw', direction: 'desc' },
+                    // ...
+                },
+                
+                // Export
+                selectedMemoryIdsForExport: [],
+
+                // Modals
+                showMemoryDetailModal: false,
+                showDeleteConfirmModal: false,
+                entityToDelete: { id: null, type: '', name: '' },
+                showStatsModal: false,
+                showLinksModal: false,
+                currentMemoryLinks: { outgoing: [], incoming: [] }, // For links modal
+                linksModalForMemory: null, // Memory whose links are being shown
+                linksModalTab: 'outgoing',
+                showDiagramModal: false,
+                showActionDetailModal: false,
+                showArtifactDetailModal: false,
+                showThoughtDetailModal: false,
+                showGoalDetailModal: false,
+
+
+                // Enum-like values (from Python schema)
+                enumVals: {
+                    memoryLevels: ["working", "episodic", "semantic", "procedural"],
+                    memoryTypes: ["observation", "action_log", "tool_output", "artifact_creation", "reasoning_step", "fact", "insight", "plan", "question", "summary", "reflection", "skill", "procedure", "pattern", "code", "json", "url", "user_input", "text"],
+                    workflowStatuses: ["active", "paused", "completed", "failed", "abandoned"],
+                    actionStatuses: ["planned", "in_progress", "completed", "failed", "skipped"],
+                    goalStatuses: ["active", "planned", "completed", "failed", "paused", "abandoned"],
+                    thoughtTypes: ["goal", "question", "hypothesis", "inference", "evidence", "constraint", "plan", "decision", "reflection", "critique", "summary", "user_guidance", "insight"],
+                    artifactTypes: ["file", "text", "image", "table", "chart", "code", "data", "json", "url"],
+                    linkTypes: ["related", "causal", "sequential", "hierarchical", "contradicts", "supports", "generalizes", "specializes", "follows", "precedes", "task", "references"]
+                },
+                
+                // Templates for dynamic HTML injection
+                templates: {},
+
+                // =======================================================================
+                // INITIALIZATION & LIFECYCLE
+                // =======================================================================
+                async init() {
+                    console.log('Ultimate UMS Explorer Initializing...');
+                    this.loadTheme();
+                    SQL = await initSqlJs(sqlJsConfig);
+                    
+                    this.cacheTemplates(); // Cache all <template> tag contents
+
+                    // Initialize Lucide icons (will be called again on view changes)
+                    this.$nextTick(() => initLucide());
+                    this.$watch('currentView', () => { this.$nextTick(() => initLucide()) });
+                    this.$watch('dbLoaded', (loaded) => {
+                        if (loaded) {
+                            this.currentView = 'dashboard'; // Set initial view
+                            this.fetchInitialDataForApp();
+                        } else {
+                            this.currentView = ''; // Clears view if DB is closed
+                            this.resetAllData();
+                        }
+                         this.$nextTick(() => initLucide());
+                    });
+                    this.$watch('showMemoryDetailModal', (showing) => {
+                        if (showing) this.$nextTick(() => initLucide());
+                    });
+                    this.$watch('showStatsModal', (showing) => {
+                        if (showing && this.dbLoaded) {
+                             this.$nextTick(() => { this.renderStatsChart(); initLucide(); });
+                        }
+                    });
+                     this.$watch('showLinksModal', (showing) => {
+                        if (showing) this.$nextTick(() => initLucide());
+                    });
+                     this.$watch('showDiagramModal', (showing) => {
+                        if (showing && this.activeDiagramContent) {
+                             this.$nextTick(() => { this.renderMermaidDiagram(this.activeDiagramContent, this.$refs.diagramModalContentEl, 'modalDiagram'); initLucide(); });
+                        }
+                    });
+                     this.$watch('memoriesViewMode', (newMode) => {
+                        if (newMode === 'graph' && this.dbLoaded) {
+                            this.renderMemoryNetworkGraph();
+                        }
+                        this.$nextTick(() => initLucide());
+                    });
+                },
+
+                cacheTemplates() {
+                    document.querySelectorAll('template').forEach(tmpl => {
+                        this.templates[tmpl.id] = tmpl.innerHTML;
+                    });
+                },
+                getTemplate(templateId) {
+                    return this.templates[templateId] || `<p class="text-error">Template ${templateId} not found!</p>`;
+                },
+                isValidView(viewName) {
+                    const validViews = ['dashboard', 'workflows', 'workflowDetail', 'memories', 'actions', 'artifacts', 'thoughts', 'goals'];
+                    return validViews.includes(viewName);
+                },
+
+                // =======================================================================
+                // DATABASE HANDLING
+                // =======================================================================
+                async loadDB(event, walEvent) {
+                    const file = event.target.files ? event.target.files[0] : (event.target?.getRootNode?.()?.host?.files?.[0]); // Handle direct event or from x-ref
+                    const walFile = walEvent && walEvent.target.files ? walEvent.target.files[0] : (walEvent?.target?.getRootNode?.()?.host?.files?.[0]);
+
+                    if (!file) {
+                        if(walFile && !this.$refs.dbFileMain.files[0]) {
+                            this.showToast('Please select the main database file first.', 'warning');
+                        }
+                        return;
+                    }
+                    this.isLoading = true;
+                    this.loadingMessage = 'Loading database...';
+                    
+                    try {
+                        const dbFileData = await file.arrayBuffer();
+                        if (this.db) { this.db.close(); this.db = null; } // Close previous DB
+                        
+                        this.db = new SQL.Database(new Uint8Array(dbFileData));
+                        console.log("Main DB file loaded into sql.js.");
+
+                        if (walFile) {
+                            this.loadingMessage = 'Attempting to apply WAL file...';
+                            const walFileData = await walFile.arrayBuffer();
+                            const dbFileName = file.name;
+                            const walFileName = dbFileName.substring(0, dbFileName.lastIndexOf('.')) + "-wal"; // Heuristic for WAL name if not exact
+                            
+                            console.log(`Using DB filename: ${dbFileName}, attempting WAL: ${walFileName}`);
+                            
+                            try {
+                                SQL.FS.writeFile(walFileName, new Uint8Array(walFileData));
+                                console.log("WAL file written to sql.js virtual FS.");
+                                // Close and reopen the database to apply WAL
+                                this.db.close();
+                                this.db = new SQL.Database(new Uint8Array(dbFileData)); // Re-open main DB
+                                console.log("Database re-opened, WAL should be applied if compatible.");
+                                this.showToast('WAL file processed. DB re-opened.', 'info');
+                            } catch (fsError) {
+                                console.error("Error writing WAL to FS or reopening DB:", fsError);
+                                // Fallback: try to open main DB anyway without WAL applied status
+                                if (!this.db) this.db = new SQL.Database(new Uint8Array(dbFileData));
+                                this.showToast(`WAL file processing issue: ${fsError.message}. Loaded main DB only.`, 'warning');
+                            }
+                        }
+                        
+                        // Standard PRAGMAs
+                        this.db.exec("PRAGMA foreign_keys = ON;");
+                        this.db.exec("PRAGMA journal_mode = MEMORY;"); // Use MEMORY journal for sql.js
+                        
+                        const testResult = this.executeQuery("SELECT count(*) as count FROM workflows;");
+                        if (testResult && testResult[0] !== undefined) {
+                             console.log("DB loaded, workflows count:", testResult[0]?.count);
+                             this.dbLoaded = true;
+                             this.showToast('Database loaded successfully!', 'success');
+                        } else {
+                            throw new Error("Database loaded but test query failed. Is it a valid UMS database?");
+                        }
+
+                    } catch (err) {
+                        console.error("Error loading database:", err);
+                        this.showToast(`Error loading database: ${err.message}`, 'error');
+                        this.dbLoaded = false;
+                        this.db = null;
+                    } finally {
+                        this.isLoading = false;
+                        this.loadingMessage = '';
+                        if(event.target) event.target.value = null; // Reset file input
+                        if (walEvent && walEvent.target) walEvent.target.value = null;
+                    }
+                },
+                
+                closeDB() {
+                    if (this.db) {
+                        this.db.close();
+                    }
+                    this.db = null;
+                    this.dbLoaded = false;
+                    this.resetAllData();
+                    this.currentView = ''; // Go to loader screen
+                    this.showToast('Database closed.', 'info');
+                },
+
+                resetAllData() {
+                    this.workflows = []; this.memories = []; this.actions = [];
+                    this.artifacts = []; this.thoughts = []; this.thoughtChains = [];
+                    this.goals = []; this.memoryLinks = []; this.tags = [];
+                    this.stats = { totalMemories: 0, totalLinks: 0, totalWorkflows: 0, byLevel: {}, byType: {} };
+                    this.activeWorkflowId = null; this.activeWorkflow = null;
+                    this.activeMemoryId = null; this.activeMemory = null;
+                    this.globalSearchTerm = '';
+                    // Reset filters and pagination for all views
+                    Object.keys(this.pagination).forEach(view => {
+                        this.pagination[view].currentPage = 1;
+                        this.pagination[view].totalItems = 0;
+                        this.pagination[view].totalPages = 1;
+                    });
+                },
+
+                executeQuery(sql, params = []) {
+                    if (!this.db || !this.dbLoaded) {
+                        console.warn("DB not loaded, cannot execute query:", sql);
+                        return [];
+                    }
+                    try {
+                        const stmt = this.db.prepare(sql);
+                        stmt.bind(params);
+                        const results = [];
+                        while (stmt.step()) {
+                            results.push(stmt.getAsObject());
+                        }
+                        stmt.free();
+                        return results;
+                    } catch (err) {
+                        console.error(`SQL Error: ${err.message}\nQuery: ${sql}\nParams: ${JSON.stringify(params)}`);
+                        this.showToast(`SQL Error: ${err.message}`, 'error');
+                        return [];
+                    }
+                },
+                
+                executeNonQuery(sql, params = []) {
+                    if (!this.db || !this.dbLoaded) {
+                         console.warn("DB not loaded, cannot execute non-query:", sql);
+                        return false;
+                    }
+                    try {
+                        this.db.run(sql, params);
+                        // Check for changes if critical, e.g., this.db.getRowsModified()
+                        return true;
+                    } catch (err) {
+                        console.error(`SQL NonQuery Error: ${err.message}\nQuery: ${sql}\nParams: ${JSON.stringify(params)}`);
+                        this.showToast(`SQL Error: ${err.message}`, 'error');
+                        return false;
+                    }
+                },
+
+                // =======================================================================
+                // DATA FETCHING & PROCESSING
+                // =======================================================================
+                async fetchInitialDataForApp() {
+                    if (!this.dbLoaded) return;
+                    this.isLoading = true;
+                    this.loadingMessage = 'Loading initial data...';
+                    await this.fetchAllWorkflows(); // Needed for filters and dashboard
+                    await this.fetchAllMemories(); // Needed for graph view and global search
+                    await this.fetchAllActions();
+                    await this.fetchAllArtifacts();
+                    await this.fetchAllThoughtsAndChains();
+                    await this.fetchAllGoals();
+                    await this.fetchAllMemoryLinks();
+                    await this.fetchAllTags();
+                    await this.fetchGlobalStats(); // Compute stats based on loaded data
+                    
+                    this.isLoading = false;
+                    this.loadingMessage = '';
+                    this.showToast('All initial data loaded.', 'success');
+                    this.applyMemoriesFiltersAndSorting(); // Apply default filters/sort to memories
+                },
+
+                // These fetch all data into memory. For very large DBs, this is not ideal,
+                // but for a client-side tool, it's simpler than re-querying for every filter change.
+                fetchAllWorkflows() {
+                    const sql = `SELECT w.*, GROUP_CONCAT(DISTINCT t.name) as tags_str 
+                                 FROM workflows w 
+                                 LEFT JOIN workflow_tags wt ON w.workflow_id = wt.workflow_id
+                                 LEFT JOIN tags t ON wt.tag_id = t.tag_id
+                                 GROUP BY w.workflow_id ORDER BY w.updated_at DESC;`;
+                    this.workflows = this.executeQuery(sql).map(wf => ({
+                        ...wf,
+                        tags: wf.tags_str ? wf.tags_str.split(',') : [],
+                        metadata: this.safeJsonParse(wf.metadata, {}),
+                        created_at_raw: wf.created_at, // Keep raw for sorting
+                        updated_at_raw: wf.updated_at,
+                        // Action count can be derived later or added via subquery if performant
+                    }));
+                },
+                fetchAllMemories() {
+                    const sql = `SELECT m.*, GROUP_CONCAT(DISTINCT t.name) as tags_str 
+                                 FROM memories m
+                                 LEFT JOIN memory_tags mt ON m.memory_id = mt.memory_id 
+                                 LEFT JOIN tags t ON mt.tag_id = t.tag_id
+                                 GROUP BY m.memory_id ORDER BY m.created_at DESC;`;
+                    this.memories = this.executeQuery(sql).map(mem => ({
+                        ...mem,
+                        tags_json_str: mem.tags, // Keep original tags JSON string if needed for FTS later
+                        tags: mem.tags_str ? mem.tags_str.split(',') : this.safeJsonParse(mem.tags, []),
+                        context: this.safeJsonParse(mem.context, {}),
+                        created_at_raw: mem.created_at, // Keep raw for sorting
+                        importance: parseFloat(mem.importance) || 5.0,
+                        confidence: parseFloat(mem.confidence) || 1.0,
+                    }));
+                },
+                fetchAllActions() {
+                    const sql = `SELECT a.*, GROUP_CONCAT(DISTINCT t.name) as tags_str
+                                 FROM actions a
+                                 LEFT JOIN action_tags act ON a.action_id = act.action_id
+                                 LEFT JOIN tags t ON act.tag_id = t.tag_id
+                                 GROUP BY a.action_id ORDER BY a.started_at DESC;`;
+                    this.actions = this.executeQuery(sql).map(act => ({
+                        ...act,
+                        tags: act.tags_str ? act.tags_str.split(',') : [],
+                        tool_args: this.safeJsonParse(act.tool_args),
+                        tool_result: this.safeJsonParse(act.tool_result), // Or keep as string for preview
+                        started_at_raw: act.started_at,
+                    }));
+                },
+                fetchAllArtifacts() {
+                    const sql = `SELECT art.*, GROUP_CONCAT(DISTINCT t.name) as tags_str
+                                 FROM artifacts art
+                                 LEFT JOIN artifact_tags artt ON art.artifact_id = artt.artifact_id
+                                 LEFT JOIN tags t ON artt.tag_id = t.tag_id
+                                 GROUP BY art.artifact_id ORDER BY art.created_at DESC;`;
+                    this.artifacts = this.executeQuery(sql).map(art => ({
+                        ...art,
+                        tags: art.tags_str ? art.tags_str.split(',') : [],
+                        metadata: this.safeJsonParse(art.metadata, {}),
+                        is_output: Boolean(art.is_output),
+                        created_at_raw: art.created_at,
+                    }));
+                },
+                fetchAllThoughtsAndChains() {
+                    this.thoughtChains = this.executeQuery("SELECT * FROM thought_chains ORDER BY created_at DESC;");
+                    const allThoughtsRaw = this.executeQuery("SELECT * FROM thoughts ORDER BY created_at DESC;");
+                    this.thoughts = allThoughtsRaw.map(th => ({...th, created_at_raw: th.created_at}));
+
+                    // Nest thoughts into chains
+                    this.thoughtChains.forEach(chain => {
+                        chain.thoughts = this.thoughts
+                            .filter(th => th.thought_chain_id === chain.thought_chain_id)
+                            .sort((a,b) => a.sequence_number - b.sequence_number);
+                        chain.created_at_raw = chain.created_at;
+                    });
+                },
+                fetchAllGoals() {
+                     const sql = `SELECT * FROM goals ORDER BY created_at DESC;`;
+                     this.goals = this.executeQuery(sql).map(g => ({
+                        ...g,
+                        acceptance_criteria: this.safeJsonParse(g.acceptance_criteria, []),
+                        metadata: this.safeJsonParse(g.metadata, {}),
+                        created_at_raw: g.created_at,
+                     }));
+                },
+                fetchAllMemoryLinks() {
+                    this.memoryLinks = this.executeQuery("SELECT * FROM memory_links;");
+                },
+                fetchAllTags() {
+                    this.tags = this.executeQuery("SELECT name FROM tags ORDER BY name;").map(t => t.name);
+                },
+
+                async fetchGlobalStats() {
+                    if (!this.dbLoaded) return;
+                    this.stats.totalMemories = this.memories.length;
+                    this.stats.totalLinks = this.memoryLinks.length;
+                    this.stats.totalWorkflows = this.workflows.length;
+                    this.stats.totalActions = this.actions.length;
+                    this.stats.totalArtifacts = this.artifacts.length;
+                    this.stats.totalThoughts = this.thoughts.length; // Individual thoughts
+                    this.stats.totalGoals = this.goals.length;
+
+                    this.stats.byLevel = this.memories.reduce((acc, mem) => {
+                        acc[mem.memory_level] = (acc[mem.memory_level] || 0) + 1;
+                        return acc;
+                    }, {});
+                    this.stats.byType = this.memories.reduce((acc, mem) => {
+                        acc[mem.memory_type] = (acc[mem.memory_type] || 0) + 1;
+                        return acc;
+                    }, {});
+                     this.stats.byWorkflowStatus = this.workflows.reduce((acc, wf) => {
+                        acc[wf.status] = (acc[wf.status] || 0) + 1;
+                        return acc;
+                    }, {});
+                    const allTagsFlat = this.memories.flatMap(m => m.tags);
+                    const tagCounts = allTagsFlat.reduce((acc, tag) => {
+                        acc[tag] = (acc[tag] || 0) + 1;
+                        return acc;
+                    }, {});
+                    this.stats.topTags = Object.entries(tagCounts)
+                        .sort(([,a],[,b]) => b-a)
+                        .slice(0, 10)
+                        .map(([name, count]) => ({ name, count }));
+                },
+
+                // =======================================================================
+                // VIEW LOGIC & FILTERING/SORTING/PAGINATION
+                // =======================================================================
+                setView(view, params = null) {
+                    this.currentView = view;
+                    this.globalSearchTerm = ''; // Clear global search when changing main views
+
+                    if (view === 'workflowDetail') {
+                        this.activeWorkflowId = params; // params is workflowId
+                        this.loadWorkflowDetailData(params);
+                    } else if (view === 'memories') {
+                        this.memoriesViewMode = params?.viewMode || 'card'; // allow pre-setting view mode
+                        this.applyMemoriesFiltersAndSorting();
+                        if (this.memoriesViewMode === 'graph') {
+                           this.$nextTick(() => this.renderMemoryNetworkGraph());
+                        }
+                    } else if (view === 'workflows') {
+                        this.applyWorkflowsFiltersAndSorting();
+                    } else if (view === 'actions') {
+                        this.applyActionsFiltersAndSorting();
+                    }
+                    // ... other views
+                    window.scrollTo(0,0);
+                    this.$nextTick(() => initLucide());
+                },
+
+                handleGlobalSearch() {
+                    // Trigger filtering in the currently active list view if applicable
+                    if (this.currentView === 'memories') this.applyMemoriesFiltersAndSorting();
+                    else if (this.currentView === 'workflows') this.applyWorkflowsFiltersAndSorting();
+                    else if (this.currentView === 'actions') this.applyActionsFiltersAndSorting();
+                    // For other views, a global search might navigate to a search results page or filter multiple lists.
+                    // For now, it primarily affects memories and workflows if they are active.
+                },
+                
+                // --- Memories View Logic ---
+                get filteredAndSortedMemories() {
+                    let processedMemories = [...this.memories];
+
+                    // Global Search (if active and not overridden by specific FTS)
+                    if (this.globalSearchTerm && !this.memoryFilters.searchTextFTS) {
+                        const term = this.globalSearchTerm.toLowerCase();
+                        processedMemories = processedMemories.filter(mem => 
+                            (mem.content && mem.content.toLowerCase().includes(term)) ||
+                            (mem.description && mem.description.toLowerCase().includes(term)) ||
+                            (mem.tags_json_str && mem.tags_json_str.toLowerCase().includes(term)) || // Search raw tags JSON
+                            (mem.workflow_id && this.workflows.find(wf => wf.workflow_id === mem.workflow_id)?.title?.toLowerCase().includes(term)) // Search workflow title
+                        );
+                    }
+                    
+                    // FTS Search (Primary search for memories if searchTextFTS has value)
+                    if (this.memoryFilters.searchTextFTS) {
+                        const ftsQuery = this.prepareFtsQuery(this.memoryFilters.searchTextFTS);
+                        // This requires `memory_fts` table and `rowid` or pk linking.
+                        // For client-side only with sql.js, FTS needs the virtual table to be loaded.
+                        // If FTS is not setup in the loaded DB, this will fail or return nothing.
+                        // A simpler client-side "LIKE" might be more robust if FTS is not guaranteed.
+                        // For now, assume FTS table exists and query it.
+                        try {
+                            const ftsResults = this.executeQuery(
+                                `SELECT m.* FROM memories m JOIN memory_fts fts ON m.rowid = fts.rowid WHERE fts.memory_fts MATCH ?;`,
+                                [ftsQuery]
+                            );
+                            const ftsIds = new Set(ftsResults.map(r => r.memory_id));
+                            processedMemories = processedMemories.filter(mem => ftsIds.has(mem.memory_id));
+                        } catch (e) {
+                            console.warn("FTS search failed (memory_fts table might be missing or query error):", e);
+                            this.showToast("Keyword (FTS) search might not be available for this database.", "warning");
+                            // Fallback to simple text search if FTS fails.
+                            const term = this.memoryFilters.searchTextFTS.toLowerCase();
+                            processedMemories = processedMemories.filter(mem => 
+                                (mem.content && mem.content.toLowerCase().includes(term)) ||
+                                (mem.description && mem.description.toLowerCase().includes(term)) ||
+                                (mem.tags_json_str && mem.tags_json_str.toLowerCase().includes(term))
+                            );
+                        }
+                    }
+
+                    // Filter by workflowId
+                    if (this.memoryFilters.workflowId) {
+                        processedMemories = processedMemories.filter(mem => mem.workflow_id === this.memoryFilters.workflowId);
+                    }
+                    // Filter by memoryLevel
+                    if (this.memoryFilters.memoryLevel) {
+                        processedMemories = processedMemories.filter(mem => mem.memory_level === this.memoryFilters.memoryLevel);
+                    }
+                    // Filter by memoryType
+                    if (this.memoryFilters.memoryType) {
+                        processedMemories = processedMemories.filter(mem => mem.memory_type === this.memoryFilters.memoryType);
+                    }
+                    // Filter by tags (must contain ALL selected tags)
+                    if (this.memoryFilters.tags.length > 0) {
+                        processedMemories = processedMemories.filter(mem => 
+                            this.memoryFilters.tags.every(filterTag => mem.tags.includes(filterTag))
+                        );
+                    }
+                    // Importance range
+                    if (this.memoryFilters.minImportance !== null) {
+                        processedMemories = processedMemories.filter(mem => mem.importance >= this.memoryFilters.minImportance);
+                    }
+                    if (this.memoryFilters.maxImportance !== null) {
+                        processedMemories = processedMemories.filter(mem => mem.importance <= this.memoryFilters.maxImportance);
+                    }
+                     // Confidence (note: original is 0-1, display as 0-100%)
+                    if (this.memoryFilters.minConfidence !== null) {
+                         processedMemories = processedMemories.filter(mem => mem.confidence * 100 >= this.memoryFilters.minConfidence);
+                    }
+                    // Date Range (uses raw unix timestamps for comparison)
+                    if (this.memoryFilters.dateRange.start) {
+                        const startTs = new Date(this.memoryFilters.dateRange.start).getTime() / 1000;
+                        processedMemories = processedMemories.filter(mem => mem.created_at_raw >= startTs);
+                    }
+                     if (this.memoryFilters.dateRange.end) {
+                        const endTs = new Date(this.memoryFilters.dateRange.end).getTime() / 1000;
+                        processedMemories = processedMemories.filter(mem => mem.created_at_raw <= endTs);
+                    }
+
+
+                    // Sorting
+                    const { column, direction } = this.sorting.memories;
+                    processedMemories.sort((a, b) => {
+                        let valA = a[column];
+                        let valB = b[column];
+                        // Special handling for relevance or other computed sort
+                        if (column === 'relevance_score_computed') { // Assuming you add this temporary field during fetch/filter
+                            valA = a.relevance_score_computed || 0;
+                            valB = b.relevance_score_computed || 0;
+                        }
+
+                        if (typeof valA === 'string') valA = valA.toLowerCase();
+                        if (typeof valB === 'string') valB = valB.toLowerCase();
+
+                        if (valA < valB) return direction === 'asc' ? -1 : 1;
+                        if (valA > valB) return direction === 'asc' ? 1 : -1;
+                        return 0;
+                    });
+                    
+                    this.pagination.memories.totalItems = processedMemories.length;
+                    this.pagination.memories.totalPages = Math.ceil(processedMemories.length / this.pagination.memories.itemsPerPage) || 1;
+                    
+                    return processedMemories;
+                },
+                get paginatedMemories() {
+                    const start = (this.pagination.memories.currentPage - 1) * this.pagination.memories.itemsPerPage;
+                    const end = start + this.pagination.memories.itemsPerPage;
+                    return this.filteredAndSortedMemories.slice(start, end);
+                },
+                applyMemoriesFiltersAndSorting() {
+                    this.pagination.memories.currentPage = 1; // Reset to first page
+                    // The filteredAndSortedMemories getter will recompute
+                    if (this.memoriesViewMode === 'graph') {
+                        this.$nextTick(() => this.renderMemoryNetworkGraph()); // Re-render graph if active
+                    }
+                },
+                resetMemoryFilters() {
+                    this.memoryFilters = { workflowId: '', memoryLevel: '', memoryType: '', searchTextFTS: '', tags: [], minImportance: null, maxImportance: null, minConfidence: null, dateRange: {start: null, end: null} };
+                    this.globalSearchTerm = '';
+                    this.applyMemoriesFiltersAndSorting();
+                },
+                prepareFtsQuery(searchText) {
+                    // More robust FTS query: terms ORed, last term prefix.
+                    const terms = searchText.trim().toLowerCase().split(/\s+/).filter(term => term.length > 0);
+                    if (!terms.length) return '';
+                    // Example: "quick brown fox" -> "quick OR brown OR fox*"
+                    // This may need adjustment based on your FTS setup (e.g., porter tokenizer, unicode61)
+                    // For a simple setup, "term1 term2" often implies "term1 AND term2".
+                    // To make it OR for broader search: terms.join(' OR ') + (terms.length > 0 ? '*' : '')
+                    // For AND with prefix on last: terms.map((t,i) => i === terms.length -1 ? t + '*' : t).join(' AND ')
+                    return terms.map(t => `${t}*`).join(' '); // Prefix search for each term, implicit AND
+                },
+
+                // --- Workflow View Logic --- (Similar structure for filtering, sorting, pagination)
+                get filteredAndSortedWorkflows() {
+                    let processed = [...this.workflows];
+                    if (this.globalSearchTerm) {
+                        const term = this.globalSearchTerm.toLowerCase();
+                        processed = processed.filter(wf => 
+                            (wf.title && wf.title.toLowerCase().includes(term)) ||
+                            (wf.goal && wf.goal.toLowerCase().includes(term)) ||
+                            (wf.description && wf.description.toLowerCase().includes(term))
+                        );
+                    }
+                    if (this.workflowFilters.status) {
+                        processed = processed.filter(wf => wf.status === this.workflowFilters.status);
+                    }
+                    if (this.workflowFilters.tag) {
+                        processed = processed.filter(wf => wf.tags.includes(this.workflowFilters.tag));
+                    }
+                    if (this.workflowFilters.titleSearch) {
+                        const term = this.workflowFilters.titleSearch.toLowerCase();
+                        processed = processed.filter(wf => wf.title && wf.title.toLowerCase().includes(term));
+                    }
+
+                    const { column, direction } = this.sorting.workflows;
+                    processed.sort((a,b) => { /* ... similar sort logic ... */ 
+                        let valA = a[column]; let valB = b[column];
+                        if (typeof valA === 'string') valA = valA.toLowerCase(); if (typeof valB === 'string') valB = valB.toLowerCase();
+                        if (valA < valB) return direction === 'asc' ? -1 : 1; if (valA > valB) return direction === 'asc' ? 1 : -1; return 0;
+                    });
+                    this.pagination.workflows.totalItems = processed.length;
+                    this.pagination.workflows.totalPages = Math.ceil(processed.length / this.pagination.workflows.itemsPerPage) || 1;
+                    return processed;
+                },
+                get paginatedWorkflows() {
+                    const start = (this.pagination.workflows.currentPage - 1) * this.pagination.workflows.itemsPerPage;
+                    const end = start + this.pagination.workflows.itemsPerPage;
+                    return this.filteredAndSortedWorkflows.slice(start, end);
+                },
+                applyWorkflowsFiltersAndSorting() { this.pagination.workflows.currentPage = 1; /* Recompute via getter */ },
+                resetWorkflowFilters() { this.workflowFilters = { status: '', tag: '', titleSearch: '' }; this.globalSearchTerm = ''; this.applyWorkflowsFiltersAndSorting(); },
+
+                // --- Actions View Logic --- (Similar structure)
+                get filteredAndSortedActions() {
+                    let processed = [...this.actions];
+                    // Apply globalSearchTerm (e.g., action title, reasoning, tool_name)
+                    if (this.globalSearchTerm) {
+                        const term = this.globalSearchTerm.toLowerCase();
+                        processed = processed.filter(a =>
+                            (a.title && a.title.toLowerCase().includes(term)) ||
+                            (a.reasoning && a.reasoning.toLowerCase().includes(term)) ||
+                            (a.tool_name && a.tool_name.toLowerCase().includes(term))
+                        );
+                    }
+                    // Apply actionFilters
+                    if (this.actionFilters.workflowId) {
+                        processed = processed.filter(a => a.workflow_id === this.actionFilters.workflowId);
+                    }
+                    if (this.actionFilters.type) {
+                        processed = processed.filter(a => a.action_type === this.actionFilters.type);
+                    }
+                    if (this.actionFilters.status) {
+                        processed = processed.filter(a => a.status === this.actionFilters.status);
+                    }
+                    if (this.actionFilters.toolNameSearch) {
+                         const term = this.actionFilters.toolNameSearch.toLowerCase();
+                        processed = processed.filter(a => a.tool_name && a.tool_name.toLowerCase().includes(term));
+                    }
+
+
+                    const { column, direction } = this.sorting.actions;
+                    processed.sort((a,b) => { /* ... sort logic ... */
+                        let valA = a[column]; let valB = b[column];
+                        if (column === 'started_at_raw' && (valA === null || valA === undefined)) valA = 0; // Handle nulls for date sort
+                        if (column === 'started_at_raw' && (valB === null || valB === undefined)) valB = 0;
+                        if (typeof valA === 'string') valA = valA.toLowerCase(); if (typeof valB === 'string') valB = valB.toLowerCase();
+                        if (valA < valB) return direction === 'asc' ? -1 : 1; if (valA > valB) return direction === 'asc' ? 1 : -1; return 0;
+                    });
+                     this.pagination.actions.totalItems = processed.length;
+                    this.pagination.actions.totalPages = Math.ceil(processed.length / this.pagination.actions.itemsPerPage) || 1;
+                    return processed;
+                },
+                 get paginatedActions() {
+                    const start = (this.pagination.actions.currentPage - 1) * this.pagination.actions.itemsPerPage;
+                    const end = start + this.pagination.actions.itemsPerPage;
+                    return this.filteredAndSortedActions.slice(start, end);
+                },
+                applyActionsFiltersAndSorting() { this.pagination.actions.currentPage = 1; },
+                resetActionFilters() { this.actionFilters = { workflowId: '', type: '', status: '', toolNameSearch: '' }; this.globalSearchTerm = ''; this.applyActionsFiltersAndSorting(); },
+
+
+                // =======================================================================
+                // UI INTERACTIONS & MODALS
+                // =======================================================================
+                showToast(message, type = 'success', duration = 3500) {
+                    this.toast = { show: true, message, type };
+                    setTimeout(() => { this.toast.show = false; }, duration);
+                    this.$nextTick(() => initLucide());
+                },
+                
+                openMemoryDetailModal(memory) {
+                    this.activeMemory = memory; // The memory object is already processed
+                    this.showMemoryDetailModal = true;
+                },
+                closeMemoryDetailModal() {
+                    this.showMemoryDetailModal = false;
+                    this.activeMemory = null;
+                },
+
+                confirmDelete(id, type, name) {
+                    this.entityToDelete = { id, type, name: this.truncateText(name, 50) };
+                    this.showDeleteConfirmModal = true;
+                },
+                async executeDelete() {
+                    if (!this.entityToDelete.id || !this.entityToDelete.type) return;
+                    const { id, type } = this.entityToDelete;
+                    let success = false;
+                    let tableName = '';
+
+                    if (type === 'memory') tableName = 'memories';
+                    else if (type === 'workflow') tableName = 'workflows'; // Add cascading deletes in schema for related data
+                    else if (type === 'action') tableName = 'actions';
+                    // ... add other types ...
+
+                    if (tableName) {
+                        success = this.executeNonQuery(`DELETE FROM ${tableName} WHERE ${type}_id = ?;`, [id]);
+                    }
+
+                    if (success) {
+                        this.showToast(`${this.capitalize(type)} deleted successfully.`, 'success');
+                        // Refresh relevant data list
+                        if (type === 'memory') { this.memories = this.memories.filter(m => m.memory_id !== id); this.applyMemoriesFiltersAndSorting(); }
+                        else if (type === 'workflow') { this.workflows = this.workflows.filter(w => w.workflow_id !== id); this.applyWorkflowsFiltersAndSorting(); }
+                        else if (type === 'action') { this.actions = this.actions.filter(a => a.action_id !== id); this.applyActionsFiltersAndSorting(); }
+                        // ...
+                        this.fetchGlobalStats(); // Update counts
+                    } else {
+                        this.showToast(`Failed to delete ${type}.`, 'error');
+                    }
+                    this.showDeleteConfirmModal = false;
+                    this.entityToDelete = { id: null, type: '', name: '' };
+                },
+
+                viewMemoryLinks(memory) {
+                    this.linksModalForMemory = memory;
+                    this.currentMemoryLinks.outgoing = this.memoryLinks
+                        .filter(l => l.source_memory_id === memory.memory_id)
+                        .map(l => ({...l, target_details: this.memories.find(m=>m.memory_id === l.target_memory_id)}));
+                    this.currentMemoryLinks.incoming = this.memoryLinks
+                        .filter(l => l.target_memory_id === memory.memory_id)
+                        .map(l => ({...l, source_details: this.memories.find(m=>m.memory_id === l.source_memory_id)}));
+                    this.linksModalTab = 'outgoing';
+                    this.showLinksModal = true;
+                },
+                navigateToMemoryFromLink(memoryId) {
+                    const targetMemory = this.memories.find(m => m.memory_id === memoryId);
+                    if (targetMemory) {
+                        this.openMemoryDetailModal(targetMemory);
+                        this.showLinksModal = false; // Close links modal if open
+                    } else {
+                        this.showToast("Linked memory not found in current list.", "warning");
+                    }
+                },
+                
+                // For generic entity detail modals
+                openDetailModal(type, entity) {
+                    if (type === 'action') { this.activeAction = entity; this.showActionDetailModal = true; }
+                    else if (type === 'artifact') { this.activeArtifact = entity; this.showArtifactDetailModal = true; }
+                    else if (type === 'thought') { this.activeThought = entity; this.showThoughtDetailModal = true; }
+                    else if (type === 'goal') { this.activeGoal = entity; this.showGoalDetailModal = true; }
+                },
+
+                // =======================================================================
+                // DIAGRAMS & VISUALIZATIONS (Mermaid & Vis.js)
+                // =======================================================================
+                async renderMermaidDiagram(graphDefinition, targetElementRef, diagramIdSuffix = 'default') {
+                    if (!targetElementRef || !graphDefinition) {
+                        if (targetElementRef) targetElementRef.innerHTML = '<p class="text-sm text-base-content/70">No diagram data.</p>';
+                        return;
+                    }
+                    try {
+                        targetElementRef.removeAttribute('data-processed'); // Allow re-rendering
+                        targetElementRef.innerHTML = graphDefinition; // Place the raw mermaid definition
+                        await mermaid.run({ nodes: [targetElementRef] });
+                    } catch (e) {
+                        console.error("Mermaid rendering error:", e, "for", graphDefinition.substring(0,100));
+                        targetElementRef.innerHTML = `<pre class="text-error text-xs p-2 rounded bg-base-300">Error rendering diagram: ${e.message}\nPreview:\n${graphDefinition.substring(0,300)}...</pre>`;
+                    }
+                },
+
+                async openDiagramModal(title, mermaidDefinition) {
+                    this.activeDiagramTitle = title;
+                    this.activeDiagramContent = mermaidDefinition;
+                    this.showDiagramModal = true;
+                    // Rendering is handled by $watch on showDiagramModal
+                },
+
+                // --- Workflow Detail Data Loading & Diagram ---
+                loadWorkflowDetailData(workflowId) {
+                    const wf = this.workflows.find(w => w.workflow_id === workflowId);
+                    if (!wf) { this.showToast(`Workflow ${workflowId} not found.`, 'error'); this.setView('workflows'); return; }
+                    
+                    this.activeWorkflow = { ...wf }; // Shallow copy
+                    this.activeWorkflow.actions = this.actions.filter(a => a.workflow_id === workflowId).sort((a,b) => a.sequence_number - b.sequence_number);
+                    this.activeWorkflow.artifacts = this.artifacts.filter(a => a.workflow_id === workflowId).sort((a,b) => a.created_at_raw - b.created_at_raw);
+                    
+                    // Load thought chains and their thoughts for this workflow
+                    this.activeWorkflow.thought_chains = this.thoughtChains
+                        .filter(tc => tc.workflow_id === workflowId)
+                        .map(tc => ({
+                            ...tc,
+                            thoughts: this.thoughts
+                                .filter(th => th.thought_chain_id === tc.thought_chain_id)
+                                .sort((a,b) => a.sequence_number - b.sequence_number)
+                        }))
+                        .sort((a,b) => a.created_at_raw - b.created_at_raw);
+
+                    // Load goals (hierarchical build)
+                    const wfGoalsRaw = this.goals.filter(g => g.workflow_id === workflowId);
+                    const goalMap = wfGoalsRaw.reduce((map, goal) => {
+                        map[goal.goal_id] = {...goal, children: []};
+                        return map;
+                    }, {});
+                    this.activeWorkflow.goals_hierarchical = [];
+                    wfGoalsRaw.forEach(goal => {
+                        if (goal.parent_goal_id && goalMap[goal.parent_goal_id]) {
+                            goalMap[goal.parent_goal_id].children.push(goalMap[goal.goal_id]);
+                        } else {
+                            this.activeWorkflow.goals_hierarchical.push(goalMap[goal.goal_id]);
+                        }
+                    });
+                    // Sort children goals by sequence_number
+                    Object.values(goalMap).forEach(g => g.children.sort((a,b)=> a.sequence_number - b.sequence_number));
+                    this.activeWorkflow.goals_hierarchical.sort((a,b)=> a.sequence_number - b.sequence_number);
+
+
+                    this.activeWorkflow.mermaidDiagram = this.generateMermaidWorkflowDiagram(this.activeWorkflow);
+                    
+                    // For workflow detail tab navigation
+                    this.$nextTick(() => {
+                         const firstTab = this.$root.querySelector('.tab[name="wf_detail_tabs"]');
+                         if(firstTab) firstTab.checked = true;
+                         if (this.activeWorkflow.mermaidDiagram) {
+                            this.renderMermaidDiagram(this.activeWorkflow.mermaidDiagram, this.$refs.workflowDiagramTarget, 'workflowDetail');
+                         }
+                    });
+                },
+
+                generateMermaidWorkflowDiagram(workflowData) {
+                    const sanitizeId = (id, prefix) => id ? `${prefix}_${id.replace(/-/g, '_')}` : `${prefix}_MISSING_${this.generateUUID().substring(0,8)}`;
+                    const escapeText = (text, maxLength = 50) => text ? this.truncateText(String(text).replace(/"/g, "#quot;").replace(/\n/g, "<br>"), maxLength) : "";
+
+                    let diagram = ["graph TD"]; // Top-Down for workflows usually better
+                    const wfNodeId = sanitizeId(workflowData.workflow_id, "WF");
+                    diagram.push(`    ${wfNodeId}("${escapeText(workflowData.title, 100)}"):::workflow`);
+
+                    const actions = workflowData.actions || [];
+                    const actionNodes = {};
+                    let lastRootActionNode = wfNodeId;
+
+                    actions.forEach(action => {
+                        const nodeId = sanitizeId(action.action_id, "A");
+                        actionNodes[action.action_id] = nodeId;
+                        const label = `<b>${escapeText(action.action_type, 20)} #${action.sequence_number}</b><br/>${escapeText(action.title, 30)}${action.tool_name ? '<br/><i>Tool: '+escapeText(action.tool_name,20)+'</i>' : ''}`;
+                        diagram.push(`    ${nodeId}["${label}"]:::${action.status || 'planned'}`);
+                        
+                        if (action.parent_action_id && actionNodes[action.parent_action_id]) {
+                            diagram.push(`    ${actionNodes[action.parent_action_id]} -->|Parent| ${nodeId}`);
+                        } else {
+                             diagram.push(`    ${lastRootActionNode} --> ${nodeId}`);
+                             lastRootActionNode = nodeId; // Chain root actions
+                        }
+                    });
+                    
+                    (workflowData.artifacts || []).forEach(art => {
+                        const artNodeId = sanitizeId(art.artifact_id, "F");
+                        const artLabel = `📄<br/><b>${escapeText(art.name,25)}</b><br/>(${escapeText(art.artifact_type,15)})`;
+                        diagram.push(`    ${artNodeId}[("${artLabel}")]:::${art.is_output ? 'artifactOutput' : 'artifact'}`);
+                        if (art.action_id && actionNodes[art.action_id]) {
+                            diagram.push(`    ${actionNodes[art.action_id]} -.->|Creates| ${artNodeId}`);
+                        } else {
+                            diagram.push(`    ${wfNodeId} -.-> ${artNodeId}`);
+                        }
+                    });
+
+                    // Styles (ensure these match CSS or are fine defaults)
+                    diagram.push("    classDef workflow fill:#2563eb,stroke:#1d4ed8,color:#fff,font-weight:bold;");
+                    diagram.push("    classDef completed fill:#10b981,stroke:#059669,color:#fff;");
+                    diagram.push("    classDef failed fill:#ef4444,stroke:#dc2626,color:#fff;");
+                    diagram.push("    classDef in_progress fill:#f59e0b,stroke:#d97706,color:#fff;");
+                    diagram.push("    classDef planned fill:#6b7280,stroke:#4b5563,color:#fff,stroke-dasharray: 3 3;");
+                    diagram.push("    classDef skipped fill:#9ca3af,stroke:#6b7280,color:#fff;");
+                    diagram.push("    classDef artifact fill:#e5e7eb,stroke:#9ca3af,color:#374151;");
+                    diagram.push("    classDef artifactOutput fill:#d1fae5,stroke:#059669,color:#065f46,font-weight:bold;");
+                    return "```mermaid\n" + diagram.join("\n") + "\n```";
+                },
+
+                generateMermaidThoughtChainDiagram(chainData) {
+                    const sanitizeId = (id, prefix) => id ? `${prefix}_${id.replace(/-/g, '_')}` : `${prefix}_MISSING_${this.generateUUID().substring(0,8)}`;
+                    const escapeText = (text, maxLength = 50) => text ? this.truncateText(String(text).replace(/"/g, "#quot;").replace(/\n/g, "<br>"), maxLength) : "";
+                    
+                    let diagram = ["graph TD"];
+                    const chainNodeId = sanitizeId(chainData.thought_chain_id, "TC");
+                    diagram.push(`    ${chainNodeId}("${escapeText(chainData.title, 100)}"):::header`);
+
+                    const thoughts = chainData.thoughts || [];
+                    const thoughtNodes = {};
+                    let lastRootThoughtNode = chainNodeId;
+
+                    thoughts.forEach(th => {
+                        const nodeId = sanitizeId(th.thought_id, "TH");
+                        thoughtNodes[th.thought_id] = nodeId;
+                        const type = th.thought_type || 'thought';
+                        const shape = this.getThoughtShape(type);
+                        const label = `<b>${escapeText(this.capitalize(type),20)} #${th.sequence_number}</b><br/>${escapeText(th.content,40)}`;
+                        diagram.push(`    ${nodeId}${shape.start}"${label}"${shape.end}:::type${type.toLowerCase()}`);
+
+                        if (th.parent_thought_id && thoughtNodes[th.parent_thought_id]) {
+                             diagram.push(`    ${thoughtNodes[th.parent_thought_id]} --> ${nodeId}`);
+                        } else {
+                            diagram.push(`    ${lastRootThoughtNode} --> ${nodeId}`);
+                            lastRootThoughtNode = nodeId;
+                        }
+                        // Add links to relevant action/artifact/memory
+                        if(th.relevant_action_id) diagram.push(`    ${nodeId} -.->|Action| ${sanitizeId(th.relevant_action_id, "RA")}[${escapeText(th.relevant_action_id.substring(0,8),10)}...]:::externalRef`);
+                        if(th.relevant_artifact_id) diagram.push(`    ${nodeId} -.->|Artifact| ${sanitizeId(th.relevant_artifact_id, "RF")}[${escapeText(th.relevant_artifact_id.substring(0,8),10)}...]:::externalRef`);
+                        if(th.relevant_memory_id) diagram.push(`    ${nodeId} -.->|Memory| ${sanitizeId(th.relevant_memory_id, "RM")}[${escapeText(th.relevant_memory_id.substring(0,8),10)}...]:::externalRef`);
+
+                    });
+                    diagram.push("    classDef header fill:#4b5563,stroke:#1f2937,color:#fff,font-weight:bold;");
+                    diagram.push("    classDef typegoal fill:#dcfce7,stroke:#16a34a,color:#14532d;");
+                    diagram.push("    classDef typequestion fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;");
+                    diagram.push("    classDef typedecision fill:#fee2e2,stroke:#ef4444,color:#7f1d1d,font-weight:bold;");
+                    diagram.push("    classDef typesummary fill:#e0e7ff,stroke:#4f46e5,color:#312e81;");
+                    diagram.push("    classDef externalRef fill:#f3f4f6,stroke:#9ca3af,color:#4b5563,stroke-dasharray:2 2;");
+                    // Add more thought type styles based on your Python enums
+                    this.enumVals.thoughtTypes.forEach(tt => {
+                        if (!['goal', 'question', 'decision', 'summary'].includes(tt)) { // Avoid re-defining
+                           diagram.push(`    classDef type${tt.toLowerCase()} fill:#f9fafb,stroke:#6b7280,color:#374151;`);
+                        }
+                    });
+                    return "```mermaid\n" + diagram.join("\n") + "\n```";
+                },
+                getThoughtShape(type) {
+                    const shapes = { 'goal': '([', 'question': '{{', 'decision': '[/', 'summary': '((', 'hypothesis': '(', 'plan': '>'};
+                    const endShapes = { 'goal': '])', 'question': '}}', 'decision': '\\]', 'summary': '))', 'hypothesis': ')', 'plan': ']'};
+                    return { start: shapes[type] || '[', end: endShapes[type] || ']' };
+                },
+
+                // --- Vis.js Memory Network Graph ---
+                renderMemoryNetworkGraph() {
+                    if (!this.dbLoaded || this.memoriesViewMode !== 'graph') return;
+                    
+                    const container = this.$refs.memoryGraphContainer; // Assuming <div x-ref="memoryGraphContainer">
+                    if (!container) { console.warn("Memory graph container not found."); return; }
+
+                    this.isLoading = true;
+                    this.loadingMessage = "Building memory network...";
+
+                    // Use currently filtered & sorted memories for the graph, but up to a limit for performance
+                    const nodesData = this.filteredAndSortedMemories.slice(0, 100).map(mem => ({ // Max 100 nodes for performance
+                        id: mem.memory_id,
+                        label: this.truncateText(mem.description || mem.content || mem.memory_type, 20),
+                        title: `<b>${mem.memory_type} (${mem.memory_id.substring(0,8)})</b><br>I: ${mem.importance} | C: ${(mem.confidence*100).toFixed(0)}%<br>${this.truncateText(mem.content,100)}`,
+                        group: mem.memory_level, // For Vis.js groups styling
+                        shape: 'box',
+                        color: this.getVisNodeColor(mem.memory_level),
+                        font: { size: 10, color: this.theme === 'dark' ? '#e5e7eb' : '#374151' },
+                        value: mem.importance, // Size nodes by importance
+                        borderWidth: mem.memory_id === this.activeMemory?.memory_id ? 3 : 1,
+                        borderColor: mem.memory_id === this.activeMemory?.memory_id ? 'hsl(var(--pf))' : undefined,
+
+                    }));
+
+                    const nodeIds = new Set(nodesData.map(n => n.id));
+                    const edgesData = this.memoryLinks
+                        .filter(link => nodeIds.has(link.source_memory_id) && nodeIds.has(link.target_memory_id))
+                        .map(link => ({
+                            from: link.source_memory_id,
+                            to: link.target_memory_id,
+                            label: link.link_type,
+                            arrows: 'to',
+                            color: { color: this.getVisLinkColor(link.link_type), highlight: 'hsl(var(--p))', hover: 'hsl(var(--p))' },
+                            font: {size: 8, color: this.theme === 'dark' ? '#9ca3af' : '#6b7280', strokeWidth: 0},
+                            smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 }
+                        }));
+
+                    const data = { nodes: new vis.DataSet(nodesData), edges: new vis.DataSet(edgesData) };
+                    const options = {
+                        autoResize: true,
+                        height: '600px', // Or use calc(100vh - Xpx)
+                        width: '100%',
+                        nodes: {
+                            shape: 'box',
+                            margin: 10,
+                            font: { multi: 'html', color: this.theme === 'dark' ? '#E0E0E0' : '#333333' },
+                            borderWidth: 1,
+                            shadow: true,
+                        },
+                        edges: {
+                            smooth: true,
+                            arrows: { to: { enabled: true, scaleFactor: 0.7 } },
+                            font: { align: 'middle', size: 9 },
+                            width: 1,
+                            hoverWidth: 1.5,
+                        },
+                        physics: {
+                            enabled: true,
+                            barnesHut: {
+                                gravitationalConstant: -15000,
+                                centralGravity: 0.1,
+                                springLength: 150,
+                                springConstant: 0.05,
+                                damping: 0.3
+                            },
+                            solver: 'barnesHut',
+                            stabilization: { iterations: 150, fit: true }
+                        },
+                        interaction: {
+                            hover: true,
+                            tooltipDelay: 200,
+                            navigationButtons: true,
+                            keyboard: true,
+                        },
+                        groups: this.getVisGroupsStyling()
+                    };
+
+                    if (this.memoryNetwork) { this.memoryNetwork.destroy(); }
+                    this.memoryNetwork = new vis.Network(container, data, options);
+
+                    this.memoryNetwork.on("stabilizationIterationsDone", () => {
+                        this.memoryNetwork.setOptions( { physics: false } ); // Turn off physics after stabilization for performance
+                    });
+                    this.memoryNetwork.on("selectNode", (params) => {
+                        if (params.nodes.length > 0) {
+                            const selectedNodeId = params.nodes[0];
+                            const mem = this.memories.find(m => m.memory_id === selectedNodeId);
+                            if(mem) this.openMemoryDetailModal(mem);
+                        }
+                    });
+                    this.memoryNetwork.on("doubleClick", (params) => {
+                        if (params.nodes.length > 0) {
+                            this.memoryNetwork.focus(params.nodes[0], { scale: 1.5, animation: true });
+                        } else if (params.edges.length > 0) {
+                           // Could show link details
+                        } else {
+                            this.memoryNetwork.fit({ animation: true });
+                        }
+                    });
+                    
+                    this.isLoading = false;
+                    this.loadingMessage = "";
+                },
+                getVisNodeColor(level) {
+                    const colors = {
+                        'working': { border: '#2563eb', background: '#dbeafe', highlight: { border: '#1d4ed8', background: '#bfdbfe'}, hover: { border: '#1d4ed8', background: '#bfdbfe'} },
+                        'episodic': { border: '#10b981', background: '#dcfce7', highlight: { border: '#059669', background: '#a7f3d0'}, hover: { border: '#059669', background: '#a7f3d0'} },
+                        'semantic': { border: '#f59e0b', background: '#fef3c7', highlight: { border: '#d97706', background: '#fde68a'}, hover: { border: '#d97706', background: '#fde68a'} },
+                        'procedural': { border: '#ef4444', background: '#fee2e2', highlight: { border: '#dc2626', background: '#fecaca'}, hover: { border: '#dc2626', background: '#fecaca'} }
+                    };
+                    return colors[level] || { border: '#6b7280', background: '#e5e7eb', highlight: { border: '#4b5563', background: '#d1d5db'}, hover: { border: '#4b5563', background: '#d1d5db'} };
+                },
+                getVisLinkColor(linkType) {
+                    const typeColors = {
+                        'related': '#9ca3af', 'causal': '#f59e0b', 'sequential': '#3b82f6',
+                        'hierarchical': '#10b981', 'contradicts': '#ef4444', 'supports': '#22c55e',
+                        'generalizes': '#8b5cf6', 'specializes': '#ec4899', 'references': '#6366f1'
+                    };
+                    return typeColors[linkType] || '#a1a1aa'; // Default color
+                },
+                getVisGroupsStyling() {
+                    const groups = {};
+                    this.enumVals.memoryLevels.forEach(level => {
+                        groups[level] = { color: this.getVisNodeColor(level) };
+                    });
+                    return groups;
+                },
+                resetMemoryNetworkGraphView() {
+                    if (this.memoryNetwork) {
+                        this.memoryNetwork.fit({ animation: {duration: 500, easingFunction: 'easeInOutQuad'} });
+                    }
+                },
+                exportMemoryNetworkGraph() {
+                    if (!this.memoryNetwork) {
+                         this.showToast("Graph not rendered yet.", "warning"); return;
+                    }
+                    try {
+                        const dataURL = this.memoryNetwork.canvas.getContext().canvas.toDataURL('image/png');
+                        const a = document.createElement('a');
+                        a.href = dataURL;
+                        a.download = `ums_memory_network_${new Date().toISOString()}.png`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        this.showToast("Graph exported as PNG.", "success");
+                    } catch(e) {
+                        console.error("Error exporting graph:", e);
+                        this.showToast("Could not export graph. Your browser might not support this.", "error");
+                    }
+                },
+
+
+                // --- Chart.js Statistics Chart ---
+                statsChartInstance: null,
+                renderStatsChart() {
+                    const ctx = this.$refs.statsChartCanvas; // Assuming <canvas x-ref="statsChartCanvas">
+                    if (!ctx || !this.dbLoaded) return;
+
+                    if (this.statsChartInstance) {
+                        this.statsChartInstance.destroy();
+                    }
+
+                    const levelCounts = this.stats.byLevel || {};
+                    const typeCounts = this.stats.byType || {};
+                    
+                    // For simplicity, chart top 5 types, group rest as 'Other'
+                    const sortedTypes = Object.entries(typeCounts).sort(([,a],[,b]) => b-a);
+                    const top5Types = sortedTypes.slice(0, 5);
+                    const otherTypesCount = sortedTypes.slice(5).reduce((sum, [,count]) => sum + count, 0);
+                    const chartTypeLabels = top5Types.map(([type]) => this.capitalize(type));
+                    const chartTypeData = top5Types.map(([,count]) => count);
+                    if (otherTypesCount > 0) {
+                        chartTypeLabels.push('Other');
+                        chartTypeData.push(otherTypesCount);
+                    }
+
+                    this.statsChartInstance = new Chart(ctx, {
+                        type: 'doughnut', // or 'bar', 'pie'
+                        data: {
+                            labels: chartTypeLabels,
+                            datasets: [{
+                                label: 'Memories by Type',
+                                data: chartTypeData,
+                                backgroundColor: [ // Provide more colors if more than 5 types are common
+                                    'hsl(var(--p))', 'hsl(var(--s))', 'hsl(var(--a))', 
+                                    'hsl(var(--in))', 'hsl(var(--wa))', 'hsl(var(--er))'
+                                ],
+                                hoverOffset: 4
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                                legend: { position: 'bottom', labels: { font: {size: 10}, color: this.theme === 'dark' ? '#e5e7eb' : '#374151' } },
+                                title: { display: true, text: 'Memory Type Distribution (Top 5 + Other)', color: this.theme === 'dark' ? '#e5e7eb' : '#374151' }
+                            }
+                        }
+                    });
+                },
+
+
+                // =======================================================================
+                // DATA EXPORT
+                // =======================================================================
+                exportAllData(format = 'json') {
+                    if (!this.dbLoaded) { this.showToast("No database loaded.", "warning"); return; }
+                    const dataToExport = {
+                        ums_schema_version: "hybrid_explorer_dump_v1", // Add a version
+                        exported_at: new Date().toISOString(),
+                        workflows: this.workflows,
+                        actions: this.actions,
+                        artifacts: this.artifacts,
+                        thought_chains: this.thoughtChains, // Includes nested thoughts
+                        goals: this.goals,
+                        memories: this.memories,
+                        memory_links: this.memoryLinks,
+                        tags: this.tags,
+                        statistics_snapshot: this.stats,
+                    };
+                    let dataStr, fileName, mimeType;
+                    if (format === 'json') {
+                        dataStr = JSON.stringify(dataToExport, null, 2);
+                        fileName = `ums_explorer_full_export_${this.formatDateForFilename(new Date())}.json`;
+                        mimeType = 'application/json';
+                        this.downloadFile(dataStr, fileName, mimeType);
+                        this.showToast("Full database dump exported as JSON.", "success");
+                    } else {
+                        this.showToast("Unsupported format for full export.", "error");
+                    }
+                },
+                exportVisibleMemories(format = 'csv') {
+                    const memoriesToExport = this.paginatedMemories; // Export current page of filtered/sorted
+                    if (memoriesToExport.length === 0) { this.showToast("No visible memories to export.", "warning"); return; }
+                    
+                    let dataStr, fileName, mimeType;
+                    const timestamp = this.formatDateForFilename(new Date());
+
+                    if (format === 'json') {
+                        dataStr = JSON.stringify(memoriesToExport, null, 2);
+                        fileName = `ums_memories_visible_${timestamp}.json`;
+                        mimeType = 'application/json';
+                    } else if (format === 'csv') {
+                        if (memoriesToExport.length > 0) {
+                            const headers = Object.keys(memoriesToExport[0]).filter(h => !['context', 'metadata', 'tags_json_str'].includes(h)); // Exclude complex objects or select specific fields
+                            const csvRows = [headers.join(',')];
+                            memoriesToExport.forEach(row => {
+                                const values = headers.map(header => {
+                                    let value = row[header];
+                                    if (value === null || value === undefined) value = '';
+                                    else if (Array.isArray(value)) value = value.join(';'); // Simple array to string
+                                    else if (typeof value === 'object') value = JSON.stringify(value); // Stringify other objects
+                                    
+                                    if (typeof value === 'string') {
+                                        return `"${value.replace(/"/g, '""')}"`; // Escape quotes
+                                    }
+                                    return value;
+                                });
+                                csvRows.push(values.join(','));
+                            });
+                            dataStr = csvRows.join('\n');
+                        } else { dataStr = ''; }
+                        fileName = `ums_memories_visible_${timestamp}.csv`;
+                        mimeType = 'text/csv;charset=utf-8;';
+                    } else { this.showToast('Invalid export format.', 'error'); return; }
+                    
+                    this.downloadFile(dataStr, fileName, mimeType);
+                    this.showToast(`Visible memories exported as ${format.toUpperCase()}.`, 'success');
+                },
+                downloadFile(content, fileName, mimeType) {
+                    const blob = new Blob([content], { type: mimeType });
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(blob);
+                    link.download = fileName;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(link.href);
+                },
+
+                // =======================================================================
+                // UTILITY FUNCTIONS
+                // =======================================================================
+                formatDate(unixTimestamp) {
+                    if (unixTimestamp === null || unixTimestamp === undefined) return 'N/A';
+                    try {
+                        // Check if it's already a Date object or string (from prior formatting)
+                        if (typeof unixTimestamp === 'string' && unixTimestamp.includes(':')) return unixTimestamp; // Already formatted
+                        const date = new Date(parseInt(unixTimestamp, 10) * 1000);
+                        if (isNaN(date.getTime())) return 'Invalid Date';
+                        return date.toLocaleString(); // Adjust format as needed: e.g., .toLocaleDateString(), .toISOString()
+                    } catch (e) {
+                        return String(unixTimestamp); // Fallback
+                    }
+                },
+                formatRelativeTime(unixTimestamp) {
+                    if (!unixTimestamp) return 'N/A';
+                    const now = new Date();
+                    const past = new Date(unixTimestamp * 1000);
+                    const diffInSeconds = Math.floor((now - past) / 1000);
+
+                    const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+
+                    if (diffInSeconds < 60) return rtf.format(-diffInSeconds, 'second');
+                    const diffInMinutes = Math.floor(diffInSeconds / 60);
+                    if (diffInMinutes < 60) return rtf.format(-diffInMinutes, 'minute');
+                    const diffInHours = Math.floor(diffInMinutes / 60);
+                    if (diffInHours < 24) return rtf.format(-diffInHours, 'hour');
+                    const diffInDays = Math.floor(diffInHours / 24);
+                    if (diffInDays < 7) return rtf.format(-diffInDays, 'day');
+                    // For older dates, just show the date
+                    return past.toLocaleDateString();
+                },
+                formatDateForFilename(date) {
+                    return date.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                },
+                safeJsonParse(jsonString, defaultValue = null) {
+                    if (typeof jsonString !== 'string' || !jsonString) return defaultValue;
+                    try {
+                        return JSON.parse(jsonString);
+                    } catch (e) {
+                        // console.warn('Failed to parse JSON:', jsonString.substring(0,50), e);
+                        return defaultValue !== null ? defaultValue : jsonString; 
+                    }
+                },
+                truncateText(text, length = 100) {
+                    if (!text) return '';
+                    text = String(text);
+                    return text.length > length ? text.substring(0, length) + '...' : text;
+                },
+                capitalize(str) {
+                    if (!str || typeof str !== 'string') return '';
+                    return str.charAt(0).toUpperCase() + str.slice(1);
+                },
+                generateUUID() { // Simple UUID for unique IDs if needed client-side
+                    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                        return v.toString(16);
+                    });
+                },
+                getWorkflowStatusClass(status) {
+                    const map = { 'active': 'badge-info', 'paused': 'badge-warning', 'completed': 'badge-success', 'failed': 'badge-error', 'abandoned': 'badge-ghost' };
+                    return map[status] || 'badge-outline';
+                },
+                getMemoryLevelColor(level) { // Used for badges
+                    const colors = { 'working': 'badge-info', 'episodic': 'badge-success', 'semantic': 'badge-warning', 'procedural': 'badge-error' };
+                    return colors[level] || 'badge-ghost';
+                },
+                getActionStatusClass(status) {
+                    const map = { 'planned': 'badge-ghost', 'in_progress': 'badge-info animate-pulse-custom', 'completed': 'badge-success', 'failed': 'badge-error', 'skipped': 'badge-outline' };
+                    return map[status] || 'badge-sm';
+                },
+                 getGoalStatusClass(status) {
+                    const map = { 'active': 'badge-info', 'planned': 'badge-ghost', 'completed': 'badge-success', 'failed': 'badge-error', 'paused': 'badge-warning', 'abandoned': 'badge-neutral' };
+                    return map[status] || 'badge-sm';
+                },
+                getThoughtTypeColorClass(type) { // For text color or badge background
+                    const map = {
+                        'goal': 'text-success', 'question': 'text-info', 'decision': 'text-error font-semibold',
+                        'summary': 'text-primary', 'reflection': 'text-neutral-content', 'hypothesis': 'text-warning',
+                        'insight': 'text-accent font-medium', 'plan': 'text-secondary'
+                    };
+                    return map[type.toLowerCase()] || 'text-base-content';
+                },
+                getArtifactTypeIcon(type) {
+                    const icons = { 'file':'file-text', 'text':'align-left', 'image':'image', 'table':'table-2', 'chart':'bar-chart-2', 'code':'code-2', 'data':'database', 'json':'file-json-2', 'url':'link' };
+                    return icons[type] || 'file';
+                },
+
+
+                // --- Theme Management ---
+                setTheme(newTheme) {
+                    this.theme = newTheme;
+                    document.documentElement.setAttribute('data-theme', this.theme);
+                    localStorage.setItem('umsExplorerTheme', this.theme);
+                    // Update chart/graph themes if they are sensitive to it
+                    if (this.dbLoaded) {
+                        if(this.showStatsModal) this.$nextTick(() => this.renderStatsChart());
+                        if(this.memoriesViewMode === 'graph') this.$nextTick(() => this.renderMemoryNetworkGraph());
+                        mermaid.initialize({ startOnLoad: false, theme: this.theme === 'dark' || this.theme === 'synthwave' || this.theme === 'dracula' ? 'dark' : 'default', securityLevel: 'loose' });
+                        // Force re-render of visible mermaid diagrams (example for workflow detail)
+                        if(this.currentView === 'workflowDetail' && this.activeWorkflow?.mermaidDiagram) {
+                            this.$nextTick(() => this.renderMermaidDiagram(this.activeWorkflow.mermaidDiagram, this.$refs.workflowDiagramTarget, 'workflowThemeChange'));
+                        }
+                        // Add for thought chain diagrams if visible
+                    }
+                },
+                loadTheme() {
+                    const savedTheme = localStorage.getItem('umsExplorerTheme') || 'light';
+                    this.setTheme(savedTheme);
+                },
+                
+                // Pagination change handlers
+                changePage(viewName, directionOrPage) {
+                    const paginator = this.pagination[viewName];
+                    if (!paginator) return;
+                    let newPage = paginator.currentPage;
+                    if (directionOrPage === 'next') {
+                        if ((paginator.currentPage * paginator.itemsPerPage) < paginator.totalItems) newPage++;
+                    } else if (directionOrPage === 'prev') {
+                        if (paginator.currentPage > 1) newPage--;
+                    } else if (typeof directionOrPage === 'number') {
+                        newPage = Math.max(1, Math.min(directionOrPage, paginator.totalPages));
+                    }
+                    paginator.currentPage = newPage;
+                    // Data refresh is handled by getters or specific applyFilter functions
+                    if (viewName === 'memories') this.applyMemoriesFiltersAndSorting(); // Re-triggers getter
+                    else if (viewName === 'workflows') this.applyWorkflowsFiltersAndSorting();
+                    else if (viewName === 'actions') this.applyActionsFiltersAndSorting();
+                },
+                // Sorting change handlers
+                setSort(viewName, column) {
+                    const sorter = this.sorting[viewName];
+                    if (!sorter) return;
+                    if (sorter.column === column) {
+                        sorter.direction = sorter.direction === 'asc' ? 'desc' : 'asc';
+                    } else {
+                        sorter.column = column;
+                        sorter.direction = 'asc'; // Default to asc on new column
+                    }
+                    if (viewName === 'memories') this.applyMemoriesFiltersAndSorting();
+                    else if (viewName === 'workflows') this.applyWorkflowsFiltersAndSorting();
+                     else if (viewName === 'actions') this.applyActionsFiltersAndSorting();
+                },
+                getSortIcon(viewName, column) {
+                    const sorter = this.sorting[viewName];
+                    if (sorter && sorter.column === column) {
+                        return sorter.direction === 'asc' ? 'arrow-up-az' : 'arrow-down-za';
+                    }
+                    return 'arrow-down-up'; // Default icon (sortable but not sorted)
+                },
+
+            }; // End of umsExplorer return
+        } // End of umsExplorer function
+
+        // Alpine.js init done via x-data on body
+        // Lucide icons init
+        document.addEventListener('alpine:initialized', () => {
+            initLucide(); // Initial call
+        });
+
+    </script>
+
+    <!-- Now define the actual HTML templates that were referenced by getTemplate() -->
+    <!-- These will be hidden by default and their content injected by Alpine -->
+
+    <!-- DB Loader Template (already defined above, now using getTemplate) -->
+
+    <!-- Dashboard View Template -->
+    <template id="dashboardViewTemplate">
+        <!-- Content defined in the Alpine section umsExplorer().getTemplate('dashboardViewTemplate') -->
+        <!-- This will be replaced by the actual dashboard HTML structure -->
+        <!-- Example: -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <!-- Key Stats Cards -->
+            <div class="stats shadow col-span-1 md:col-span-2 lg:col-span-4 bg-base-100">
+                <div class="stat">
+                    <div class="stat-figure text-primary"><i data-lucide="brain" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Total Memories</div>
+                    <div class="stat-value text-primary" x-text="stats.totalMemories || 0"></div>
+                </div>
+                <div class="stat">
+                    <div class="stat-figure text-secondary"><i data-lucide="git-fork" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Workflows</div>
+                    <div class="stat-value text-secondary" x-text="stats.totalWorkflows || 0"></div>
+                </div>
+                 <div class="stat">
+                    <div class="stat-figure text-accent"><i data-lucide="zap" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Actions</div>
+                    <div class="stat-value text-accent" x-text="stats.totalActions || 0"></div>
+                </div>
+                <div class="stat">
+                    <div class="stat-figure text-info"><i data-lucide="file-text" class="w-8 h-8"></i></div>
+                    <div class="stat-title">Artifacts</div>
+                    <div class="stat-value text-info" x-text="stats.totalArtifacts || 0"></div>
+                </div>
+            </div>
+
+            <!-- Recent Workflows Card -->
+            <div class="card bg-base-100 shadow-xl lg:col-span-2">
+                <div class="card-body">
+                    <div class="flex justify-between items-center mb-2">
+                        <h2 class="card-title"><i data-lucide="history" class="w-5 h-5 mr-1"></i> Recent Workflows</h2>
+                        <button class="btn btn-xs btn-ghost" @click="setView('workflows')">View All <i data-lucide="arrow-right" class="w-3 h-3"></i></button>
+                    </div>
+                     <div class="overflow-x-auto max-h-72">
+                        <table class="table table-sm">
+                            <thead><tr><th>Title</th><th>Status</th><th>Last Updated</th></tr></thead>
+                            <tbody>
+                                <template x-if="!workflows.length && !isLoading"><td colspan="3" class="text-center p-4">No workflows.</td></template>
+                                <template x-for="wf in workflows.slice().sort((a,b) => b.updated_at_raw - a.updated_at_raw).slice(0,5)" :key="wf.workflow_id">
+                                    <tr class="hover">
+                                        <td><a class="link link-hover text-sm" @click="setView('workflowDetail', wf.workflow_id)" x-text="truncateText(wf.title, 30)"></a></td>
+                                        <td><span class="badge badge-xs" :class="getWorkflowStatusClass(wf.status)" x-text="wf.status"></span></td>
+                                        <td class="text-xs" x-text="formatRelativeTime(wf.updated_at_raw)"></td>
+                                    </tr>
+                                </template>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Memory Level Distribution Card -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body">
+                    <h2 class="card-title"><i data-lucide="layers-3" class="w-5 h-5 mr-1"></i> Memories by Level</h2>
+                    <div class="max-h-72 overflow-y-auto space-y-1">
+                    <template x-for="(count, level) in stats.byLevel" :key="level">
+                        <div class="flex justify-between items-center py-1 text-sm">
+                            <span x-text="capitalize(level)"></span>
+                            <span class="badge font-mono" :class="getMemoryLevelColor(level)" x-text="count"></span>
+                        </div>
+                    </template>
+                    <p x-if="Object.keys(stats.byLevel || {}).length === 0" class="text-xs text-base-content/70">No memories found.</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Top Tags Card -->
+            <div class="card bg-base-100 shadow-xl">
+                <div class="card-body">
+                     <h2 class="card-title"><i data-lucide="tags" class="w-5 h-5 mr-1"></i> Top Tags</h2>
+                     <div class="max-h-72 overflow-y-auto space-y-1">
+                        <template x-for="tagInfo in stats.topTags" :key="tagInfo.name">
+                            <div class="flex justify-between items-center py-1 text-sm">
+                                <span class="badge badge-outline cursor-pointer" @click="memoryFilters.tags = [tagInfo.name]; setView('memories');" x-text="tagInfo.name"></span>
+                                <span class="badge badge-ghost font-mono" x-text="tagInfo.count"></span>
+                            </div>
+                        </template>
+                        <p x-if="!stats.topTags || stats.topTags.length === 0" class="text-xs text-base-content/70">No tags found.</p>
+                     </div>
+                </div>
+            </div>
+       </div>
+    </template>
+
+    <template id="workflowsViewTemplate">
+        <div class="bg-base-100 p-4 md:p-6 rounded-lg shadow-xl">
+            <div class="flex flex-wrap justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold">Workflows (<span x-text="pagination.workflows.totalItems"></span>)</h2>
+                <!-- Add New Workflow button could go here if functionality is added -->
+            </div>
+            <!-- Filters -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 mb-4 p-3 border border-base-300 rounded-md bg-base-200/30">
+                <div class="form-control">
+                    <label class="label py-1"><span class="label-text text-xs">Search Title/Goal</span></label>
+                    <input type="search" x-model.debounce.300ms="workflowFilters.titleSearch" @input="applyWorkflowsFiltersAndSorting" placeholder="Search..." class="input input-sm input-bordered w-full" />
+                </div>
+                <div class="form-control">
+                    <label class="label py-1"><span class="label-text text-xs">Status</span></label>
+                    <select x-model="workflowFilters.status" @change="applyWorkflowsFiltersAndSorting" class="select select-sm select-bordered">
+                        <option value="">All</option>
+                        <template x-for="status in enumVals.workflowStatuses" :key="status">
+                            <option :value="status" x-text="capitalize(status)"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="form-control">
+                    <label class="label py-1"><span class="label-text text-xs">Tag</span></label>
+                     <select x-model="workflowFilters.tag" @change="applyWorkflowsFiltersAndSorting" class="select select-sm select-bordered">
+                        <option value="">All</option>
+                        <template x-for="tag in tags" :key="tag"> <!-- Use global tags list -->
+                            <option :value="tag" x-text="tag"></option>
+                        </template>
+                    </select>
+                </div>
+                <div class="sm:col-span-2 md:col-span-3 self-end mt-2">
+                     <button @click="resetWorkflowFilters()" class="btn btn-xs btn-outline">Reset Filters</button>
+                </div>
+            </div>
+
+            <!-- Table -->
+            <div class="overflow-x-auto">
+                <table class="table table-zebra w-full table-sm">
+                    <thead>
+                        <tr>
+                            <th><a href="#" @click.prevent="setSort('workflows', 'title')">Title <i :data-lucide="getSortIcon('workflows', 'title')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('workflows', 'status')">Status <i :data-lucide="getSortIcon('workflows', 'status')" class="inline-block w-3 h-3"></i></a></th>
+                            <th class="hidden md:table-cell">Goal Preview</th>
+                            <th class="hidden lg:table-cell"><a href="#" @click.prevent="setSort('workflows', 'created_at_raw')">Created <i :data-lucide="getSortIcon('workflows', 'created_at_raw')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('workflows', 'updated_at_raw')">Updated <i :data-lucide="getSortIcon('workflows', 'updated_at_raw')" class="inline-block w-3 h-3"></i></a></th>
+                            <th class="hidden md:table-cell">Tags</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-if="paginatedWorkflows.length === 0 && !isLoading">
+                            <tr><td colspan="7" class="text-center py-4">No workflows match criteria.</td></tr>
+                        </template>
+                        <template x-for="wf in paginatedWorkflows" :key="wf.workflow_id">
+                            <tr class="hover">
+                                <td>
+                                    <a class="link link-hover font-medium" @click="setView('workflowDetail', wf.workflow_id)" x-text="truncateText(wf.title, 35)"></a>
+                                    <p class="text-xs text-base-content/60" x-text="`ID: ${wf.workflow_id.substring(0,8)}...`"></p>
+                                </td>
+                                <td><span class="badge badge-sm" :class="getWorkflowStatusClass(wf.status)" x-text="wf.status"></span></td>
+                                <td class="text-xs hidden md:table-cell" x-text="truncateText(wf.goal, 60)"></td>
+                                <td class="text-xs hidden lg:table-cell" x-text="formatDate(wf.created_at_raw)"></td>
+                                <td class="text-xs" x-text="formatRelativeTime(wf.updated_at_raw)"></td>
+                                <td class="hidden md:table-cell">
+                                    <template x-for="tag in (wf.tags || []).slice(0,2)" :key="tag">
+                                        <span class="badge badge-outline badge-xs mr-1" x-text="tag"></span>
+                                    </template>
+                                    <span x-show="(wf.tags || []).length > 2" class="text-xs">...</span>
+                                </td>
+                                <td>
+                                    <button @click="setView('workflowDetail', wf.workflow_id)" class="btn btn-xs btn-ghost text-primary"><i data-lucide="eye"></i></button>
+                                    <button @click="confirmDelete(wf.workflow_id, 'workflow', wf.title)" class="btn btn-xs btn-ghost text-error"><i data-lucide="trash-2"></i></button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+            <!-- Pagination -->
+             <div class="flex justify-between items-center mt-4" x-show="pagination.workflows.totalItems > 0 && pagination.workflows.totalPages > 1">
+                <span class="text-xs">Page <span x-text="pagination.workflows.currentPage"></span> of <span x-text="pagination.workflows.totalPages"></span> (<span x-text="pagination.workflows.totalItems"></span> total)</span>
+                <div class="join">
+                    <button @click="changePage('workflows', 'prev')" class="join-item btn btn-xs" :disabled="pagination.workflows.currentPage === 1">« Prev</button>
+                    <button @click="changePage('workflows', 'next')" class="join-item btn btn-xs" :disabled="pagination.workflows.currentPage === pagination.workflows.totalPages">Next »</button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="workflowDetailViewTemplate">
+        <div x-show="activeWorkflow" class="bg-base-100 p-3 md:p-6 rounded-lg shadow-xl">
+            <div class="mb-4">
+                <button @click="setView('workflows')" class="btn btn-sm btn-outline mb-3 text-xs">
+                    <i data-lucide="arrow-left" class="w-3 h-3 mr-1"></i> Back to Workflows
+                </button>
+                <h2 class="text-2xl font-bold" x-text="activeWorkflow.title"></h2>
+                <p class="text-xs text-base-content/70">ID: <code x-text="activeWorkflow.workflow_id"></code></p>
+                <div class="mt-1">
+                     <span class="badge mr-2" :class="getWorkflowStatusClass(activeWorkflow.status)" x-text="activeWorkflow.status"></span>
+                    <template x-for="tag in (activeWorkflow.tags || [])" :key="tag">
+                        <span class="badge badge-outline badge-sm mr-1" x-text="tag"></span>
+                    </template>
+                </div>
+                <p class="mt-2 text-sm"><strong>Goal:</strong> <span x-text="activeWorkflow.goal || 'N/A'"></span></p>
+                <p x-show="activeWorkflow.description" class="text-sm mt-1"><strong>Description:</strong> <span x-text="activeWorkflow.description"></span></p>
+                <div class="text-xs mt-1 text-base-content/70">
+                    Created: <span x-text="formatDate(activeWorkflow.created_at_raw)"></span> |
+                    Updated: <span x-text="formatDate(activeWorkflow.updated_at_raw)"></span>
+                    <span x-show="activeWorkflow.completed_at_raw">| Completed: <span x-text="formatDate(activeWorkflow.completed_at_raw)"></span></span>
+                </div>
+                 <details class="mt-2 text-xs collapse collapse-arrow border border-base-300 bg-base-200/30 text-xs">
+                    <summary class="collapse-title font-medium py-1 min-h-0">Raw Workflow Metadata</summary>
+                    <div class="collapse-content">
+                        <pre class="whitespace-pre-wrap p-2 bg-base-100 rounded max-h-40 overflow-y-auto text-xs"><code x-text="JSON.stringify(activeWorkflow.metadata, null, 2)"></code></pre>
+                    </div>
+                </details>
+            </div>
+
+            <div role="tablist" class="tabs tabs-lifted tabs-sm md:tabs-md -mb-px">
+                <input type="radio" name="wf_detail_tabs" role="tab" class="tab" aria-label="Overview" checked @change="activeWorkflowTab = 'overview'; $nextTick(() => renderMermaidDiagram(activeWorkflow.mermaidDiagram, $refs.workflowDiagramTarget, 'workflowDetail'))" />
+                <div role="tabpanel" class="tab-content bg-base-100 border-base-300 rounded-box p-3 md:p-4" x-show="activeWorkflowTab === 'overview'">
+                    <h3 class="text-lg font-semibold mb-2">Workflow Diagram</h3>
+                    <div x-ref="workflowDiagramTarget" class="mermaid bg-base-200/50 p-2 rounded overflow-x-auto min-h-60">
+                         <span x-show="!activeWorkflow.mermaidDiagram" class="p-4 text-sm text-base-content/70">Generating diagram...</span>
+                    </div>
+                     <button class="btn btn-xs btn-outline mt-2" 
+                            @click="openDiagramModal('Workflow: ' + activeWorkflow.title, activeWorkflow.mermaidDiagram)"
+                            x-show="activeWorkflow.mermaidDiagram">
+                        <i data-lucide="maximize-2" class="w-3 h-3 mr-1"></i> View Fullscreen
+                    </button>
+                </div>
+
+                <input type="radio" name="wf_detail_tabs" role="tab" class="tab" aria-label="Actions" @change="activeWorkflowTab = 'actions'" />
+                <div role="tabpanel" class="tab-content bg-base-100 border-base-300 rounded-box p-3 md:p-4" x-show="activeWorkflowTab === 'actions'">
+                    <h3 class="text-lg font-semibold mb-2">Actions (<span x-text="activeWorkflow.actions?.length || 0"></span>)</h3>
+                     <div class="overflow-x-auto max-h-[60vh]">
+                        <table class="table table-sm table-pin-rows">
+                            <thead><tr><th>Seq</th><th>Title</th><th>Type</th><th>Status</th><th>Tool</th><th>Details</th></tr></thead>
+                            <tbody>
+                                <template x-for="action in activeWorkflow.actions" :key="action.action_id">
+                                    <tr>
+                                        <td class="text-center" x-text="action.sequence_number"></td>
+                                        <td>
+                                            <p class="font-medium text-sm" x-text="truncateText(action.title, 30)"></p>
+                                            <p class="text-xs text-base-content/60" x-text="`ID: ${action.action_id.substring(0,8)}`"></p>
+                                        </td>
+                                        <td class="text-xs" x-text="action.action_type"></td>
+                                        <td><span class="badge badge-xs" :class="getActionStatusClass(action.status)" x-text="action.status"></span></td>
+                                        <td class="text-xs" x-text="action.tool_name || 'N/A'"></td>
+                                        <td><button class="btn btn-xs btn-ghost" @click="openDetailModal('action', action)"><i data-lucide="eye"></i></button></td>
+                                    </tr>
+                                </template>
+                                <tr x-show="!activeWorkflow.actions || activeWorkflow.actions.length === 0"><td colspan="6" class="text-center">No actions in this workflow.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <input type="radio" name="wf_detail_tabs" role="tab" class="tab" aria-label="Artifacts" @change="activeWorkflowTab = 'artifacts'" />
+                <div role="tabpanel" class="tab-content bg-base-100 border-base-300 rounded-box p-3 md:p-4" x-show="activeWorkflowTab === 'artifacts'">
+                    <h3 class="text-lg font-semibold mb-2">Artifacts (<span x-text="activeWorkflow.artifacts?.length || 0"></span>)</h3>
+                     <div class="overflow-x-auto max-h-[60vh]">
+                        <table class="table table-sm">
+                            <thead><tr><th>Name</th><th>Type</th><th>Path/Preview</th><th>Output</th><th>Created</th><th>Details</th></tr></thead>
+                            <tbody>
+                                <template x-for="art in activeWorkflow.artifacts" :key="art.artifact_id">
+                                     <tr>
+                                        <td>
+                                            <p class="font-medium text-sm" x-text="truncateText(art.name, 30)"></p>
+                                            <p class="text-xs text-base-content/60" x-text="`ID: ${art.artifact_id.substring(0,8)}`"></p>
+                                        </td>
+                                        <td class="text-xs" x-text="art.artifact_type"></td>
+                                        <td><code class="text-xs" x-text="truncateText(art.path || safeJsonParse(art.content)?.substring(0,40) || art.description || '', 40)"></code></td>
+                                        <td><input type="checkbox" :checked="art.is_output" class="checkbox checkbox-xs checkbox-primary" disabled /></td>
+                                        <td class="text-xs" x-text="formatDate(art.created_at_raw)"></td>
+                                        <td><button class="btn btn-xs btn-ghost" @click="openDetailModal('artifact', art)"><i data-lucide="eye"></i></button></td>
+                                    </tr>
+                                </template>
+                                 <tr x-show="!activeWorkflow.artifacts || activeWorkflow.artifacts.length === 0"><td colspan="6" class="text-center">No artifacts in this workflow.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <input type="radio" name="wf_detail_tabs" role="tab" class="tab" aria-label="Thoughts" @change="activeWorkflowTab = 'thoughts'; $nextTick(() => (activeWorkflow.thought_chains || []).forEach(chain => renderMermaidDiagram(generateMermaidThoughtChainDiagram(chain), $refs['thoughtChainDiagram_' + chain.thought_chain_id], 'tc_' + chain.thought_chain_id)))" />
+                <div role="tabpanel" class="tab-content bg-base-100 border-base-300 rounded-box p-3 md:p-4" x-show="activeWorkflowTab === 'thoughts'">
+                    <h3 class="text-lg font-semibold mb-2">Thought Chains (<span x-text="activeWorkflow.thought_chains?.length || 0"></span>)</h3>
+                    <div class="space-y-3 max-h-[60vh] overflow-y-auto">
+                    <template x-for="chain in activeWorkflow.thought_chains" :key="chain.thought_chain_id">
+                        <details class="collapse collapse-arrow border border-base-300 bg-base-200/30 rounded">
+                            <summary class="collapse-title text-md font-medium py-2 min-h-0">
+                                <i data-lucide="network" class="inline w-4 h-4 mr-1"></i>
+                                <span x-text="chain.title"></span> 
+                                <span class="text-xs text-base-content/60" x-text="`(ID: ${chain.thought_chain_id.substring(0,8)}, ${chain.thoughts?.length || 0} thoughts)`"></span>
+                            </summary>
+                            <div class="collapse-content">
+                                <button class="btn btn-xs btn-outline mt-1 mb-2" @click="openDiagramModal('Thought Chain: '+chain.title, generateMermaidThoughtChainDiagram(chain))">
+                                    <i data-lucide="projector" class="w-3 h-3 mr-1"></i> View Full Diagram
+                                </button>
+                                <div class="mermaid bg-base-100 p-1 rounded overflow-x-auto min-h-40" :x-ref="`thoughtChainDiagram_${chain.thought_chain_id}`">
+                                    <span class="p-2 text-xs text-base-content/70">Generating diagram...</span>
+                                </div>
+                                <h5 class="font-semibold text-sm mt-2 mb-1">Thoughts Log:</h5>
+                                <ul class="list-none space-y-1 text-xs max-h-60 overflow-y-auto">
+                                    <template x-for="thought in chain.thoughts" :key="thought.thought_id">
+                                        <li class="p-1 border-l-2" :class="`border-${getThoughtTypeColorClass(thought.thought_type).split('-')[1] || 'neutral'}`">
+                                            <strong :class="getThoughtTypeColorClass(thought.thought_type)" x-text="capitalize(thought.thought_type) + ' (#' + thought.sequence_number + '): '"></strong>
+                                            <span class="cursor-pointer hover:underline" @click="openDetailModal('thought', thought)" x-text="truncateText(thought.content, 100)"></span>
+                                            <p class="text-xs text-base-content/60 pl-2" x-text="formatDate(thought.created_at_raw)"></p>
+                                        </li>
+                                    </template>
+                                    <li x-show="!chain.thoughts || chain.thoughts.length === 0" class="text-xs text-base-content/70">No thoughts in this chain.</li>
+                                </ul>
+                            </div>
+                        </details>
+                    </template>
+                    <p x-show="!activeWorkflow.thought_chains || activeWorkflow.thought_chains.length === 0" class="text-center">No thought chains in this workflow.</p>
+                    </div>
+                </div>
+                
+                <input type="radio" name="wf_detail_tabs" role="tab" class="tab" aria-label="Goals" @change="activeWorkflowTab = 'goals'" />
+                <div role="tabpanel" class="tab-content bg-base-100 border-base-300 rounded-box p-3 md:p-4" x-show="activeWorkflowTab === 'goals'">
+                    <h3 class="text-lg font-semibold mb-2">Goals Tree (<span x-text="activeWorkflow.goals_hierarchical?.length || 0"></span> roots)</h3>
+                    <div class="space-y-1 max-h-[60vh] overflow-y-auto text-sm">
+                        <template x-if="!activeWorkflow.goals_hierarchical || activeWorkflow.goals_hierarchical.length === 0">
+                            <p class="text-center text-xs text-base-content/70">No goals defined for this workflow.</p>
+                        </template>
+                        <template x-for="goal in activeWorkflow.goals_hierarchical" :key="goal.goal_id">
+                           <div x-data="{ expanded: true }" class="p-2 border-l-2 rounded-sm" :class="goal.parent_goal_id ? 'ml-3 border-primary/50' : 'border-secondary'">
+                                <div @click="expanded = !expanded" class="flex items-center cursor-pointer hover:bg-base-200/50 p-1 rounded">
+                                    <i :data-lucide="expanded ? 'chevron-down' : 'chevron-right'" class="w-4 h-4 mr-1 transition-transform" :class="{'rotate-0': expanded, '-rotate-90': !expanded}"></i>
+                                    <span class="badge badge-xs mr-1" :class="getGoalStatusClass(goal.status)" x-text="goal.status"></span>
+                                    <span class="font-medium" x-text="goal.title || truncateText(goal.description, 40)"></span>
+                                    <span class="text-xs text-base-content/60 ml-1">(P<span x-text="goal.priority"></span>, Seq <span x-text="goal.sequence_number"></span>)</span>
+                                    <button class="btn btn-xs btn-ghost ml-auto" @click.stop="openDetailModal('goal', goal)"><i data-lucide="eye" class="w-3 h-3"></i></button>
+                                </div>
+                                <div x-show="expanded" x-collapse.duration.300ms class="pl-4 mt-1 text-xs border-l border-base-300 ml-2">
+                                    <p x-show="goal.description && goal.title !== goal.description" class="my-1"><strong class="text-xs">Desc:</strong> <span x-text="goal.description"></span></p>
+                                    <p class="text-xs my-1"><strong class="text-xs">Criteria:</strong> <span x-text="(goal.acceptance_criteria || []).join(', ') || 'N/A'"></span></p>
+                                    <!-- Recursive template for sub-goals (simplified) -->
+                                    <template x-if="goal.children && goal.children.length > 0">
+                                        <div class="mt-1 space-y-1">
+                                            <template x-for="subGoal in goal.children" :key="subGoal.goal_id">
+                                                 <div class="p-1 border-l-2 border-accent/50">
+                                                    <span class="badge badge-xs mr-1" :class="getGoalStatusClass(subGoal.status)" x-text="subGoal.status"></span>
+                                                    <span class="font-medium" x-text="subGoal.title || truncateText(subGoal.description, 30)"></span>
+                                                    <button class="btn btn-xs btn-ghost" @click.stop="openDetailModal('goal', subGoal)"><i data-lucide="eye" class="w-3 h-3"></i></button>
+                                                 </div>
+                                            </template>
+                                        </div>
+                                    </template>
+                                </div>
+                           </div>
+                        </template>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="memoriesViewTemplate">
+         <div class="bg-base-100 p-3 md:p-6 rounded-lg shadow-xl">
+            <div class="flex flex-wrap justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold">Memories (<span x-text="pagination.memories.totalItems"></span>)</h2>
+                <div class="flex items-center gap-2">
+                    <span class="text-sm">View:</span>
+                    <div class="join join-sm">
+                        <button class="join-item btn btn-sm" :class="{'btn-active btn-primary': memoriesViewMode === 'card'}" @click="memoriesViewMode = 'card'"><i data-lucide="layout-grid" class="w-4 h-4"></i></button>
+                        <button class="join-item btn btn-sm" :class="{'btn-active btn-primary': memoriesViewMode === 'table'}" @click="memoriesViewMode = 'table'"><i data-lucide="list" class="w-4 h-4"></i></button>
+                        <button class="join-item btn btn-sm" :class="{'btn-active btn-primary': memoriesViewMode === 'graph'}" @click="memoriesViewMode = 'graph'"><i data-lucide="share-2" class="w-4 h-4"></i></button>
+                    </div>
+                </div>
+            </div>
+            <!-- Filters -->
+            <details class="collapse collapse-arrow border border-base-300 bg-base-200/30 rounded-md mb-4">
+                <summary class="collapse-title text-md font-medium py-2 min-h-0">
+                    <i data-lucide="filter" class="inline w-4 h-4 mr-1"></i> Filters & Search
+                    <span class="text-xs font-normal" x-show="activeMemoryFilterCount() > 0" x-text="`(${activeMemoryFilterCount()} active)`"></span>
+                </summary>
+                <div class="collapse-content">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 pt-2">
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Keyword Search (Content, Desc, Tags)</span></label>
+                            <input type="search" x-model.debounce.500ms="memoryFilters.searchTextFTS" @input="applyMemoriesFiltersAndSorting" placeholder="Search..." class="input input-sm input-bordered w-full" />
+                        </div>
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Workflow</span></label>
+                             <select x-model="memoryFilters.workflowId" @change="applyMemoriesFiltersAndSorting" class="select select-sm select-bordered w-full">
+                                <option value="">All</option>
+                                <template x-for="wf in workflows" :key="wf.workflow_id">
+                                    <option :value="wf.workflow_id" x-text="truncateText(wf.title, 30) + ' (' + wf.workflow_id.substring(0,4) + '..)'"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Level</span></label>
+                            <select x-model="memoryFilters.memoryLevel" @change="applyMemoriesFiltersAndSorting" class="select select-sm select-bordered w-full">
+                                <option value="">All</option>
+                                <template x-for="level in enumVals.memoryLevels" :key="level">
+                                    <option :value="level" x-text="capitalize(level)"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Type</span></label>
+                            <select x-model="memoryFilters.memoryType" @change="applyMemoriesFiltersAndSorting" class="select select-sm select-bordered w-full">
+                                <option value="">All</option>
+                                <template x-for="type in enumVals.memoryTypes" :key="type">
+                                    <option :value="type" x-text="capitalize(type)"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div class="sm:col-span-2 md:col-span-1">
+                            <label class="label py-1"><span class="label-text text-xs">Tags (select multiple)</span></label>
+                            <div class="dropdown w-full">
+                                <div tabindex="0" role="button" class="btn btn-sm btn-outline w-full justify-start font-normal normal-case">
+                                    <span class="line-clamp-1" x-text="memoryFilters.tags.length ? memoryFilters.tags.join(', ') : 'Any Tags'"></span>
+                                    <i data-lucide="chevron-down" class="w-3 h-3 ml-auto"></i>
+                                </div>
+                                <ul tabindex="0" class="dropdown-content z-[20] menu p-2 shadow bg-base-300 rounded-box w-full max-h-60 overflow-y-auto mt-1">
+                                    <template x-for="tag in tags" :key="tag">
+                                    <li>
+                                        <label class="label cursor-pointer py-1 px-2 hover:bg-base-100/50 rounded">
+                                        <span class="label-text text-xs" x-text="tag"></span> 
+                                        <input type="checkbox" :value="tag" x-model="memoryFilters.tags" @change="applyMemoriesFiltersAndSorting" class="checkbox checkbox-xs checkbox-primary" />
+                                        </label>
+                                    </li>
+                                    </template>
+                                    <li x-show="!tags || tags.length === 0"><span class="text-xs italic">No tags in DB</span></li>
+                                </ul>
+                            </div>
+                        </div>
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Importance (1-10)</span></label>
+                            <div class="flex gap-2">
+                                <input type="number" min="1" max="10" step="0.1" x-model.lazy="memoryFilters.minImportance" @change="applyMemoriesFiltersAndSorting" placeholder="Min" class="input input-sm input-bordered w-1/2" />
+                                <input type="number" min="1" max="10" step="0.1" x-model.lazy="memoryFilters.maxImportance" @change="applyMemoriesFiltersAndSorting" placeholder="Max" class="input input-sm input-bordered w-1/2" />
+                            </div>
+                        </div>
+                         <div>
+                            <label class="label py-1"><span class="label-text text-xs">Confidence (0-100%)</span></label>
+                            <input type="number" min="0" max="100" step="1" x-model.lazy="memoryFilters.minConfidence" @change="applyMemoriesFiltersAndSorting" placeholder="Min %" class="input input-sm input-bordered w-full" />
+                        </div>
+                         <div>
+                            <label class="label py-1"><span class="label-text text-xs">Created Date Range</span></label>
+                            <div class="flex gap-2">
+                                <input type="date" x-model="memoryFilters.dateRange.start" @change="applyMemoriesFiltersAndSorting" class="input input-sm input-bordered w-1/2" />
+                                <input type="date" x-model="memoryFilters.dateRange.end" @change="applyMemoriesFiltersAndSorting" class="input input-sm input-bordered w-1/2" />
+                            </div>
+                        </div>
+                         <div class="sm:col-span-full mt-2">
+                            <button @click="resetMemoryFilters" class="btn btn-xs btn-outline">Reset All Filters</button>
+                        </div>
+                    </div>
+                </div>
+            </details>
+
+            <!-- Selected for Export Info -->
+            <div x-show="selectedMemoryIdsForExport.length > 0" class="mb-3 p-2 bg-info/20 text-info-content/80 rounded-md text-xs flex justify-between items-center">
+                <span x-text="`${selectedMemoryIdsForExport.length} memor${selectedMemoryIdsForExport.length === 1 ? 'y' : 'ies'} selected for export.`"></span>
+                <div>
+                    <button @click="exportVisibleMemories('json')" class="btn btn-xs btn-ghost text-info-content"><i data-lucide="file-json" class="w-3 h-3 mr-1"></i>JSON</button>
+                    <button @click="exportVisibleMemories('csv')" class="btn btn-xs btn-ghost text-info-content"><i data-lucide="file-spreadsheet" class="w-3 h-3 mr-1"></i>CSV</button>
+                    <button @click="selectedMemoryIdsForExport = []" class="btn btn-xs btn-ghost text-info-content/70"><i data-lucide="x-circle" class="w-3 h-3 mr-1"></i>Clear</button>
+                </div>
+            </div>
+
+            <!-- Card View -->
+            <div x-show="memoriesViewMode === 'card'" class="grid gap-3 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                <template x-if="paginatedMemories.length === 0 && !isLoading">
+                    <p class="sm:col-span-2 lg:col-span-3 xl:col-span-4 text-center py-8 text-base-content/70">No memories match criteria.</p>
+                </template>
+                <template x-for="mem in paginatedMemories" :key="mem.memory_id">
+                    <div class="memory-card card bg-base-100 shadow-lg border border-base-300/50 hover:border-primary" @click="openMemoryDetailModal(mem)">
+                        <div class="card-body p-3">
+                            <div class="flex justify-between items-start mb-1">
+                                <span class="badge text-xs" :class="getMemoryLevelColor(mem.memory_level)" x-text="mem.memory_level"></span>
+                                <div class="dropdown dropdown-end">
+                                    <button tabindex="0" class="btn btn-ghost btn-xs btn-circle" @click.stop="">
+                                        <i data-lucide="more-vertical" class="w-4 h-4"></i>
+                                    </button>
+                                    <ul tabindex="0" class="dropdown-content z-[20] menu p-1 shadow bg-base-200 rounded-box w-40 text-xs">
+                                        <li><a @click.stop="openMemoryDetailModal(mem)"><i data-lucide="eye" class="w-3 h-3 mr-1"></i> View Details</a></li>
+                                        <li><a @click.stop="viewMemoryLinks(mem)"><i data-lucide="share-2" class="w-3 h-3 mr-1"></i> View Links</a></li>
+                                        <li><a @click.stop="confirmDelete(mem.memory_id, 'memory', mem.description || mem.content)" class="text-error"><i data-lucide="trash-2" class="w-3 h-3 mr-1"></i> Delete</a></li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <h3 class="font-semibold text-sm mb-1 line-clamp-2" x-text="mem.description || truncateText(mem.content, 60) || 'Untitled Memory'"></h3>
+                            <div class="text-xs mb-1">
+                                <span class="badge badge-outline badge-xs mr-1" x-text="mem.memory_type"></span>
+                                <span class="text-base-content/70" x-text="formatRelativeTime(mem.created_at_raw)"></span>
+                            </div>
+                            <p class="text-xs text-base-content/80 line-clamp-3" x-text="mem.content || mem.description || 'No content available'"></p>
+                            <div class="flex justify-between items-center mt-2 text-xs">
+                                <div>
+                                    I: <strong x-text="mem.importance?.toFixed(1)"></strong> | 
+                                    C: <strong x-text="(mem.confidence * 100).toFixed(0) + '%'"></strong>
+                                </div>
+                                <input type="checkbox" class="checkbox checkbox-xs checkbox-primary" :value="mem.memory_id" @click.stop="" @change="toggleMemoryForExport(mem.memory_id)" :checked="selectedMemoryIdsForExport.includes(mem.memory_id)" />
+                            </div>
+                            <div x-show="(mem.tags || []).length" class="flex flex-wrap gap-1 mt-1 max-h-10 overflow-hidden">
+                                <template x-for="tag in mem.tags.slice(0,5)" :key="tag">
+                                    <span class="tag-badge badge badge-ghost badge-xs" x-text="tag"></span>
+                                </template>
+                                <span x-show="mem.tags.length > 5" class="badge badge-ghost badge-xs">...</span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Table View -->
+            <div x-show="memoriesViewMode === 'table'" class="overflow-x-auto">
+                 <table class="table table-zebra table-sm w-full">
+                    <thead>
+                        <tr>
+                            <th><input type="checkbox" class="checkbox checkbox-xs" @change="toggleSelectAllVisibleMemories($el.checked)" /></th>
+                            <th><a href="#" @click.prevent="setSort('memories', 'description')">Preview/Desc <i :data-lucide="getSortIcon('memories', 'description')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('memories', 'memory_level')">Level <i :data-lucide="getSortIcon('memories', 'memory_level')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('memories', 'memory_type')">Type <i :data-lucide="getSortIcon('memories', 'memory_type')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('memories', 'importance')">Imp <i :data-lucide="getSortIcon('memories', 'importance')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('memories', 'created_at_raw')">Created <i :data-lucide="getSortIcon('memories', 'created_at_raw')" class="inline-block w-3 h-3"></i></a></th>
+                            <th>Workflow</th>
+                            <th>Tags</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                         <template x-if="paginatedMemories.length === 0 && !isLoading">
+                            <tr><td colspan="9" class="text-center py-4">No memories match criteria.</td></tr>
+                        </template>
+                        <template x-for="mem in paginatedMemories" :key="mem.memory_id">
+                            <tr class="hover">
+                                <td><input type="checkbox" class="checkbox checkbox-xs" :value="mem.memory_id" @change="toggleMemoryForExport(mem.memory_id)" :checked="selectedMemoryIdsForExport.includes(mem.memory_id)" /></td>
+                                <td class="text-xs" x-text="truncateText(mem.description || mem.content, 50)"></td>
+                                <td><span class="badge badge-xs" :class="getMemoryLevelColor(mem.memory_level)" x-text="mem.memory_level"></span></td>
+                                <td class="text-xs" x-text="mem.memory_type"></td>
+                                <td class="text-center text-xs" x-text="mem.importance?.toFixed(1)"></td>
+                                <td class="text-xs" x-text="formatDate(mem.created_at_raw)"></td>
+                                <td class="text-xs"><a href="#" @click.prevent="setView('workflowDetail', mem.workflow_id)" class="link link-hover" x-text="truncateText(workflows.find(w=>w.workflow_id === mem.workflow_id)?.title || mem.workflow_id, 20)"></a></td>
+                                <td class="text-xs">
+                                    <template x-for="tag in (mem.tags || []).slice(0,2)" :key="tag">
+                                        <span class="badge badge-ghost badge-xs mr-1" x-text="tag"></span>
+                                    </template>
+                                     <span x-show="(mem.tags || []).length > 2" class="text-xs">...</span>
+                                </td>
+                                <td class="text-center">
+                                    <div class="flex items-center gap-0">
+                                        <button @click="openMemoryDetailModal(mem)" class="btn btn-xs btn-ghost"><i data-lucide="eye" class="w-4 h-4"></i></button>
+                                        <button @click="confirmDelete(mem.memory_id, 'memory', mem.description || mem.content)" class="btn btn-xs btn-ghost text-error"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Graph View -->
+            <div x-show="memoriesViewMode === 'graph'" class="mt-4">
+                <div class="flex justify-between items-center mb-2">
+                    <h3 class="text-lg font-semibold">Memory Network Graph</h3>
+                     <div>
+                        <button class="btn btn-xs btn-outline mr-1" @click="resetMemoryNetworkGraphView()"><i data-lucide="focus" class="w-3 h-3 mr-1"></i>Fit View</button>
+                        <button class="btn btn-xs btn-outline" @click="exportMemoryNetworkGraph()"><i data-lucide="image" class="w-3 h-3 mr-1"></i>Export PNG</button>
+                     </div>
+                </div>
+                <div x-ref="memoryGraphContainer" class="w-full min-h-[500px] h-[calc(70vh)] bg-base-200/50 rounded-md shadow">
+                    <div x-show="isLoading && loadingMessage.includes('network')" class="flex items-center justify-center h-full">
+                        <span class="loading loading-dots loading-md"></span> Building graph...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pagination for Memories View -->
+            <div class="flex justify-between items-center mt-4" x-show="pagination.memories.totalItems > 0 && pagination.memories.totalPages > 1 && memoriesViewMode !== 'graph'">
+                <span class="text-xs">Page <span x-text="pagination.memories.currentPage"></span> of <span x-text="pagination.memories.totalPages"></span> (<span x-text="pagination.memories.totalItems"></span> total memories)</span>
+                <div class="join">
+                    <button @click="changePage('memories', 'prev')" class="join-item btn btn-xs" :disabled="pagination.memories.currentPage === 1">« Prev</button>
+                    <button @click="changePage('memories', 'next')" class="join-item btn btn-xs" :disabled="pagination.memories.currentPage === pagination.memories.totalPages">Next »</button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <template id="actionsViewTemplate">
+        <div class="bg-base-100 p-4 md:p-6 rounded-lg shadow-xl">
+            <div class="flex flex-wrap justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold">Actions Log (<span x-text="pagination.actions.totalItems"></span>)</h2>
+            </div>
+             <!-- Filters for Actions -->
+            <details class="collapse collapse-arrow border border-base-300 bg-base-200/30 rounded-md mb-4">
+                <summary class="collapse-title text-md font-medium py-2 min-h-0">
+                    <i data-lucide="filter" class="inline w-4 h-4 mr-1"></i> Action Filters
+                </summary>
+                <div class="collapse-content">
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 pt-2">
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Workflow</span></label>
+                            <select x-model="actionFilters.workflowId" @change="applyActionsFiltersAndSorting" class="select select-sm select-bordered w-full">
+                                <option value="">All Workflows</option>
+                                <template x-for="wf in workflows" :key="wf.workflow_id">
+                                    <option :value="wf.workflow_id" x-text="truncateText(wf.title, 30)"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Action Type</span></label>
+                            <select x-model="actionFilters.type" @change="applyActionsFiltersAndSorting" class="select select-sm select-bordered w-full">
+                                <option value="">All Types</option>
+                                <template x-for="type in enumVals.actionTypes" :key="type">
+                                    <option :value="type" x-text="capitalize(type)"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Status</span></label>
+                            <select x-model="actionFilters.status" @change="applyActionsFiltersAndSorting" class="select select-sm select-bordered w-full">
+                                <option value="">All Statuses</option>
+                                <template x-for="status in enumVals.actionStatuses" :key="status">
+                                    <option :value="status" x-text="capitalize(status)"></option>
+                                </template>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label py-1"><span class="label-text text-xs">Tool Name Search</span></label>
+                            <input type="search" x-model.debounce.300ms="actionFilters.toolNameSearch" @input="applyActionsFiltersAndSorting" placeholder="e.g., summarize_text" class="input input-sm input-bordered w-full" />
+                        </div>
+                        <div class="sm:col-span-full mt-2">
+                            <button @click="resetActionFilters()" class="btn btn-xs btn-outline">Reset Filters</button>
+                        </div>
+                    </div>
+                </div>
+            </details>
+
+            <div class="overflow-x-auto">
+                <table class="table table-zebra table-sm w-full">
+                    <thead>
+                        <tr>
+                            <th><a href="#" @click.prevent="setSort('actions', 'sequence_number')">Seq <i :data-lucide="getSortIcon('actions', 'sequence_number')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('actions', 'title')">Title <i :data-lucide="getSortIcon('actions', 'title')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('actions', 'action_type')">Type <i :data-lucide="getSortIcon('actions', 'action_type')" class="inline-block w-3 h-3"></i></a></th>
+                            <th><a href="#" @click.prevent="setSort('actions', 'status')">Status <i :data-lucide="getSortIcon('actions', 'status')" class="inline-block w-3 h-3"></i></a></th>
+                            <th class="hidden md:table-cell">Tool</th>
+                            <th><a href="#" @click.prevent="setSort('actions', 'started_at_raw')">Started <i :data-lucide="getSortIcon('actions', 'started_at_raw')" class="inline-block w-3 h-3"></i></a></th>
+                            <th>Workflow</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-if="paginatedActions.length === 0 && !isLoading">
+                             <tr><td colspan="8" class="text-center py-4">No actions match criteria.</td></tr>
+                        </template>
+                        <template x-for="action in paginatedActions" :key="action.action_id">
+                            <tr class="hover">
+                                <td class="text-center text-xs" x-text="action.sequence_number"></td>
+                                <td>
+                                    <p class="font-medium text-sm" x-text="truncateText(action.title, 35)"></p>
+                                    <p class="text-xs text-base-content/60" x-text="`ID: ${action.action_id.substring(0,8)}...`"></p>
+                                </td>
+                                <td class="text-xs" x-text="action.action_type"></td>
+                                <td><span class="badge badge-xs" :class="getActionStatusClass(action.status)" x-text="action.status"></span></td>
+                                <td class="text-xs hidden md:table-cell" x-text="action.tool_name || 'N/A'"></td>
+                                <td class="text-xs" x-text="formatRelativeTime(action.started_at_raw)"></td>
+                                <td class="text-xs"><a href="#" @click.prevent="setView('workflowDetail', action.workflow_id)" class="link link-hover" x-text="truncateText(workflows.find(w=>w.workflow_id === action.workflow_id)?.title || action.workflow_id, 20)"></a></td>
+                                <td class="text-center">
+                                    <button @click="openDetailModal('action', action)" class="btn btn-xs btn-ghost"><i data-lucide="eye" class="w-4 h-4"></i></button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+             <!-- Pagination for Actions -->
+            <div class="flex justify-between items-center mt-4" x-show="pagination.actions.totalItems > 0 && pagination.actions.totalPages > 1">
+                 <span class="text-xs">Page <span x-text="pagination.actions.currentPage"></span> of <span x-text="pagination.actions.totalPages"></span> (<span x-text="pagination.actions.totalItems"></span> total)</span>
+                <div class="join">
+                    <button @click="changePage('actions', 'prev')" class="join-item btn btn-xs" :disabled="pagination.actions.currentPage === 1">« Prev</button>
+                    <button @click="changePage('actions', 'next')" class="join-item btn btn-xs" :disabled="pagination.actions.currentPage === pagination.actions.totalPages">Next »</button>
+                </div>
+            </div>
+        </div>
+    </template>
+
+    <!-- Other view templates (artifacts, thoughts, goals) would follow a similar pattern to actionsViewTemplate, with relevant columns and filters -->
+    <template id="artifactsViewTemplate"><div> Artifacts view content here... </div></template>
+    <template id="thoughtsViewTemplate"><div> Thoughts view content here... </div></template>
+    <template id="goalsViewTemplate"><div> Goals view content here... </div></template>
+
+
+    <!-- ======================================================================= -->
+    <!-- MODAL TEMPLATES -->
+    <!-- ======================================================================= -->
+
+    <template id="memoryDetailModalTemplate">
+        <dialog id="memoryDetailModalEl" class="modal" :class="{'modal-open': showMemoryDetailModal}">
+            <div class="modal-box w-11/12 max-w-3xl transform transition-all" 
+                 x-show="showMemoryDetailModal"
+                 x-transition:enter="ease-out duration-300"
+                 x-transition:enter-start="opacity-0 scale-95"
+                 x-transition:enter-end="opacity-100 scale-100"
+                 x-transition:leave="ease-in duration-200"
+                 x-transition:leave-start="opacity-100 scale-100"
+                 x-transition:leave-end="opacity-0 scale-95">
+                
+                <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="closeMemoryDetailModal()">✕</button>
+                
+                <div x-show="activeMemory" class="modal-content">
+                    <h3 class="font-bold text-lg mb-1 line-clamp-2" x-text="activeMemory.description || 'Memory Detail'"></h3>
+                    <p class="text-xs text-base-content/70 mb-3">ID: <code x-text="activeMemory.memory_id"></code> | Workflow: 
+                        <a href="#" @click.prevent="closeMemoryDetailModal(); setView('workflowDetail', activeMemory.workflow_id)" 
+                           class="link link-hover" 
+                           x-text="truncateText(workflows.find(w=>w.workflow_id === activeMemory.workflow_id)?.title || activeMemory.workflow_id, 25)">
+                        </a>
+                    </p>
+                    
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-2 text-sm mb-3">
+                        <div><strong>Level:</strong> <span class="badge badge-sm" :class="getMemoryLevelColor(activeMemory.memory_level)" x-text="activeMemory.memory_level"></span></div>
+                        <div><strong>Type:</strong> <span class="badge badge-outline badge-sm" x-text="activeMemory.memory_type"></span></div>
+                        <div><strong>Importance:</strong> <span class="font-mono" x-text="activeMemory.importance?.toFixed(1)"></span></div>
+                        <div><strong>Confidence:</strong> <span class="font-mono" x-text="(activeMemory.confidence * 100).toFixed(0) + '%'"></span></div>
+                        <div class="md:col-span-1"><strong>Created:</strong> <span x-text="formatDate(activeMemory.created_at_raw)"></span></div>
+                        <div class="md:col-span-1"><strong>Last Accessed:</strong> <span x-text="activeMemory.last_accessed ? formatDate(activeMemory.last_accessed) : 'Never'"></span></div>
+                         <div><strong>Access Count:</strong> <span class="font-mono" x-text="activeMemory.access_count || 0"></span></div>
+                         <div><strong>TTL:</strong> <span class="font-mono" x-text="activeMemory.ttl || 'Permanent'"></span></div>
+                    </div>
+
+                    <div x-show="(activeMemory.tags || []).length > 0" class="mb-3">
+                        <strong>Tags:</strong> 
+                        <span class="flex flex-wrap gap-1 mt-1">
+                        <template x-for="tag in activeMemory.tags" :key="tag"><span class="badge badge-ghost badge-xs" x-text="tag"></span></template>
+                        </span>
+                    </div>
+                    
+                    <div class="space-y-2 text-xs">
+                        <details class="bg-base-200/50 p-2 rounded text-xs">
+                            <summary class="font-semibold cursor-pointer">Content</summary>
+                            <pre class="whitespace-pre-wrap mt-1 max-h-40 overflow-y-auto p-1 bg-base-100 rounded" x-text="activeMemory.content || 'N/A'"></pre>
+                        </details>
+                        <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.reasoning">
+                            <summary class="font-semibold cursor-pointer">Reasoning</summary>
+                            <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="activeMemory.reasoning"></pre>
+                        </details>
+                        <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.source">
+                            <summary class="font-semibold cursor-pointer">Source</summary>
+                            <p class="mt-1 p-1 bg-base-100 rounded" x-text="activeMemory.source"></p>
+                        </details>
+                        <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.context && Object.keys(activeMemory.context).length > 0">
+                            <summary class="font-semibold cursor-pointer">Creation Context</summary>
+                            <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="JSON.stringify(activeMemory.context, null, 1)"></pre>
+                        </details>
+                         <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.metadata && Object.keys(activeMemory.metadata).length > 0">
+                            <summary class="font-semibold cursor-pointer">Metadata</summary>
+                            <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="JSON.stringify(activeMemory.metadata, null, 1)"></pre>
+                        </details>
+                    </div>
+
+                    <div class="mt-3 text-xs">
+                        <h4 class="font-semibold mb-1">Associated Entities:</h4>
+                        <p x-show="activeMemory.action_id"><strong>Action:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('action', actions.find(a=>a.action_id === activeMemory.action_id))" x-text="truncateText(actions.find(a=>a.action_id === activeMemory.action_id)?.title,30) + ` (${activeMemory.action_id.substring(0,6)}..)`"></code></p>
+                        <p x-show="activeMemory.artifact_id"><strong>Artifact:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('artifact', artifacts.find(f=>f.artifact_id === activeMemory.artifact_id))" x-text="truncateText(artifacts.find(f=>f.artifact_id === activeMemory.artifact_id)?.name,30) + ` (${activeMemory.artifact_id.substring(0,6)}..)`"></code></p>
+                        <p x-show="activeMemory.thought_id"><strong>Thought:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('thought', thoughts.find(t=>t.thought_id === activeMemory.thought_id))" x-text="truncateText(thoughts.find(t=>t.thought_id === activeMemory.thought_id)?.content, 30) + ` (${activeMemory.thought_id.substring(0,6)}..)`"></code></p>
+                    </div>
+                </div>
+                <div class="modal-action mt-4 pt-3 border-t border-base-300">
+                    <button class="btn btn-sm btn-primary" @click="viewMemoryLinks(activeMemory); closeMemoryDetailModal();">
+                        <i data-lucide="share-2" class="w-4 h-4"></i> View Links
+                    </button>
+                    <button class="btn btn-sm btn-error" @click="confirmDelete(activeMemory.memory_id, 'memory', activeMemory.description || activeMemory.content); closeMemoryDetailModal();">
+                        <i data-lucide="trash-2" class="w-4 h-4"></i> Delete
+                    </button>
+                    <button class="btn btn-sm" @click="closeMemoryDetailModal()">Close</button>
+                </div>
+            </div>
+        </dialog>
+    </template>
+
+    <template id="deleteConfirmModalTemplate">
+        <dialog class="modal" :class="{'modal-open': showDeleteConfirmModal}">
+            <div class="modal-box w-auto max-w-md">
+                 <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="showDeleteConfirmModal = false">✕</button>
+                <h3 class="font-bold text-lg"><i data-lucide="alert-triangle" class="inline w-5 h-5 mr-2 text-error"></i> Confirm Deletion</h3>
+                <p class="py-4 text-sm">Are you sure you want to delete this <strong x-text="entityToDelete.type"></strong>?
+                    <br/> "<span class="italic" x-text="entityToDelete.name"></span>" (<code x-text="entityToDelete.id ? entityToDelete.id.substring(0,8) + '...' : ''"></code>)
+                    <br/><strong class="text-error">This action cannot be undone.</strong>
+                </p>
+                <div class="modal-action">
+                    <button class="btn btn-sm btn-outline" @click="showDeleteConfirmModal = false">Cancel</button>
+                    <button class="btn btn-sm btn-error" @click="executeDelete()">Delete</button>
+                </div>
+            </div>
+        </dialog>
+    </template>
+
+    <template id="statsModalTemplate">
+        <dialog class="modal" :class="{'modal-open': showStatsModal}">
+            <div class="modal-box w-11/12 max-w-2xl">
+                <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="showStatsModal = false">✕</button>
+                <h3 class="font-bold text-lg mb-4"><i data-lucide="bar-chart-big" class="inline w-5 h-5 mr-2"></i>Database Statistics</h3>
+                
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm mb-4">
+                    <div class="stat p-2 bg-base-200/50 rounded-md">
+                        <div class="stat-title text-xs">Memories</div>
+                        <div class="stat-value text-lg text-primary" x-text="stats.totalMemories || 0"></div>
+                    </div>
+                    <div class="stat p-2 bg-base-200/50 rounded-md">
+                        <div class="stat-title text-xs">Memory Links</div>
+                        <div class="stat-value text-lg text-secondary" x-text="stats.totalLinks || 0"></div>
+                    </div>
+                    <div class="stat p-2 bg-base-200/50 rounded-md">
+                        <div class="stat-title text-xs">Workflows</div>
+                        <div class="stat-value text-lg text-accent" x-text="stats.totalWorkflows || 0"></div>
+                    </div>
+                    <div class="stat p-2 bg-base-200/50 rounded-md">
+                        <div class="stat-title text-xs">Actions</div>
+                        <div class="stat-value text-lg" x-text="stats.totalActions || 0"></div>
+                    </div>
+                     <div class="stat p-2 bg-base-200/50 rounded-md">
+                        <div class="stat-title text-xs">Artifacts</div>
+                        <div class="stat-value text-lg" x-text="stats.totalArtifacts || 0"></div>
+                    </div>
+                     <div class="stat p-2 bg-base-200/50 rounded-md">
+                        <div class="stat-title text-xs">Thoughts</div>
+                        <div class="stat-value text-lg" x-text="stats.totalThoughts || 0"></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                        <h4 class="text-md font-semibold mb-1">Memories by Level</h4>
+                        <div class="space-y-1 text-xs max-h-40 overflow-y-auto pr-1">
+                        <template x-for="(count, level) in stats.byLevel" :key="level">
+                            <div class="flex justify-between p-1 bg-base-200/30 rounded-sm">
+                                <span x-text="capitalize(level)"></span>
+                                <span class="badge badge-sm font-mono" :class="getMemoryLevelColor(level)" x-text="count"></span>
+                            </div>
+                        </template>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="text-md font-semibold mb-1">Workflow Statuses</h4>
+                         <div class="space-y-1 text-xs max-h-40 overflow-y-auto pr-1">
+                        <template x-for="(count, status) in stats.byWorkflowStatus" :key="status">
+                            <div class="flex justify-between p-1 bg-base-200/30 rounded-sm">
+                                <span x-text="capitalize(status)"></span>
+                                <span class="badge badge-sm font-mono" :class="getWorkflowStatusClass(status)" x-text="count"></span>
+                            </div>
+                        </template>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mt-4 h-64 md:h-72"> <!-- Fixed height container for chart -->
+                    <canvas x-ref="statsChartCanvas"></canvas>
+                </div>
+
+                <div class="modal-action mt-4">
+                    <button class="btn btn-sm btn-outline" @click="showStatsModal = false">Close</button>
+                </div>
+            </div>
+        </dialog>
+    </template>
+
+    <template id="linksModalTemplate">
+        <dialog class="modal" :class="{'modal-open': showLinksModal}">
+            <div class="modal-box w-11/12 max-w-lg">
+                 <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="showLinksModal = false">✕</button>
+                <h3 class="font-bold text-lg mb-2">
+                    Memory Links for <code class="text-primary" x-text="linksModalForMemory?.memory_id.substring(0,8) + '...'"></code>
+                </h3>
+                <p class="text-xs mb-3 line-clamp-2" x-text="linksModalForMemory?.description || linksModalForMemory?.content"></p>
+                
+                <div role="tablist" class="tabs tabs-boxed tabs-sm mb-3">
+                    <a role="tab" class="tab grow" :class="{'tab-active': linksModalTab === 'outgoing'}" @click="linksModalTab = 'outgoing'">
+                        Outgoing (<span x-text="currentMemoryLinks.outgoing.length"></span>)
+                    </a>
+                    <a role="tab" class="tab grow" :class="{'tab-active': linksModalTab === 'incoming'}" @click="linksModalTab = 'incoming'">
+                        Incoming (<span x-text="currentMemoryLinks.incoming.length"></span>)
+                    </a>
+                </div>
+
+                <div class="max-h-80 overflow-y-auto space-y-2 pr-1">
+                    <div x-show="linksModalTab === 'outgoing'">
+                        <p x-show="currentMemoryLinks.outgoing.length === 0" class="text-center text-sm text-base-content/70 py-4">No outgoing links.</p>
+                        <template x-for="link in currentMemoryLinks.outgoing" :key="link.link_id">
+                            <div class="card card-compact bg-base-200/50 shadow-sm border border-base-300/30">
+                                <div class="card-body p-2 text-xs">
+                                    <div class="flex justify-between items-center">
+                                        <span class="badge badge-sm" :class="getMemoryLevelColor(link.target_details?.memory_level)" x-text="link.link_type"></span>
+                                        <button class="btn btn-xs btn-ghost" @click="navigateToMemoryFromLink(link.target_memory_id)">
+                                            <i data-lucide="arrow-right-circle" class="w-3 h-3"></i> Go to
+                                        </button>
+                                    </div>
+                                    <p class="font-medium mt-1 line-clamp-1" x-text="link.target_details?.description || link.target_details?.content || 'Target Memory'"></p>
+                                    <p class="text-base-content/70 line-clamp-2" x-text="link.description || 'No link description'"></p>
+                                    <p class="text-xs text-base-content/50">Strength: <span x-text="link.strength?.toFixed(1) || 'N/A'"></span> | Type: <span x-text="link.target_details?.memory_type || 'N/A'"></span></p>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+
+                    <div x-show="linksModalTab === 'incoming'">
+                         <p x-show="currentMemoryLinks.incoming.length === 0" class="text-center text-sm text-base-content/70 py-4">No incoming links.</p>
+                        <template x-for="link in currentMemoryLinks.incoming" :key="link.link_id">
+                             <div class="card card-compact bg-base-200/50 shadow-sm border border-base-300/30">
+                                <div class="card-body p-2 text-xs">
+                                    <div class="flex justify-between items-center">
+                                        <span class="badge badge-sm" :class="getMemoryLevelColor(link.source_details?.memory_level)" x-text="link.link_type"></span>
+                                        <button class="btn btn-xs btn-ghost" @click="navigateToMemoryFromLink(link.source_memory_id)">
+                                            <i data-lucide="arrow-left-circle" class="w-3 h-3"></i> Go to
+                                        </button>
+                                    </div>
+                                    <p class="font-medium mt-1 line-clamp-1" x-text="link.source_details?.description || link.source_details?.content || 'Source Memory'"></p>
+                                    <p class="text-base-content/70 line-clamp-2" x-text="link.description || 'No link description'"></p>
+                                    <p class="text-xs text-base-content/50">Strength: <span x-text="link.strength?.toFixed(1) || 'N/A'"></span> | Type: <span x-text="link.source_details?.memory_type || 'N/A'"></span></p>
+                                </div>
+                            </div>
+                        </template>
+                    </div>
+                </div>
+
+                <div class="modal-action mt-3">
+                    <button class="btn btn-sm btn-outline" @click="showLinksModal = false">Close</button>
+                </div>
+            </div>
+        </dialog>
+    </template>
+
+    <template id="diagramModalTemplate">
+        <dialog class="modal" :class="{'modal-open': showDiagramModal}">
+             <div class="modal-box w-11/12 max-w-5xl transform transition-all"
+                  x-show="showDiagramModal"
+                 x-transition:enter="ease-out duration-300"
+                 x-transition:enter-start="opacity-0 scale-95"
+                 x-transition:enter-end="opacity-100 scale-100"
+                 x-transition:leave="ease-in duration-200"
+                 x-transition:leave-start="opacity-100 scale-100"
+                 x-transition:leave-end="opacity-0 scale-95">
+                <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2 z-10" @click="showDiagramModal = false">✕</button>
+                <h3 class="font-bold text-lg mb-2" x-text="activeDiagramTitle || 'Diagram'"></h3>
+                <div class="modal-content">
+                    <div x-ref="diagramModalContentEl" class="mermaid bg-base-200/50 p-2 rounded min-h-[70vh] overflow-auto">
+                        <!-- Mermaid diagram will be rendered here by $watch -->
+                        <div x-show="isLoading && loadingMessage.includes('diagram')" class="flex items-center justify-center h-full">
+                            <span class="loading loading-dots loading-md"></span> Rendering diagram...
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-action mt-3">
+                    <button class="btn btn-sm btn-outline" @click="showDiagramModal = false">Close</button>
+                </div>
+            </div>
+        </dialog>
+    </template>
+
+    <!-- Detail Modals for Action, Artifact, Thought, Goal -->
+    <template id="actionDetailModalTemplate">
+        <dialog class="modal" :class="{'modal-open': showActionDetailModal && activeAction}">
+            <div class="modal-box w-11/12 max-w-2xl">
+                <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="showActionDetailModal = false">✕</button>
+                <div x-show="activeAction" class="modal-content">
+                    <h3 class="font-bold text-lg mb-1 line-clamp-2" x-text="activeAction.title || 'Action Detail'"></h3>
+                    <p class="text-xs text-base-content/70 mb-3">ID: <code x-text="activeAction.action_id"></code> | Workflow: 
+                        <a href="#" @click.prevent="showActionDetailModal = false; setView('workflowDetail', activeAction.workflow_id)" 
+                           class="link link-hover" 
+                           x-text="truncateText(workflows.find(w=>w.workflow_id === activeAction.workflow_id)?.title || activeAction.workflow_id, 25)">
+                        </a>
+                    </p>
+                     <div class="grid grid-cols-2 gap-x-4 gap-y-1 text-sm mb-3">
+                        <div><strong>Type:</strong> <span class="badge badge-outline badge-sm" x-text="activeAction.action_type"></span></div>
+                        <div><strong>Status:</strong> <span class="badge badge-sm" :class="getActionStatusClass(activeAction.status)" x-text="activeAction.status"></span></div>
+                        <div><strong>Sequence:</strong> <span x-text="activeAction.sequence_number"></span></div>
+                        <div x-show="activeAction.tool_name"><strong>Tool:</strong> <code x-text="activeAction.tool_name"></code></div>
+                        <div><strong>Started:</strong> <span x-text="formatDate(activeAction.started_at_raw)"></span></div>
+                        <div x-show="activeAction.completed_at"><strong>Completed:</strong> <span x-text="formatDate(activeAction.completed_at)"></span></div>
+                        <div x-show="activeAction.parent_action_id" class="col-span-2"><strong>Parent Action:</strong> <code class="text-xs cursor-pointer hover:underline" @click="const parentAct = actions.find(a=>a.action_id===activeAction.parent_action_id); if(parentAct){activeAction=parentAct;} else {showToast('Parent action not found in current list.', 'warning')}" x-text="activeAction.parent_action_id"></code></div>
+                    </div>
+                    <div x-show="(activeAction.tags || []).length > 0" class="mb-3">
+                        <strong>Tags:</strong> 
+                        <span class="flex flex-wrap gap-1 mt-1">
+                        <template x-for="tag in activeAction.tags" :key="tag"><span class="badge badge-ghost badge-xs" x-text="tag"></span></template>
+                        </span>
+                    </div>
+                    <details class="bg-base-200/50 p-2 rounded text-xs mb-2" x-show="activeAction.reasoning"><summary class="font-semibold cursor-pointer">Reasoning</summary><pre class="whitespace-pre-wrap mt-1 p-1 bg-base-100 rounded max-h-32 overflow-y-auto" x-text="activeAction.reasoning"></pre></details>
+                    <details class="bg-base-200/50 p-2 rounded text-xs mb-2" x-show="activeAction.tool_args && Object.keys(activeAction.tool_args).length > 0"><summary class="font-semibold cursor-pointer">Tool Arguments</summary><pre class="whitespace-pre-wrap mt-1 p-1 bg-base-100 rounded max-h-32 overflow-y-auto" x-text="JSON.stringify(activeAction.tool_args, null, 2)"></pre></details>
+                    <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeAction.tool_result !== null && activeAction.tool_result !== undefined"><summary class="font-semibold cursor-pointer">Tool Result</summary><pre class="whitespace-pre-wrap mt-1 p-1 bg-base-100 rounded max-h-40 overflow-y-auto" x-text="typeof activeAction.tool_result === 'object' ? JSON.stringify(activeAction.tool_result, null, 2) : activeAction.tool_result"></pre></details>
+                </div>
+                <div class="modal-action mt-4 pt-3 border-t border-base-300">
+                    <button class="btn btn-sm btn-error" @click="confirmDelete(activeAction.action_id, 'action', activeAction.title); showActionDetailModal = false;">Delete Action</button>
+                    <button class="btn btn-sm btn-outline" @click="showActionDetailModal = false">Close</button>
+                </div>
+            </div>
+        </dialog>
+    </template>
+
+    <template id="artifactDetailModalTemplate"> <!-- Placeholder: Implement similarly to Action Modal --> <div>Artifact Detail Modal</div> </template>
+    <template id="thoughtDetailModalTemplate"> <!-- Placeholder --> <div>Thought Detail Modal</div> </template>
+    <template id="goalDetailModalTemplate"> <!-- Placeholder --> <div>Goal Detail Modal</div> </template>
+
+</body>
+</html>

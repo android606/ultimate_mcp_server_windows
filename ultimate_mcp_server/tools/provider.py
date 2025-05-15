@@ -123,7 +123,7 @@ async def list_models(
                 ],
                 "gemini": [                      # Example for another provider
                     {
-                        "id": "gemini/gemini-2.5-pro-exp-03-25",
+                        "id": "gemini/gemini-2.5-pro-preview-03-25",
                         "name": "Gemini 2.5 Pro Experimental",
                         "context_window": 8192,
                         "features": ["chat", "completion"],

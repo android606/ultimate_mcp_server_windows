@@ -101,15 +101,28 @@ async def generate_completion(
     # Set default additional params
     additional_params = additional_params or {}
     
+    # Conditionally construct parameters for the provider call
+    params_for_provider = {
+        "prompt": prompt,
+        "model": model, # model here is already stripped of provider prefix if applicable
+        "temperature": temperature,
+        "json_mode": json_mode,
+        # messages will be handled by chat_completion, this is for simple completion
+    }
+    if max_tokens is not None:
+        params_for_provider["max_tokens"] = max_tokens
+    
+    # Merge any other additional_params, ensuring they don't overwrite core params already set
+    # or ensuring that additional_params are provider-specific and don't conflict.
+    # A safer merge would be params_for_provider.update({k: v for k, v in additional_params.items() if k not in params_for_provider})
+    # However, the current **additional_params likely intends to override if keys match, so we keep that behavior for now
+    # but apply it to the conditionally built dict.
+    final_provider_params = {**params_for_provider, **additional_params}
+
     try:
-        # Generate completion, passing json_mode directly
+        # Generate completion
         result = await provider_instance.generate_completion(
-            prompt=prompt,
-            model=model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            json_mode=json_mode, # Pass the flag here
-            **additional_params
+            **final_provider_params
         )
         
         # Calculate processing time

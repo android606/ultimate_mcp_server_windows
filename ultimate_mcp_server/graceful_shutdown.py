@@ -70,7 +70,11 @@ async def _execute_shutdown_handlers():
     for handler in _shutdown_handlers:
         try:
             if asyncio.iscoroutinefunction(handler):
-                await handler()
+                # Add a timeout to each handler to prevent hanging
+                try:
+                    await asyncio.wait_for(handler(), timeout=15.0)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Shutdown handler {handler.__name__} timed out after 15 seconds")
             else:
                 handler()
         except Exception as e:
@@ -83,9 +87,12 @@ async def _handle_shutdown(sig_name):
     
     if _shutdown_in_progress:
         logger.warning(f"Received {sig_name} while shutdown in progress - forcing exit")
-        # Use asyncio.get_running_loop().stop() instead of sys.exit for cleaner async shutdown
-        asyncio.get_running_loop().stop()
-        return  # Return here to avoid raising QuietExit multiple times
+        # On second SIGINT, just exit immediately with os._exit
+        # This is more forceful than sys.exit and bypasses any pending async operations
+        print("\n[Emergency Exit] Forcing immediate shutdown...", file=_original_stderr or sys.stderr)
+        import os
+        os._exit(1)  # Force exit without cleanup
+        return  # This line won't execute, but keeping for clarity
         
     _shutdown_in_progress = True
     
@@ -95,7 +102,12 @@ async def _handle_shutdown(sig_name):
     print("\n[Graceful Shutdown] Closing connections and cleaning up...", file=_original_stderr or sys.stderr)
     
     try:
-        await _execute_shutdown_handlers()
+        # Add an overall timeout for all shutdown handlers
+        try:
+            await asyncio.wait_for(_execute_shutdown_handlers(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.warning("Graceful shutdown timed out after 30 seconds")
+        
         logger.info("Graceful shutdown completed successfully")
         print("[Graceful Shutdown] Done.", file=_original_stderr or sys.stderr)
     except Exception as e:

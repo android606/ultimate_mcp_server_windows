@@ -398,7 +398,7 @@ async def recommend_model(
         "gemini/gemini-2.0-flash-lite": ["knowledge", "instruction-following"],
         "gemini/gemini-2.0-flash": ["knowledge", "instruction-following", "multimodal"],
         "gemini/gemini-2.0-flash-thinking-exp-01-21": ["reasoning", "coding", "knowledge", "instruction-following", "multimodal"],
-        "gemini/gemini-2.5-pro-exp-03-25": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Map from gemini-2.5-pro-preview-03-25
+        "gemini/gemini-2.5-pro-preview-03-25": ["reasoning", "coding", "knowledge", "instruction-following", "math", "multimodal"], # Map from gemini-2.5-pro-preview-03-25
 
         # Grok models (Estimates)
         "grok/grok-3-latest": ["reasoning", "knowledge", "instruction-following", "math"],
@@ -435,7 +435,7 @@ async def recommend_model(
         "gemini/gemini-2.0-flash-lite": 5,
         "gemini/gemini-2.0-flash": 6,
         "gemini/gemini-2.0-flash-thinking-exp-01-21": 6,
-        "gemini/gemini-2.5-pro-exp-03-25": 9,
+        "gemini/gemini-2.5-pro-preview-03-25": 9,
 
         # Grok models (Estimates: 1-10 scale)
         "grok/grok-3-latest": 9,

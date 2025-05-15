@@ -26,7 +26,7 @@ import re
 import sys
 from collections import namedtuple
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 # Add project root to path for imports when running as script
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -54,20 +54,40 @@ from ultimate_mcp_server.utils.display import (
 )
 from ultimate_mcp_server.utils.logging.console import console
 
+DEFAULT_MODEL_CONFIGS_TEXT: List[Dict[str, Any]] = [
+    {
+        "model_id": "openai/gpt-4o-mini",
+        "diversity_count": 1,
+        "temperature": 0.75,
+    },
+    {
+        "model_id": "anthropic/claude-3-5-haiku-20241022",
+        "diversity_count": 1,
+        "temperature": 0.7,
+    },
+]
+DEFAULT_NUM_ROUNDS_TEXT = 2
+DEFAULT_TOURNAMENT_NAME_TEXT = "Advanced Text Refinement Tournament"
 
-def parse_arguments():
-    """Parse command line arguments"""
+def parse_arguments_text():
     parser = argparse.ArgumentParser(description="Run a text refinement tournament demo")
     parser.add_argument(
-        "--topic", 
-        type=str, 
-        default="transformer_vs_diffusion",
-        help="Essay topic (transformer_vs_diffusion, llm_vs_traditional_ai, or custom)"
+        "--topic", type=str, default="transformer_vs_diffusion",
+        choices=list(TOPICS.keys()) + ["custom"],
+        help="Essay topic (default: transformer_vs_diffusion)"
     )
     parser.add_argument(
-        "--custom-topic", 
-        type=str, 
-        help="Custom essay topic description (used when --topic=custom)"
+        "--custom-topic", type=str,
+        help="Custom essay topic (used when --topic=custom)"
+    )
+    parser.add_argument(
+        "--rounds", type=int, default=DEFAULT_NUM_ROUNDS_TEXT,
+        help=f"Number of tournament rounds (default: {DEFAULT_NUM_ROUNDS_TEXT})"
+    )
+    parser.add_argument(
+        "--models", type=str, nargs="+",
+        default=[mc["model_id"] for mc in DEFAULT_MODEL_CONFIGS_TEXT],
+        help="List of model IDs to participate."
     )
     return parser.parse_args()
 
@@ -79,14 +99,14 @@ logger = get_logger("example.tournament_text")
 TrackableResult = namedtuple("TrackableResult", ["cost", "input_tokens", "output_tokens", "provider", "model", "processing_time"])
 
 # Initialize global gateway
-gateway = None
+gateway: Optional[Gateway] = None
 
 # --- Configuration ---
 # Adjust model IDs based on your configured providers
 MODEL_IDS = [
     "openai:gpt-4.1-mini",
     "deepseek:deepseek-chat",
-    "gemini:gemini-2.5-pro-exp-03-25"
+    "gemini:gemini-2.5-pro-preview-03-25"
 ]
 NUM_ROUNDS = 2  # Changed from 3 to 2 for faster execution and debugging
 TOURNAMENT_NAME = "Text Refinement Tournament Demo"  # More generic name
@@ -95,21 +115,23 @@ TOURNAMENT_NAME = "Text Refinement Tournament Demo"  # More generic name
 TEMPLATE_TEXT = """
 # GENERIC TEXT TOURNAMENT PROMPT TEMPLATE
 
-Write a {{content_type}} about {{topic}}.
+Please write a high-quality, comprehensive {{content_type}} on the topic of: "{{topic}}".
 
 {{context}}
 
-Your {{content_type}} should address:
-
+Your {{content_type}} should thoroughly explore the following sections and subtopics:
 {% for section in sections %}
-{{ loop.index }}. {{section.title}}:
+## {{section.title}}
 {% for subtopic in section.subtopics %}
-   - {{subtopic}}
+- {{subtopic}}
+{% endfor %}
 {% endfor %}
 
-{% endfor %}
-
+Adhere to the following style and content requirements:
 {{style_requirements}}
+
+Please provide only the {{content_type}} text. If you have meta-comments or a thinking process,
+enclose it in <thinking>...</thinking> tags at the very beginning of your response.
 """
 
 # Define predefined topics
@@ -117,39 +139,14 @@ TOPICS = {
     "transformer_vs_diffusion": {
         "content_type": "technical essay",
         "topic": "comparing transformer architecture and diffusion models",
-        "context": "",  # No additional context needed
+        "context": "Focus on their underlying mechanisms, common applications, strengths, weaknesses, and future potential in AI.",
         "sections": [
-            {
-                "title": "Core Principles",
-                "subtopics": [
-                    "Explain how transformers work (self-attention, positional encoding, etc.)",
-                    "Explain how diffusion models work (forward/reverse diffusion process)"
-                ]
-            },
-            {
-                "title": "Strengths and Weaknesses",
-                "subtopics": [
-                    "Transformers: What tasks do they excel at? What are their limitations?",
-                    "Diffusion Models: What domains are they best suited for? What are their constraints?"
-                ]
-            },
-            {
-                "title": "Long-term Potential",
-                "subtopics": [
-                    "Which architecture has greater potential for general-purpose AI systems and why?",
-                    "What innovations might unlock further capabilities for each architecture?"
-                ]
-            },
-            {
-                "title": "Technical Comparisons",
-                "subtopics": [
-                    "Training requirements (data, compute, etc.)",
-                    "Inference efficiency",
-                    "Scalability characteristics"
-                ]
-            }
+            {"title": "Core Principles", "subtopics": ["Transformer self-attention, positional encoding", "Diffusion forward/reverse processes, noise schedules"]},
+            {"title": "Applications & Performance", "subtopics": ["Typical tasks for transformers (NLP, vision)", "Typical tasks for diffusion models (image/audio generation)", "Comparative performance benchmarks or known strengths"]},
+            {"title": "Limitations & Challenges", "subtopics": ["Computational costs, data requirements", "Interpretability, controllability, known failure modes for each"]},
+            {"title": "Future Outlook", "subtopics": ["Potential for hybridization", "Scaling frontiers", "Impact on AGI research"]}
         ],
-        "style_requirements": "Make your essay technically precise yet accessible to an audience with ML background."
+        "style_requirements": "Write in a clear, objective, and technically precise manner suitable for an audience with a machine learning background. Aim for around 800-1200 words."
     },
     "llm_vs_traditional_ai": {
         "content_type": "comparative analysis",
@@ -427,7 +424,7 @@ async def evaluate_essays(essays_by_model: Dict[str, str], tracker: CostTracker 
         evaluation_prompt += "4. Suggest one improvement for each essay\n"
         
         # Use a more capable model for evaluation
-        model_to_use = "gemini:gemini-2.5-pro-exp-03-25"
+        model_to_use = "gemini:gemini-2.5-pro-preview-03-25"
         
         logger.info(f"Evaluating essays using {model_to_use}...", emoji_key="evaluate")
         
@@ -552,7 +549,7 @@ async def calculate_tournament_costs(rounds_results, evaluation_cost=None):
 async def run_tournament_demo(tracker: CostTracker):
     """Run the text tournament demo."""
     # Parse command line arguments
-    args = parse_arguments()
+    args = parse_arguments_text()
     
     # Determine which topic to use
     if args.topic == "custom" and args.custom_topic:
@@ -598,10 +595,15 @@ async def run_tournament_demo(tracker: CostTracker):
         return 1
     
     # 1. Create the tournament
+    # Prepare model configurations
+    # Default temperature from DEFAULT_MODEL_CONFIGS_TEXT, assuming it's a common parameter.
+    # The create_tournament tool itself will parse these against InputModelConfig.
+    model_configs = [{"model_id": mid, "diversity_count": 1, "temperature": 0.7 } for mid in MODEL_IDS]
+
     create_input = {
         "name": f"{TOURNAMENT_NAME} - {topic_name.replace('_', ' ').title()}",
         "prompt": rendered_prompt,
-        "model_ids": MODEL_IDS,
+        "models": model_configs, # Changed from model_ids to models
         "rounds": NUM_ROUNDS,
         "tournament_type": "text"
     }

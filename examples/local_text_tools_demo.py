@@ -1143,7 +1143,7 @@ async def run_llm_interactive_workflow(
             if llm_provider_name == Provider.OPENAI.value:
                 llm_model_name = "gpt-3.5-turbo"
             elif llm_provider_name == Provider.ANTHROPIC.value:
-                llm_model_name = "claude-3-haiku-20240307"  # Use a valid model without comments
+                llm_model_name = "claude-3-5-haiku-20241022"  # Use a valid model without comments
             # Add other provider fallbacks if needed
             else:
                 llm_model_name = "default"  # Placeholder if truly unknown

@@ -318,79 +318,112 @@ async def parse_result(result: Any) -> Dict[str, Any]:
         elif isinstance(result, list):
             if result:
                 first_item = result[0]
-                if hasattr(first_item, 'text'):
+                if hasattr(first_item, 'text'): 
                     text_to_parse = first_item.text
+                elif isinstance(first_item, dict):
+                    # NEW: Check if it's an MCP-style text content dict
+                    if first_item.get("type") == "text" and "text" in first_item:
+                        text_to_parse = first_item["text"]
+                    else:
+                        # It's some other dictionary, return it directly
+                        return first_item 
+                elif isinstance(first_item, str): 
+                    text_to_parse = first_item
                 else:
-                    # If the first item isn't text, try returning it directly
-                    if isinstance(first_item, dict):
-                        return first_item
-                    # Or handle other types as needed, maybe log a warning?
-                    return {"warning": f"List item type not directly parseable: {type(first_item)}"}
+                    logger.warning(f"List item type not directly parseable: {type(first_item)}")
+                    return {"error": f"List item type not directly parseable: {type(first_item)}", "original_result_type": str(type(result))}
             else: # Empty list
-                return {}
+                return {} # Or perhaps an error/warning? For now, empty dict.
             
         # Handle dictionary directly
         elif isinstance(result, dict):
             return result
 
-        # Attempt to parse if we found text
-        if text_to_parse is not None:
-            # Extract potential JSON content from markdown fences
-            json_str = extract_json_from_markdown(text_to_parse)
+        # Handle string directly
+        elif isinstance(result, str):
+            text_to_parse = result
 
-            # If no fences were found, json_str remains the original cleaned_text
+        # If text_to_parse is still None or is empty/whitespace after potential assignments
+        if text_to_parse is None or not text_to_parse.strip():
+            logger.warning(f"No parsable text content found in result (type: {type(result)}, content preview: \'{str(text_to_parse)[:100]}...\').")
+            return {"error": "No parsable text content found in result", "result_type": str(type(result)), "content_preview": str(text_to_parse)[:100] if text_to_parse else None}
 
+        # At this point, text_to_parse should be a non-empty string.
+        # Attempt to extract JSON from markdown (if any)
+        # If no markdown, or extraction fails, json_to_parse will be text_to_parse itself.
+        json_to_parse = extract_json_from_markdown(text_to_parse)
+
+        if not json_to_parse.strip(): # If extraction resulted in an empty string (e.g. from "``` ```")
+            logger.warning(f"JSON extraction from text_to_parse yielded an empty string. Original text_to_parse: \'{text_to_parse[:200]}...\'")
+            # Fallback to trying the original text_to_parse if extraction gave nothing useful
+            # This covers cases where text_to_parse might be pure JSON without fences.
+            if text_to_parse.strip(): # Ensure original text_to_parse wasn't also empty
+                 json_to_parse = text_to_parse 
+            else: # Should have been caught by the earlier check, but as a safeguard:
+                return {"error": "Content became empty after attempting JSON extraction", "original_text_to_parse": text_to_parse}
+
+
+        # Now, json_to_parse should be the best candidate string for JSON parsing.
+        # Only attempt to parse if it's not empty/whitespace.
+        if not json_to_parse.strip():
+            logger.warning(f"Final string to parse is empty. Original text_to_parse: \'{text_to_parse[:200]}...\'")
+            return {"error": "Final string for JSON parsing is empty", "original_text_to_parse": text_to_parse}
+
+        try:
+            return json.loads(json_to_parse)
+        except json.JSONDecodeError as e:
+            problematic_text_for_repair = json_to_parse # This is the string that failed json.loads
+            logger.warning(f"Initial JSON parsing failed for: '{problematic_text_for_repair[:200]}...' Error: {e}. Attempting LLM repair...", emoji_key="warning")
             try:
-                # Try to parse the potentially extracted/cleaned text as JSON
-                return json.loads(json_str)
-            except json.JSONDecodeError as e:
-                # If parsing fails, try LLM repair
-                logger.warning(f"Initial JSON parsing failed: {e}. Attempting LLM repair...", emoji_key="warning")
-                try:
-                    # Local import to minimize scope/potential circular dependency issues
-                    from ultimate_mcp_server.tools.completion import generate_completion
-                    
-                    repair_prompt = (
-                        f"The following text is supposed to be JSON but failed parsing. "
-                        f"Please extract the valid JSON data from it and return *only* the raw JSON string, nothing else. "
-                        f"If it's impossible to extract valid JSON, return an empty JSON object {{}}. "
-                        f"Problematic text:\n\n```\n{json_str}\n```"
-                    )
-                    
-                    llm_repair_result = await generate_completion(
-                        prompt=repair_prompt,
-                        provider="openai", # Use openai as requested
-                        model="gpt-4.1-mini", # Use gpt-4.1-mini as requested
-                        temperature=0.0 # Be deterministic for extraction
-                    )
-                    
-                    if llm_repair_result.get("success"):
-                        llm_json_text = llm_repair_result.get("text", "")
-                        try:
-                            # Try parsing the LLM response
-                            repaired_json = json.loads(llm_json_text)
-                            logger.info("LLM repair successful.", emoji_key="success")
-                            return repaired_json
-                        except json.JSONDecodeError as llm_e:
-                            logger.error(f"LLM repair attempt failed. LLM response could not be parsed as JSON: {llm_e}. LLM response: {llm_json_text[:100]}...", emoji_key="error")
-                            return {"error": f"LLM repair failed: LLM response was not valid JSON ({llm_e})", "raw_content": json_str, "llm_response": llm_json_text}
-                    else:
-                        llm_error = llm_repair_result.get("error", "Unknown LLM error")
-                        logger.error(f"LLM repair attempt failed: LLM call failed: {llm_error}", emoji_key="error")
-                        return {"error": f"LLM repair failed: LLM call error ({llm_error})", "raw_content": json_str}
-                        
-                except Exception as repair_ex:
-                    logger.error(f"LLM repair attempt failed with exception: {repair_ex}", emoji_key="error", exc_info=True)
-                    return {"error": f"LLM repair failed with exception: {repair_ex}", "raw_content": json_str}
+                from ultimate_mcp_server.tools.completion import generate_completion
+                
+                system_message_content = "You are an expert JSON repair assistant. Your goal is to return only valid JSON."
+                # Prepend system instruction to the main prompt for completion models
+                # (as generate_completion with openai provider doesn't natively use a separate system_prompt field in its current design)
+                user_repair_request = (
+                    f"The following text is supposed to be valid JSON but failed parsing. "
+                    f"Please correct it and return *only* the raw, valid JSON string. "
+                    f"Do not include any explanations or markdown formatting. "
+                    f"If it's impossible to extract or repair to valid JSON, return an empty JSON object {{}}. "
+                    f"Problematic text:\n\n```text\n{problematic_text_for_repair}\n```"
+                )
+                combined_prompt = f"{system_message_content}\n\n{user_repair_request}"
 
-        # Handle other potential types or return error if no text was found/parsed
-        else:
-            logger.warning(f"Unexpected result type or structure: {type(result)}", emoji_key="warning")
-            return {"error": f"Unexpected result type or structure: {type(result)}"}
-        
-    except Exception as e:
-        logger.warning(f"Error parsing result: {str(e)}", emoji_key="warning")
-        return {"error": f"Error parsing result: {str(e)}"}
+                llm_repair_result = await generate_completion(
+                    prompt=combined_prompt, # Use the combined prompt
+                    provider="openai",
+                    model="gpt-4.1-mini", 
+                    temperature=0.0,
+                    additional_params={} # Remove system_prompt from here
+                )
+
+                text_from_llm_repair = llm_repair_result.get("text", "")
+                if not text_from_llm_repair.strip():
+                    logger.error("LLM repair attempt returned empty string.")
+                    return {"error": "LLM repair returned empty string", "original_text": problematic_text_for_repair}
+
+                # Re-extract from LLM response, as it might add fences
+                final_repaired_json_str = extract_json_from_markdown(text_from_llm_repair)
+                
+                if not final_repaired_json_str.strip():
+                    logger.error(f"LLM repair extracted an empty JSON string from LLM response: {text_from_llm_repair[:200]}...")
+                    return {"error": "LLM repair extracted empty JSON", "llm_response": text_from_llm_repair, "original_text": problematic_text_for_repair}
+
+                try:
+                    logger.debug(f"Attempting to parse LLM-repaired JSON: {final_repaired_json_str[:200]}...")
+                    parsed_llm_result = json.loads(final_repaired_json_str)
+                    logger.success("LLM JSON repair successful.", emoji_key="success")
+                    return parsed_llm_result
+                except json.JSONDecodeError as llm_e:
+                    logger.error(f"LLM repair attempt failed. LLM response could not be parsed as JSON: {llm_e}. LLM response (after extraction): '{final_repaired_json_str[:200]}' Original LLM text: '{text_from_llm_repair[:500]}...'")
+                    return {"error": "LLM repair failed to produce valid JSON", "detail": str(llm_e), "llm_response_extracted": final_repaired_json_str, "llm_response_raw": text_from_llm_repair, "original_text": problematic_text_for_repair}
+            except Exception as repair_ex:
+                logger.error(f"Exception during LLM repair process: {repair_ex}", exc_info=True)
+                return {"error": "Exception during LLM repair", "detail": str(repair_ex), "original_text": problematic_text_for_repair}
+
+    except Exception as e: # General error in parse_result
+        logger.error(f"Critical error in parse_result: {e}", exc_info=True)
+        return {"error": "Critical error during result parsing", "detail": str(e)}
 
 async def process_mcp_result(result: Any) -> Dict[str, Any]:
     """

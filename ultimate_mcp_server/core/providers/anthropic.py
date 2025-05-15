@@ -86,9 +86,9 @@ class AnthropicProvider(BaseProvider):
         prompt: Optional[str] = None,
         messages: Optional[List[Dict[str, Any]]] = None,
         model: Optional[str] = None,
-        max_tokens: Optional[int] = 1024,  # Provide a default
+        max_tokens: Optional[int] = 1024,  # Signature default
         temperature: float = 0.7,
-        json_mode: bool = False,  # Accept json_mode flag
+        json_mode: bool = False,
         **kwargs,
     ) -> ModelResponse:
         """Generate a single non-chat completion using Anthropic Claude.
@@ -106,74 +106,76 @@ class AnthropicProvider(BaseProvider):
             ModelResponse object.
         """
         if not self.client:
-            # Attempt lazy initialization if needed
             if not await self.initialize():
-                raise ConnectionError(
-                    "Anthropic provider failed to initialize."
-                )  # Or a specific ProviderError
+                raise ConnectionError("Anthropic provider failed to initialize.")
 
         model = model or self.get_default_model()
-        actual_model_name = self.strip_provider_prefix(model)  # Use helper
+        actual_model_name = self.strip_provider_prefix(model)
 
-        # Validate that either prompt or messages is provided
+        # Original logic: Validate that either prompt or messages is provided
         if prompt is None and not messages:
             raise ValueError("Either 'prompt' or 'messages' must be provided")
             
-        # If messages are provided, use the chat_completion function
+        # Original logic: If messages are provided, use the chat_completion function
         if messages:
+            # Ensure all necessary parameters are passed to generate_chat_completion
+            # This includes system_prompt if it's in kwargs
             return await self.generate_chat_completion(
                 messages=messages,
-                model=model,
+                model=model, # Pass original model ID
                 max_tokens=max_tokens,
                 temperature=temperature,
-                json_mode=json_mode,
-                **kwargs
+                json_mode=json_mode, # Pass json_mode
+                **kwargs # Pass other kwargs like system, top_p etc.
             )
 
-        # Prepare message list for the API from prompt
-        messages = [{"role": "user", "content": prompt}]
+        # Original logic: Prepare message list for the API from prompt
+        # This path is taken if only 'prompt' is provided (and not 'messages')
+        current_api_messages = [{"role": "user", "content": prompt}]
 
-        # Handle system prompt if passed in kwargs
+        # Original logic: Handle system prompt if passed in kwargs for the simple prompt case
         system_prompt = kwargs.pop("system", None)
 
-        # Handle JSON mode - relies on prompt modification for Anthropic
-        processed_messages = messages  # Start with original messages
+        # Original logic: Handle JSON mode for simple prompt case
         if json_mode:
             self.logger.debug(
-                "json_mode=True requested for completion, modifying prompt for Anthropic."
+                "json_mode=True requested for completion (simple prompt), modifying user message for Anthropic."
             )
-            # Modify the user message content
-            last_user_message = processed_messages[-1]
-            if last_user_message["role"] == "user":
-                original_content = last_user_message["content"]
-                if "Please respond with valid JSON" not in original_content:
-                    last_user_message["content"] = (
-                        f"{original_content}\nPlease respond ONLY with valid JSON matching the expected schema. Do not include explanations or markdown formatting."
+            # Modify the user message content in current_api_messages
+            user_message_idx = -1
+            for i, msg in enumerate(current_api_messages):
+                if msg["role"] == "user":
+                    user_message_idx = i
+                    break
+            
+            if user_message_idx != -1:
+                original_content = current_api_messages[user_message_idx]["content"]
+                if isinstance(original_content, str) and "Please respond with valid JSON" not in original_content:
+                     current_api_messages[user_message_idx]["content"] = (
+                        f"{original_content}\\nPlease respond ONLY with valid JSON matching the expected schema. Do not include explanations or markdown formatting."
                     )
             else:
-                # Less ideal, append a new user message asking for JSON
-                processed_messages.append(
-                    {"role": "user", "content": "Please ensure your response is ONLY valid JSON."}
-                )
-        else:
-            # Ensure json_mode isn't passed in kwargs if False
-            kwargs.pop("json_mode", None)
+                # This case should ideally not happen if prompt is always user role.
+                # If it could, one might append a new user message asking for JSON,
+                # or include it in system prompt if system_prompt is being constructed here.
+                self.logger.warning("Could not find user message to append JSON instruction for simple prompt case.")
 
-        # Prepare API call parameters
+        # Prepare API call parameters using max_tokens directly from signature
         api_params = {
-            "messages": processed_messages,  # Use potentially modified messages
+            "messages": current_api_messages,
             "model": actual_model_name,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens, # Uses max_tokens from signature (which defaults to 1024 if not passed)
             "temperature": temperature,
-            **kwargs,  # Pass remaining kwargs (like top_p, etc.)
+            **kwargs,  # Pass remaining kwargs (like top_p, etc.) that were not popped
         }
-        if system_prompt:
+        if system_prompt: # Add system prompt if it was extracted
             api_params["system"] = system_prompt
-
+        
+        # Logging before API call (original style)
         self.logger.info(
             f"Generating completion with Anthropic model {actual_model_name}",
-            emoji_key=TaskType.COMPLETION.value,  # Use enum value
-            prompt_length=len(prompt or ""),
+            emoji_key=TaskType.COMPLETION.value,
+            prompt_length=len(prompt) if prompt else 0, # length of prompt if provided
             json_mode_requested=json_mode,
         )
 
@@ -182,13 +184,10 @@ class AnthropicProvider(BaseProvider):
                 self.client.messages.create, **api_params
             )
         except Exception as e:
-            # Add more context to the exception before re-raising
             error_message = f"Anthropic API error during completion for model {actual_model_name}: {type(e).__name__}: {str(e)}"
             self.logger.error(error_message, exc_info=True)
-            # Re-raise with more context, maybe as a ProviderError subtype?
             raise ConnectionError(error_message) from e
 
-        # Extract response text
         if (
             not response.content
             or not isinstance(response.content, list)
@@ -197,37 +196,32 @@ class AnthropicProvider(BaseProvider):
             raise ValueError(f"Unexpected response format from Anthropic API: {response}")
         completion_text = response.content[0].text
 
-        # Post-process if JSON mode was requested - best effort extraction
-        if json_mode:
-            original_text = completion_text
+        # Post-process if JSON mode was requested (for simple prompt case) - best effort extraction
+        if json_mode: # This json_mode is the original parameter
+            original_text_for_json_check = completion_text
             completion_text = self._extract_json_from_text(completion_text)
-            if original_text != completion_text:
-                self.logger.debug("Extracted JSON content from Anthropic response post-processing.")
+            if original_text_for_json_check != completion_text:
+                self.logger.debug("Extracted JSON content from Anthropic response post-processing (simple prompt case).")
 
-        # Create standardized response
         result = ModelResponse(
-            text=completion_text,  # Keep raw text accessible
-            model=f"{self.provider_name}/{actual_model_name}",  # Return prefixed model ID
+            text=completion_text,
+            model=f"{self.provider_name}/{actual_model_name}",
             provider=self.provider_name,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
             processing_time=processing_time,
-            raw_response=response.model_dump(),  # Use model_dump() if it's a Pydantic model
+            raw_response=response.model_dump(),
         )
-        
-        # Add message to result for consistency with chat_completion
         result.message = {"role": "assistant", "content": completion_text}
 
-        # Log success
         self.logger.success(
             "Anthropic completion successful",
             emoji_key="success",
             model=result.model,
             tokens={"input": result.input_tokens, "output": result.output_tokens},
-            cost=result.cost,  # cost calculation happens in ModelResponse
+            cost=result.cost,
             time=result.processing_time,
         )
-
         return result
 
     # --- NEW METHOD ---

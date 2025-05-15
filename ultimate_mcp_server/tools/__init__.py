@@ -76,7 +76,8 @@ from .local_text_tools import (
     run_sed,
     run_sed_stream,
 )
-from .marqo_fused_search import marqo_fused_search
+# from .marqo_fused_search import marqo_fused_search
+
 # from .meta_api_tool import register_api_meta_tools
 from .optimization import (
     compare_models,
@@ -170,6 +171,7 @@ from .unified_memory_system import (
     visualize_memory_network,
     visualize_reasoning_chain,
 )
+from .single_shot_synthesis import single_shot_synthesis
 
 __all__ = [
     # Base decorators/classes
@@ -286,7 +288,7 @@ __all__ = [
     # "register_api_meta_tools",
 
     # Marqo tool
-    "marqo_fused_search",
+    # "marqo_fused_search",
 
     # Tournament tools
     # "create_tournament",
@@ -350,6 +352,7 @@ __all__ = [
     "get_goal_details",
     "create_goal",
     "update_goal_status",
+    "single_shot_synthesis",
 ]
 
 logger = get_logger("ultimate_mcp_server.tools")

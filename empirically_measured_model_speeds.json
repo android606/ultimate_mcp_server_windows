@@ -44,7 +44,7 @@
         "output_tokens": 460,
         "output_tokens_per_second": 75.37
     },
-    "gemini-2.5-pro-exp-03-25": {
+    "gemini-2.5-pro-preview-03-25": {
         "total_time_s": 18.481,
         "output_tokens": 593,
         "output_tokens_per_second": 32.09

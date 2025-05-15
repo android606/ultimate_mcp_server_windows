@@ -582,7 +582,7 @@ async def _get_llm_config(action_name: str) -> Tuple[str, str]:
             if provider_name == LLMGatewayProvider.OPENAI.value:
                 model_name = "gpt-4o-mini"
             elif provider_name == LLMGatewayProvider.ANTHROPIC.value:
-                model_name = "claude-3-haiku-20240307"
+                model_name = "claude-3-5-haiku-20241022"
             else:
                 model_name = "provider-default"  # Placeholder
             logger.warning(
