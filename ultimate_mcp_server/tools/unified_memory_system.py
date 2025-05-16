@@ -27,12 +27,11 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import aiosqlite
 import markdown
 import numpy as np
-from grpc import Status
 from pygments.formatters import HtmlFormatter
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine_similarity
 
@@ -562,27 +561,27 @@ class DBConnection:
     @classmethod
     async def force_wal_checkpoint(
         cls,
-        modes: Sequence[str] = ("PASSIVE",), # Default to PASSIVE for less disruption
+        modes: Sequence[str] = ("PASSIVE",),  # Default to PASSIVE for less disruption
         retries: int = 5,
         wait: float = 0.2,
-        log_if_unable: bool = True, # Control logging if it fails
+        log_if_unable: bool = True,  # Control logging if it fails
     ):
-        async with cls._lock: # Acquire lock for the whole checkpointing attempt
+        async with cls._lock:  # Acquire lock for the whole checkpointing attempt
             if cls._instance is None:
                 if log_if_unable:
                     logger.warning("force_wal_checkpoint: No active connection, cannot checkpoint.")
-                return # Cannot checkpoint if no connection
+                return  # Cannot checkpoint if no connection
 
             conn = cls._instance
-            
+
             # Critical: Do not attempt checkpoint if the shared connection is in an active transaction
             # started by some other part of the code that hasn't committed yet.
             if conn.in_transaction:
                 if log_if_unable:
                     logger.warning(
-                        f"force_wal_checkpoint: Shared connection is in an active transaction. "
-                        f"Checkpoint attempt deferred. This might indicate a transaction leak or "
-                        f"checkpoint being called at an inappropriate time."
+                        "force_wal_checkpoint: Shared connection is in an active transaction. "
+                        "Checkpoint attempt deferred. This might indicate a transaction leak or "
+                        "checkpoint being called at an inappropriate time."
                     )
                 # Do NOT raise ToolError here, as it might interrupt the ongoing transaction.
                 # Let the caller decide if this is critical. Often, a deferred checkpoint is okay.
@@ -590,7 +589,7 @@ class DBConnection:
 
             # If we are here, conn is not in a transaction *at this moment by this check*.
             # The PRAGMA wal_checkpoint itself will try to acquire necessary locks.
-            
+
             for mode in modes:
                 for attempt in range(retries):
                     try:
@@ -600,37 +599,56 @@ class DBConnection:
                             result = await c.fetchone()
                             if result:
                                 busy, log_frames, checkpointed_frames = result
-                                logger.debug(f"WAL Checkpoint ({mode}, attempt {attempt+1}): busy={busy}, log={log_frames}, ckpt={checkpointed_frames}")
+                                logger.debug(
+                                    f"WAL Checkpoint ({mode}, attempt {attempt + 1}): busy={busy}, log={log_frames}, ckpt={checkpointed_frames}"
+                                )
                                 if busy == 0 and log_frames == 0:
                                     logger.debug(f"WAL successfully checkpointed with mode {mode}.")
-                                    return # Success
+                                    return  # Success
                             else:
-                                logger.warning(f"WAL Checkpoint ({mode}, attempt {attempt+1}): No result from PRAGMA.")
-                        
+                                logger.warning(
+                                    f"WAL Checkpoint ({mode}, attempt {attempt + 1}): No result from PRAGMA."
+                                )
+
                         # If not returned yet, means busy or log_frames > 0
-                        if attempt < retries -1: # Don't sleep on the last attempt
-                            await asyncio.sleep(wait * (attempt + 1)) # Exponential backoff for sleep
+                        if attempt < retries - 1:  # Don't sleep on the last attempt
+                            await asyncio.sleep(
+                                wait * (attempt + 1)
+                            )  # Exponential backoff for sleep
 
                     except aiosqlite.OperationalError as oe:
                         # This can happen if the DB is locked or busy in a way that prevents checkpoint
-                        logger.warning(f"WAL Checkpoint ({mode}, attempt {attempt+1}) failed with OperationalError: {oe}. Retrying...")
-                        if attempt < retries -1:
-                             await asyncio.sleep(wait * (attempt + 1))
-                        elif mode == modes[-1] and attempt == retries -1: # Last mode, last retry
+                        logger.warning(
+                            f"WAL Checkpoint ({mode}, attempt {attempt + 1}) failed with OperationalError: {oe}. Retrying..."
+                        )
+                        if attempt < retries - 1:
+                            await asyncio.sleep(wait * (attempt + 1))
+                        elif mode == modes[-1] and attempt == retries - 1:  # Last mode, last retry
                             if log_if_unable:
-                                logger.error(f"force_wal_checkpoint: Unable to flush WAL after all retries due to OperationalError: {oe}")
+                                logger.error(
+                                    f"force_wal_checkpoint: Unable to flush WAL after all retries due to OperationalError: {oe}"
+                                )
                             raise ToolError(f"unable to flush WAL due to: {oe}") from oe
                     except Exception as e:
-                        logger.error(f"force_wal_checkpoint: Unexpected error during checkpoint ({mode}, attempt {attempt+1}): {e}", exc_info=True)
-                        if mode == modes[-1] and attempt == retries -1: # Last mode, last retry
-                             if log_if_unable:
-                                logger.error(f"force_wal_checkpoint: Unable to flush WAL after all retries due to unexpected error: {e}")
-                             raise ToolError(f"unable to flush WAL due to unexpected error: {e}") from e
+                        logger.error(
+                            f"force_wal_checkpoint: Unexpected error during checkpoint ({mode}, attempt {attempt + 1}): {e}",
+                            exc_info=True,
+                        )
+                        if mode == modes[-1] and attempt == retries - 1:  # Last mode, last retry
+                            if log_if_unable:
+                                logger.error(
+                                    f"force_wal_checkpoint: Unable to flush WAL after all retries due to unexpected error: {e}"
+                                )
+                            raise ToolError(
+                                f"unable to flush WAL due to unexpected error: {e}"
+                            ) from e
                 # If loop for modes finishes and we haven't returned, it means all modes failed for this attempt
-            
+
             # If we've gone through all modes and retries and haven't returned, it failed.
             if log_if_unable:
-                logger.error("force_wal_checkpoint: Unable to flush WAL after all modes and retries.")
+                logger.error(
+                    "force_wal_checkpoint: Unable to flush WAL after all modes and retries."
+                )
             raise ToolError("unable to flush WAL")
 
     @classmethod
@@ -1079,7 +1097,7 @@ class MemoryUtils:
 
     @staticmethod
     async def _log_memory_operation(
-        conn: aiosqlite.Connection, # Accept the connection object
+        conn: aiosqlite.Connection,  # Accept the connection object
         workflow_id: str,
         operation: str,
         memory_id: Optional[str] = None,
@@ -1105,7 +1123,8 @@ class MemoryUtils:
             )
         except Exception as e:
             logger.error(
-                f"CRITICAL: Failed to log memory operation '{operation}' using provided conn: {e}", exc_info=True
+                f"CRITICAL: Failed to log memory operation '{operation}' using provided conn: {e}",
+                exc_info=True,
             )
 
     @staticmethod
@@ -1431,6 +1450,7 @@ async def initialize_memory_system(db_path: str = agent_memory_config.db_path) -
 
 # --- 2. Workflow Management Tools ---
 
+
 @with_tool_metrics
 @with_error_handling
 async def create_workflow(
@@ -1467,8 +1487,8 @@ async def create_workflow(
         raise ToolInputError("Workflow title must be a non-empty string.", param_name="title")
 
     workflow_id = MemoryUtils.generate_id()
-    now_unix = int(time.time()) # Use Unix timestamp for all DB operations
-    chain_id = MemoryUtils.generate_id() # Pre-generate for return value consistency
+    now_unix = int(time.time())  # Use Unix timestamp for all DB operations
+    chain_id = MemoryUtils.generate_id()  # Pre-generate for return value consistency
 
     # Get a DBConnection manager instance
     db_manager = DBConnection(db_path)
@@ -1505,11 +1525,11 @@ async def create_workflow(
                     description,
                     goal,
                     WorkflowStatus.ACTIVE.value,
-                    now_unix, # Use Unix timestamp
-                    now_unix, # Use Unix timestamp
+                    now_unix,  # Use Unix timestamp
+                    now_unix,  # Use Unix timestamp
                     parent_workflow_id,
                     metadata_json,
-                    now_unix, # Use Unix timestamp for last_active
+                    now_unix,  # Use Unix timestamp for last_active
                 ),
             )
 
@@ -1523,7 +1543,12 @@ async def create_workflow(
                     thought_chain_id, workflow_id, title, created_at
                 ) VALUES (?, ?, ?, ?)
                 """,
-                (chain_id, workflow_id, f"Main reasoning for: {title}", now_unix), # Use Unix timestamp
+                (
+                    chain_id,
+                    workflow_id,
+                    f"Main reasoning for: {title}",
+                    now_unix,
+                ),  # Use Unix timestamp
             )
 
             # 6. If a goal string is provided, record it as the first thought in the primary chain
@@ -1546,7 +1571,7 @@ async def create_workflow(
                         ThoughtType.GOAL.value,
                         goal,
                         sequence_number,
-                        now_unix, # Use Unix timestamp
+                        now_unix,  # Use Unix timestamp
                     ),
                 )
             # If all operations within the 'async with db_manager.transaction() as conn:' block succeed,
@@ -1556,9 +1581,13 @@ async def create_workflow(
         try:
             await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
         except ToolError as te_wal:
-            logger.warning(f"Passive WAL checkpoint failed after creating workflow '{title}': {te_wal}. Main operation succeeded.")
+            logger.warning(
+                f"Passive WAL checkpoint failed after creating workflow '{title}': {te_wal}. Main operation succeeded."
+            )
 
-            logger.info(f"Successfully created workflow '{title}' (ID: {_fmt_id(workflow_id)}) and primary thought chain (ID: {_fmt_id(chain_id)}).")
+            logger.info(
+                f"Successfully created workflow '{title}' (ID: {_fmt_id(workflow_id)}) and primary thought chain (ID: {_fmt_id(chain_id)})."
+            )
 
         # Prepare the return dictionary using ISO formatted timestamps for external consumers
         return {
@@ -1567,8 +1596,8 @@ async def create_workflow(
             "description": description,
             "goal": goal,
             "status": WorkflowStatus.ACTIVE.value,
-            "created_at": to_iso_z(now_unix), # Format for output
-            "updated_at": to_iso_z(now_unix), # Format for output
+            "created_at": to_iso_z(now_unix),  # Format for output
+            "updated_at": to_iso_z(now_unix),  # Format for output
             "tags": tags or [],
             "primary_thought_chain_id": chain_id,
             "success": True,
@@ -1581,7 +1610,6 @@ async def create_workflow(
         # Log unexpected errors and wrap them in ToolError
         logger.error(f"Unexpected error creating workflow '{title}': {e}", exc_info=True)
         raise ToolError(f"Failed to create workflow: {str(e)}") from e
-
 
 
 @with_tool_metrics
@@ -1605,9 +1633,9 @@ async def update_workflow_status(
         ) from e
 
     now_unix = int(time.time())
-    db_manager = DBConnection(db_path) # Get DB manager instance
+    db_manager = DBConnection(db_path)  # Get DB manager instance
 
-    async with db_manager.transaction() as conn: # Use transaction context manager
+    async with db_manager.transaction() as conn:  # Use transaction context manager
         # Check existence first within the transaction
         async with conn.execute(
             "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
@@ -1615,7 +1643,11 @@ async def update_workflow_status(
             if not await cursor.fetchone():
                 raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
 
-        update_params: List[Any] = [status_enum.value, now_unix, now_unix] # For status, updated_at, last_active
+        update_params: List[Any] = [
+            status_enum.value,
+            now_unix,
+            now_unix,
+        ]  # For status, updated_at, last_active
         set_clauses_parts = ["status = ?", "updated_at = ?", "last_active = ?"]
 
         if status_enum in [
@@ -1627,7 +1659,7 @@ async def update_workflow_status(
             update_params.append(now_unix)
 
         set_clauses_sql = ", ".join(set_clauses_parts)
-        update_params.append(workflow_id) # For WHERE clause
+        update_params.append(workflow_id)  # For WHERE clause
 
         await conn.execute(
             f"UPDATE workflows SET {set_clauses_sql} WHERE workflow_id = ?", update_params
@@ -1643,10 +1675,13 @@ async def update_workflow_status(
                 tc_row = await tc_cursor.fetchone()
                 if tc_row:
                     primary_thought_chain_id = tc_row["thought_chain_id"]
-            
+
             if primary_thought_chain_id:
                 seq_no = await MemoryUtils.get_next_sequence_number(
-                    conn, primary_thought_chain_id, "thoughts", "thought_chain_id" # Pass conn
+                    conn,
+                    primary_thought_chain_id,
+                    "thoughts",
+                    "thought_chain_id",  # Pass conn
                 )
                 thought_id = MemoryUtils.generate_id()
                 thought_type = (
@@ -1667,7 +1702,9 @@ async def update_workflow_status(
                 )
                 logger.debug(f"Recorded completion thought {thought_id} for workflow {workflow_id}")
             else:
-                logger.warning(f"Could not find primary thought chain for workflow {workflow_id} to add completion message.")
+                logger.warning(
+                    f"Could not find primary thought chain for workflow {workflow_id} to add completion message."
+                )
 
         # Process additional tags (within the same transaction)
         # Assuming MemoryUtils.process_tags accepts and uses 'conn'
@@ -1679,7 +1716,9 @@ async def update_workflow_status(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after updating workflow '{workflow_id}' status: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after updating workflow '{workflow_id}' status: {te_wal}. Main operation succeeded."
+        )
 
     # Prepare the result dictionary
     result = {
@@ -1701,6 +1740,7 @@ async def update_workflow_status(
         emoji_key="arrows_counterclockwise",
     )
     return result
+
 
 # --- 3. Action Tracking Tools ---
 
@@ -1743,7 +1783,7 @@ async def record_action_start(
     action_id = MemoryUtils.generate_id()
     memory_id = MemoryUtils.generate_id()  # Pre-generate ID for the linked memory
     now_unix = int(time.time())
-    start_time_perf = time.perf_counter() # For precise processing time
+    start_time_perf = time.perf_counter()  # For precise processing time
 
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
@@ -1783,7 +1823,10 @@ async def record_action_start(
 
         # --- Determine Action Title & Sequence Number ---
         sequence_number = await MemoryUtils.get_next_sequence_number(
-            conn, workflow_id, "actions", "workflow_id" # Pass conn
+            conn,
+            workflow_id,
+            "actions",
+            "workflow_id",  # Pass conn
         )
         auto_title = title
         if not auto_title:
@@ -1804,14 +1847,22 @@ async def record_action_start(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                action_id, workflow_id, parent_action_id, action_type_enum.value,
-                auto_title, reasoning, tool_name, tool_args_json,
-                ActionStatus.IN_PROGRESS.value, now_unix, sequence_number,
+                action_id,
+                workflow_id,
+                parent_action_id,
+                action_type_enum.value,
+                auto_title,
+                reasoning,
+                tool_name,
+                tool_args_json,
+                ActionStatus.IN_PROGRESS.value,
+                now_unix,
+                sequence_number,
             ),
         )
 
         # --- Process Tags for Action ---
-        await MemoryUtils.process_tags(conn, action_id, tags or [], "action") # Pass conn
+        await MemoryUtils.process_tags(conn, action_id, tags or [], "action")  # Pass conn
 
         # --- Link Action to Related Thought ---
         if related_thought_id:
@@ -1825,21 +1876,30 @@ async def record_action_start(
         if tool_name:
             memory_content += f" Tool: {tool_name}."
         mem_tags_list = ["action_start", action_type_enum.value] + (tags or [])
-        mem_tags_json = json.dumps(list(set(mem_tags_list))) # Ensure unique tags
+        mem_tags_json = json.dumps(list(set(mem_tags_list)))  # Ensure unique tags
 
         await conn.execute(
             """
              INSERT INTO memories (memory_id, workflow_id, action_id, content, memory_level, memory_type,
              importance, confidence, tags, created_at, updated_at, access_count, last_accessed)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL) 
-             """, # Added last_accessed as NULL
+             """,  # Added last_accessed as NULL
             (
-                memory_id, workflow_id, action_id, memory_content,
-                MemoryLevel.EPISODIC.value, MemoryType.ACTION_LOG.value,
-                5.0, 1.0, mem_tags_json, now_unix, now_unix, 0, # access_count starts at 0
+                memory_id,
+                workflow_id,
+                action_id,
+                memory_content,
+                MemoryLevel.EPISODIC.value,
+                MemoryType.ACTION_LOG.value,
+                5.0,
+                1.0,
+                mem_tags_json,
+                now_unix,
+                now_unix,
+                0,  # access_count starts at 0
             ),
         )
-        await MemoryUtils._log_memory_operation( # Pass conn
+        await MemoryUtils._log_memory_operation(  # Pass conn
             conn, workflow_id, "create_from_action_start", memory_id, action_id
         )
 
@@ -1853,7 +1913,9 @@ async def record_action_start(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after starting action '{action_id}': {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after starting action '{action_id}': {te_wal}. Main operation succeeded."
+        )
 
     # --- Prepare Result ---
     result = {
@@ -1874,21 +1936,20 @@ async def record_action_start(
     logger.info(
         f"Started action '{_fmt_id(auto_title)}' ({_fmt_id(action_id)}) in workflow {_fmt_id(workflow_id)}",
         emoji_key="fast_forward",
-        duration=result["processing_time"]
+        duration=result["processing_time"],
     )
     return result
-
 
 
 @with_tool_metrics
 @with_error_handling
 async def record_action_completion(
     action_id: str,
-    status: str = "completed", # Keep default as string for flexibility from LLM
+    status: str = "completed",  # Keep default as string for flexibility from LLM
     tool_result: Optional[Any] = None,
     summary: Optional[str] = None,
     conclusion_thought: Optional[str] = None,
-    conclusion_thought_type: str = "inference", # Keep default as string
+    conclusion_thought_type: str = "inference",  # Keep default as string
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Logs the end of an agent action, its result, and status. Updates linked memory.
@@ -1902,7 +1963,9 @@ async def record_action_completion(
         if status_enum not in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.SKIPPED]:
             raise ValueError("Status must indicate completion, failure, or skipping.")
     except ValueError as e:
-        valid_statuses = [s.value for s in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.SKIPPED]]
+        valid_statuses = [
+            s.value for s in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.SKIPPED]
+        ]
         raise ToolInputError(
             f"Invalid completion status '{status}'. Must be one of: {', '.join(valid_statuses)}",
             param_name="status",
@@ -1921,7 +1984,7 @@ async def record_action_completion(
             ) from e
 
     now_unix = int(time.time())
-    conclusion_thought_id_val: Optional[str] = None # Initialize
+    conclusion_thought_id_val: Optional[str] = None  # Initialize
 
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
@@ -1932,10 +1995,13 @@ async def record_action_completion(
             action_row = await cursor.fetchone()
             if not action_row:
                 raise ToolInputError(f"Action not found: {action_id}", param_name="action_id")
-        
+
         workflow_id = action_row["workflow_id"]
         current_status_from_db = action_row["status"]
-        if current_status_from_db not in [ActionStatus.IN_PROGRESS.value, ActionStatus.PLANNED.value]:
+        if current_status_from_db not in [
+            ActionStatus.IN_PROGRESS.value,
+            ActionStatus.PLANNED.value,
+        ]:
             logger.warning(
                 f"Action {action_id} already has terminal status '{current_status_from_db}'. Allowing update anyway."
             )
@@ -1969,10 +2035,13 @@ async def record_action_completion(
                 chain_row = await cursor.fetchone()
                 if chain_row:
                     primary_chain_id = chain_row["thought_chain_id"]
-            
+
             if primary_chain_id:
                 seq_no = await MemoryUtils.get_next_sequence_number(
-                    conn, primary_chain_id, "thoughts", "thought_chain_id" # Pass conn
+                    conn,
+                    primary_chain_id,
+                    "thoughts",
+                    "thought_chain_id",  # Pass conn
                 )
                 conclusion_thought_id_val = MemoryUtils.generate_id()
                 await conn.execute(
@@ -1982,11 +2051,18 @@ async def record_action_completion(
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        conclusion_thought_id_val, primary_chain_id, thought_type_enum.value,
-                        conclusion_thought, seq_no, now_unix, action_id,
+                        conclusion_thought_id_val,
+                        primary_chain_id,
+                        thought_type_enum.value,
+                        conclusion_thought,
+                        seq_no,
+                        now_unix,
+                        action_id,
                     ),
                 )
-                logger.debug(f"Recorded conclusion thought {_fmt_id(conclusion_thought_id_val)} for action {_fmt_id(action_id)}")
+                logger.debug(
+                    f"Recorded conclusion thought {_fmt_id(conclusion_thought_id_val)} for action {_fmt_id(action_id)}"
+                )
             else:
                 logger.warning(
                     f"Could not find primary thought chain for workflow {_fmt_id(workflow_id)} to add conclusion thought."
@@ -2003,12 +2079,12 @@ async def record_action_completion(
             if memory_row:
                 memory_id_to_update = memory_row["memory_id"]
                 original_content = memory_row["content"]
-        
+
         if memory_id_to_update and original_content is not None:
             update_parts = [f"Completed ({status_enum.value})."]
             if summary:
                 update_parts.append(f"Summary: {summary}")
-            
+
             result_preview = ""
             if tool_result is not None:
                 if isinstance(tool_result, dict):
@@ -2016,12 +2092,12 @@ async def record_action_completion(
                 elif isinstance(tool_result, list):
                     result_preview = f"Result: [List with {len(tool_result)} items]"
                 elif isinstance(tool_result, str) and len(tool_result) > 100:
-                     result_preview = f"Result: {tool_result[:97]}..."
+                    result_preview = f"Result: {tool_result[:97]}..."
                 elif isinstance(tool_result, str):
-                     result_preview = f"Result: {tool_result}"
-                elif tool_result is True: # Explicitly check for boolean True
+                    result_preview = f"Result: {tool_result}"
+                elif tool_result is True:  # Explicitly check for boolean True
                     result_preview = "Result: Success (True)"
-                elif tool_result is False: # Explicitly check for boolean False
+                elif tool_result is False:  # Explicitly check for boolean False
                     result_preview = "Result: Failure (False)"
                 else:
                     result_preview = f"Result: [Object type {type(tool_result).__name__}]"
@@ -2030,11 +2106,13 @@ async def record_action_completion(
 
             update_text = " ".join(update_parts)
             new_content = original_content + " " + update_text
-            
+
             importance_mult = 1.0
-            if status_enum == ActionStatus.FAILED: importance_mult = 1.2
-            elif status_enum == ActionStatus.SKIPPED: importance_mult = 0.8
-            
+            if status_enum == ActionStatus.FAILED:
+                importance_mult = 1.2
+            elif status_enum == ActionStatus.SKIPPED:
+                importance_mult = 0.8
+
             await conn.execute(
                 """
                 UPDATE memories
@@ -2043,15 +2121,21 @@ async def record_action_completion(
                     updated_at = ?,
                     last_accessed = ? 
                 WHERE memory_id = ?
-                """, # Added last_accessed update
+                """,  # Added last_accessed update
                 (new_content, importance_mult, now_unix, now_unix, memory_id_to_update),
             )
-            await MemoryUtils._log_memory_operation( # Pass conn
-                conn, workflow_id, "update_from_action_completion", memory_id_to_update, action_id,
+            await MemoryUtils._log_memory_operation(  # Pass conn
+                conn,
+                workflow_id,
+                "update_from_action_completion",
+                memory_id_to_update,
+                action_id,
                 {"status": status_enum.value, "summary_added": bool(summary)},
             )
-            logger.debug(f"Updated linked memory {_fmt_id(memory_id_to_update)} for completed action {_fmt_id(action_id)}")
-        elif action_row: # action_row confirmed action_id exists
+            logger.debug(
+                f"Updated linked memory {_fmt_id(memory_id_to_update)} for completed action {_fmt_id(action_id)}"
+            )
+        elif action_row:  # action_row confirmed action_id exists
             logger.warning(
                 f"Could not find corresponding action_log memory for completed action {_fmt_id(action_id)} to update."
             )
@@ -2060,8 +2144,10 @@ async def record_action_completion(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after completing action '{action_id}': {te_wal}. Main operation succeeded.")
-   
+        logger.warning(
+            f"Passive WAL checkpoint failed after completing action '{action_id}': {te_wal}. Main operation succeeded."
+        )
+
     # --- Prepare Result ---
     result = {
         "action_id": action_id,
@@ -2237,7 +2323,6 @@ async def get_action_details(
 # ======================================================
 
 
-
 @with_tool_metrics
 @with_error_handling
 async def summarize_context_block(
@@ -2318,7 +2403,7 @@ THOUGHT CHAINS TO SUMMARIZE:
 
 CONCISE THOUGHT SUMMARY:
 """
-    else: # Generic template
+    else:  # Generic template
         prompt_template = """
 You are an expert context summarizer for an AI agent. Your task is to create a concise summary of the following text
 while preserving the most important information for the agent to maintain awareness and functionality.
@@ -2339,28 +2424,35 @@ CONCISE SUMMARY:
 """
     try:
         # Determine provider/model to use
-        config = get_config() # Assuming get_config() is available and works
+        config = get_config()  # Assuming get_config() is available and works
         # Use provided 'provider', else config.default_provider, else a hardcoded fallback
-        provider_to_use_str = provider or config.default_provider or LLMGatewayProvider.ANTHROPIC.value # Ensure LLMGatewayProvider is imported
-        
-        provider_instance = await get_provider(provider_to_use_str) # Assuming get_provider is available
+        provider_to_use_str = (
+            provider or config.default_provider or LLMGatewayProvider.ANTHROPIC.value
+        )  # Ensure LLMGatewayProvider is imported
+
+        provider_instance = await get_provider(
+            provider_to_use_str
+        )  # Assuming get_provider is available
         if not provider_instance:
             raise ToolError(f"Failed to initialize provider '{provider_to_use_str}'.")
 
         model_to_use = model or provider_instance.get_default_model()
-        if not model_to_use: # Fallback if provider has no default
-            logger.warning(f"Provider '{provider_to_use_str}' has no default model. Attempting with a generic fallback (this might fail).")
+        if not model_to_use:  # Fallback if provider has no default
+            logger.warning(
+                f"Provider '{provider_to_use_str}' has no default model. Attempting with a generic fallback (this might fail)."
+            )
             # Define a generic fallback or raise error if no model can be determined
             # For example, if provider_to_use_str is 'openai', a common fallback is 'gpt-3.5-turbo'
             # This part depends heavily on how your get_default_model and providers are set up.
             # If get_default_model can return None, you need a robust fallback here.
             if provider_to_use_str == LLMGatewayProvider.OPENAI.value:
-                 model_to_use = "gpt-3.5-turbo" # Example fallback
+                model_to_use = "gpt-3.5-turbo"  # Example fallback
             elif provider_to_use_str == LLMGatewayProvider.ANTHROPIC.value:
-                 model_to_use = "claude-3-haiku-20240307" # Example fallback
+                model_to_use = "claude-3-haiku-20240307"  # Example fallback
             else:
-                 raise ToolError(f"No model specified and provider '{provider_to_use_str}' has no default model configured, and no generic fallback for it.")
-
+                raise ToolError(
+                    f"No model specified and provider '{provider_to_use_str}' has no default model configured, and no generic fallback for it."
+                )
 
         # Generate summary
         generation_result = await provider_instance.generate_completion(
@@ -2368,7 +2460,7 @@ CONCISE SUMMARY:
                 text_to_summarize=text_to_summarize, target_tokens=target_tokens
             ),
             model=model_to_use,
-            max_tokens=target_tokens + 150, # Increased buffer slightly
+            max_tokens=target_tokens + 150,  # Increased buffer slightly
             temperature=0.2,
         )
 
@@ -2378,22 +2470,21 @@ CONCISE SUMMARY:
             # as an empty summary from LLM is a valid (though unhelpful) outcome.
             # The caller can decide how to handle an empty summary.
             logger.warning(f"LLM returned empty context summary for context_type '{context_type}'.")
-            summary_text = "" # Ensure it's an empty string, not None
+            summary_text = ""  # Ensure it's an empty string, not None
 
-        original_length = max(1, len(text_to_summarize)) # Avoid division by zero
+        original_length = max(1, len(text_to_summarize))  # Avoid division by zero
         compression_ratio = len(summary_text) / original_length if original_length > 0 else 0.0
-
 
         # Log the operation if workflow_id provided, using a transaction
         if workflow_id:
             db_manager = DBConnection(db_path)
             async with db_manager.transaction() as conn:
-                await MemoryUtils._log_memory_operation( # Ensure this uses 'conn'
+                await MemoryUtils._log_memory_operation(  # Ensure this uses 'conn'
                     conn,
                     workflow_id,
                     "compress_context",
-                    None, # memory_id
-                    None, # action_id
+                    None,  # memory_id
+                    None,  # action_id
                     {
                         "context_type": context_type,
                         "original_length": len(text_to_summarize),
@@ -2417,7 +2508,7 @@ CONCISE SUMMARY:
             "summary": summary_text,
             "context_type": context_type,
             "compression_ratio": compression_ratio,
-            "success": True, # Indicates the summarization process completed
+            "success": True,  # Indicates the summarization process completed
             "processing_time": processing_time,
         }
 
@@ -2457,7 +2548,7 @@ async def add_action_dependency(
 
     start_time = time.time()
     now_unix = int(time.time())
-    dependency_id: Optional[int] = None # lastrowid returns int
+    dependency_id: Optional[int] = None  # lastrowid returns int
 
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
@@ -2509,17 +2600,17 @@ async def add_action_dependency(
         )
 
         if insert_cursor.rowcount > 0:
-            dependency_id = insert_cursor.lastrowid # This is an int for autoincrement PK
+            dependency_id = insert_cursor.lastrowid  # This is an int for autoincrement PK
             logger.debug(f"Inserted new dependency row with ID: {dependency_id}")
         else:
             # If IGNORE occurred, fetch the existing dependency_id
-            async with conn.execute( # Use a new cursor for this SELECT
+            async with conn.execute(  # Use a new cursor for this SELECT
                 "SELECT dependency_id FROM dependencies WHERE source_action_id = ? AND target_action_id = ? AND dependency_type = ?",
                 (source_action_id, target_action_id, dependency_type),
             ) as existing_cursor:
                 existing_row = await existing_cursor.fetchone()
                 if existing_row:
-                    dependency_id = existing_row["dependency_id"] # This is an int
+                    dependency_id = existing_row["dependency_id"]  # This is an int
                     logger.debug(
                         f"Dependency already existed. Retrieved existing ID: {dependency_id}"
                     )
@@ -2531,7 +2622,7 @@ async def add_action_dependency(
                         f"Dependency insert was ignored for ({_fmt_id(source_action_id)}, {_fmt_id(target_action_id)}, {dependency_type}), "
                         "but could not retrieve existing row. This might indicate a data consistency issue if the UNIQUE constraint was expected to be hit."
                     )
-        await insert_cursor.close() # Close the insert_cursor
+        await insert_cursor.close()  # Close the insert_cursor
 
         # --- Update Workflow Timestamp ---
         await conn.execute(
@@ -2544,7 +2635,7 @@ async def add_action_dependency(
             "source_action_id": source_action_id,
             "target_action_id": target_action_id,
             "dependency_type": dependency_type,
-            "db_dependency_id": dependency_id, # This can be None if the fallback lookup failed
+            "db_dependency_id": dependency_id,  # This can be None if the fallback lookup failed
         }
         # Ensure _log_memory_operation uses the passed 'conn'
         await MemoryUtils._log_memory_operation(
@@ -2555,8 +2646,10 @@ async def add_action_dependency(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after adding dependency for action '{source_action_id}': {te_wal}. Main operation succeeded.")
-   
+        logger.warning(
+            f"Passive WAL checkpoint failed after adding dependency for action '{source_action_id}': {te_wal}. Main operation succeeded."
+        )
+
     processing_time = time.time() - start_time
     logger.info(
         f"Added/Confirmed dependency ({dependency_type}) from {_fmt_id(source_action_id)} to {_fmt_id(target_action_id)} (ID: {dependency_id or 'N/A'}).",
@@ -2567,8 +2660,8 @@ async def add_action_dependency(
         "source_action_id": source_action_id,
         "target_action_id": target_action_id,
         "dependency_type": dependency_type,
-        "dependency_id": dependency_id, # Can be None if not newly inserted and lookup failed
-        "created_at": to_iso_z(now_unix), # Return ISO formatted time
+        "dependency_id": dependency_id,  # Can be None if not newly inserted and lookup failed
+        "created_at": to_iso_z(now_unix),  # Return ISO formatted time
         "success": True,
         "processing_time": processing_time,
     }
@@ -2690,19 +2783,19 @@ async def record_artifact(
 
     artifact_id = MemoryUtils.generate_id()
     now_unix = int(time.time())
-    db_manager = DBConnection(db_path) # Get DB manager instance
+    db_manager = DBConnection(db_path)  # Get DB manager instance
 
-    linked_memory_id = MemoryUtils.generate_id() # Pre-generate for return value consistency
-    final_db_content = None # Initialize
+    linked_memory_id = MemoryUtils.generate_id()  # Pre-generate for return value consistency
+    final_db_content = None  # Initialize
 
-    async with db_manager.transaction() as conn: # Use transaction context manager
+    async with db_manager.transaction() as conn:  # Use transaction context manager
         # --- Existence Checks (within transaction) ---
         async with conn.execute(
             "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
         ) as cursor:
             if not await cursor.fetchone():
                 raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
-        
+
         if action_id:
             async with conn.execute(
                 "SELECT 1 FROM actions WHERE action_id = ? AND workflow_id = ?",
@@ -2715,8 +2808,10 @@ async def record_artifact(
                     )
 
         # --- Prepare Data (within transaction if it involves DB reads, but serialize doesn't) ---
-        metadata_json = await MemoryUtils.serialize(metadata) # Safe to call outside transaction if it doesn't query DB
-        
+        metadata_json = await MemoryUtils.serialize(
+            metadata
+        )  # Safe to call outside transaction if it doesn't query DB
+
         # Content truncation logic
         max_len = agent_memory_config.max_text_length
         if content:
@@ -2731,17 +2826,19 @@ async def record_artifact(
                 if final_db_content.endswith("\ufffd") and max_len > 0:
                     # Try decoding one byte less to avoid partial char if possible
                     # This is a heuristic
-                    for i in range(1, min(4, max_len)): # Check up to 3 bytes back
-                        try_shorter_bytes = content_bytes[:max_len - i]
-                        try_shorter_str = try_shorter_bytes.decode("utf-8", errors="strict") # Use strict to check validity
-                        final_db_content = try_shorter_str # If strict decode works, use it
-                        break # Found a valid shorter string
-                    else: # If loop finished without break, stick with original replace
-                        pass 
-                final_db_content += "..." # Add ellipsis after truncation
+                    for i in range(1, min(4, max_len)):  # Check up to 3 bytes back
+                        try_shorter_bytes = content_bytes[: max_len - i]
+                        try_shorter_str = try_shorter_bytes.decode(
+                            "utf-8", errors="strict"
+                        )  # Use strict to check validity
+                        final_db_content = try_shorter_str  # If strict decode works, use it
+                        break  # Found a valid shorter string
+                    else:  # If loop finished without break, stick with original replace
+                        pass
+                final_db_content += "..."  # Add ellipsis after truncation
             else:
                 final_db_content = content
-        
+
         # --- Insert Artifact Record ---
         await conn.execute(
             """
@@ -2750,8 +2847,17 @@ async def record_artifact(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                artifact_id, workflow_id, action_id, artifact_type_enum.value, name,
-                description, path, final_db_content, metadata_json, now_unix, is_output,
+                artifact_id,
+                workflow_id,
+                action_id,
+                artifact_type_enum.value,
+                name,
+                description,
+                path,
+                final_db_content,
+                metadata_json,
+                now_unix,
+                is_output,
             ),
         )
         logger.debug(f"Inserted artifact record {artifact_id}")
@@ -2769,13 +2875,19 @@ async def record_artifact(
 
         # --- Create Linked Episodic Memory about the Artifact Creation (within transaction) ---
         memory_content = f"Artifact '{name}' (type: {artifact_type_enum.value}) was created"
-        if action_id: memory_content += f" during action '{action_id[:8]}...'"
-        if description: memory_content += f". Description: {description[:100]}..."
-        if path: memory_content += f". Located at: {path}"
-        elif final_db_content and final_db_content != content : memory_content += ". Content stored (truncated)."
-        elif content: memory_content += ". Content stored directly."
-        if is_output: memory_content += ". Marked as a final workflow output."
-        
+        if action_id:
+            memory_content += f" during action '{action_id[:8]}...'"
+        if description:
+            memory_content += f". Description: {description[:100]}..."
+        if path:
+            memory_content += f". Located at: {path}"
+        elif final_db_content and final_db_content != content:
+            memory_content += ". Content stored (truncated)."
+        elif content:
+            memory_content += ". Content stored directly."
+        if is_output:
+            memory_content += ". Marked as a final workflow output."
+
         mem_tags_set = set(["artifact_creation", artifact_type_enum.value] + artifact_tags_list)
         mem_importance = 6.0 if is_output else 5.0
 
@@ -2786,28 +2898,48 @@ async def record_artifact(
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              """,
             (
-                linked_memory_id, workflow_id, action_id, artifact_id, memory_content,
-                MemoryLevel.EPISODIC.value, MemoryType.ARTIFACT_CREATION.value,
-                mem_importance, 1.0, json.dumps(list(mem_tags_set)), now_unix, now_unix, 0,
+                linked_memory_id,
+                workflow_id,
+                action_id,
+                artifact_id,
+                memory_content,
+                MemoryLevel.EPISODIC.value,
+                MemoryType.ARTIFACT_CREATION.value,
+                mem_importance,
+                1.0,
+                json.dumps(list(mem_tags_set)),
+                now_unix,
+                now_unix,
+                0,
             ),
         )
         logger.debug(f"Inserted linked memory record {linked_memory_id} for artifact {artifact_id}")
 
         # --- Log Operations (assuming MemoryUtils._log_memory_operation uses passed conn) ---
         await MemoryUtils._log_memory_operation(
-            conn, workflow_id, "create_artifact", None, action_id,
+            conn,
+            workflow_id,
+            "create_artifact",
+            None,
+            action_id,
             {"artifact_id": artifact_id, "name": name, "type": artifact_type_enum.value},
         )
         await MemoryUtils._log_memory_operation(
-            conn, workflow_id, "create_from_artifact", linked_memory_id, action_id,
+            conn,
+            workflow_id,
+            "create_from_artifact",
+            linked_memory_id,
+            action_id,
             {"artifact_id": artifact_id},
         )
         # Transaction will commit here if no exceptions
-    
+
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after recording artifact '{name}': {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after recording artifact '{name}': {te_wal}. Main operation succeeded."
+        )
 
     result = {
         "artifact_id": artifact_id,
@@ -2815,8 +2947,12 @@ async def record_artifact(
         "name": name,
         "artifact_type": artifact_type_enum.value,
         "path": path,
-        "content_stored_in_db": bool(final_db_content), # Reflects if content was stored (even if truncated)
-        "content_truncated_in_db": bool(final_db_content and content and final_db_content != content),
+        "content_stored_in_db": bool(
+            final_db_content
+        ),  # Reflects if content was stored (even if truncated)
+        "content_truncated_in_db": bool(
+            final_db_content and content and final_db_content != content
+        ),
         "created_at": to_iso_z(now_unix),
         "is_output": is_output,
         "tags": artifact_tags_list,
@@ -2845,7 +2981,7 @@ async def record_thought(
     relevant_artifact_id: Optional[str] = None,
     relevant_memory_id: Optional[str] = None,
     db_path: str = agent_memory_config.db_path,
-    conn: Optional[Any] = None, # Keep type hint
+    conn: Optional[Any] = None,  # Keep type hint
 ) -> Dict[str, Any]:
     """Saves a single reasoning step, goal, decision, or reflection to a thought chain. Optionally links to memory.
     Args: workflow_id, content, thought_type, thought_chain_id, parent_thought_id, relevant_action/artifact/memory_id.
@@ -2870,7 +3006,7 @@ async def record_thought(
 
     # Inner helper function remains the same as it correctly uses the passed 'db_conn'
     async def _perform_db_operations(db_conn: aiosqlite.Connection):
-        nonlocal final_linked_memory_id # Allow modification of outer scope variable
+        nonlocal final_linked_memory_id  # Allow modification of outer scope variable
 
         async with db_conn.execute(
             "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
@@ -2895,20 +3031,28 @@ async def record_thought(
                 "SELECT 1 FROM actions WHERE action_id = ?", (relevant_action_id,)
             ) as cursor:
                 if not await cursor.fetchone():
-                    raise ToolInputError(f"Relevant action not found: {relevant_action_id}", param_name="relevant_action_id")
+                    raise ToolInputError(
+                        f"Relevant action not found: {relevant_action_id}",
+                        param_name="relevant_action_id",
+                    )
         if relevant_artifact_id:
             async with db_conn.execute(
                 "SELECT 1 FROM artifacts WHERE artifact_id = ?", (relevant_artifact_id,)
             ) as cursor:
                 if not await cursor.fetchone():
-                    raise ToolInputError(f"Relevant artifact not found: {relevant_artifact_id}", param_name="relevant_artifact_id")
+                    raise ToolInputError(
+                        f"Relevant artifact not found: {relevant_artifact_id}",
+                        param_name="relevant_artifact_id",
+                    )
         if relevant_memory_id:
             async with db_conn.execute(
                 "SELECT 1 FROM memories WHERE memory_id = ?", (relevant_memory_id,)
             ) as cursor:
                 if not await cursor.fetchone():
-                    raise ToolInputError(f"Relevant memory not found: {relevant_memory_id}", param_name="relevant_memory_id")
-
+                    raise ToolInputError(
+                        f"Relevant memory not found: {relevant_memory_id}",
+                        param_name="relevant_memory_id",
+                    )
 
         target_thought_chain_id = thought_chain_id
         if not target_thought_chain_id:
@@ -2921,11 +3065,13 @@ async def record_thought(
                     # This is the critical part: if 'conn' (external transaction) is passed, we cannot create a new chain here
                     # because that would require a separate commit or handling within the external transaction's scope.
                     # The original logic `if conn: raise ToolError(...)` was correct.
-                    if conn: # Check if an *external* transaction connection was passed to record_thought
+                    if (
+                        conn
+                    ):  # Check if an *external* transaction connection was passed to record_thought
                         raise ToolError(
                             f"Primary thought chain for workflow {workflow_id} not found, and cannot auto-create within an existing external transaction."
                         )
-                    else: # No external conn, we are managing our own transaction, so we can create it.
+                    else:  # No external conn, we are managing our own transaction, so we can create it.
                         target_thought_chain_id = MemoryUtils.generate_id()
                         logger.info(
                             f"No existing thought chain found for workflow {workflow_id}, creating default with ID {target_thought_chain_id}."
@@ -2961,9 +3107,16 @@ async def record_thought(
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                thought_id, target_thought_chain_id, parent_thought_id, thought_type_enum.value,
-                content, sequence_number, now_unix, relevant_action_id,
-                relevant_artifact_id, relevant_memory_id,
+                thought_id,
+                target_thought_chain_id,
+                parent_thought_id,
+                thought_type_enum.value,
+                content,
+                sequence_number,
+                now_unix,
+                relevant_action_id,
+                relevant_artifact_id,
+                relevant_memory_id,
             ),
         )
 
@@ -2973,14 +3126,24 @@ async def record_thought(
         )
 
         important_thought_types = [
-            ThoughtType.GOAL.value, ThoughtType.DECISION.value, ThoughtType.SUMMARY.value,
-            ThoughtType.REFLECTION.value, ThoughtType.HYPOTHESIS.value, ThoughtType.INSIGHT.value,
+            ThoughtType.GOAL.value,
+            ThoughtType.DECISION.value,
+            ThoughtType.SUMMARY.value,
+            ThoughtType.REFLECTION.value,
+            ThoughtType.HYPOTHESIS.value,
+            ThoughtType.INSIGHT.value,
         ]
         if thought_type_enum.value in important_thought_types:
-            final_linked_memory_id = MemoryUtils.generate_id() # Set the outer scope variable
-            mem_content = f"Thought [{sequence_number}] ({thought_type_enum.value.capitalize()}): {content}"
+            final_linked_memory_id = MemoryUtils.generate_id()  # Set the outer scope variable
+            mem_content = (
+                f"Thought [{sequence_number}] ({thought_type_enum.value.capitalize()}): {content}"
+            )
             mem_tags = ["reasoning", thought_type_enum.value]
-            mem_importance = 7.5 if thought_type_enum.value in [ThoughtType.GOAL.value, ThoughtType.DECISION.value] else 6.5
+            mem_importance = (
+                7.5
+                if thought_type_enum.value in [ThoughtType.GOAL.value, ThoughtType.DECISION.value]
+                else 6.5
+            )
 
             await db_conn.execute(
                 """
@@ -2991,38 +3154,62 @@ async def record_thought(
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                  """,
                 (
-                    final_linked_memory_id, workflow_id, thought_id, mem_content,
-                    MemoryLevel.SEMANTIC.value, MemoryType.REASONING_STEP.value,
-                    mem_importance, 1.0, json.dumps(mem_tags), now_unix, now_unix, 0,
+                    final_linked_memory_id,
+                    workflow_id,
+                    thought_id,
+                    mem_content,
+                    MemoryLevel.SEMANTIC.value,
+                    MemoryType.REASONING_STEP.value,
+                    mem_importance,
+                    1.0,
+                    json.dumps(mem_tags),
+                    now_unix,
+                    now_unix,
+                    0,
                 ),
             )
-            await MemoryUtils._log_memory_operation( # Uses the passed db_conn
-                db_conn, workflow_id, "create_from_thought", final_linked_memory_id, None, {"thought_id": thought_id}
+            await MemoryUtils._log_memory_operation(  # Uses the passed db_conn
+                db_conn,
+                workflow_id,
+                "create_from_thought",
+                final_linked_memory_id,
+                None,
+                {"thought_id": thought_id},
             )
         return target_thought_chain_id, sequence_number
 
     target_thought_chain_id_res: Optional[str] = None
     sequence_number_res: Optional[int] = None
-    manage_transaction_locally = conn is None # True if no external connection was passed
+    manage_transaction_locally = conn is None  # True if no external connection was passed
 
     try:
         if manage_transaction_locally:
             db_manager = DBConnection(db_path)
             async with db_manager.transaction() as local_conn:
-                target_thought_chain_id_res, sequence_number_res = await _perform_db_operations(local_conn)
+                target_thought_chain_id_res, sequence_number_res = await _perform_db_operations(
+                    local_conn
+                )
             # WAL checkpoint after local transaction commits
             try:
                 await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
             except ToolError as te_wal:
-                logger.warning(f"Passive WAL checkpoint failed after recording thought for chain {target_thought_chain_id_res}: {te_wal}. Main operation succeeded.")
-            logger.debug(f"Executed record_thought with internal transaction and WAL checkpoint for chain {target_thought_chain_id_res}")
-        else: # Use the provided external connection
+                logger.warning(
+                    f"Passive WAL checkpoint failed after recording thought for chain {target_thought_chain_id_res}: {te_wal}. Main operation succeeded."
+                )
+            logger.debug(
+                f"Executed record_thought with internal transaction and WAL checkpoint for chain {target_thought_chain_id_res}"
+            )
+        else:  # Use the provided external connection
             # Type check for safety, though Pylance might complain if conn type is just 'Any' in signature
             if not isinstance(conn, aiosqlite.Connection):
-                 raise ToolError("Invalid database connection object passed to record_thought.") # Should not happen with correct usage
+                raise ToolError(
+                    "Invalid database connection object passed to record_thought."
+                )  # Should not happen with correct usage
             target_thought_chain_id_res, sequence_number_res = await _perform_db_operations(conn)
             # NO COMMIT and NO WAL CHECKPOINT here - handled by the outer transaction manager
-            logger.debug(f"Executed record_thought within provided transaction for chain {target_thought_chain_id_res}")
+            logger.debug(
+                f"Executed record_thought within provided transaction for chain {target_thought_chain_id_res}"
+            )
 
         result = {
             "thought_id": thought_id,
@@ -3034,11 +3221,16 @@ async def record_thought(
             "linked_memory_id": final_linked_memory_id,
             "success": True,
         }
-        logger.info(f"Recorded thought ({thought_type_enum.value}) in workflow {workflow_id}", emoji_key="brain")
+        logger.info(
+            f"Recorded thought ({thought_type_enum.value}) in workflow {workflow_id}",
+            emoji_key="brain",
+        )
         return result
 
     except ToolInputError:
-        logger.warning(f"Input error recording thought: {traceback.format_exc(limit=0)}", exc_info=False)
+        logger.warning(
+            f"Input error recording thought: {traceback.format_exc(limit=0)}", exc_info=False
+        )
         raise
     except ToolError as te:
         logger.error(f"Tool error recording thought: {te}", exc_info=True)
@@ -3062,7 +3254,7 @@ async def store_memory(
     reasoning: Optional[str] = None,
     source: Optional[str] = None,
     tags: Optional[List[str]] = None,
-    ttl: Optional[int] = None, # Use config default if None
+    ttl: Optional[int] = None,  # Use config default if None
     context_data: Optional[Dict[str, Any]] = None,
     generate_embedding: bool = True,
     suggest_links: bool = True,
@@ -3098,9 +3290,13 @@ async def store_memory(
     if not 0.0 <= confidence <= 1.0:
         raise ToolInputError("Confidence must be 0.0-1.0.", param_name="confidence")
     if not 0.0 <= link_suggestion_threshold <= 1.0:
-        raise ToolInputError("Link suggestion threshold must be 0.0-1.0.", param_name="link_suggestion_threshold")
+        raise ToolInputError(
+            "Link suggestion threshold must be 0.0-1.0.", param_name="link_suggestion_threshold"
+        )
     if not isinstance(max_suggested_links, int) or max_suggested_links < 0:
-        raise ToolInputError("Max suggested links must be a non-negative integer.", param_name="max_suggested_links")
+        raise ToolInputError(
+            "Max suggested links must be a non-negative integer.", param_name="max_suggested_links"
+        )
 
     memory_id = MemoryUtils.generate_id()
     now_unix = int(time.time())
@@ -3111,7 +3307,7 @@ async def store_memory(
     suggested_links_list_final: List[Dict[str, Any]] = []
 
     db_manager = DBConnection(db_path)
-    async with db_manager.transaction() as conn: # Use transaction context manager
+    async with db_manager.transaction() as conn:  # Use transaction context manager
         # --- 1. Existence checks for foreign keys ---
         async with conn.execute(
             "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
@@ -3119,17 +3315,25 @@ async def store_memory(
             if not await cursor.fetchone():
                 raise ToolInputError(f"Workflow not found: {workflow_id}", param_name="workflow_id")
         if action_id:
-            async with conn.execute("SELECT 1 FROM actions WHERE action_id = ?", (action_id,)) as cursor:
+            async with conn.execute(
+                "SELECT 1 FROM actions WHERE action_id = ?", (action_id,)
+            ) as cursor:
                 if not await cursor.fetchone():
                     raise ToolInputError(f"Action {action_id} not found", param_name="action_id")
         if thought_id:
-            async with conn.execute("SELECT 1 FROM thoughts WHERE thought_id = ?", (thought_id,)) as cursor:
+            async with conn.execute(
+                "SELECT 1 FROM thoughts WHERE thought_id = ?", (thought_id,)
+            ) as cursor:
                 if not await cursor.fetchone():
                     raise ToolInputError(f"Thought {thought_id} not found", param_name="thought_id")
         if artifact_id:
-            async with conn.execute("SELECT 1 FROM artifacts WHERE artifact_id = ?", (artifact_id,)) as cursor:
+            async with conn.execute(
+                "SELECT 1 FROM artifacts WHERE artifact_id = ?", (artifact_id,)
+            ) as cursor:
                 if not await cursor.fetchone():
-                    raise ToolInputError(f"Artifact {artifact_id} not found", param_name="artifact_id")
+                    raise ToolInputError(
+                        f"Artifact {artifact_id} not found", param_name="artifact_id"
+                    )
 
         # --- Prepare tags and TTL ---
         # Correctly add memory_type and memory_level to tags
@@ -3138,19 +3342,18 @@ async def store_memory(
         final_tags_json = json.dumps(final_tags_list)
 
         # Set TTL based on memory level if not explicitly provided
-        effective_ttl = ttl # Retain explicitly passed ttl
-        if ttl is None: # Only apply default if ttl is not passed at all
+        effective_ttl = ttl  # Retain explicitly passed ttl
+        if ttl is None:  # Only apply default if ttl is not passed at all
             if mem_level == MemoryLevel.WORKING:
                 effective_ttl = agent_memory_config.ttl_working
             elif mem_level == MemoryLevel.EPISODIC:
                 effective_ttl = agent_memory_config.ttl_episodic
             # SEMANTIC and PROCEDURAL usually have ttl=0 (no expiry) by default, handled by schema.
             # If you want specific defaults for them if ttl=None, add here.
-            else: # Default for SEMANTIC, PROCEDURAL, or any other
-                effective_ttl = 0 # No expiry
-        else: # ttl was passed, use it (could be 0 for no expiry)
+            else:  # Default for SEMANTIC, PROCEDURAL, or any other
+                effective_ttl = 0  # No expiry
+        else:  # ttl was passed, use it (could be 0 for no expiry)
             effective_ttl = int(ttl)
-
 
         # --- 2. Insert the main memory record ---
         await conn.execute(
@@ -3159,13 +3362,26 @@ async def store_memory(
             description, reasoning, source, context, tags, created_at, updated_at, last_accessed, access_count, ttl,
             action_id, thought_id, artifact_id, embedding_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, NULL)
-            """, # last_accessed=NULL, access_count=0, embedding_id=NULL initially
+            """,  # last_accessed=NULL, access_count=0, embedding_id=NULL initially
             (
-                memory_id, workflow_id, content, mem_level.value, mem_type.value, importance, confidence,
-                description or "", reasoning or "", source or "",
+                memory_id,
+                workflow_id,
+                content,
+                mem_level.value,
+                mem_type.value,
+                importance,
+                confidence,
+                description or "",
+                reasoning or "",
+                source or "",
                 await MemoryUtils.serialize(context_data) if context_data else "{}",
-                final_tags_json, now_unix, now_unix, effective_ttl,
-                action_id, thought_id, artifact_id,
+                final_tags_json,
+                now_unix,
+                now_unix,
+                effective_ttl,
+                action_id,
+                thought_id,
+                artifact_id,
             ),
         )
 
@@ -3178,28 +3394,40 @@ async def store_memory(
                 embedding_db_id_final = await _store_embedding(conn, memory_id, text_for_embedding)
                 if embedding_db_id_final:
                     embedding_generated_successfully = True
-                    logger.debug(f"Successfully generated embedding {embedding_db_id_final} for memory {memory_id}")
+                    logger.debug(
+                        f"Successfully generated embedding {embedding_db_id_final} for memory {memory_id}"
+                    )
                 else:
                     logger.warning(f"Embedding generation skipped or failed for memory {memory_id}")
             except Exception as embed_err:
-                logger.error(f"Error during embedding generation/storage for memory {memory_id}: {embed_err}", exc_info=True)
+                logger.error(
+                    f"Error during embedding generation/storage for memory {memory_id}: {embed_err}",
+                    exc_info=True,
+                )
                 # Continue, but embedding won't be available
 
         # --- 4. Suggest Semantic Links (if requested and embedding succeeded) ---
         if suggest_links and embedding_generated_successfully and max_suggested_links > 0:
-            logger.debug(f"Attempting to find similar memories for link suggestion (threshold={link_suggestion_threshold})...")
+            logger.debug(
+                f"Attempting to find similar memories for link suggestion (threshold={link_suggestion_threshold})..."
+            )
             try:
                 text_for_search = f"{description}: {content}" if description else content
                 # _find_similar_memories uses the passed 'conn'
                 similar_memories = await _find_similar_memories(
-                    conn=conn, query_text=text_for_search, workflow_id=workflow_id,
-                    limit=max_suggested_links + 1, threshold=link_suggestion_threshold,
+                    conn=conn,
+                    query_text=text_for_search,
+                    workflow_id=workflow_id,
+                    limit=max_suggested_links + 1,
+                    threshold=link_suggestion_threshold,
                 )
                 if similar_memories:
                     # ... (rest of the link suggestion logic using 'conn' remains the same as original) ...
                     # This part primarily reads, so direct transaction use is less critical than writes.
                     # It was:
-                    similar_ids = [sim_id for sim_id, _ in similar_memories if sim_id != memory_id][:max_suggested_links]
+                    similar_ids = [sim_id for sim_id, _ in similar_memories if sim_id != memory_id][
+                        :max_suggested_links
+                    ]
                     if similar_ids:
                         placeholders = ",".join("?" * len(similar_ids))
                         async with conn.execute(
@@ -3207,18 +3435,27 @@ async def store_memory(
                             similar_ids,
                         ) as cursor:
                             target_details_rows = await cursor.fetchall()
-                            target_details = {row["memory_id"]: dict(row) for row in target_details_rows}
+                            target_details = {
+                                row["memory_id"]: dict(row) for row in target_details_rows
+                            }
 
                         score_map = dict(similar_memories)
-                        for sim_id_val in similar_ids: # Renamed to avoid conflict
+                        for sim_id_val in similar_ids:  # Renamed to avoid conflict
                             if sim_id_val in target_details:
                                 details = target_details[sim_id_val]
                                 similarity = score_map.get(sim_id_val, 0.0)
-                                suggested_type = LinkType.RELATED.value # Default
+                                suggested_type = LinkType.RELATED.value  # Default
                                 # ... (your existing logic for suggested_type)
                                 if mem_type.value == details.get("memory_type"):
-                                    suggested_type = (LinkType.SEQUENTIAL.value if mem_level.value == MemoryLevel.EPISODIC.value else LinkType.SUPPORTS.value)
-                                elif (mem_type.value == MemoryType.INSIGHT.value and details.get("memory_type") == MemoryType.FACT.value):
+                                    suggested_type = (
+                                        LinkType.SEQUENTIAL.value
+                                        if mem_level.value == MemoryLevel.EPISODIC.value
+                                        else LinkType.SUPPORTS.value
+                                    )
+                                elif (
+                                    mem_type.value == MemoryType.INSIGHT.value
+                                    and details.get("memory_type") == MemoryType.FACT.value
+                                ):
                                     suggested_type = LinkType.GENERALIZES.value
 
                                 suggested_links_list_final.append(
@@ -3230,9 +3467,13 @@ async def store_memory(
                                         "suggested_link_type": suggested_type,
                                     }
                                 )
-                        logger.info(f"Generated {len(suggested_links_list_final)} link suggestions for memory {memory_id}")
+                        logger.info(
+                            f"Generated {len(suggested_links_list_final)} link suggestions for memory {memory_id}"
+                        )
             except Exception as link_err:
-                logger.error(f"Error suggesting links for memory {memory_id}: {link_err}", exc_info=True)
+                logger.error(
+                    f"Error suggesting links for memory {memory_id}: {link_err}", exc_info=True
+                )
 
         # --- 5. Update Workflow Timestamp ---
         # Use now_unix directly, as now_iso was removed. 'last_active' expects Unix timestamp.
@@ -3244,11 +3485,18 @@ async def store_memory(
         # --- 6. Log Operation ---
         # _log_memory_operation now uses the passed 'conn'
         await MemoryUtils._log_memory_operation(
-            conn, workflow_id, "create", memory_id, action_id,
+            conn,
+            workflow_id,
+            "create",
+            memory_id,
+            action_id,
             {
-                "memory_level": mem_level.value, "memory_type": mem_type.value,
-                "importance": importance, "embedding_generated": embedding_generated_successfully,
-                "links_suggested": len(suggested_links_list_final), "tags": final_tags_list,
+                "memory_level": mem_level.value,
+                "memory_type": mem_type.value,
+                "importance": importance,
+                "embedding_generated": embedding_generated_successfully,
+                "links_suggested": len(suggested_links_list_final),
+                "tags": final_tags_list,
             },
         )
         # Transaction will commit here if no exceptions
@@ -3256,7 +3504,9 @@ async def store_memory(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after storing memory '{memory_id}': {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after storing memory '{memory_id}': {te_wal}. Main operation succeeded."
+        )
 
     # --- 8. Prepare Result (Timestamps formatted here) ---
     processing_time = time.time() - start_time
@@ -3268,9 +3518,9 @@ async def store_memory(
         "content_preview": content[:100] + ("..." if len(content) > 100 else ""),
         "importance": importance,
         "confidence": confidence,
-        "created_at": to_iso_z(now_unix), # Format for output
+        "created_at": to_iso_z(now_unix),  # Format for output
         "tags": final_tags_list,
-        "embedding_id": embedding_db_id_final, # Use the one set during embedding
+        "embedding_id": embedding_db_id_final,  # Use the one set during embedding
         "linked_action_id": action_id,
         "linked_thought_id": thought_id,
         "linked_artifact_id": artifact_id,
@@ -3280,7 +3530,8 @@ async def store_memory(
     }
     logger.info(
         f"Stored memory {memory_id} ({mem_type.value}) in workflow {workflow_id}. Links suggested: {len(suggested_links_list_final)}.",
-        emoji_key="floppy_disk", time=processing_time,
+        emoji_key="floppy_disk",
+        time=processing_time,
     )
     return result
 
@@ -3301,10 +3552,10 @@ async def get_memory_by_id(
         raise ToolInputError("Memory ID required.", param_name="memory_id")
 
     start_time = time.time()
-    result_memory_dict: Optional[Dict[str, Any]] = None # Initialize
+    result_memory_dict: Optional[Dict[str, Any]] = None  # Initialize
 
     db_manager = DBConnection(db_path)
-    async with db_manager.transaction() as conn: # Use transaction context manager
+    async with db_manager.transaction() as conn:  # Use transaction context manager
         # --- 1. Fetch Core Memory Data ---
         async with conn.execute(
             "SELECT * FROM memories WHERE memory_id = ?", (memory_id,)
@@ -3315,8 +3566,10 @@ async def get_memory_by_id(
                 raise ToolInputError(f"Memory {memory_id} not found.", param_name="memory_id")
             result_memory_dict = dict(row)
 
-        if result_memory_dict is None: # Should be caught by above, but defensive
-             raise ToolError(f"Internal error: Memory data for {memory_id} not loaded after initial fetch.")
+        if result_memory_dict is None:  # Should be caught by above, but defensive
+            raise ToolError(
+                f"Internal error: Memory data for {memory_id} not loaded after initial fetch."
+            )
 
         # --- 2. Check TTL (within transaction, before further processing) ---
         if result_memory_dict.get("ttl", 0) > 0:
@@ -3330,7 +3583,9 @@ async def get_memory_by_id(
                 # unless you have a very specific "accessed_expired_memory" log type.
                 # The delete_expired_memories tool handles batch expiration logging.
                 # Let the transaction commit this deletion.
-                raise ToolError(f"Memory {memory_id} has expired and was deleted.") # Signal that it was found then expired
+                raise ToolError(
+                    f"Memory {memory_id} has expired and was deleted."
+                )  # Signal that it was found then expired
 
         # --- 3. Parse JSON Fields ---
         result_memory_dict["tags"] = await MemoryUtils.deserialize(result_memory_dict.get("tags"))
@@ -3339,9 +3594,12 @@ async def get_memory_by_id(
         )
 
         # --- 4. Update Access Statistics (within the transaction) ---
-        await MemoryUtils._update_memory_access(conn, memory_id) # Pass conn
+        await MemoryUtils._update_memory_access(conn, memory_id)  # Pass conn
         await MemoryUtils._log_memory_operation(
-            conn, result_memory_dict["workflow_id"], "access_by_id", memory_id # Pass conn
+            conn,
+            result_memory_dict["workflow_id"],
+            "access_by_id",
+            memory_id,  # Pass conn
         )
 
         # --- 5. Fetch Links (Incoming & Outgoing) ---
@@ -3368,7 +3626,9 @@ async def get_memory_by_id(
                             "link_type": link_row["link_type"],
                             "strength": link_row["strength"],
                             "description": link_row["description"],
-                            "created_at": safe_format_timestamp(link_row.get("link_created_at")) # Format link timestamp
+                            "created_at": safe_format_timestamp(
+                                link_row.get("link_created_at")
+                            ),  # Format link timestamp
                         }
                     )
             # Incoming Links
@@ -3391,7 +3651,9 @@ async def get_memory_by_id(
                             "link_type": link_row["link_type"],
                             "strength": link_row["strength"],
                             "description": link_row["description"],
-                            "created_at": safe_format_timestamp(link_row.get("link_created_at")) # Format link timestamp
+                            "created_at": safe_format_timestamp(
+                                link_row.get("link_created_at")
+                            ),  # Format link timestamp
                         }
                     )
 
@@ -3404,7 +3666,7 @@ async def get_memory_by_id(
 
             if search_text:
                 try:
-                    similar_results = await _find_similar_memories( # This function needs 'conn'
+                    similar_results = await _find_similar_memories(  # This function needs 'conn'
                         conn=conn,
                         query_text=search_text,
                         workflow_id=result_memory_dict["workflow_id"],
@@ -3412,15 +3674,21 @@ async def get_memory_by_id(
                         threshold=agent_memory_config.similarity_threshold * 0.9,
                     )
                     if similar_results:
-                        similar_ids = [mem_id for mem_id, _ in similar_results if mem_id != memory_id][:context_limit]
+                        similar_ids = [
+                            mem_id for mem_id, _ in similar_results if mem_id != memory_id
+                        ][:context_limit]
                         score_map = dict(similar_results)
                         if similar_ids:
                             placeholders = ",".join(["?"] * len(similar_ids))
-                            context_query = "SELECT memory_id, description, memory_type, importance FROM memories WHERE memory_id IN ({})".format(placeholders)
+                            context_query = "SELECT memory_id, description, memory_type, importance FROM memories WHERE memory_id IN ({})".format(
+                                placeholders
+                            )
                             async with conn.execute(context_query, similar_ids) as context_cursor:
                                 context_rows = await context_cursor.fetchall()
                                 ordered_context = sorted(
-                                    context_rows, key=lambda r: score_map.get(r["memory_id"], -1.0), reverse=True
+                                    context_rows,
+                                    key=lambda r: score_map.get(r["memory_id"], -1.0),
+                                    reverse=True,
                                 )
                                 for context_row_data in ordered_context:
                                     context_row = dict(context_row_data)
@@ -3430,21 +3698,32 @@ async def get_memory_by_id(
                                             "description": context_row["description"],
                                             "memory_type": context_row["memory_type"],
                                             "importance": context_row["importance"],
-                                            "similarity": round(score_map.get(context_row["memory_id"], 0.0), 4),
+                                            "similarity": round(
+                                                score_map.get(context_row["memory_id"], 0.0), 4
+                                            ),
                                         }
                                     )
                 except Exception as context_err:
-                    logger.warning(f"Could not retrieve semantic context for memory {memory_id}: {context_err}", exc_info=True)
+                    logger.warning(
+                        f"Could not retrieve semantic context for memory {memory_id}: {context_err}",
+                        exc_info=True,
+                    )
         # Transaction will commit here if no exceptions
-    
+
     # WAL checkpoint after successful transaction
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after retrieving memory {memory_id}: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after retrieving memory {memory_id}: {te_wal}. Main operation succeeded."
+        )
 
-    if result_memory_dict is None: # Should not happen if ToolInputError wasn't raised for not found
-        raise ToolError(f"Internal error: Memory data for {memory_id} became None after transaction.")
+    if (
+        result_memory_dict is None
+    ):  # Should not happen if ToolInputError wasn't raised for not found
+        raise ToolError(
+            f"Internal error: Memory data for {memory_id} became None after transaction."
+        )
 
     # --- 7. Finalize and Return (Format timestamps AFTER transaction) ---
     for ts_key in ["created_at", "updated_at", "last_accessed"]:
@@ -3463,7 +3742,6 @@ async def get_memory_by_id(
         time=result_memory_dict["processing_time"],
     )
     return result_memory_dict
-
 
 
 @with_tool_metrics
@@ -3489,17 +3767,21 @@ async def search_semantic_memories(
     if not 0.0 <= threshold <= 1.0:
         raise ToolInputError("Threshold must be 0.0-1.0.", param_name="threshold")
     if memory_level:
-        try: MemoryLevel(memory_level.lower())
-        except ValueError as e: raise ToolInputError("Invalid memory_level.", param_name="memory_level") from e
+        try:
+            MemoryLevel(memory_level.lower())
+        except ValueError as e:
+            raise ToolInputError("Invalid memory_level.", param_name="memory_level") from e
     if memory_type:
-        try: MemoryType(memory_type.lower())
-        except ValueError as e: raise ToolInputError("Invalid memory_type.", param_name="memory_type") from e
+        try:
+            MemoryType(memory_type.lower())
+        except ValueError as e:
+            raise ToolInputError("Invalid memory_type.", param_name="memory_type") from e
 
     start_time = time.time()
-    memories_data_list: List[Dict[str, Any]] = [] # Initialize
+    memories_data_list: List[Dict[str, Any]] = []  # Initialize
 
     db_manager = DBConnection(db_path)
-    async with db_manager.transaction() as conn: # Use transaction context manager
+    async with db_manager.transaction() as conn:  # Use transaction context manager
         # Verify workflow exists only if a specific one is provided
         if workflow_id:
             async with conn.execute(
@@ -3551,7 +3833,7 @@ async def search_semantic_memories(
             rows = await cursor.fetchall()
 
             ordered_rows_data = sorted(
-                [dict(r) for r in rows], # Convert to dicts first
+                [dict(r) for r in rows],  # Convert to dicts first
                 key=lambda r_dict: (score_map.get(r_dict["memory_id"], -1.0), r_dict["memory_id"]),
                 reverse=True,
             )
@@ -3563,7 +3845,7 @@ async def search_semantic_memories(
             now_unix_batch = int(time.time())
 
             for row_data in ordered_rows_data:
-                mem_dict = dict(row_data) # Ensure it's a dictionary
+                mem_dict = dict(row_data)  # Ensure it's a dictionary
                 mem_dict["similarity"] = round(score_map.get(row_data["memory_id"], 0.0), 4)
                 mem_dict["tags"] = await MemoryUtils.deserialize(mem_dict.get("tags"))
 
@@ -3581,14 +3863,16 @@ async def search_semantic_memories(
                     (
                         row_data["workflow_id"],
                         row_data["memory_id"],
-                        None, # action_id for log
-                        json.dumps({"query": query[:100], "score": mem_dict["similarity"]}), # operation_data
-                        now_unix_batch
+                        None,  # action_id for log
+                        json.dumps(
+                            {"query": query[:100], "score": mem_dict["similarity"]}
+                        ),  # operation_data
+                        now_unix_batch,
                     )
                 )
                 if len(memories_data_list) >= limit:
                     break
-            
+
             # Perform batch updates and logging within the transaction
             if batch_update_params:
                 update_sql = """
@@ -3604,31 +3888,38 @@ async def search_semantic_memories(
                     VALUES (?, ?, ?, ?, 'semantic_access', ?, ?)
                 """
                 # Prepend generated ID for log_sql
-                log_params_with_ids = [ (MemoryUtils.generate_id(),) + params for params in batch_log_params ]
+                log_params_with_ids = [
+                    (MemoryUtils.generate_id(),) + params for params in batch_log_params
+                ]
                 await conn.executemany(log_sql, log_params_with_ids)
         # Transaction commits here
-    
+
     # WAL checkpoint after successful transaction
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after semantic search: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after semantic search: {te_wal}. Main operation succeeded."
+        )
 
     # Format timestamps for the final output AFTER transaction
     for mem_dict_final in memories_data_list:
         for ts_key, original_ts_key in [
             ("created_at", "created_at_unix_original"),
             ("updated_at", "updated_at_unix_original"),
-            ("last_accessed", "last_accessed_unix_original") # last_accessed is updated to now_unix_batch in DB
+            (
+                "last_accessed",
+                "last_accessed_unix_original",
+            ),  # last_accessed is updated to now_unix_batch in DB
         ]:
             # For created_at and updated_at, use original values for formatting
             # For last_accessed, it's now_unix_batch if updated, or original if not.
             # Since we batch updated, all last_accessed in memories_data_list would be now_unix_batch.
             if ts_key == "last_accessed":
-                 mem_dict_final[ts_key] = safe_format_timestamp(now_unix_batch)
+                mem_dict_final[ts_key] = safe_format_timestamp(now_unix_batch)
             else:
-                 mem_dict_final[ts_key] = safe_format_timestamp(mem_dict_final.get(original_ts_key))
-            mem_dict_final.pop(original_ts_key, None) # Remove the temporary original key
+                mem_dict_final[ts_key] = safe_format_timestamp(mem_dict_final.get(original_ts_key))
+            mem_dict_final.pop(original_ts_key, None)  # Remove the temporary original key
 
     processing_time = time.time() - start_time
     logger.info(
@@ -3680,30 +3971,49 @@ async def hybrid_search_memories(
         raise ToolInputError("semantic_weight must be 0.0-1.0", param_name="semantic_weight")
     if not 0.0 <= keyword_weight <= 1.0:
         raise ToolInputError("keyword_weight must be 0.0-1.0", param_name="keyword_weight")
-    if semantic_weight + keyword_weight <= 0 and (semantic_weight > 0 or keyword_weight > 0) : # Allow one to be zero if other is positive
-        raise ToolInputError("Sum of weights must be positive if any weight is positive.", param_name="semantic_weight")
+    if semantic_weight + keyword_weight <= 0 and (
+        semantic_weight > 0 or keyword_weight > 0
+    ):  # Allow one to be zero if other is positive
+        raise ToolInputError(
+            "Sum of weights must be positive if any weight is positive.",
+            param_name="semantic_weight",
+        )
     if limit < 1:
         raise ToolInputError("Limit must be >= 1", param_name="limit")
     if offset < 0:
         raise ToolInputError("Offset must be >= 0", param_name="offset")
     if memory_level:
-        try: MemoryLevel(memory_level.lower())
-        except ValueError as e: raise ToolInputError(f"Invalid memory_level: {memory_level}", param_name="memory_level") from e
+        try:
+            MemoryLevel(memory_level.lower())
+        except ValueError as e:
+            raise ToolInputError(
+                f"Invalid memory_level: {memory_level}", param_name="memory_level"
+            ) from e
     if memory_type:
-        try: MemoryType(memory_type.lower())
-        except ValueError as e: raise ToolInputError(f"Invalid memory_type: {memory_type}", param_name="memory_type") from e
-    
+        try:
+            MemoryType(memory_type.lower())
+        except ValueError as e:
+            raise ToolInputError(
+                f"Invalid memory_type: {memory_type}", param_name="memory_type"
+            ) from e
+
     valid_link_directions = ["outgoing", "incoming", "both"]
     link_direction_lower = link_direction.lower()
     if link_direction_lower not in valid_link_directions:
-        raise ToolInputError(f"link_direction must be one of: {valid_link_directions}", param_name="link_direction")
+        raise ToolInputError(
+            f"link_direction must be one of: {valid_link_directions}", param_name="link_direction"
+        )
 
     # Normalize weights
     total_weight = semantic_weight + keyword_weight
-    norm_sem_weight = (semantic_weight / total_weight) if total_weight > 0 else 0.5 # Default to equal if both zero (though disallowed by check above)
+    norm_sem_weight = (
+        (semantic_weight / total_weight) if total_weight > 0 else 0.5
+    )  # Default to equal if both zero (though disallowed by check above)
     norm_key_weight = (keyword_weight / total_weight) if total_weight > 0 else 0.5
 
-    combined_scores: Dict[str, Dict[str, float]] = defaultdict(lambda: {"semantic": 0.0, "keyword": 0.0, "hybrid": 0.0})
+    combined_scores: Dict[str, Dict[str, float]] = defaultdict(
+        lambda: {"semantic": 0.0, "keyword": 0.0, "hybrid": 0.0}
+    )
     memories_results: List[Dict[str, Any]] = []
     total_candidates_considered = 0
 
@@ -3713,20 +4023,30 @@ async def hybrid_search_memories(
         semantic_candidate_ids_scores: Dict[str, float] = {}
         if norm_sem_weight > 0:
             try:
-                semantic_candidate_limit = min(max(limit * 10, 100), agent_memory_config.max_semantic_candidates) # Fetch more for better ranking
+                semantic_candidate_limit = min(
+                    max(limit * 10, 100), agent_memory_config.max_semantic_candidates
+                )  # Fetch more for better ranking
                 # _find_similar_memories now returns List[Tuple[str, float]]
                 semantic_search_results_tuples = await _find_similar_memories(
-                    conn=conn, query_text=query, workflow_id=workflow_id,
-                    limit=semantic_candidate_limit, threshold=0.1, # Lower threshold for candidate gathering
-                    memory_level=memory_level, memory_type=memory_type,
+                    conn=conn,
+                    query_text=query,
+                    workflow_id=workflow_id,
+                    limit=semantic_candidate_limit,
+                    threshold=0.1,  # Lower threshold for candidate gathering
+                    memory_level=memory_level,
+                    memory_type=memory_type,
                 )
                 semantic_candidate_ids_scores = dict(semantic_search_results_tuples)
                 for mem_id, score in semantic_candidate_ids_scores.items():
                     combined_scores[mem_id]["semantic"] = score
-                logger.debug(f"Hybrid search: Found {len(semantic_candidate_ids_scores)} semantic candidates.")
+                logger.debug(
+                    f"Hybrid search: Found {len(semantic_candidate_ids_scores)} semantic candidates."
+                )
             except Exception as sem_err:
-                logger.warning(f"Hybrid search: Semantic component failed: {sem_err}", exc_info=True)
-        
+                logger.warning(
+                    f"Hybrid search: Semantic component failed: {sem_err}", exc_info=True
+                )
+
         # --- Step 2: Keyword/Filtered Search & Relevance Score ---
         keyword_candidate_relevance_scores: Dict[str, float] = {}
         if norm_key_weight > 0:
@@ -3739,25 +4059,34 @@ async def hybrid_search_memories(
 
             # Apply filters (similar to query_memories)
             if workflow_id:
-                where_clauses_kw.append("m.workflow_id = ?"); params_kw.append(workflow_id)
+                where_clauses_kw.append("m.workflow_id = ?")
+                params_kw.append(workflow_id)
             if memory_level:
-                where_clauses_kw.append("m.memory_level = ?"); params_kw.append(memory_level.lower())
+                where_clauses_kw.append("m.memory_level = ?")
+                params_kw.append(memory_level.lower())
             # ... (all other filters: memory_type, min/max_importance, min_confidence, created_at, ttl, tags) ...
             if memory_type:
-                where_clauses_kw.append("m.memory_type = ?"); params_kw.append(memory_type.lower())
+                where_clauses_kw.append("m.memory_type = ?")
+                params_kw.append(memory_type.lower())
             if min_importance is not None:
-                where_clauses_kw.append("m.importance >= ?"); params_kw.append(min_importance)
+                where_clauses_kw.append("m.importance >= ?")
+                params_kw.append(min_importance)
             if max_importance is not None:
-                where_clauses_kw.append("m.importance <= ?"); params_kw.append(max_importance)
+                where_clauses_kw.append("m.importance <= ?")
+                params_kw.append(max_importance)
             if min_confidence is not None:
-                where_clauses_kw.append("m.confidence >= ?"); params_kw.append(min_confidence)
+                where_clauses_kw.append("m.confidence >= ?")
+                params_kw.append(min_confidence)
             if min_created_at_unix is not None:
-                where_clauses_kw.append("m.created_at >= ?"); params_kw.append(min_created_at_unix)
+                where_clauses_kw.append("m.created_at >= ?")
+                params_kw.append(min_created_at_unix)
             if max_created_at_unix is not None:
-                where_clauses_kw.append("m.created_at <= ?"); params_kw.append(max_created_at_unix)
-            
+                where_clauses_kw.append("m.created_at <= ?")
+                params_kw.append(max_created_at_unix)
+
             current_time_unix_kw = int(time.time())
-            where_clauses_kw.append("(m.ttl = 0 OR m.created_at + m.ttl > ?)"); params_kw.append(current_time_unix_kw)
+            where_clauses_kw.append("(m.ttl = 0 OR m.created_at + m.ttl > ?)")
+            params_kw.append(current_time_unix_kw)
 
             if tags and isinstance(tags, list) and len(tags) > 0:
                 clean_tags_kw = [str(tag).strip().lower() for tag in tags if str(tag).strip()]
@@ -3766,24 +4095,32 @@ async def hybrid_search_memories(
                     where_clauses_kw.append("json_contains_all(m.tags, ?)")
                     params_kw.append(tags_json_kw)
 
-            if query: # Use the original, un-sanitized query for FTS, FTS handles it
+            if query:  # Use the original, un-sanitized query for FTS, FTS handles it
                 if "memory_fts" not in joins_kw:
                     joins_kw += " JOIN memory_fts fts ON m.rowid = fts.rowid"
                 # FTS engines usually handle tokenization and operators. Pass query as is.
                 # Simple split might be too naive if query contains FTS syntax.
                 # For `porter unicode61` tokenizer, it handles terms well.
                 # If more advanced FTS query construction is needed, it would be here.
-                sanitized_query_for_fts_match = re.sub(r'[^a-zA-Z0-9\s*+\-"]', '', query).strip() # Allow FTS operators
-                fts_terms_for_match = [term for term in sanitized_query_for_fts_match.split() if term]
+                sanitized_query_for_fts_match = re.sub(
+                    r'[^a-zA-Z0-9\s*+\-"]', "", query
+                ).strip()  # Allow FTS operators
+                fts_terms_for_match = [
+                    term for term in sanitized_query_for_fts_match.split() if term
+                ]
 
                 if fts_terms_for_match:
                     where_clauses_kw.append("fts.memory_fts MATCH ?")
                     # Pass the sanitized query that retains operators
                     fts_params_kw.append(sanitized_query_for_fts_match)
                 else:
-                    logger.debug(f"Hybrid FTS: Query '{query}' resulted in no valid FTS terms after sanitization. FTS match omitted.")
+                    logger.debug(
+                        f"Hybrid FTS: Query '{query}' resulted in no valid FTS terms after sanitization. FTS match omitted."
+                    )
 
-            where_sql_kw = " WHERE " + " AND ".join(where_clauses_kw) if len(where_clauses_kw) > 1 else ""
+            where_sql_kw = (
+                " WHERE " + " AND ".join(where_clauses_kw) if len(where_clauses_kw) > 1 else ""
+            )
             final_query_kw = data_query_kw + joins_kw + where_sql_kw
             # Potentially add a LIMIT here for keyword candidates if performance is an issue
             # final_query_kw += " LIMIT 200" # Example: Limit keyword candidates
@@ -3793,28 +4130,38 @@ async def hybrid_search_memories(
                 for row in keyword_candidate_rows:
                     mem_id_kw = row["memory_id"]
                     kw_relevance = _compute_memory_relevance(
-                        row["importance"], row["confidence"], row["created_at"],
-                        row["access_count"], row["last_accessed"]
+                        row["importance"],
+                        row["confidence"],
+                        row["created_at"],
+                        row["access_count"],
+                        row["last_accessed"],
                     )
                     keyword_candidate_relevance_scores[mem_id_kw] = kw_relevance
-                    combined_scores[mem_id_kw] # Ensure entry for this ID exists
-            
+                    combined_scores[mem_id_kw]  # Ensure entry for this ID exists
+
             # Normalize keyword relevance scores (0-1 range)
-            max_kw_relevance = max(keyword_candidate_relevance_scores.values()) if keyword_candidate_relevance_scores else 0.0
-            norm_factor_kw = max(max_kw_relevance, 1e-6) # Avoid division by zero
+            max_kw_relevance = (
+                max(keyword_candidate_relevance_scores.values())
+                if keyword_candidate_relevance_scores
+                else 0.0
+            )
+            norm_factor_kw = max(max_kw_relevance, 1e-6)  # Avoid division by zero
             for mem_id_kw, raw_rel_score in keyword_candidate_relevance_scores.items():
                 normalized_kw_score = min(max(raw_rel_score / norm_factor_kw, 0.0), 1.0)
                 combined_scores[mem_id_kw]["keyword"] = normalized_kw_score
-            logger.debug(f"Hybrid search: Found and scored {len(keyword_candidate_rows)} keyword candidates.")
+            logger.debug(
+                f"Hybrid search: Found and scored {len(keyword_candidate_rows)} keyword candidates."
+            )
 
         # --- Step 3: Calculate Hybrid Score ---
         if not combined_scores:
             logger.info("Hybrid search: No candidates from semantic or keyword search.")
         else:
-            for mem_id_hybrid, scores_hybrid in combined_scores.items():
-                scores_hybrid["hybrid"] = (scores_hybrid["semantic"] * norm_sem_weight) + \
-                                          (scores_hybrid["keyword"] * norm_key_weight)
-        
+            for _mem_id_hybrid, scores_hybrid in combined_scores.items():
+                scores_hybrid["hybrid"] = (scores_hybrid["semantic"] * norm_sem_weight) + (
+                    scores_hybrid["keyword"] * norm_key_weight
+                )
+
         sorted_hybrid_results = sorted(
             combined_scores.items(), key=lambda item: item[1]["hybrid"], reverse=True
         )
@@ -3828,19 +4175,34 @@ async def hybrid_search_memories(
         if final_ranked_ids_list:
             placeholders_final = ",".join("?" * len(final_ranked_ids_list))
             select_cols_final_parts = [
-                "m.memory_id", "m.workflow_id", "m.memory_level", "m.memory_type",
-                "m.importance", "m.confidence", "m.description", "m.reasoning",
-                "m.source", "m.tags", "m.created_at", "m.updated_at",
-                "m.last_accessed", "m.access_count", "m.ttl", "m.action_id",
-                "m.thought_id", "m.artifact_id"
+                "m.memory_id",
+                "m.workflow_id",
+                "m.memory_level",
+                "m.memory_type",
+                "m.importance",
+                "m.confidence",
+                "m.description",
+                "m.reasoning",
+                "m.source",
+                "m.tags",
+                "m.created_at",
+                "m.updated_at",
+                "m.last_accessed",
+                "m.access_count",
+                "m.ttl",
+                "m.action_id",
+                "m.thought_id",
+                "m.artifact_id",
             ]
             if include_content:
                 select_cols_final_parts.append("m.content")
             select_cols_final_str = ", ".join(select_cols_final_parts)
-            
+
             query_final_details = f"SELECT {select_cols_final_str} FROM memories m WHERE m.memory_id IN ({placeholders_final})"
             async with conn.execute(query_final_details, final_ranked_ids_list) as cursor:
-                db_fetched_rows_map = {row["memory_id"]: dict(row) for row in await cursor.fetchall()}
+                db_fetched_rows_map = {
+                    row["memory_id"]: dict(row) for row in await cursor.fetchall()
+                }
 
         # --- Step 5: Batch Fetch Links (within transaction, for selected final IDs) ---
         links_map_for_final_results = defaultdict(lambda: {"outgoing": [], "incoming": []})
@@ -3854,7 +4216,10 @@ async def hybrid_search_memories(
                 WHERE ml.source_memory_id IN ({placeholders_links_final})
                 """
                 async with conn.execute(q_out_links, final_ranked_ids_list) as cur:
-                    async for lr in cur: links_map_for_final_results[lr["source_memory_id"]]["outgoing"].append(dict(lr))
+                    async for lr in cur:
+                        links_map_for_final_results[lr["source_memory_id"]]["outgoing"].append(
+                            dict(lr)
+                        )
             # Incoming
             if link_direction_lower in ["incoming", "both"]:
                 q_in_links = f"""
@@ -3863,44 +4228,71 @@ async def hybrid_search_memories(
                 WHERE ml.target_memory_id IN ({placeholders_links_final})
                 """
                 async with conn.execute(q_in_links, final_ranked_ids_list) as cur:
-                    async for lr in cur: links_map_for_final_results[lr["target_memory_id"]]["incoming"].append(dict(lr))
-        
+                    async for lr in cur:
+                        links_map_for_final_results[lr["target_memory_id"]]["incoming"].append(
+                            dict(lr)
+                        )
+
         # --- Step 6: Reconstruct Results, Update Access, Log (within transaction) ---
         batch_update_access_params_hybrid: List[Tuple[int, str]] = []
-        batch_log_op_params_hybrid: List[Tuple[str, str, str, Optional[str], Dict[str,Any]]] = []
+        batch_log_op_params_hybrid: List[Tuple[str, str, str, Optional[str], Dict[str, Any]]] = []
         current_time_unix_hybrid_access = int(time.time())
 
-        for mem_id_final_ranked in final_ranked_ids_list: # Iterate in ranked order
+        for mem_id_final_ranked in final_ranked_ids_list:  # Iterate in ranked order
             if mem_id_final_ranked in db_fetched_rows_map:
                 memory_dict_reconstruct = db_fetched_rows_map[mem_id_final_ranked]
                 scores_for_this_mem = final_ranked_ids_with_scores.get(mem_id_final_ranked, {})
-                
-                memory_dict_reconstruct["hybrid_score"] = round(scores_for_this_mem.get("hybrid", 0.0), 4)
-                memory_dict_reconstruct["semantic_score"] = round(scores_for_this_mem.get("semantic", 0.0), 4)
-                memory_dict_reconstruct["keyword_relevance_score"] = round(scores_for_this_mem.get("keyword", 0.0), 4)
-                memory_dict_reconstruct["tags"] = await MemoryUtils.deserialize(memory_dict_reconstruct.get("tags"))
-                
+
+                memory_dict_reconstruct["hybrid_score"] = round(
+                    scores_for_this_mem.get("hybrid", 0.0), 4
+                )
+                memory_dict_reconstruct["semantic_score"] = round(
+                    scores_for_this_mem.get("semantic", 0.0), 4
+                )
+                memory_dict_reconstruct["keyword_relevance_score"] = round(
+                    scores_for_this_mem.get("keyword", 0.0), 4
+                )
+                memory_dict_reconstruct["tags"] = await MemoryUtils.deserialize(
+                    memory_dict_reconstruct.get("tags")
+                )
+
                 # Timestamps formatted LATER
-                
+
                 if include_links:
                     memory_dict_reconstruct["links"] = {"outgoing": [], "incoming": []}
-                    for link_data_raw_out in links_map_for_final_results[mem_id_final_ranked].get("outgoing", []):
-                        link_data_out_copy = dict(link_data_raw_out) # Timestamps formatted later
+                    for link_data_raw_out in links_map_for_final_results[mem_id_final_ranked].get(
+                        "outgoing", []
+                    ):
+                        link_data_out_copy = dict(link_data_raw_out)  # Timestamps formatted later
                         memory_dict_reconstruct["links"]["outgoing"].append(link_data_out_copy)
-                    for link_data_raw_in in links_map_for_final_results[mem_id_final_ranked].get("incoming", []):
-                        link_data_in_copy = dict(link_data_raw_in) # Timestamps formatted later
+                    for link_data_raw_in in links_map_for_final_results[mem_id_final_ranked].get(
+                        "incoming", []
+                    ):
+                        link_data_in_copy = dict(link_data_raw_in)  # Timestamps formatted later
                         memory_dict_reconstruct["links"]["incoming"].append(link_data_in_copy)
-                
+
                 memories_results.append(memory_dict_reconstruct)
-                
+
                 # Prepare for batch access update and logging
-                wf_id_for_log_hybrid = memory_dict_reconstruct.get("workflow_id", "unknown_workflow")
-                batch_update_access_params_hybrid.append((current_time_unix_hybrid_access, mem_id_final_ranked))
-                batch_log_op_params_hybrid.append(
-                    (wf_id_for_log_hybrid, "hybrid_access", mem_id_final_ranked, None, 
-                     {"query": query[:100], "hybrid_score": memory_dict_reconstruct["hybrid_score"]})
+                wf_id_for_log_hybrid = memory_dict_reconstruct.get(
+                    "workflow_id", "unknown_workflow"
                 )
-        
+                batch_update_access_params_hybrid.append(
+                    (current_time_unix_hybrid_access, mem_id_final_ranked)
+                )
+                batch_log_op_params_hybrid.append(
+                    (
+                        wf_id_for_log_hybrid,
+                        "hybrid_access",
+                        mem_id_final_ranked,
+                        None,
+                        {
+                            "query": query[:100],
+                            "hybrid_score": memory_dict_reconstruct["hybrid_score"],
+                        },
+                    )
+                )
+
         # Perform batch updates for access and logging
         if batch_update_access_params_hybrid:
             update_access_sql_hybrid = """
@@ -3909,27 +4301,37 @@ async def hybrid_search_memories(
             """
             await conn.executemany(update_access_sql_hybrid, batch_update_access_params_hybrid)
             for log_params_tuple_hybrid in batch_log_op_params_hybrid:
-                 await MemoryUtils._log_memory_operation(conn, *log_params_tuple_hybrid)
+                await MemoryUtils._log_memory_operation(conn, *log_params_tuple_hybrid)
     # Transaction commits here
 
     # Perform WAL checkpoint after successful transaction
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after hybrid search: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after hybrid search: {te_wal}. Main operation succeeded."
+        )
 
     # --- Final Formatting for Output (Timestamps) ---
     for mem_dict_final_format_hybrid in memories_results:
         for ts_key_hybrid in ["created_at", "updated_at", "last_accessed"]:
-            if ts_key_hybrid in mem_dict_final_format_hybrid and mem_dict_final_format_hybrid[ts_key_hybrid] is not None:
-                mem_dict_final_format_hybrid[ts_key_hybrid] = safe_format_timestamp(mem_dict_final_format_hybrid[ts_key_hybrid])
-        
+            if (
+                ts_key_hybrid in mem_dict_final_format_hybrid
+                and mem_dict_final_format_hybrid[ts_key_hybrid] is not None
+            ):
+                mem_dict_final_format_hybrid[ts_key_hybrid] = safe_format_timestamp(
+                    mem_dict_final_format_hybrid[ts_key_hybrid]
+                )
+
         if include_links and "links" in mem_dict_final_format_hybrid:
             for direction_key_hybrid in ["outgoing", "incoming"]:
-                for link_item_hybrid in mem_dict_final_format_hybrid["links"].get(direction_key_hybrid, []):
+                for link_item_hybrid in mem_dict_final_format_hybrid["links"].get(
+                    direction_key_hybrid, []
+                ):
                     if link_item_hybrid.get("created_at") is not None:
-                        link_item_hybrid["created_at"] = safe_format_timestamp(link_item_hybrid["created_at"])
-
+                        link_item_hybrid["created_at"] = safe_format_timestamp(
+                            link_item_hybrid["created_at"]
+                        )
 
     processing_time = time.time() - start_time
     logger.info(
@@ -3978,7 +4380,7 @@ async def create_memory_link(
     link_id = MemoryUtils.generate_id()
     now_unix = int(time.time())
     start_time = time.time()
-    workflow_id: Optional[str] = None # To store workflow_id for logging
+    workflow_id: Optional[str] = None  # To store workflow_id for logging
 
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
@@ -4026,30 +4428,34 @@ async def create_memory_link(
             ),
         )
 
-        if workflow_id: # workflow_id should be set if source memory was found
+        if workflow_id:  # workflow_id should be set if source memory was found
             await MemoryUtils._log_memory_operation(
-                conn, # Pass the transaction connection
+                conn,  # Pass the transaction connection
                 workflow_id,
-                "link_created", # More specific operation name
+                "link_created",  # More specific operation name
                 source_memory_id,
-                None, # action_id not directly relevant
+                None,  # action_id not directly relevant
                 {
                     "target_memory_id": target_memory_id,
                     "link_type": link_type_enum.value,
-                    "link_id": link_id, # Log the new link_id
+                    "link_id": link_id,  # Log the new link_id
                     "strength": strength,
-                    "link_description": description or ""
+                    "link_description": description or "",
                 },
             )
         else:
             # This case should ideally not be reached if source memory validation passed
-            logger.warning(f"Workflow ID not found for source memory {source_memory_id} during link creation logging.")
+            logger.warning(
+                f"Workflow ID not found for source memory {source_memory_id} during link creation logging."
+            )
 
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after creating memory link '{link_id}': {te_wal}. Main operation succeeded.")
-   
+        logger.warning(
+            f"Passive WAL checkpoint failed after creating memory link '{link_id}': {te_wal}. Main operation succeeded."
+        )
+
     result = {
         "link_id": link_id,
         "source_memory_id": source_memory_id,
@@ -4057,13 +4463,14 @@ async def create_memory_link(
         "link_type": link_type_enum.value,
         "strength": strength,
         "description": description or "",
-        "created_at": to_iso_z(now_unix), # Use consistent ISO Z format
+        "created_at": to_iso_z(now_unix),  # Use consistent ISO Z format
         "success": True,
         "processing_time": time.time() - start_time,
     }
     logger.info(
         f"Created/Replaced link {link_id} from {_fmt_id(source_memory_id)} to {_fmt_id(target_memory_id)} (Type: {link_type_enum.value})",
-        emoji_key="link", time=result["processing_time"]
+        emoji_key="link",
+        time=result["processing_time"],
     )
     return result
 
@@ -4098,8 +4505,13 @@ async def query_memories(
 
     # --- Input Validation ---
     valid_sort_fields = [
-        "relevance", "importance", "created_at", "updated_at",
-        "confidence", "last_accessed", "access_count",
+        "relevance",
+        "importance",
+        "created_at",
+        "updated_at",
+        "confidence",
+        "last_accessed",
+        "access_count",
     ]
     if sort_by not in valid_sort_fields:
         raise ToolInputError(
@@ -4107,7 +4519,7 @@ async def query_memories(
         )
     if sort_order.upper() not in ["ASC", "DESC"]:
         raise ToolInputError("sort_order must be 'ASC' or 'DESC'", param_name="sort_order")
-    sort_order_upper = sort_order.upper() # Use validated upper case
+    sort_order_upper = sort_order.upper()  # Use validated upper case
 
     valid_link_directions = ["outgoing", "incoming", "both"]
     link_direction_lower = link_direction.lower()
@@ -4126,16 +4538,20 @@ async def query_memories(
         try:
             MemoryLevel(memory_level.lower())
         except ValueError as e:
-            raise ToolInputError(f"Invalid memory_level: {memory_level}", param_name="memory_level") from e
+            raise ToolInputError(
+                f"Invalid memory_level: {memory_level}", param_name="memory_level"
+            ) from e
     if memory_type:
         try:
             MemoryType(memory_type.lower())
         except ValueError as e:
-            raise ToolInputError(f"Invalid memory_type: {memory_type}", param_name="memory_type") from e
+            raise ToolInputError(
+                f"Invalid memory_type: {memory_type}", param_name="memory_type"
+            ) from e
 
     memories_results: List[Dict[str, Any]] = []
     total_matching_count = 0
-    
+
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
         # Verify workflow exists if provided
@@ -4150,11 +4566,24 @@ async def query_memories(
 
         # --- Build Query ---
         select_clause_parts = [
-            "m.memory_id", "m.workflow_id", "m.memory_level", "m.memory_type",
-            "m.importance", "m.confidence", "m.description", "m.reasoning",
-            "m.source", "m.tags", "m.created_at", "m.updated_at",
-            "m.last_accessed", "m.access_count", "m.ttl", "m.action_id",
-            "m.thought_id", "m.artifact_id",
+            "m.memory_id",
+            "m.workflow_id",
+            "m.memory_level",
+            "m.memory_type",
+            "m.importance",
+            "m.confidence",
+            "m.description",
+            "m.reasoning",
+            "m.source",
+            "m.tags",
+            "m.created_at",
+            "m.updated_at",
+            "m.last_accessed",
+            "m.access_count",
+            "m.ttl",
+            "m.action_id",
+            "m.thought_id",
+            "m.artifact_id",
         ]
         if include_content:
             select_clause_parts.append("m.content")
@@ -4162,11 +4591,11 @@ async def query_memories(
 
         count_query_base = "SELECT COUNT(m.memory_id) FROM memories m"
         data_query_base = f"SELECT {select_clause} FROM memories m"
-        
+
         joins = ""
         where_clauses = ["1=1"]
         params: List[Any] = []
-        
+
         # FTS search params are handled separately if search_text is present
         fts_params: List[Any] = []
 
@@ -4209,22 +4638,28 @@ async def query_memories(
                 params.append(tags_json)
 
         if search_text:
-            if "memory_fts" not in joins: # Add join only if FTS search is active
-                 joins += " JOIN memory_fts fts ON m.rowid = fts.rowid"
+            if "memory_fts" not in joins:  # Add join only if FTS search is active
+                joins += " JOIN memory_fts fts ON m.rowid = fts.rowid"
             # Sanitize for FTS MATCH, ensure terms are present
-            sanitized_query_for_fts = re.sub(r'[^a-zA-Z0-9\s*+\-"]', '', search_text).strip() # Allow FTS operators
-            fts_terms = [term for term in sanitized_query_for_fts.split() if term] # Basic split, FTS handles operators
+            sanitized_query_for_fts = re.sub(
+                r'[^a-zA-Z0-9\s*+\-"]', "", search_text
+            ).strip()  # Allow FTS operators
+            fts_terms = [
+                term for term in sanitized_query_for_fts.split() if term
+            ]  # Basic split, FTS handles operators
             if fts_terms:
                 # Use the sanitized query directly for FTS MATCH
                 # The FTS engine will interpret operators like OR, AND, NEAR, prefixes, phrases.
                 where_clauses.append("fts.memory_fts MATCH ?")
-                fts_params.append(sanitized_query_for_fts) # Use the full sanitized string
+                fts_params.append(sanitized_query_for_fts)  # Use the full sanitized string
             else:
-                logger.debug(f"FTS Search: Query '{search_text}' resulted in no valid terms after sanitization. FTS match clause omitted.")
+                logger.debug(
+                    f"FTS Search: Query '{search_text}' resulted in no valid terms after sanitization. FTS match clause omitted."
+                )
                 # If no valid FTS terms, the MATCH clause is not added, effectively disabling FTS for this query.
 
         where_sql = " WHERE " + " AND ".join(where_clauses) if len(where_clauses) > 1 else ""
-        
+
         final_count_query = count_query_base + joins + where_sql
         final_data_query_base = data_query_base + joins + where_sql
 
@@ -4238,9 +4673,9 @@ async def query_memories(
         if sort_by == "relevance":
             order_clause = " ORDER BY compute_memory_relevance(m.importance, m.confidence, m.created_at, m.access_count, m.last_accessed)"
         elif sort_by in valid_sort_fields:
-            order_clause = f" ORDER BY m.{MemoryUtils._validate_sql_identifier(sort_by, 'sort_by_column')}" # Validate identifier
-        else: # Should not happen due to initial validation
-            order_clause = " ORDER BY m.created_at" 
+            order_clause = f" ORDER BY m.{MemoryUtils._validate_sql_identifier(sort_by, 'sort_by_column')}"  # Validate identifier
+        else:  # Should not happen due to initial validation
+            order_clause = " ORDER BY m.created_at"
         order_clause += f" {sort_order_upper}"
 
         # --- Apply Pagination ---
@@ -4256,7 +4691,7 @@ async def query_memories(
             for row_data in fetched_rows:
                 memory_dict = dict(row_data)
                 memory_dict["tags"] = await MemoryUtils.deserialize(memory_dict.get("tags"))
-                
+
                 # Format timestamps for output LATER, keep as unix for internal processing
                 # (e.g., for _log_memory_operation if it expects unix)
 
@@ -4265,17 +4700,24 @@ async def query_memories(
         # --- Batch Update Access Stats & Log Operations (within transaction) ---
         if fetched_rows_data:
             batch_update_access_params: List[Tuple[int, str]] = []
-            batch_log_op_params: List[Tuple[str, str, str, Optional[str], Dict[str,Any]]] = []
+            batch_log_op_params: List[Tuple[str, str, str, Optional[str], Dict[str, Any]]] = []
             now_unix_for_access = int(time.time())
 
             for mem_dict_for_access_update in fetched_rows_data:
                 mem_id_for_update = mem_dict_for_access_update["memory_id"]
-                wf_id_for_log = mem_dict_for_access_update.get("workflow_id", "unknown_workflow") # Fallback
+                wf_id_for_log = mem_dict_for_access_update.get(
+                    "workflow_id", "unknown_workflow"
+                )  # Fallback
 
                 batch_update_access_params.append((now_unix_for_access, mem_id_for_update))
                 batch_log_op_params.append(
-                    (wf_id_for_log, "query_access", mem_id_for_update, None, 
-                     {"query_filters": {"sort": sort_by, "limit": limit}})
+                    (
+                        wf_id_for_log,
+                        "query_access",
+                        mem_id_for_update,
+                        None,
+                        {"query_filters": {"sort": sort_by, "limit": limit}},
+                    )
                 )
 
             # Batch update memory access
@@ -4284,27 +4726,29 @@ async def query_memories(
                 WHERE memory_id = ?
             """
             await conn.executemany(update_access_sql, batch_update_access_params)
-            
+
             # Batch log operations (assuming MemoryUtils._log_memory_operation is efficient or adapted for batching)
             # If _log_memory_operation cannot be batched easily, this loop is acceptable for moderate `limit` values.
             for log_params_tuple in batch_log_op_params:
-                 await MemoryUtils._log_memory_operation(conn, *log_params_tuple)
-        
-        memories_results = fetched_rows_data # Assign processed rows
+                await MemoryUtils._log_memory_operation(conn, *log_params_tuple)
+
+        memories_results = fetched_rows_data  # Assign processed rows
     # Transaction commits here
 
     # Perform WAL checkpoint after successful transaction
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after memory query: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after memory query: {te_wal}. Main operation succeeded."
+        )
 
     # --- Final Formatting for Output (Timestamps) ---
     for mem_dict_final_format in memories_results:
         for ts_key in ["created_at", "updated_at", "last_accessed"]:
             if ts_key in mem_dict_final_format and mem_dict_final_format[ts_key] is not None:
                 mem_dict_final_format[ts_key] = safe_format_timestamp(mem_dict_final_format[ts_key])
-        
+
         # Fetch and format links if requested (AFTER main transaction for memories)
         if include_links and mem_dict_final_format.get("memory_id"):
             # This part happens outside the main transaction, as it's a read operation
@@ -4316,15 +4760,22 @@ async def query_memories(
                 link_details = await get_linked_memories(
                     memory_id=mem_dict_final_format["memory_id"],
                     direction=link_direction_lower,
-                    limit=5, # Default reasonable limit for linked memories in a list view
-                    include_memory_details=False, # Keep it light for list view
-                    db_path=db_path
+                    limit=5,  # Default reasonable limit for linked memories in a list view
+                    include_memory_details=False,  # Keep it light for list view
+                    db_path=db_path,
                 )
-                mem_dict_final_format["links"] = link_details.get("links", {"outgoing": [], "incoming": []})
+                mem_dict_final_format["links"] = link_details.get(
+                    "links", {"outgoing": [], "incoming": []}
+                )
             except Exception as link_err:
-                logger.warning(f"Failed to fetch links for memory {mem_dict_final_format['memory_id']} in query_memories: {link_err}")
-                mem_dict_final_format["links"] = {"outgoing": [], "incoming": [], "error": str(link_err)}
-
+                logger.warning(
+                    f"Failed to fetch links for memory {mem_dict_final_format['memory_id']} in query_memories: {link_err}"
+                )
+                mem_dict_final_format["links"] = {
+                    "outgoing": [],
+                    "incoming": [],
+                    "error": str(link_err),
+                }
 
     processing_time = time.time() - start_time
     logger.info(
@@ -4899,7 +5350,6 @@ async def get_artifacts(
         raise ToolError(f"Failed to get artifacts: {str(e)}") from e
 
 
-
 @with_tool_metrics
 @with_error_handling
 async def get_artifact_by_id(
@@ -4915,7 +5365,7 @@ async def get_artifact_by_id(
     artifact_data_for_return: Optional[Dict[str, Any]] = None
 
     db_manager = DBConnection(db_path)
-    async with db_manager.transaction() as conn: # Use transaction for read + potential writes
+    async with db_manager.transaction() as conn:  # Use transaction for read + potential writes
         select_cols = "a.*, GROUP_CONCAT(t.name) as tags_str"
         # No need to include_content in SELECT here, it's part of a.*
         # The include_content flag will be used to conditionally delete from dict later.
@@ -4933,11 +5383,11 @@ async def get_artifact_by_id(
             if not row:
                 raise ToolInputError(f"Artifact {artifact_id} not found.", param_name="artifact_id")
 
-            artifact = dict(row) # Keep raw timestamp for now
+            artifact = dict(row)  # Keep raw timestamp for now
             artifact["metadata"] = await MemoryUtils.deserialize(artifact.get("metadata"))
             artifact["is_output"] = bool(artifact["is_output"])
             artifact["tags"] = row["tags_str"].split(",") if row["tags_str"] else []
-            artifact.pop("tags_str", None) # Remove intermediate column
+            artifact.pop("tags_str", None)  # Remove intermediate column
 
             # Store the artifact data before potentially modifying it
             artifact_data_for_return = artifact.copy()
@@ -4951,10 +5401,12 @@ async def get_artifact_by_id(
                 "SELECT memory_id, workflow_id FROM memories WHERE artifact_id = ?", (artifact_id,)
             )
             mem_row = await mem_cursor.fetchone()
-            await mem_cursor.close() # Close cursor explicitly
+            await mem_cursor.close()  # Close cursor explicitly
 
             if mem_row:
-                artifact_workflow_id = artifact.get("workflow_id") # Get workflow_id from artifact data
+                artifact_workflow_id = artifact.get(
+                    "workflow_id"
+                )  # Get workflow_id from artifact data
                 if artifact_workflow_id:
                     # Ensure MemoryUtils helpers use the passed 'conn'
                     await MemoryUtils._update_memory_access(conn, mem_row["memory_id"])
@@ -4963,7 +5415,7 @@ async def get_artifact_by_id(
                         artifact_workflow_id,
                         "access_via_artifact",
                         mem_row["memory_id"],
-                        None, # action_id
+                        None,  # action_id
                         {"artifact_id": artifact_id},
                     )
                 else:
@@ -4971,14 +5423,16 @@ async def get_artifact_by_id(
                         f"Cannot log memory access via artifact {artifact_id} as workflow_id is missing from artifact record."
                     )
             # Transaction will commit here
-    
+
     # WAL checkpoint after successful transaction
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after retrieving artifact {artifact_id}: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after retrieving artifact {artifact_id}: {te_wal}. Main operation succeeded."
+        )
 
-    if artifact_data_for_return is None: # Should not happen if artifact was found
+    if artifact_data_for_return is None:  # Should not happen if artifact was found
         raise ToolError("Internal error: Artifact data not available after transaction.")
 
     # Format timestamp AFTER transaction and before returning
@@ -4988,12 +5442,14 @@ async def get_artifact_by_id(
         )
 
     artifact_data_for_return["success"] = True
-    artifact_data_for_return["processing_time"] = time.time() - start_time # Add processing time
-    
+    artifact_data_for_return["processing_time"] = time.time() - start_time  # Add processing time
+
     logger.info(f"Retrieved artifact {artifact_id}", emoji_key="page_facing_up")
     return artifact_data_for_return
 
+
 # --- 10.5 Goals ---
+
 
 @with_tool_metrics
 @with_error_handling
@@ -5021,7 +5477,7 @@ async def create_goal(
         valid_statuses_str = ", ".join([gs.value for gs in GoalStatus])
         raise ToolInputError(
             f"Invalid initial_status '{initial_status}'. Must be one of: {valid_statuses_str}",
-            param_name="initial_status"
+            param_name="initial_status",
         ) from e
 
     goal_id = MemoryUtils.generate_id()
@@ -5091,7 +5547,7 @@ async def create_goal(
                 parent_goal_id,
                 title,
                 description,
-                status_enum_val.value, # Use validated enum value
+                status_enum_val.value,  # Use validated enum value
                 priority,
                 reasoning,
                 acceptance_criteria_json,
@@ -5108,7 +5564,9 @@ async def create_goal(
             created_goal_row = await cursor.fetchone()
             if not created_goal_row:
                 # This should not happen if insert was successful within a transaction
-                logger.error(f"CRITICAL: Failed to retrieve created goal '{goal_id}' immediately after insert.")
+                logger.error(
+                    f"CRITICAL: Failed to retrieve created goal '{goal_id}' immediately after insert."
+                )
                 raise ToolError("Failed to retrieve created goal from database post-insert.")
 
         created_goal_dict_for_return = dict(created_goal_row)
@@ -5129,7 +5587,7 @@ async def create_goal(
             None,  # action_id not directly relevant
             {
                 "goal_id": goal_id,
-                "title": title or description[:50], # Use title or truncated description for log
+                "title": title or description[:50],  # Use title or truncated description for log
                 "parent_goal_id": parent_goal_id,
                 "status": status_enum_val.value,
             },
@@ -5141,9 +5599,11 @@ async def create_goal(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after creating goal {goal_id}: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after creating goal {goal_id}: {te_wal}. Main operation succeeded."
+        )
 
-    if created_goal_dict_for_return is None: # Should not be None if transaction succeeded
+    if created_goal_dict_for_return is None:  # Should not be None if transaction succeeded
         raise ToolError("Internal error: Goal data not available after transaction.")
 
     # Format timestamps for the final return dictionary AFTER the transaction
@@ -5154,7 +5614,7 @@ async def create_goal(
         created_goal_dict_for_return.get("updated_at")
     )
     created_goal_dict_for_return["completed_at"] = safe_format_timestamp(
-        created_goal_dict_for_return.get("completed_at") # Will be None if not completed
+        created_goal_dict_for_return.get("completed_at")  # Will be None if not completed
     )
 
     processing_time = time.time() - start_time
@@ -5190,7 +5650,7 @@ async def update_goal_status(
         valid_statuses_str = ", ".join([gs.value for gs in GoalStatus])
         raise ToolInputError(
             f"Invalid goal status '{status}'. Must be one of: {valid_statuses_str}",
-            param_name="status"
+            param_name="status",
         ) from e
 
     now_unix = int(time.time())
@@ -5210,7 +5670,7 @@ async def update_goal_status(
             if not goal_info_row:
                 logger.error(f"Goal '{goal_id}' not found in UMS during update_goal_status.")
                 raise ToolInputError(f"Goal {goal_id} not found.", param_name="goal_id")
-            
+
             workflow_id = goal_info_row["workflow_id"]
             parent_goal_id_for_return = goal_info_row["parent_goal_id"]
 
@@ -5235,8 +5695,10 @@ async def update_goal_status(
         # Fetch the updated goal details to return
         async with conn.execute("SELECT * FROM goals WHERE goal_id = ?", (goal_id,)) as cursor:
             updated_goal_row = await cursor.fetchone()
-            if not updated_goal_row: # Should not happen if update was successful
-                logger.error(f"CRITICAL: Failed to retrieve goal '{goal_id}' after status update within transaction.")
+            if not updated_goal_row:  # Should not happen if update was successful
+                logger.error(
+                    f"CRITICAL: Failed to retrieve goal '{goal_id}' after status update within transaction."
+                )
                 raise ToolError("Failed to retrieve updated goal details after update.")
 
         updated_goal_dict_for_return = dict(updated_goal_row)
@@ -5271,9 +5733,11 @@ async def update_goal_status(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after updating goal status {goal_id}: {te_wal}. Main operation succeeded.")
-    
-    if updated_goal_dict_for_return is None: # Defensive check
+        logger.warning(
+            f"Passive WAL checkpoint failed after updating goal status {goal_id}: {te_wal}. Main operation succeeded."
+        )
+
+    if updated_goal_dict_for_return is None:  # Defensive check
         raise ToolError("Internal error: Updated goal data not available after transaction.")
 
     # Format timestamps for the final return dictionary AFTER the transaction
@@ -5284,7 +5748,7 @@ async def update_goal_status(
         updated_goal_dict_for_return.get("updated_at")
     )
     updated_goal_dict_for_return["completed_at"] = safe_format_timestamp(
-        updated_goal_dict_for_return.get("completed_at") # Will be None if not completed
+        updated_goal_dict_for_return.get("completed_at")  # Will be None if not completed
     )
 
     processing_time = time.time() - start_time
@@ -5393,8 +5857,8 @@ async def get_goal_details(
 async def create_thought_chain(
     workflow_id: str,
     title: str,
-    initial_thought_content: Optional[str] = None, # Renamed for clarity
-    initial_thought_type: str = ThoughtType.GOAL.value, # Default to goal for new chains
+    initial_thought_content: Optional[str] = None,  # Renamed for clarity
+    initial_thought_type: str = ThoughtType.GOAL.value,  # Default to goal for new chains
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Starts a new, distinct line of reasoning or sub-problem analysis in UMS.
@@ -5403,10 +5867,12 @@ async def create_thought_chain(
     if not title:
         raise ToolInputError("Thought chain title required", param_name="title")
     if not workflow_id:
-        raise ToolInputError("Workflow ID required for creating thought chain.", param_name="workflow_id")
+        raise ToolInputError(
+            "Workflow ID required for creating thought chain.", param_name="workflow_id"
+        )
 
     initial_thought_type_enum: Optional[ThoughtType] = None
-    if initial_thought_content: # Only validate type if content is provided
+    if initial_thought_content:  # Only validate type if content is provided
         try:
             initial_thought_type_enum = ThoughtType(initial_thought_type.lower())
         except ValueError as e:
@@ -5428,7 +5894,10 @@ async def create_thought_chain(
             "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
         ) as cursor:
             if not await cursor.fetchone():
-                raise ToolInputError(f"Workflow {workflow_id} not found. Cannot create thought chain.", param_name="workflow_id")
+                raise ToolInputError(
+                    f"Workflow {workflow_id} not found. Cannot create thought chain.",
+                    param_name="workflow_id",
+                )
 
         # Insert chain using Unix timestamp
         await conn.execute(
@@ -5448,9 +5917,9 @@ async def create_thought_chain(
                 workflow_id=workflow_id,
                 content=initial_thought_content,
                 thought_type=initial_thought_type_enum.value,
-                thought_chain_id=thought_chain_id, # Link to this new chain
-                db_path=db_path, # db_path is still needed for record_thought if it might open its own connection
-                conn=conn,       # Pass the active transaction connection
+                thought_chain_id=thought_chain_id,  # Link to this new chain
+                db_path=db_path,  # db_path is still needed for record_thought if it might open its own connection
+                conn=conn,  # Pass the active transaction connection
             )
             if thought_result.get("success"):
                 created_initial_thought_id = thought_result.get("thought_id")
@@ -5458,7 +5927,9 @@ async def create_thought_chain(
                 # If record_thought fails, the transaction should roll back.
                 # Log the error from record_thought's result.
                 error_msg = thought_result.get("error", "Failed to record initial thought.")
-                logger.error(f"Failed to record initial thought for new chain '{title}': {error_msg}")
+                logger.error(
+                    f"Failed to record initial thought for new chain '{title}': {error_msg}"
+                )
                 # Raise an error to ensure transaction rollback if not already handled by record_thought
                 raise ToolError(f"Failed to create initial thought in new chain: {error_msg}")
     # Transaction commits here if all operations (including nested record_thought) succeeded.
@@ -5466,7 +5937,9 @@ async def create_thought_chain(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after creating thought chain '{title}': {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after creating thought chain '{title}': {te_wal}. Main operation succeeded."
+        )
 
     result = {
         "thought_chain_id": thought_chain_id,
@@ -5703,7 +6176,7 @@ async def _add_to_active_memories(
 async def get_working_memory(
     context_id: str,
     include_content: bool = True,
-    include_links: bool = True, # Default for links is now True as per UMS spec
+    include_links: bool = True,  # Default for links is now True as per UMS spec
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """Retrieves current working memory items for a UMS cognitive context.
@@ -5712,24 +6185,24 @@ async def get_working_memory(
     if not context_id:
         raise ToolInputError("Context ID required.", param_name="context_id")
     start_time = time.time()
-    
+
     # Initialize structure for the result payload
     result_data: Dict[str, Any] = {
         "context_id": context_id,
         "workflow_id": None,
         "focal_memory_id": None,
         "working_memories": [],
-        "success": True, # Assume success unless an error occurs
+        "success": True,  # Assume success unless an error occurs
         "processing_time": 0.0,
     }
 
     db_manager = DBConnection(db_path)
-    async with db_manager.transaction() as conn: # Start transaction
+    async with db_manager.transaction() as conn:  # Start transaction
         # --- 1. Get Cognitive State & Working Memory IDs ---
         async with conn.execute(
             "SELECT * FROM cognitive_states WHERE state_id = ?", (context_id,)
         ) as cursor:
-            state_row_dict = await cursor.fetchone() # Fetch as dict-like Row
+            state_row_dict = await cursor.fetchone()  # Fetch as dict-like Row
             if not state_row_dict:
                 logger.warning(
                     f"Cognitive state for context {context_id} not found. Returning empty working memory."
@@ -5737,28 +6210,46 @@ async def get_working_memory(
                 # No transaction commit needed as no DB write occurred.
                 # 'success' remains true as the tool executed, but found no data for context.
                 result_data["processing_time"] = time.time() - start_time
-                return result_data # Returns pre-initialized empty structure
+                return result_data  # Returns pre-initialized empty structure
 
         workflow_id_from_state = state_row_dict.get("workflow_id")
         focal_memory_id_from_state = state_row_dict.get("focal_memory_id")
         working_memory_ids_json = state_row_dict.get("working_memory")
-        
+
         # Update result_data with fetched state info
         result_data["workflow_id"] = workflow_id_from_state
         result_data["focal_memory_id"] = focal_memory_id_from_state
 
         working_memory_ids = await MemoryUtils.deserialize(working_memory_ids_json) or []
-        
-        working_memories_list_for_result: List[Dict[str, Any]] = [] # Store processed memories
-        
-        if working_memory_ids and workflow_id_from_state: # Ensure we have IDs and a workflow_id to proceed
+
+        working_memories_list_for_result: List[Dict[str, Any]] = []  # Store processed memories
+
+        if (
+            working_memory_ids and workflow_id_from_state
+        ):  # Ensure we have IDs and a workflow_id to proceed
             # --- 2. Fetch Memory Details ---
             placeholders = ", ".join(["?"] * len(working_memory_ids))
             select_cols_list = [
-                "memory_id", "workflow_id", "description", "memory_type", "memory_level",
-                "importance", "confidence", "created_at", "tags", "action_id",
-                "thought_id", "artifact_id", "reasoning", "source", "context",
-                "updated_at", "last_accessed", "access_count", "ttl", "embedding_id",
+                "memory_id",
+                "workflow_id",
+                "description",
+                "memory_type",
+                "memory_level",
+                "importance",
+                "confidence",
+                "created_at",
+                "tags",
+                "action_id",
+                "thought_id",
+                "artifact_id",
+                "reasoning",
+                "source",
+                "context",
+                "updated_at",
+                "last_accessed",
+                "access_count",
+                "ttl",
+                "embedding_id",
             ]
             if include_content:
                 select_cols_list.append("content")
@@ -5767,23 +6258,29 @@ async def get_working_memory(
             memory_map: Dict[str, Dict[str, Any]] = {}
             # Also filter by workflow_id from the cognitive state for data integrity
             query_mem_details = f"SELECT {select_cols_str} FROM memories WHERE memory_id IN ({placeholders}) AND workflow_id = ?"
-            
-            async with conn.execute(query_mem_details, working_memory_ids + [workflow_id_from_state]) as cursor:
+
+            async with conn.execute(
+                query_mem_details, working_memory_ids + [workflow_id_from_state]
+            ) as cursor:
                 rows = await cursor.fetchall()
-                for row_dict in rows: # row is already dict-like
-                    mem_dict = dict(row_dict) # Ensure it's a plain dict
+                for row_dict in rows:  # row is already dict-like
+                    mem_dict = dict(row_dict)  # Ensure it's a plain dict
                     mem_dict["tags"] = await MemoryUtils.deserialize(mem_dict.get("tags"))
-                    mem_dict["context"] = await MemoryUtils.deserialize(mem_dict.get("context")) # Creation context
-                    
+                    mem_dict["context"] = await MemoryUtils.deserialize(
+                        mem_dict.get("context")
+                    )  # Creation context
+
                     # Format timestamps after fetching, before adding to map
                     for ts_key in ["created_at", "updated_at", "last_accessed"]:
                         mem_dict[ts_key] = safe_format_timestamp(mem_dict.get(ts_key))
-                    
+
                     memory_map[row_dict["memory_id"]] = mem_dict
 
             # --- 3. Fetch Links if Requested ---
             if include_links:
-                links_by_source_id = defaultdict(list) # Maps source_memory_id to list of its outgoing links
+                links_by_source_id = defaultdict(
+                    list
+                )  # Maps source_memory_id to list of its outgoing links
                 # Fetch outgoing links for all working memories in one go
                 links_query = f"""
                     SELECT ml.source_memory_id, ml.target_memory_id, ml.link_type, ml.strength, 
@@ -5793,21 +6290,25 @@ async def get_working_memory(
                     JOIN memories target_mem ON ml.target_memory_id = target_mem.memory_id
                     WHERE ml.source_memory_id IN ({placeholders}) 
                           AND target_mem.workflow_id = ? 
-                """ # Ensure linked target is also in the same workflow
-                async with conn.execute(links_query, working_memory_ids + [workflow_id_from_state]) as link_cursor:
-                    async for link_row_dict in link_cursor: # link_row_dict is already dict-like
+                """  # Ensure linked target is also in the same workflow
+                async with conn.execute(
+                    links_query, working_memory_ids + [workflow_id_from_state]
+                ) as link_cursor:
+                    async for link_row_dict in link_cursor:  # link_row_dict is already dict-like
                         link_data = dict(link_row_dict)
                         link_data["created_at"] = safe_format_timestamp(link_data.get("created_at"))
                         links_by_source_id[link_row_dict["source_memory_id"]].append(link_data)
 
                 # Attach links to memories
                 for mem_id_key in memory_map:
-                    memory_map[mem_id_key]["links"] = {"outgoing": links_by_source_id.get(mem_id_key, [])}
+                    memory_map[mem_id_key]["links"] = {
+                        "outgoing": links_by_source_id.get(mem_id_key, [])
+                    }
                     # Note: This simplified version only fetches outgoing links.
                     # If incoming links for each working memory are also needed, a similar query for incoming links would be required.
 
             # --- 4. Reconstruct List & Update Access Stats (within transaction) ---
-            update_access_params_list: List[Tuple[str, str]] = [] # (workflow_id, memory_id)
+            update_access_params_list: List[Tuple[str, str]] = []  # (workflow_id, memory_id)
             for mem_id_ordered in working_memory_ids:
                 if mem_id_ordered in memory_map:
                     working_memories_list_for_result.append(memory_map[mem_id_ordered])
@@ -5822,7 +6323,7 @@ async def get_working_memory(
                     SET last_accessed = ?,
                         access_count = COALESCE(access_count, 0) + 1
                     WHERE memory_id = ? AND workflow_id = ? 
-                """ # Include workflow_id in WHERE for safety
+                """  # Include workflow_id in WHERE for safety
                 # Parameters: (timestamp, memory_id, workflow_id)
                 update_params_for_executemany = [
                     (now_unix_batch_access, mem_id_access, wf_id_access)
@@ -5833,11 +6334,11 @@ async def get_working_memory(
                 # Batch log operations
                 for wf_id_log_access, mem_id_log_access in update_access_params_list:
                     await MemoryUtils._log_memory_operation(
-                        conn, # Pass transaction connection
+                        conn,  # Pass transaction connection
                         wf_id_log_access,
-                        "access_working", # Or a more specific operation type
+                        "access_working",  # Or a more specific operation type
                         mem_id_log_access,
-                        None, # action_id
+                        None,  # action_id
                         {"context_id": context_id},
                     )
             result_data["working_memories"] = working_memories_list_for_result
@@ -5847,15 +6348,17 @@ async def get_working_memory(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after retrieving working memories: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after retrieving working memories: {te_wal}. Main operation succeeded."
+        )
 
     # --- 6. Return Result ---
     processing_time = time.time() - start_time
     result_data["processing_time"] = processing_time
     logger.info(
         f"Retrieved {len(result_data['working_memories'])} working memories for context {context_id}",
-        emoji_key="brain", # Using brain emoji as it's cognitive context related
-        time=processing_time
+        emoji_key="brain",  # Using brain emoji as it's cognitive context related
+        time=processing_time,
     )
     return result_data
 
@@ -5876,7 +6379,7 @@ async def focus_memory(
     if not context_id:
         raise ToolInputError("Context ID required.", param_name="context_id")
     start_time = time.time()
-    added_to_wm_successfully = False # Track if it was actually added
+    added_to_wm_successfully = False  # Track if it was actually added
 
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
@@ -5897,9 +6400,7 @@ async def focus_memory(
         ) as cursor:
             state_row = await cursor.fetchone()
             if not state_row:
-                raise ToolInputError(
-                    f"Context {context_id} not found.", param_name="context_id"
-                )
+                raise ToolInputError(f"Context {context_id} not found.", param_name="context_id")
             context_workflow_id = state_row["workflow_id"]
 
         if context_workflow_id != mem_workflow_id:
@@ -5927,7 +6428,12 @@ async def focus_memory(
         # Log focus operation (within the transaction)
         # Ensure _log_memory_operation uses the passed 'conn'
         await MemoryUtils._log_memory_operation(
-            conn, mem_workflow_id, "focus", memory_id, None, {"context_id": context_id} # mem_workflow_id is confirmed to be non-None
+            conn,
+            mem_workflow_id,
+            "focus",
+            memory_id,
+            None,
+            {"context_id": context_id},  # mem_workflow_id is confirmed to be non-None
         )
         # Transaction commits here if no exceptions were raised
 
@@ -5935,7 +6441,9 @@ async def focus_memory(
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after focusing memory {memory_id}: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after focusing memory {memory_id}: {te_wal}. Main operation succeeded."
+        )
 
     processing_time = time.time() - start_time
     logger.info(
@@ -5945,8 +6453,8 @@ async def focus_memory(
     return {
         "context_id": context_id,
         "focused_memory_id": memory_id,
-        "workflow_id": mem_workflow_id, # mem_workflow_id is confirmed to be non-None
-        "added_to_working": added_to_wm_successfully, # Reflect the actual outcome of the add attempt
+        "workflow_id": mem_workflow_id,  # mem_workflow_id is confirmed to be non-None
+        "added_to_working": added_to_wm_successfully,  # Reflect the actual outcome of the add attempt
         "success": True,
         "processing_time": processing_time,
     }
@@ -6007,12 +6515,14 @@ async def optimize_working_memory(
                     "removed_count": 0,
                     "retained_memories": [],
                     "removed_memories": [],
-                    "success": False, # Indicate failure to find context
+                    "success": False,  # Indicate failure to find context
                     "reason": "Context ID not found.",
                     "processing_time": time.time() - start_time,
                 }
             workflow_id_for_log = state_row["workflow_id"]
-            current_memory_ids_from_state = await MemoryUtils.deserialize(state_row["working_memory"]) or []
+            current_memory_ids_from_state = (
+                await MemoryUtils.deserialize(state_row["working_memory"]) or []
+            )
             before_count = len(current_memory_ids_from_state)
 
     # --- Handle Edge Case: Already Optimized (No DB write needed yet) ---
@@ -6022,24 +6532,29 @@ async def optimize_working_memory(
             "No optimization calculation needed. Logging this check."
         )
         # Log this event even if no optimization happens
-        if workflow_id_for_log: # Only log if we have a workflow_id
+        if workflow_id_for_log:  # Only log if we have a workflow_id
             db_manager_log_no_op = DBConnection(db_path)
             async with db_manager_log_no_op.transaction() as conn_log_no_op:
                 await MemoryUtils._log_memory_operation(
                     conn_log_no_op,
                     workflow_id_for_log,
-                    "calculate_wm_optimization_skipped", # Different op name
-                    None, None,
+                    "calculate_wm_optimization_skipped",  # Different op name
+                    None,
+                    None,
                     {
-                        "context_id": context_id, "strategy": strategy, "target_size": target_size,
-                        "before_count": before_count, "reason": "already_optimal_size"
-                    }
+                        "context_id": context_id,
+                        "strategy": strategy,
+                        "target_size": target_size,
+                        "before_count": before_count,
+                        "reason": "already_optimal_size",
+                    },
                 )
             try:
                 await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
             except ToolError as te_wal:
-                logger.warning(f"Passive WAL checkpoint failed after logging WM optimization skipped: {te_wal}. Main operation succeeded.")
-
+                logger.warning(
+                    f"Passive WAL checkpoint failed after logging WM optimization skipped: {te_wal}. Main operation succeeded."
+                )
 
         return {
             "context_id": context_id,
@@ -6051,24 +6566,28 @@ async def optimize_working_memory(
             "removed_count": 0,
             "retained_memories": current_memory_ids_from_state,
             "removed_memories": [],
-            "success": True, # The tool's operation (checking) succeeded.
+            "success": True,  # The tool's operation (checking) succeeded.
             "processing_time": time.time() - start_time,
         }
 
     # --- Fetch Details for Scoring (Read phase) ---
     memories_to_consider = []
-    if current_memory_ids_from_state: # Should be true if before_count > target_size
+    if current_memory_ids_from_state:  # Should be true if before_count > target_size
         db_manager_details = DBConnection(db_path)
         async with db_manager_details as conn_details:
             placeholders = ", ".join(["?"] * len(current_memory_ids_from_state))
             query = f"""
             SELECT memory_id, memory_type, importance, confidence, created_at, last_accessed, access_count
             FROM memories WHERE memory_id IN ({placeholders}) AND workflow_id = ?
-            """ # Also filter by workflow_id for safety
-            async with conn_details.execute(query, current_memory_ids_from_state + [workflow_id_for_log]) as mem_cursor:
+            """  # Also filter by workflow_id for safety
+            async with conn_details.execute(
+                query, current_memory_ids_from_state + [workflow_id_for_log]
+            ) as mem_cursor:
                 memories_to_consider = [dict(row) for row in await mem_cursor.fetchall()]
 
-    if not memories_to_consider and current_memory_ids_from_state: # If IDs were present but no details found
+    if (
+        not memories_to_consider and current_memory_ids_from_state
+    ):  # If IDs were present but no details found
         logger.warning(
             f"Working memory ID list for state {context_id} was not empty ({before_count}), "
             f"but failed to fetch details for scoring (workflow_id: {workflow_id_for_log}). "
@@ -6077,20 +6596,26 @@ async def optimize_working_memory(
         if workflow_id_for_log:
             db_manager_log_fail = DBConnection(db_path)
             async with db_manager_log_fail.transaction() as conn_log_fail:
-                 await MemoryUtils._log_memory_operation(
+                await MemoryUtils._log_memory_operation(
                     conn_log_fail,
                     workflow_id_for_log,
                     "calculate_wm_optimization_failed_fetch",
-                    None, None,
+                    None,
+                    None,
                     {
-                        "context_id": context_id, "strategy": strategy, "target_size": target_size,
-                        "before_count": before_count, "reason": "failed_to_fetch_memory_details"
-                    }
+                        "context_id": context_id,
+                        "strategy": strategy,
+                        "target_size": target_size,
+                        "before_count": before_count,
+                        "reason": "failed_to_fetch_memory_details",
+                    },
                 )
             try:
                 await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
             except ToolError as te_wal:
-                logger.warning(f"Passive WAL checkpoint failed after logging WM optimization failed: {te_wal}. Main operation succeeded.")
+                logger.warning(
+                    f"Passive WAL checkpoint failed after logging WM optimization failed: {te_wal}. Main operation succeeded."
+                )
 
         return {
             "context_id": context_id,
@@ -6102,7 +6627,7 @@ async def optimize_working_memory(
             "removed_count": before_count,
             "retained_memories": [],
             "removed_memories": current_memory_ids_from_state,
-            "success": True, # Tool calculation itself "succeeded" but result is empty
+            "success": True,  # Tool calculation itself "succeeded" but result is empty
             "processing_time": time.time() - start_time,
         }
 
@@ -6127,7 +6652,12 @@ async def optimize_working_memory(
         if strategy == "balanced":
             score = relevance
         elif strategy == "importance":
-            score = (importance_val * 0.6) + (confidence_val * 0.2) + (relevance * 0.1) + (recency * 0.1)
+            score = (
+                (importance_val * 0.6)
+                + (confidence_val * 0.2)
+                + (relevance * 0.1)
+                + (recency * 0.1)
+            )
         elif strategy == "recency":
             score = (recency * 0.5) + (min(1.0, access_count_val / 5.0) * 0.2) + (relevance * 0.3)
         elif strategy == "diversity":
@@ -6141,10 +6671,14 @@ async def optimize_working_memory(
         type_groups: Dict[Any, List[Dict]] = defaultdict(list)
         for mem in scored_memories:
             type_groups[mem["type"]].append(mem)
-        for group_list in type_groups.values(): # Changed from group to group_list to avoid conflict
+        for (
+            group_list
+        ) in type_groups.values():  # Changed from group to group_list to avoid conflict
             group_list.sort(key=lambda x: x["score"], reverse=True)
 
-        group_iters = {mem_type: iter(group_val) for mem_type, group_val in type_groups.items()} # Use group_val
+        group_iters = {
+            mem_type: iter(group_val) for mem_type, group_val in type_groups.items()
+        }  # Use group_val
         active_groups = list(group_iters.keys())
         while len(retained_memory_ids) < target_size and active_groups:
             group_type_to_select = active_groups.pop(0)
@@ -6163,17 +6697,22 @@ async def optimize_working_memory(
     removed_count = len(removed_memory_ids)
 
     # --- Log the *Outcome* of the Optimization Calculation (Write phase) ---
-    if workflow_id_for_log: # Ensure we have workflow_id before logging
+    if workflow_id_for_log:  # Ensure we have workflow_id before logging
         db_manager_log_op = DBConnection(db_path)
         async with db_manager_log_op.transaction() as conn_log_op:
             await MemoryUtils._log_memory_operation(
-                conn_log_op, # Pass the transaction connection
+                conn_log_op,  # Pass the transaction connection
                 workflow_id_for_log,
                 "calculate_wm_optimization",
-                None, None,
+                None,
+                None,
                 {
-                    "context_id": context_id, "strategy": strategy, "target_size": target_size,
-                    "before_count": before_count, "after_count": after_count, "removed_count": removed_count,
+                    "context_id": context_id,
+                    "strategy": strategy,
+                    "target_size": target_size,
+                    "before_count": before_count,
+                    "after_count": after_count,
+                    "removed_count": removed_count,
                     "retained_ids_sample": retained_memory_ids[:5],
                     "removed_ids_sample": removed_memory_ids[:5],
                 },
@@ -6181,17 +6720,20 @@ async def optimize_working_memory(
         try:
             await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
         except ToolError as te_wal:
-            logger.warning(f"Passive WAL checkpoint failed after logging WM optimization calc for '{context_id}': {te_wal}. Main operation succeeded.")
+            logger.warning(
+                f"Passive WAL checkpoint failed after logging WM optimization calc for '{context_id}': {te_wal}. Main operation succeeded."
+            )
     else:
-        logger.warning(f"Cannot log wm_optimization_calculation for context {context_id} as workflow_id is missing.")
-
+        logger.warning(
+            f"Cannot log wm_optimization_calculation for context {context_id} as workflow_id is missing."
+        )
 
     processing_time = time.time() - start_time
     logger.info(
         f"Calculated working memory optimization for state {context_id} using '{strategy}'. "
         f"Input: {before_count}, Retained: {after_count}, Removed: {removed_count}",
-        emoji_key="brain", # Assuming brain emoji is appropriate
-        time=processing_time
+        emoji_key="brain",  # Assuming brain emoji is appropriate
+        time=processing_time,
     )
     return {
         "context_id": context_id,
@@ -6208,18 +6750,18 @@ async def optimize_working_memory(
     }
 
 
-
 # --- 13. Cognitive State Persistence ---
+
 
 @with_tool_metrics
 @with_error_handling
 async def save_cognitive_state(
     workflow_id: str,
     title: str,
-    working_memory_ids: List[str], # Assumed to be UMS Memory IDs
+    working_memory_ids: List[str],  # Assumed to be UMS Memory IDs
     focus_area_ids: Optional[List[str]] = None,  # Assumed to be UMS Memory IDs
-    context_action_ids: Optional[List[str]] = None, # UMS Action IDs
-    current_goal_thought_ids: Optional[List[str]] = None, # UMS Thought IDs representing goals
+    context_action_ids: Optional[List[str]] = None,  # UMS Action IDs
+    current_goal_thought_ids: Optional[List[str]] = None,  # UMS Thought IDs representing goals
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """(Agent Internal) Checkpoints the agent's current cognitive state to UMS.
@@ -6239,7 +6781,7 @@ async def save_cognitive_state(
     all_memory_ids_to_validate: Set[str] = set(working_memory_ids or [])
     if focus_area_ids:
         all_memory_ids_to_validate.update(focus_area_ids)
-    
+
     all_action_ids_to_validate: Set[str] = set(context_action_ids or [])
     all_thought_ids_to_validate: Set[str] = set(current_goal_thought_ids or [])
 
@@ -6251,7 +6793,10 @@ async def save_cognitive_state(
             "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
         ) as cursor:
             if not await cursor.fetchone():
-                raise ToolInputError(f"Workflow {workflow_id} not found. Cannot save state.", param_name="workflow_id")
+                raise ToolInputError(
+                    f"Workflow {workflow_id} not found. Cannot save state.",
+                    param_name="workflow_id",
+                )
 
         # 2. Validate Memory IDs belong to this workflow
         if all_memory_ids_to_validate:
@@ -6260,12 +6805,13 @@ async def save_cognitive_state(
             params = list(all_memory_ids_to_validate) + [workflow_id]
             async with conn.execute(query, params) as cursor:
                 found_mem_ids = {row["memory_id"] for row in await cursor.fetchall()}
-            
+
             missing_mem_ids = all_memory_ids_to_validate - found_mem_ids
             if missing_mem_ids:
                 # Use _fmt_id for concise logging if many IDs
                 missing_ids_str = ", ".join([_fmt_id(mid) for mid in list(missing_mem_ids)[:5]])
-                if len(missing_mem_ids) > 5: missing_ids_str += "..."
+                if len(missing_mem_ids) > 5:
+                    missing_ids_str += "..."
                 raise ToolInputError(
                     f"Memory IDs not found or not in workflow '{_fmt_id(workflow_id)}': {missing_ids_str}",
                     param_name="working_memory_ids/focus_area_ids",
@@ -6282,7 +6828,8 @@ async def save_cognitive_state(
             missing_action_ids = all_action_ids_to_validate - found_action_ids
             if missing_action_ids:
                 missing_ids_str = ", ".join([_fmt_id(aid) for aid in list(missing_action_ids)[:5]])
-                if len(missing_action_ids) > 5: missing_ids_str += "..."
+                if len(missing_action_ids) > 5:
+                    missing_ids_str += "..."
                 raise ToolInputError(
                     f"Action IDs not found or not in workflow '{_fmt_id(workflow_id)}': {missing_ids_str}",
                     param_name="context_action_ids",
@@ -6299,11 +6846,12 @@ async def save_cognitive_state(
             params = list(all_thought_ids_to_validate) + [workflow_id]
             async with conn.execute(query, params) as cursor:
                 found_thought_ids = {row["thought_id"] for row in await cursor.fetchall()}
-            
+
             missing_thought_ids = all_thought_ids_to_validate - found_thought_ids
             if missing_thought_ids:
                 missing_ids_str = ", ".join([_fmt_id(tid) for tid in list(missing_thought_ids)[:5]])
-                if len(missing_thought_ids) > 5: missing_ids_str += "..."
+                if len(missing_thought_ids) > 5:
+                    missing_ids_str += "..."
                 raise ToolInputError(
                     f"Thought IDs (goals) not found or not in workflow '{_fmt_id(workflow_id)}': {missing_ids_str}",
                     param_name="current_goal_thought_ids",
@@ -6317,11 +6865,13 @@ async def save_cognitive_state(
 
         # Serialize state data (using the validated lists)
         # Ensure working_memory_ids is not None before serialization
-        working_mem_json = await MemoryUtils.serialize(working_memory_ids if working_memory_ids is not None else [])
+        working_mem_json = await MemoryUtils.serialize(
+            working_memory_ids if working_memory_ids is not None else []
+        )
         focus_json = await MemoryUtils.serialize(focus_area_ids or [])
         context_actions_json = await MemoryUtils.serialize(context_action_ids or [])
         current_goals_json = await MemoryUtils.serialize(current_goal_thought_ids or [])
-        
+
         # Determine focal_memory_id based on logic (e.g., first of focus_area_ids or working_memory_ids)
         # This assumes focal_memory_id is one of the memory IDs in focus_areas or working_memory.
         # Agent/AML should ideally determine this and pass it explicitly if a specific one is needed.
@@ -6329,8 +6879,8 @@ async def save_cognitive_state(
         determined_focal_memory_id: Optional[str] = None
         if focus_area_ids:
             determined_focal_memory_id = focus_area_ids[0]
-        elif working_memory_ids: # Ensure working_memory_ids is not None before accessing
-             determined_focal_memory_id = working_memory_ids[0]
+        elif working_memory_ids:  # Ensure working_memory_ids is not None before accessing
+            determined_focal_memory_id = working_memory_ids[0]
 
         # Insert new state
         await conn.execute(
@@ -6351,9 +6901,9 @@ async def save_cognitive_state(
                 context_actions_json,
                 current_goals_json,
                 now_unix,
-                True, # is_latest
-                determined_focal_memory_id, # focal_memory_id
-                now_unix # last_active
+                True,  # is_latest
+                determined_focal_memory_id,  # focal_memory_id
+                now_unix,  # last_active
             ),
         )
 
@@ -6371,23 +6921,32 @@ async def save_cognitive_state(
             "focus_count": len(focus_area_ids or []),
             "action_context_count": len(context_action_ids or []),
             "goal_count": len(current_goal_thought_ids or []),
-            "focal_memory_id_set": _fmt_id(determined_focal_memory_id) if determined_focal_memory_id else "None",
+            "focal_memory_id_set": _fmt_id(determined_focal_memory_id)
+            if determined_focal_memory_id
+            else "None",
         }
         await MemoryUtils._log_memory_operation(
-            conn, workflow_id, "save_state", None, None, log_data # Pass conn
+            conn,
+            workflow_id,
+            "save_state",
+            None,
+            None,
+            log_data,  # Pass conn
         )
     # Transaction commits here if no exceptions
 
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after saving cognitive state '{title}' ({_fmt_id(state_id)}) for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after saving cognitive state '{title}' ({_fmt_id(state_id)}) for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded."
+        )
 
     result = {
         "state_id": state_id,
         "workflow_id": workflow_id,
         "title": title,
-        "created_at": to_iso_z(now_unix), # Format timestamp for output
+        "created_at": to_iso_z(now_unix),  # Format timestamp for output
         "success": True,
         "processing_time": time.time() - start_time,
     }
@@ -6415,10 +6974,10 @@ async def load_cognitive_state(
     start_time = time.time()
 
     state_dict: Optional[Dict[str, Any]] = None
-    created_at_unix_for_log: Optional[int] = None # To store the raw unix timestamp for logging
+    created_at_unix_for_log: Optional[int] = None  # To store the raw unix timestamp for logging
 
     db_manager_read = DBConnection(db_path)
-    async with db_manager_read as conn_read: # Read phase
+    async with db_manager_read as conn_read:  # Read phase
         # Check workflow exists
         async with conn_read.execute(
             "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
@@ -6447,35 +7006,47 @@ async def load_cognitive_state(
                     else f"No states found for workflow {workflow_id}."
                 )
                 # Log this as a warning, as it might be a valid state (e.g., new workflow)
-                logger.warning(f"load_cognitive_state: {err_msg} (Workflow: {workflow_id}, State: {state_id or 'latest'})")
+                logger.warning(
+                    f"load_cognitive_state: {err_msg} (Workflow: {workflow_id}, State: {state_id or 'latest'})"
+                )
                 # Return a structure indicating no state found, but success=True as the query executed.
                 return {
-                    "state_id": None, "workflow_id": workflow_id, "title": None,
-                    "working_memory_ids": [], "focus_areas": [], "context_action_ids": [],
-                    "current_goals": [], "created_at": None, "success": True, # Query succeeded, but no state found
-                    "message": err_msg, "processing_time": time.time() - start_time,
+                    "state_id": None,
+                    "workflow_id": workflow_id,
+                    "title": None,
+                    "working_memory_ids": [],
+                    "focus_areas": [],
+                    "context_action_ids": [],
+                    "current_goals": [],
+                    "created_at": None,
+                    "success": True,  # Query succeeded, but no state found
+                    "message": err_msg,
+                    "processing_time": time.time() - start_time,
                 }
             state_dict = dict(row)
-            created_at_unix_for_log = state_dict["created_at"] # Keep raw for logging
+            created_at_unix_for_log = state_dict["created_at"]  # Keep raw for logging
 
-    if state_dict is None: # Should not happen if row was fetched
-         raise ToolError("Internal error: state_dict not populated after fetch.")
+    if state_dict is None:  # Should not happen if row was fetched
+        raise ToolError("Internal error: state_dict not populated after fetch.")
 
     # Log operation (Write phase - new transaction)
     db_manager_log = DBConnection(db_path)
     async with db_manager_log.transaction() as conn_log:
         await MemoryUtils._log_memory_operation(
-            conn_log, # Pass the transaction connection
+            conn_log,  # Pass the transaction connection
             workflow_id,
             "load_state",
-            None, None,
+            None,
+            None,
             {"state_id": state_dict["state_id"], "title": state_dict["title"]},
         )
     # WAL checkpoint after successful log transaction
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after loading cognitive state for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after loading cognitive state for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded."
+        )
 
     # Deserialize data and format timestamp for the final return
     # Ensure 'created_at' is correctly used, which should be the Unix timestamp from DB
@@ -6484,19 +7055,24 @@ async def load_cognitive_state(
         "workflow_id": state_dict["workflow_id"],
         "title": state_dict["title"],
         "working_memory_ids": await MemoryUtils.deserialize(state_dict.get("working_memory")) or [],
-        "focus_areas": await MemoryUtils.deserialize(state_dict.get("focus_areas")) or [], # For UMS this is "focus_area_ids"
-        "context_action_ids": await MemoryUtils.deserialize(state_dict.get("context_actions")) or [],
-        "current_goals": await MemoryUtils.deserialize(state_dict.get("current_goals")) or [], # For UMS this is "current_goal_thought_ids"
-        "created_at": safe_format_timestamp(created_at_unix_for_log), # Use the raw unix ts for formatting
-        "focal_memory_id": state_dict.get("focal_memory_id"), # Add focal_memory_id to the return
+        "focus_areas": await MemoryUtils.deserialize(state_dict.get("focus_areas"))
+        or [],  # For UMS this is "focus_area_ids"
+        "context_action_ids": await MemoryUtils.deserialize(state_dict.get("context_actions"))
+        or [],
+        "current_goals": await MemoryUtils.deserialize(state_dict.get("current_goals"))
+        or [],  # For UMS this is "current_goal_thought_ids"
+        "created_at": safe_format_timestamp(
+            created_at_unix_for_log
+        ),  # Use the raw unix ts for formatting
+        "focal_memory_id": state_dict.get("focal_memory_id"),  # Add focal_memory_id to the return
         "success": True,
         "processing_time": time.time() - start_time,
     }
 
     logger.info(
         f"Loaded cognitive state '{result['title']}' ({_fmt_id(result['state_id'])}) for workflow {_fmt_id(workflow_id)}",
-        emoji_key="inbox_tray", # Assuming inbox_tray emoji is appropriate
-        time=result["processing_time"]
+        emoji_key="inbox_tray",  # Assuming inbox_tray emoji is appropriate
+        time=result["processing_time"],
     )
     return result
 
@@ -6710,7 +7286,10 @@ def _calculate_focus_score(memory: Dict, recent_action_ids: List[str], now_unix:
     # Ensure score is not negative
     return max(0.0, score)
 
-def _calculate_focus_score_internal_ums(memory: Dict, recent_action_ids: List[str], now_unix: int) -> float:
+
+def _calculate_focus_score_internal_ums(
+    memory: Dict, recent_action_ids: List[str], now_unix: int
+) -> float:
     """
     Calculates a score for prioritizing focus, based on memory attributes.
     This is an internal version for UMS, mirroring the agent's logic.
@@ -6724,7 +7303,7 @@ def _calculate_focus_score_internal_ums(memory: Dict, recent_action_ids: List[st
         memory.get("confidence", 1.0),
         memory.get("created_at", now_unix),
         memory.get("access_count", 0),
-        memory.get("last_accessed", None), # Pass None if not available
+        memory.get("last_accessed", None),  # Pass None if not available
     )
     score += relevance * 0.6  # Base relevance is weighted heavily
 
@@ -6768,12 +7347,13 @@ async def auto_update_focus(
         raise ToolInputError("Context ID required.", param_name="context_id")
     if not isinstance(recent_actions_count, int) or recent_actions_count < 0:
         raise ToolInputError(
-            "Recent actions count must be a non-negative integer.", param_name="recent_actions_count"
+            "Recent actions count must be a non-negative integer.",
+            param_name="recent_actions_count",
         )
     start_time = time.time()
 
-    db_manager = DBConnection(db_path) # Get DB manager instance
-    async with db_manager.transaction() as conn: # Use transaction context manager
+    db_manager = DBConnection(db_path)  # Get DB manager instance
+    async with db_manager.transaction() as conn:  # Use transaction context manager
         # --- 1. Get Current Context & Working Memory ---
         async with conn.execute(
             "SELECT workflow_id, focal_memory_id, working_memory FROM cognitive_states WHERE state_id = ?",
@@ -6791,7 +7371,7 @@ async def auto_update_focus(
                     "new_focal_memory_id": None,
                     "focus_changed": False,
                     "reason": "Context ID not found in UMS.",
-                    "success": False, # Indicate failure to find context
+                    "success": False,  # Indicate failure to find context
                     "processing_time": time.time() - start_time,
                 }
             workflow_id = state_row["workflow_id"]
@@ -6810,21 +7390,22 @@ async def auto_update_focus(
                 "workflow_id": workflow_id,
                 "previous_focal_memory_id": previous_focal_id,
                 "new_focal_memory_id": None,
-                "focus_changed": previous_focal_id is not None, # Changed if previous was set and now it's None (though it stays same here)
+                "focus_changed": previous_focal_id
+                is not None,  # Changed if previous was set and now it's None (though it stays same here)
                 "reason": "Working memory is empty.",
-                "success": True, # Operation itself is successful (no error), just no change.
+                "success": True,  # Operation itself is successful (no error), just no change.
                 "processing_time": time.time() - start_time,
             }
 
         # --- 2. Get Details for Working Memories ---
         working_memories_details = []
-        if current_memory_ids: # Ensure list is not empty before creating placeholders
+        if current_memory_ids:  # Ensure list is not empty before creating placeholders
             placeholders = ", ".join(["?"] * len(current_memory_ids))
             query = f"""
                 SELECT memory_id, action_id, memory_type, memory_level, importance, confidence,
                        created_at, last_accessed, access_count
                 FROM memories WHERE memory_id IN ({placeholders}) AND workflow_id = ?
-            """ # Also filter by workflow_id for safety
+            """  # Also filter by workflow_id for safety
             # All reads are within the transaction, ensuring consistent view
             async with conn.execute(query, current_memory_ids + [workflow_id]) as cursor:
                 working_memories_details = [dict(row) for row in await cursor.fetchall()]
@@ -6846,7 +7427,9 @@ async def auto_update_focus(
         for memory in working_memories_details:
             # Use the UMS-internal scoring function
             score = _calculate_focus_score_internal_ums(memory, recent_action_ids, now_unix)
-            logger.debug(f"Memory {_fmt_id(memory['memory_id'])} in context {_fmt_id(context_id)} focus score: {score:.2f}")
+            logger.debug(
+                f"Memory {_fmt_id(memory['memory_id'])} in context {_fmt_id(context_id)} focus score: {score:.2f}"
+            )
             if score > highest_score:
                 highest_score = score
                 best_candidate_id = memory["memory_id"]
@@ -6867,7 +7450,7 @@ async def auto_update_focus(
             )
             # Log the operation (within the transaction)
             await MemoryUtils._log_memory_operation(
-                conn, # Pass the transaction connection
+                conn,  # Pass the transaction connection
                 workflow_id,
                 "auto_focus_shift",
                 best_candidate_id,
@@ -6881,10 +7464,8 @@ async def auto_update_focus(
             # The transaction will commit at the end of the 'async with db_manager.transaction() as conn:' block
         elif not best_candidate_id:
             reason = "No suitable memory found in working set to focus on."
-            logger.info(
-                f"Auto-focus update for context {context_id}: No suitable candidate found."
-            )
-        else: # best_candidate_id is same as previous_focal_id
+            logger.info(f"Auto-focus update for context {context_id}: No suitable candidate found.")
+        else:  # best_candidate_id is same as previous_focal_id
             reason = f"Focus remains on {_fmt_id(previous_focal_id)} (score: {highest_score:.2f})."
             logger.info(
                 f"Auto-focus update for context {context_id}: Focus remains on {previous_focal_id}."
@@ -6895,24 +7476,24 @@ async def auto_update_focus(
                 (now_unix, context_id),
             )
 
-
     # Transaction commits automatically here if no exceptions were raised
     # WAL checkpoint can be done after successful transaction
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after auto-focus update for context {context_id}: {te_wal}. Main operation succeeded.")
-
+        logger.warning(
+            f"Passive WAL checkpoint failed after auto-focus update for context {context_id}: {te_wal}. Main operation succeeded."
+        )
 
     processing_time = time.time() - start_time
     return {
         "context_id": context_id,
         "workflow_id": workflow_id,
         "previous_focal_memory_id": previous_focal_id,
-        "new_focal_memory_id": best_candidate_id, # Will be None if no candidate or empty working mem
+        "new_focal_memory_id": best_candidate_id,  # Will be None if no candidate or empty working mem
         "focus_changed": focus_changed,
         "reason": reason,
-        "success": True, # The operation itself succeeded, even if focus didn't change
+        "success": True,  # The operation itself succeeded, even if focus didn't change
         "processing_time": processing_time,
     }
 
@@ -6947,20 +7528,22 @@ async def promote_memory_level(
             ) from e
 
     start_time = time.time()
-    db_manager = DBConnection(db_path) # DB manager instance for transaction
+    db_manager = DBConnection(db_path)  # DB manager instance for transaction
     promoted = False
     new_level_enum: Optional[MemoryLevel] = None
     reason = "Criteria not met or already at highest/target level."
-    current_level_val_str = "unknown" # For logging if initial fetch fails
+    current_level_val_str = "unknown"  # For logging if initial fetch fails
 
     # --- 1. Get Current Memory Details (Read operation, can be outside main transaction if needed) ---
     # However, for consistency and to ensure we operate on potentially fresh data if this tool
     # were part of a larger operation, it's fine to do this read within a transaction context
     # that might only commit if an update happens. Or, fetch, decide, then open transaction for write.
     # For this specific tool, fetching outside and then opening transaction for write is cleaner.
-    
-    async with db_manager.transaction() as conn_read: # Use a read transaction or just direct execute
-        mem_row_cursor = await conn_read.execute( # Ensure cursor is awaited and closed
+
+    async with (
+        db_manager.transaction() as conn_read
+    ):  # Use a read transaction or just direct execute
+        mem_row_cursor = await conn_read.execute(  # Ensure cursor is awaited and closed
             "SELECT workflow_id, memory_level, memory_type, access_count, confidence, importance FROM memories WHERE memory_id = ?",
             (memory_id,),
         )
@@ -6971,7 +7554,7 @@ async def promote_memory_level(
         raise ToolInputError(f"Memory {memory_id} not found.", param_name="memory_id")
 
     current_level = MemoryLevel(mem_row["memory_level"])
-    current_level_val_str = current_level.value # For logging
+    current_level_val_str = current_level.value  # For logging
     mem_type = MemoryType(mem_row["memory_type"])
     access_count = mem_row["access_count"] or 0
     confidence = mem_row["confidence"] or 0.0
@@ -6981,7 +7564,10 @@ async def promote_memory_level(
     potential_next_level = None
     if current_level == MemoryLevel.EPISODIC:
         potential_next_level = MemoryLevel.SEMANTIC
-    elif current_level == MemoryLevel.SEMANTIC and mem_type in [MemoryType.PROCEDURE, MemoryType.SKILL]:
+    elif current_level == MemoryLevel.SEMANTIC and mem_type in [
+        MemoryType.PROCEDURE,
+        MemoryType.SKILL,
+    ]:
         potential_next_level = MemoryLevel.PROCEDURAL
 
     level_to_check_for = target_level_enum or potential_next_level
@@ -7000,7 +7586,8 @@ async def promote_memory_level(
         elif level_to_check_for == MemoryLevel.PROCEDURAL and current_level == MemoryLevel.SEMANTIC:
             if mem_type in [MemoryType.PROCEDURE, MemoryType.SKILL]:
                 criteria_met = (
-                    access_count >= min_access_count_semantic and confidence >= min_confidence_semantic
+                    access_count >= min_access_count_semantic
+                    and confidence >= min_confidence_semantic
                 )
                 criteria_desc = (
                     f"Met criteria for Procedural: type ('{mem_type.value}'), "
@@ -7015,7 +7602,9 @@ async def promote_memory_level(
             new_level_enum = level_to_check_for
             reason = criteria_desc
         else:
-            reason = criteria_desc or f"Criteria not met for promotion to {level_to_check_for.value}."
+            reason = (
+                criteria_desc or f"Criteria not met for promotion to {level_to_check_for.value}."
+            )
     elif level_to_check_for and level_to_check_for.value <= current_level.value:
         reason = f"Memory is already at or above the target level '{level_to_check_for.value}'."
     elif not level_to_check_for:
@@ -7024,15 +7613,23 @@ async def promote_memory_level(
     # --- 3. Update Memory if Promoted (DB Write - Needs Transaction) ---
     db_write_occurred = False
     if promoted and new_level_enum:
-        async with db_manager.transaction() as conn_write: # Start transaction for write
+        async with db_manager.transaction() as conn_write:  # Start transaction for write
             now_unix = int(time.time())
             await conn_write.execute(
                 "UPDATE memories SET memory_level = ?, updated_at = ? WHERE memory_id = ?",
                 (new_level_enum.value, now_unix, memory_id),
             )
-            await MemoryUtils._log_memory_operation( # Pass the transaction connection
-                conn_write, workflow_id, "promote_level", memory_id, None,
-                {"previous_level": current_level.value, "new_level": new_level_enum.value, "reason": reason}
+            await MemoryUtils._log_memory_operation(  # Pass the transaction connection
+                conn_write,
+                workflow_id,
+                "promote_level",
+                memory_id,
+                None,
+                {
+                    "previous_level": current_level.value,
+                    "new_level": new_level_enum.value,
+                    "reason": reason,
+                },
             )
             db_write_occurred = True
         # Transaction commits here if no exceptions
@@ -7041,20 +7638,24 @@ async def promote_memory_level(
             try:
                 await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
             except ToolError as te_wal:
-                logger.warning(f"Passive WAL checkpoint failed after promoting memory '{memory_id}': {te_wal}. Main operation succeeded.")
+                logger.warning(
+                    f"Passive WAL checkpoint failed after promoting memory '{memory_id}': {te_wal}. Main operation succeeded."
+                )
             logger.info(
                 f"Promoted memory {memory_id} from {current_level.value} to {new_level_enum.value}",
                 emoji_key="arrow_up",
             )
     else:
-        logger.info(f"Memory {memory_id} (Level: {current_level_val_str}) not promoted. Reason: {reason}")
+        logger.info(
+            f"Memory {memory_id} (Level: {current_level_val_str}) not promoted. Reason: {reason}"
+        )
 
     # --- 4. Return Result ---
     processing_time = time.time() - start_time
     return {
         "memory_id": memory_id,
         "promoted": promoted,
-        "previous_level": current_level.value, # Return the original level
+        "previous_level": current_level.value,  # Return the original level
         "new_level": new_level_enum.value if promoted and new_level_enum else None,
         "reason": reason,
         "success": True,
@@ -7063,6 +7664,7 @@ async def promote_memory_level(
 
 
 # --- 15. Memory Update ---
+
 
 @with_tool_metrics
 @with_error_handling
@@ -7094,7 +7696,7 @@ async def update_memory(
         raise ToolInputError("Confidence must be 0.0-1.0.", param_name="confidence")
 
     final_tags_json: Optional[str] = None
-    if tags is not None: # If tags is an empty list, it means clear tags. If None, don't touch.
+    if tags is not None:  # If tags is an empty list, it means clear tags. If None, don't touch.
         final_tags_json = json.dumps(list(set(str(t).lower() for t in tags if str(t).strip())))
 
     memory_level_value: Optional[str] = None
@@ -7103,11 +7705,14 @@ async def update_memory(
             memory_level_value = MemoryLevel(memory_level.lower()).value
         except ValueError as e:
             valid_levels_str = ", ".join([ml.value for ml in MemoryLevel])
-            raise ToolInputError(f"Invalid memory_level. Must be one of: {valid_levels_str}", param_name="memory_level") from e
+            raise ToolInputError(
+                f"Invalid memory_level. Must be one of: {valid_levels_str}",
+                param_name="memory_level",
+            ) from e
 
     update_clauses = []
-    params: List[Any] = [] # Params for the SQL query
-    updated_fields_log: List[str] = [] # For logging which fields were actually changed
+    params: List[Any] = []  # Params for the SQL query
+    updated_fields_log: List[str] = []  # For logging which fields were actually changed
 
     # Build dynamic SET clause
     if content is not None:
@@ -7130,7 +7735,7 @@ async def update_memory(
         update_clauses.append("reasoning = ?")
         params.append(reasoning)
         updated_fields_log.append("reasoning")
-    if final_tags_json is not None: # Distinguish from tags=None
+    if final_tags_json is not None:  # Distinguish from tags=None
         update_clauses.append("tags = ?")
         params.append(final_tags_json)
         updated_fields_log.append("tags")
@@ -7149,12 +7754,12 @@ async def update_memory(
         )
 
     now_unix_for_update = int(time.time())
-    if update_clauses: # Only add updated_at if other fields are changing via SQL
+    if update_clauses:  # Only add updated_at if other fields are changing via SQL
         update_clauses.append("updated_at = ?")
         params.append(now_unix_for_update)
-    
+
     embedding_regenerated_flag = False
-    new_embedding_id: Optional[str] = None # To store ID from embeddings table if regenerated
+    new_embedding_id: Optional[str] = None  # To store ID from embeddings table if regenerated
 
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
@@ -7175,36 +7780,63 @@ async def update_memory(
             final_params = params + [memory_id]
             update_sql = f"UPDATE memories SET {', '.join(update_clauses)} WHERE memory_id = ?"
             await conn.execute(update_sql, final_params)
-            logger.debug(f"Executed SQL update for memory {memory_id}. Clauses: {', '.join(update_clauses)}")
+            logger.debug(
+                f"Executed SQL update for memory {memory_id}. Clauses: {', '.join(update_clauses)}"
+            )
 
         # Regenerate embedding if requested OR if content/description changed significantly
         # For now, explicit `regenerate_embedding` flag is primary trigger.
         # Content change check can be added later if desired.
         if regenerate_embedding:
             # Determine the text to embed using new values if provided, else current DB values
-            text_for_embedding_desc = description if "description" in updated_fields_log else db_current_description
-            text_for_embedding_content = content if "content" in updated_fields_log else db_current_content
-            
-            final_text_for_embedding = f"{text_for_embedding_desc}: {text_for_embedding_content}" if text_for_embedding_desc else text_for_embedding_content
-            
+            text_for_embedding_desc = (
+                description if "description" in updated_fields_log else db_current_description
+            )
+            text_for_embedding_content = (
+                content if "content" in updated_fields_log else db_current_content
+            )
+
+            final_text_for_embedding = (
+                f"{text_for_embedding_desc}: {text_for_embedding_content}"
+                if text_for_embedding_desc
+                else text_for_embedding_content
+            )
+
             if not final_text_for_embedding:
-                logger.warning(f"Cannot regenerate embedding for memory {memory_id}: effective text for embedding is empty.")
+                logger.warning(
+                    f"Cannot regenerate embedding for memory {memory_id}: effective text for embedding is empty."
+                )
             else:
                 try:
                     # _store_embedding handles inserting/updating in 'embeddings' and updating 'memories.embedding_id'
-                    new_embedding_id_from_store = await _store_embedding(conn, memory_id, final_text_for_embedding)
+                    new_embedding_id_from_store = await _store_embedding(
+                        conn, memory_id, final_text_for_embedding
+                    )
                     if new_embedding_id_from_store:
                         embedding_regenerated_flag = True
-                        new_embedding_id = new_embedding_id_from_store # Store the DB ID of the embedding
-                        logger.info(f"Regenerated embedding (ID: {new_embedding_id}) for updated memory {memory_id}", emoji_key="brain")
+                        new_embedding_id = (
+                            new_embedding_id_from_store  # Store the DB ID of the embedding
+                        )
+                        logger.info(
+                            f"Regenerated embedding (ID: {new_embedding_id}) for updated memory {memory_id}",
+                            emoji_key="brain",
+                        )
                         # If only embedding was regenerated, explicitly update `updated_at` for the memory
                         if not update_clauses:
-                            await conn.execute("UPDATE memories SET updated_at = ? WHERE memory_id = ?", (now_unix_for_update, memory_id))
+                            await conn.execute(
+                                "UPDATE memories SET updated_at = ? WHERE memory_id = ?",
+                                (now_unix_for_update, memory_id),
+                            )
                     else:
-                        logger.warning(f"Embedding regeneration failed for memory {memory_id}, _store_embedding returned None.")
+                        logger.warning(
+                            f"Embedding regeneration failed for memory {memory_id}, _store_embedding returned None."
+                        )
                 except Exception as embed_err:
-                    logger.error(f"Error during embedding regeneration for memory {memory_id}: {embed_err}", exc_info=True)
-        
+                    logger.error(
+                        f"Error during embedding regeneration for memory {memory_id}: {embed_err}",
+                        exc_info=True,
+                    )
+
         # Log operation (within the transaction)
         log_data = {"updated_fields": updated_fields_log}
         if embedding_regenerated_flag:
@@ -7212,24 +7844,32 @@ async def update_memory(
             log_data["new_embedding_id"] = new_embedding_id
 
         await MemoryUtils._log_memory_operation(
-            conn, workflow_id, "update_memory", memory_id, None, log_data # More specific op name
+            conn,
+            workflow_id,
+            "update_memory",
+            memory_id,
+            None,
+            log_data,  # More specific op name
         )
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after updating memory '{memory_id}': {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after updating memory '{memory_id}': {te_wal}. Main operation succeeded."
+        )
 
     processing_time = time.time() - start_time
     logger.info(
         f"Updated memory {memory_id}. Fields: {', '.join(updated_fields_log) or 'None (Embedding only)'}. Embedding regenerated: {embedding_regenerated_flag}",
-        emoji_key="pencil2", time=processing_time
+        emoji_key="pencil2",
+        time=processing_time,
     )
     return {
         "memory_id": memory_id,
         "updated_fields": updated_fields_log,
         "embedding_regenerated": embedding_regenerated_flag,
-        "new_embedding_id": new_embedding_id, # Return the ID from the embeddings table
-        "updated_at": to_iso_z(now_unix_for_update), # Use consistent ISO Z format
+        "new_embedding_id": new_embedding_id,  # Return the ID from the embeddings table
+        "updated_at": to_iso_z(now_unix_for_update),  # Use consistent ISO Z format
         "success": True,
         "processing_time": processing_time,
     }
@@ -7259,7 +7899,7 @@ async def get_linked_memories(
         raise ToolInputError("Memory ID is required", param_name="memory_id")
 
     valid_directions = ["outgoing", "incoming", "both"]
-    direction_lower = direction.lower() # Store lowercase version
+    direction_lower = direction.lower()  # Store lowercase version
     if direction_lower not in valid_directions:
         raise ToolInputError(
             f"Direction must be one of: {', '.join(valid_directions)}", param_name="direction"
@@ -7274,23 +7914,22 @@ async def get_linked_memories(
                 f"Invalid link_type. Must be one of: {', '.join(valid_types)}",
                 param_name="link_type",
             ) from e
-    
+
     if limit <= 0:
         raise ToolInputError("Limit must be a positive integer.", param_name="limit")
 
-
     # Initialize result structure
-    result_payload: Dict[str, Any] = { # Renamed to avoid conflict with 'result' variable name
+    result_payload: Dict[str, Any] = {  # Renamed to avoid conflict with 'result' variable name
         "memory_id": memory_id,
         "links": {"outgoing": [], "incoming": []},
-        "success": True, # Assume success unless an error occurs
+        "success": True,  # Assume success unless an error occurs
         "processing_time": 0.0,
     }
-    
-    source_memory_workflow_id: Optional[str] = None # To store workflow_id for logging
+
+    source_memory_workflow_id: Optional[str] = None  # To store workflow_id for logging
 
     db_manager = DBConnection(db_path)
-    async with db_manager.transaction() as conn: # Start transaction
+    async with db_manager.transaction() as conn:  # Start transaction
         # Check if memory exists and get its workflow_id for logging
         async with conn.execute(
             "SELECT workflow_id FROM memories WHERE memory_id = ?", (memory_id,)
@@ -7308,7 +7947,7 @@ async def get_linked_memories(
                 JOIN memories m ON ml.target_memory_id = m.memory_id
                 WHERE ml.source_memory_id = ?
             """
-            params_outgoing: List[Any] = [memory_id] # Type hint for clarity
+            params_outgoing: List[Any] = [memory_id]  # Type hint for clarity
 
             if link_type:
                 outgoing_query += " AND ml.link_type = ?"
@@ -7335,11 +7974,17 @@ async def get_linked_memories(
                             if target_memory_out:
                                 mem_dict_out = dict(target_memory_out)
                                 for ts_key in ["created_at", "updated_at"]:
-                                    mem_dict_out[ts_key] = safe_format_timestamp(mem_dict_out.get(ts_key))
-                                mem_dict_out["tags"] = await MemoryUtils.deserialize(mem_dict_out.get("tags"))
+                                    mem_dict_out[ts_key] = safe_format_timestamp(
+                                        mem_dict_out.get(ts_key)
+                                    )
+                                mem_dict_out["tags"] = await MemoryUtils.deserialize(
+                                    mem_dict_out.get("tags")
+                                )
                                 link_data_out["target_memory"] = mem_dict_out
-                    
-                    link_data_out["created_at"] = safe_format_timestamp(link_data_out.get("created_at"))
+
+                    link_data_out["created_at"] = safe_format_timestamp(
+                        link_data_out.get("created_at")
+                    )
                     link_data_out.pop("created_at_unix", None)
                     result_payload["links"]["outgoing"].append(link_data_out)
 
@@ -7378,34 +8023,44 @@ async def get_linked_memories(
                             if source_memory_in:
                                 mem_dict_in = dict(source_memory_in)
                                 for ts_key in ["created_at", "updated_at"]:
-                                    mem_dict_in[ts_key] = safe_format_timestamp(mem_dict_in.get(ts_key))
-                                mem_dict_in["tags"] = await MemoryUtils.deserialize(mem_dict_in.get("tags"))
+                                    mem_dict_in[ts_key] = safe_format_timestamp(
+                                        mem_dict_in.get(ts_key)
+                                    )
+                                mem_dict_in["tags"] = await MemoryUtils.deserialize(
+                                    mem_dict_in.get("tags")
+                                )
                                 link_data_in["source_memory"] = mem_dict_in
-                    
-                    link_data_in["created_at"] = safe_format_timestamp(link_data_in.get("created_at"))
+
+                    link_data_in["created_at"] = safe_format_timestamp(
+                        link_data_in.get("created_at")
+                    )
                     link_data_in.pop("created_at_unix", None)
                     result_payload["links"]["incoming"].append(link_data_in)
 
         # Record access stats for the source memory (within the transaction)
-        if source_memory_workflow_id: # Ensure workflow_id was fetched
+        if source_memory_workflow_id:  # Ensure workflow_id was fetched
             await MemoryUtils._update_memory_access(conn, memory_id)
             await MemoryUtils._log_memory_operation(
-                conn, # Pass transaction connection
+                conn,  # Pass transaction connection
                 source_memory_workflow_id,
                 "access_links",
                 memory_id,
                 None,
-                {"direction": direction_lower, "link_type_filter": link_type}
+                {"direction": direction_lower, "link_type_filter": link_type},
             )
         else:
             # This case should ideally not be reached if memory_id was validated
-            logger.warning(f"Could not log access for get_linked_memories on {memory_id} as its workflow_id was not determined.")
+            logger.warning(
+                f"Could not log access for get_linked_memories on {memory_id} as its workflow_id was not determined."
+            )
 
     # Transaction commits here if no exceptions
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after recording access for get_linked_memories on {memory_id}: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after recording access for get_linked_memories on {memory_id}: {te_wal}. Main operation succeeded."
+        )
 
     processing_time = time.time() - start_time
     logger.info(
@@ -7666,6 +8321,7 @@ STRATEGIC PLAN:"""
 
 # --- Tool: Consolidate Memories ---
 
+
 @with_tool_metrics
 @with_error_handling
 async def consolidate_memories(
@@ -7695,9 +8351,11 @@ async def consolidate_memories(
 
     source_memories_list: List[Dict[str, Any]] = []
     source_memory_ids: List[str] = []
-    effective_workflow_id = workflow_id # Will be inferred if not provided and target_memories are used
+    effective_workflow_id = (
+        workflow_id  # Will be inferred if not provided and target_memories are used
+    )
 
-    db_manager_for_reads = DBConnection(db_path) # For initial reads, no transaction needed yet
+    db_manager_for_reads = DBConnection(db_path)  # For initial reads, no transaction needed yet
 
     try:
         # --- 1. Select Source Memories ---
@@ -7716,24 +8374,36 @@ async def consolidate_memories(
                     rows = await cursor.fetchall()
 
                 found_memories_details = {r["memory_id"]: dict(r) for r in rows}
-                
+
                 if not effective_workflow_id and rows:
                     effective_workflow_id = rows[0]["workflow_id"]
                     if not effective_workflow_id:
-                         raise ToolError(f"Memory {rows[0]['memory_id']} exists but lacks a workflow ID.")
-                    logger.debug(f"Inferred effective_workflow_id: {effective_workflow_id} from target memories.")
+                        raise ToolError(
+                            f"Memory {rows[0]['memory_id']} exists but lacks a workflow ID."
+                        )
+                    logger.debug(
+                        f"Inferred effective_workflow_id: {effective_workflow_id} from target memories."
+                    )
                 elif not effective_workflow_id and not rows:
-                     raise ToolInputError("Workflow ID must be provided if target_memories are specified but none are found.", param_name="workflow_id")
+                    raise ToolInputError(
+                        "Workflow ID must be provided if target_memories are specified but none are found.",
+                        param_name="workflow_id",
+                    )
 
                 problematic_ids_details = []
                 for mem_id_req in target_memories:
                     if mem_id_req not in found_memories_details:
                         problematic_ids_details.append(f"ID '{_fmt_id(mem_id_req)}' not found")
-                    elif found_memories_details[mem_id_req].get("workflow_id") != effective_workflow_id:
-                        problematic_ids_details.append(f"ID '{_fmt_id(mem_id_req)}' not in workflow '{_fmt_id(effective_workflow_id)}'")
+                    elif (
+                        found_memories_details[mem_id_req].get("workflow_id")
+                        != effective_workflow_id
+                    ):
+                        problematic_ids_details.append(
+                            f"ID '{_fmt_id(mem_id_req)}' not in workflow '{_fmt_id(effective_workflow_id)}'"
+                        )
                     else:
                         source_memories_list.append(found_memories_details[mem_id_req])
-                
+
                 if problematic_ids_details:
                     err_msg = f"Target memories issue: {'; '.join(problematic_ids_details)}."
                     raise ToolInputError(err_msg, param_name="target_memories")
@@ -7741,14 +8411,22 @@ async def consolidate_memories(
 
             elif query_filter:
                 if not effective_workflow_id:
-                    raise ToolInputError("workflow_id is required when using query_filter.", param_name="workflow_id")
-                
+                    raise ToolInputError(
+                        "workflow_id is required when using query_filter.", param_name="workflow_id"
+                    )
+
                 # Build filter query dynamically (ensure this is safe and validated)
                 # This part is adapted from query_memories logic
                 filter_where_clauses = ["workflow_id = ?"]
                 filter_query_params: List[Any] = [effective_workflow_id]
-                
-                valid_filter_keys = {"memory_level", "memory_type", "source", "min_importance", "min_confidence"}
+
+                valid_filter_keys = {
+                    "memory_level",
+                    "memory_type",
+                    "source",
+                    "min_importance",
+                    "min_confidence",
+                }
                 for key, value in query_filter.items():
                     if key not in valid_filter_keys:
                         logger.warning(f"Consolidation: Ignoring unsupported filter key: {key}")
@@ -7766,43 +8444,54 @@ async def consolidate_memories(
                 now_unix_filter = int(time.time())
                 filter_where_clauses.append("(ttl = 0 OR created_at + ttl > ?)")
                 filter_query_params.append(now_unix_filter)
-                
+
                 where_sql_filter = " AND ".join(filter_where_clauses)
                 query_sql = f"SELECT * FROM memories WHERE {where_sql_filter} ORDER BY importance DESC, created_at DESC LIMIT ?"
                 filter_query_params.append(max_source_memories)
-                
+
                 async with read_conn.execute(query_sql, filter_query_params) as cursor:
                     source_memories_list = [dict(row) for row in await cursor.fetchall()]
                     source_memory_ids = [m["memory_id"] for m in source_memories_list]
 
-            else: # Default: Get recent, important memories from the specified workflow
+            else:  # Default: Get recent, important memories from the specified workflow
                 if not effective_workflow_id:
-                    raise ToolInputError("workflow_id is required if not using target_memories or query_filter.", param_name="workflow_id")
+                    raise ToolInputError(
+                        "workflow_id is required if not using target_memories or query_filter.",
+                        param_name="workflow_id",
+                    )
                 query_sql = "SELECT * FROM memories WHERE workflow_id = ? AND (ttl = 0 OR created_at + ttl > ?) ORDER BY importance DESC, created_at DESC LIMIT ?"
                 now_unix_filter = int(time.time())
-                async with read_conn.execute(query_sql, [effective_workflow_id, now_unix_filter, max_source_memories]) as cursor:
+                async with read_conn.execute(
+                    query_sql, [effective_workflow_id, now_unix_filter, max_source_memories]
+                ) as cursor:
                     source_memories_list = [dict(row) for row in await cursor.fetchall()]
                     source_memory_ids = [m["memory_id"] for m in source_memories_list]
 
             if len(source_memories_list) < 2:
-                raise ToolError(f"Insufficient source memories ({len(source_memories_list)}) found for consolidation.")
-            if not effective_workflow_id: # Should be set by now if sources were found
+                raise ToolError(
+                    f"Insufficient source memories ({len(source_memories_list)}) found for consolidation."
+                )
+            if not effective_workflow_id:  # Should be set by now if sources were found
                 raise ToolError("Could not determine a workflow ID for consolidation.")
 
         # --- 2. Generate Consolidation Prompt ---
-        prompt = prompt_override or _generate_consolidation_prompt(source_memories_list, consolidation_type)
+        prompt = prompt_override or _generate_consolidation_prompt(
+            source_memories_list, consolidation_type
+        )
 
         # --- 3. Call LLM via Gateway ---
         consolidated_content = ""
-        llm_config = get_config() # Get full config for provider defaults
+        llm_config = get_config()  # Get full config for provider defaults
         provider_to_use = provider or llm_config.default_provider or LLMGatewayProvider.OPENAI.value
         provider_instance = await get_provider(provider_to_use)
         if not provider_instance:
             raise ToolError(f"Failed to initialize LLM provider '{provider_to_use}'.")
-        
+
         model_to_use = model or provider_instance.get_default_model()
-        logger.info(f"Consolidating memories using LLM: {provider_to_use}/{model_to_use or 'provider_default'}...")
-        
+        logger.info(
+            f"Consolidating memories using LLM: {provider_to_use}/{model_to_use or 'provider_default'}..."
+        )
+
         try:
             llm_result = await provider_instance.generate_completion(
                 prompt=prompt, model=model_to_use, max_tokens=max_tokens, temperature=0.6
@@ -7817,53 +8506,96 @@ async def consolidate_memories(
 
         # --- 4. Store Result and Log Operation (within a transaction for logging) ---
         stored_memory_id = None
-        db_manager_for_writes = DBConnection(db_path) # New manager for write transaction
+        db_manager_for_writes = DBConnection(db_path)  # New manager for write transaction
 
         async with db_manager_for_writes.transaction() as write_conn:
             if store_result and consolidated_content:
                 result_type_val = store_as_type or {
-                    "summary": MemoryType.SUMMARY.value, "insight": MemoryType.INSIGHT.value,
-                    "procedural": MemoryType.PROCEDURE.value, "question": MemoryType.QUESTION.value,
+                    "summary": MemoryType.SUMMARY.value,
+                    "insight": MemoryType.INSIGHT.value,
+                    "procedural": MemoryType.PROCEDURE.value,
+                    "question": MemoryType.QUESTION.value,
                 }.get(consolidation_type, MemoryType.INSIGHT.value)
-                try: result_type_enum = MemoryType(result_type_val.lower())
-                except ValueError: result_type_enum = MemoryType.INSIGHT
-                try: result_level_enum = MemoryLevel(store_as_level.lower())
-                except ValueError: result_level_enum = MemoryLevel.SEMANTIC
+                try:
+                    result_type_enum = MemoryType(result_type_val.lower())
+                except ValueError:
+                    result_type_enum = MemoryType.INSIGHT
+                try:
+                    result_level_enum = MemoryLevel(store_as_level.lower())
+                except ValueError:
+                    result_level_enum = MemoryLevel.SEMANTIC
 
-                result_desc = f"Consolidated {consolidation_type} from {len(source_memory_ids)} memories."
-                result_tags = ["consolidated", consolidation_type, result_type_enum.value, result_level_enum.value]
-                result_context = {"source_memories": source_memory_ids, "consolidation_type": consolidation_type}
+                result_desc = (
+                    f"Consolidated {consolidation_type} from {len(source_memory_ids)} memories."
+                )
+                result_tags = [
+                    "consolidated",
+                    consolidation_type,
+                    result_type_enum.value,
+                    result_level_enum.value,
+                ]
+                result_context = {
+                    "source_memories": source_memory_ids,
+                    "consolidation_type": consolidation_type,
+                }
 
                 derived_importance, derived_confidence = 5.0, 0.75
                 if source_memories_list:
-                    src_imps = [m.get("importance", 5.0) for m in source_memories_list if m.get("importance") is not None]
-                    src_confs = [m.get("confidence", 0.5) for m in source_memories_list if m.get("confidence") is not None]
-                    if src_imps: derived_importance = min(max(src_imps) + 0.5, 10.0)
+                    src_imps = [
+                        m.get("importance", 5.0)
+                        for m in source_memories_list
+                        if m.get("importance") is not None
+                    ]
+                    src_confs = [
+                        m.get("confidence", 0.5)
+                        for m in source_memories_list
+                        if m.get("confidence") is not None
+                    ]
+                    if src_imps:
+                        derived_importance = min(max(src_imps) + 0.5, 10.0)
                     if src_confs:
                         derived_confidence = min(sum(src_confs) / len(src_confs), 1.0)
-                        derived_confidence = max(0.1, derived_confidence * (1.0 - min(0.2, (len(source_memories_list) - 1) * 0.02)))
-                    else: derived_confidence = 0.5
-                
-                logger.debug(f"Consolidation: Derived Importance: {derived_importance:.2f}, Confidence: {derived_confidence:.2f}")
+                        derived_confidence = max(
+                            0.1,
+                            derived_confidence
+                            * (1.0 - min(0.2, (len(source_memories_list) - 1) * 0.02)),
+                        )
+                    else:
+                        derived_confidence = 0.5
+
+                logger.debug(
+                    f"Consolidation: Derived Importance: {derived_importance:.2f}, Confidence: {derived_confidence:.2f}"
+                )
 
                 # Call store_memory. Assumed to be atomic itself.
                 # It will use its own DBConnection and transaction if conn is not passed.
                 try:
                     store_result_dict = await store_memory(
-                        workflow_id=effective_workflow_id, content=consolidated_content,
-                        memory_type=result_type_enum.value, memory_level=result_level_enum.value,
-                        importance=round(derived_importance, 2), confidence=round(derived_confidence, 3),
-                        description=result_desc, source=f"consolidation_{consolidation_type}",
-                        tags=result_tags, context_data=result_context,
-                        generate_embedding=True, suggest_links=True, db_path=db_path,
+                        workflow_id=effective_workflow_id,
+                        content=consolidated_content,
+                        memory_type=result_type_enum.value,
+                        memory_level=result_level_enum.value,
+                        importance=round(derived_importance, 2),
+                        confidence=round(derived_confidence, 3),
+                        description=result_desc,
+                        source=f"consolidation_{consolidation_type}",
+                        tags=result_tags,
+                        context_data=result_context,
+                        generate_embedding=True,
+                        suggest_links=True,
+                        db_path=db_path,
                         # Not passing 'conn=write_conn' here, as store_memory isn't (yet) designed to take it
                     )
                     stored_memory_id = store_result_dict.get("memory_id")
                     if not stored_memory_id:
-                         logger.error(f"store_memory call during consolidation succeeded but returned no memory_id. Result: {store_result_dict}")
-                         # Proceed with logging the consolidation attempt, but no links can be made.
+                        logger.error(
+                            f"store_memory call during consolidation succeeded but returned no memory_id. Result: {store_result_dict}"
+                        )
+                        # Proceed with logging the consolidation attempt, but no links can be made.
                 except Exception as store_err:
-                    logger.error(f"Failed to store consolidated memory result: {store_err}", exc_info=True)
+                    logger.error(
+                        f"Failed to store consolidated memory result: {store_err}", exc_info=True
+                    )
                     # Don't re-raise here, allow logging of the consolidation attempt itself.
                     # The fact that stored_memory_id is None will indicate storage failure.
 
@@ -7871,55 +8603,69 @@ async def consolidate_memories(
                 if stored_memory_id:
                     link_tasks = []
                     for source_id in source_memory_ids:
-                        link_task = create_memory_link( # Also assumed atomic
-                            source_memory_id=stored_memory_id, target_memory_id=source_id,
+                        link_task = create_memory_link(  # Also assumed atomic
+                            source_memory_id=stored_memory_id,
+                            target_memory_id=source_id,
                             link_type=LinkType.GENERALIZES.value,
                             description=f"Source for consolidated {consolidation_type}",
                             db_path=db_path,
                             # Not passing 'conn=write_conn'
                         )
                         link_tasks.append(link_task)
-                    
+
                     link_results = await asyncio.gather(*link_tasks, return_exceptions=True)
-                    failed_links = [res for res in link_results if isinstance(res, Exception) or (isinstance(res, dict) and not res.get("success"))]
+                    failed_links = [
+                        res
+                        for res in link_results
+                        if isinstance(res, Exception)
+                        or (isinstance(res, dict) and not res.get("success"))
+                    ]
                     if failed_links:
-                        logger.warning(f"Failed to create {len(failed_links)} links from consolidated memory {stored_memory_id} to sources. Errors: {[str(e) for e in failed_links]}")
-            
+                        logger.warning(
+                            f"Failed to create {len(failed_links)} links from consolidated memory {stored_memory_id} to sources. Errors: {[str(e) for e in failed_links]}"
+                        )
+
             # Log Consolidation Operation (this is the part atomic to *this* function)
             log_data = {
                 "consolidation_type": consolidation_type,
                 "source_count": len(source_memory_ids),
                 "llm_provider": provider_to_use,
                 "llm_model": model_to_use or "provider_default",
-                "stored": bool(stored_memory_id), # True if store_memory returned an ID
+                "stored": bool(stored_memory_id),  # True if store_memory returned an ID
                 "stored_memory_id": stored_memory_id,
-                "content_generated_length": len(consolidated_content)
+                "content_generated_length": len(consolidated_content),
             }
             await MemoryUtils._log_memory_operation(
-                write_conn, # Use the transaction connection here
-                effective_workflow_id, "consolidate", 
-                None, None, # memory_id, action_id for the log op itself
-                log_data
+                write_conn,  # Use the transaction connection here
+                effective_workflow_id,
+                "consolidate",
+                None,
+                None,  # memory_id, action_id for the log op itself
+                log_data,
             )
         # Transaction for logging commits here
 
         try:
             await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
         except ToolError as te_wal:
-            logger.warning(f"Passive WAL checkpoint failed after logging consolidation for workflow {_fmt_id(effective_workflow_id)}: {te_wal}. Main operation succeeded.")
+            logger.warning(
+                f"Passive WAL checkpoint failed after logging consolidation for workflow {_fmt_id(effective_workflow_id)}: {te_wal}. Main operation succeeded."
+            )
 
         processing_time = time.time() - start_time
         logger.info(
             f"Consolidated {len(source_memory_ids)} memories ({consolidation_type}). Stored as: {stored_memory_id or 'Not Stored'}",
-            emoji_key="sparkles", time=processing_time,
+            emoji_key="sparkles",
+            time=processing_time,
         )
         return {
-            "consolidated_content": consolidated_content or "Consolidation failed or produced no content.",
+            "consolidated_content": consolidated_content
+            or "Consolidation failed or produced no content.",
             "consolidation_type": consolidation_type,
             "source_memory_ids": source_memory_ids,
             "workflow_id": effective_workflow_id,
-            "stored_memory_id": stored_memory_id, # Will be None if storing failed
-            "success": True, # Success of the overall consolidation *attempt*
+            "stored_memory_id": stored_memory_id,  # Will be None if storing failed
+            "success": True,  # Success of the overall consolidation *attempt*
             "processing_time": processing_time,
         }
 
@@ -7936,7 +8682,7 @@ async def generate_reflection(
     workflow_id: str,
     reflection_type: str = "summary",  # summary, progress, gaps, strengths, plan
     recent_ops_limit: int = 30,
-    provider: str = LLMGatewayProvider.OPENAI.value, # Using constant from UMS if available
+    provider: str = LLMGatewayProvider.OPENAI.value,  # Using constant from UMS if available
     model: Optional[str] = None,
     max_tokens: int = 1000,
     db_path: str = agent_memory_config.db_path,
@@ -7948,11 +8694,10 @@ async def generate_reflection(
     valid_types = ["summary", "progress", "gaps", "strengths", "plan"]
     if reflection_type not in valid_types:
         raise ToolInputError(
-            f"Invalid reflection_type. Must be one of: {valid_types}", 
-            param_name="reflection_type"
+            f"Invalid reflection_type. Must be one of: {valid_types}", param_name="reflection_type"
         )
 
-    db_manager = DBConnection(db_path) # For both read and write operations
+    db_manager = DBConnection(db_path)  # For both read and write operations
 
     try:
         # --- 1. Fetch Workflow Info & Recent Operations (Read-only part) ---
@@ -7962,13 +8707,15 @@ async def generate_reflection(
         mem_ids_from_ops: Set[str] = set()
         memories_details_for_prompt: Dict[str, Dict[str, Any]] = {}
 
-        async with db_manager as read_conn: # Separate read context for these initial fetches
+        async with db_manager as read_conn:  # Separate read context for these initial fetches
             async with read_conn.execute(
                 "SELECT title, description FROM workflows WHERE workflow_id = ?", (workflow_id,)
             ) as cursor:
                 wf_row = await cursor.fetchone()
                 if not wf_row:
-                    raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
+                    raise ToolInputError(
+                        f"Workflow {workflow_id} not found.", param_name="workflow_id"
+                    )
                 workflow_name = wf_row["title"]
                 workflow_desc = wf_row["description"]
 
@@ -7979,12 +8726,14 @@ async def generate_reflection(
                 operations = [dict(row) for row in await cursor.fetchall()]
 
             if not operations:
-                raise ToolError(f"No operations found for workflow {workflow_id} to generate reflection.")
+                raise ToolError(
+                    f"No operations found for workflow {workflow_id} to generate reflection."
+                )
 
             for op in operations:
                 if op.get("memory_id"):
                     mem_ids_from_ops.add(op["memory_id"])
-            
+
             if mem_ids_from_ops:
                 placeholders = ",".join("?" * len(mem_ids_from_ops))
                 # Fetch memory_type as well for better context in prompt
@@ -7992,8 +8741,8 @@ async def generate_reflection(
                 async with read_conn.execute(query_mem_details, list(mem_ids_from_ops)) as cursor:
                     async for row in cursor:
                         memories_details_for_prompt[row["memory_id"]] = dict(row)
-        
-        if workflow_name is None: # Should not happen if wf_row check passed
+
+        if workflow_name is None:  # Should not happen if wf_row check passed
             raise ToolError("Failed to retrieve workflow name.")
 
         # --- 2. Generate Reflection Prompt ---
@@ -8002,14 +8751,14 @@ async def generate_reflection(
         )
 
         # --- 3. Call LLM via Gateway ---
-        llm_config = get_config() # Get full config for provider defaults
+        llm_config = get_config()  # Get full config for provider defaults
         provider_to_use = provider or llm_config.default_provider or LLMGatewayProvider.OPENAI.value
         provider_instance = await get_provider(provider_to_use)
         if not provider_instance:
             raise ToolError(f"Failed to initialize LLM provider '{provider_to_use}'.")
-        
+
         model_to_use = model or provider_instance.get_default_model()
-        
+
         try:
             llm_result = await provider_instance.generate_completion(
                 prompt=prompt, model=model_to_use, max_tokens=max_tokens, temperature=0.7
@@ -8024,25 +8773,38 @@ async def generate_reflection(
         # --- 4. Store Reflection and Log Operation (within a transaction) ---
         reflection_id = MemoryUtils.generate_id()
         now_unix = int(time.time())
-        title = (reflection_content.split("\n", 1)[0].strip("# ")[:100] or 
-                 f"{reflection_type.capitalize()} Reflection")
+        title = (
+            reflection_content.split("\n", 1)[0].strip("# ")[:100]
+            or f"{reflection_type.capitalize()} Reflection"
+        )
         referenced_memory_ids_json = json.dumps(list(mem_ids_from_ops))
 
-        async with db_manager.transaction() as write_conn: # New transaction for writes
+        async with db_manager.transaction() as write_conn:  # New transaction for writes
             await write_conn.execute(
                 """INSERT INTO reflections
                     (reflection_id, workflow_id, title, content, reflection_type, created_at, referenced_memories)
                     VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    reflection_id, workflow_id, title, reflection_content,
-                    reflection_type, now_unix, referenced_memory_ids_json,
+                    reflection_id,
+                    workflow_id,
+                    title,
+                    reflection_content,
+                    reflection_type,
+                    now_unix,
+                    referenced_memory_ids_json,
                 ),
             )
             await MemoryUtils._log_memory_operation(
-                write_conn, workflow_id, "reflect", None, None,
+                write_conn,
+                workflow_id,
+                "reflect",
+                None,
+                None,
                 {
-                    "reflection_id": reflection_id, "reflection_type": reflection_type,
-                    "ops_analyzed": len(operations), "title": title
+                    "reflection_id": reflection_id,
+                    "reflection_type": reflection_type,
+                    "ops_analyzed": len(operations),
+                    "title": title,
                 },
             )
         # Transaction commits here
@@ -8050,12 +8812,15 @@ async def generate_reflection(
         try:
             await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
         except ToolError as te_wal:
-            logger.warning(f"Passive WAL checkpoint failed after logging reflection for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded.")
+            logger.warning(
+                f"Passive WAL checkpoint failed after logging reflection for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded."
+            )
 
         processing_time = time.time() - start_time
         logger.info(
             f"Generated reflection '{title}' ({_fmt_id(reflection_id)}) for workflow {_fmt_id(workflow_id)}",
-            emoji_key="mirror", time=processing_time
+            emoji_key="mirror",
+            time=processing_time,
         )
         return {
             "reflection_id": reflection_id,
@@ -8071,7 +8836,9 @@ async def generate_reflection(
     except (ToolInputError, ToolError):
         raise
     except Exception as e:
-        logger.error(f"Failed to generate reflection for workflow {workflow_id}: {str(e)}", exc_info=True)
+        logger.error(
+            f"Failed to generate reflection for workflow {workflow_id}: {str(e)}", exc_info=True
+        )
         raise ToolError(f"Failed to generate reflection: {str(e)}") from e
 
 
@@ -8086,7 +8853,7 @@ async def summarize_text(
     text_to_summarize: str,
     target_tokens: int = 500,
     prompt_template: Optional[str] = None,
-    provider: str = "openai", # Consider making this use LLMGatewayProvider enum default
+    provider: str = "openai",  # Consider making this use LLMGatewayProvider enum default
     model: Optional[str] = None,
     workflow_id: Optional[str] = None,
     record_summary: bool = False,
@@ -8106,29 +8873,31 @@ async def summarize_text(
             "Workflow ID is required when record_summary=True", param_name="workflow_id"
         )
 
-    target_tokens = max(50, min(2000, target_tokens)) # Ensure reasonable target
+    target_tokens = max(50, min(2000, target_tokens))  # Ensure reasonable target
 
     # Determine provider and model (this logic can stay outside transaction)
     # Assuming get_config() and get_provider() are available as in your original UMS file.
     # If `provider` arg is from LLMGatewayProvider enum, adjust type hint.
     # For now, assuming provider is string.
-    loaded_config = get_config() # Fetch config for provider/model defaults
+    loaded_config = get_config()  # Fetch config for provider/model defaults
     provider_to_use = provider or loaded_config.default_provider or LLMGatewayProvider.OPENAI.value
 
     # Default models for common providers if none specified
     # You might have a more sophisticated way to get default model from provider instance
     default_models_map = {
-        LLMGatewayProvider.OPENAI.value: "gpt-4.1-mini", # Example, adjust to your config
-        LLMGatewayProvider.ANTHROPIC.value: "claude-3-5-haiku-20241022" # Example
+        LLMGatewayProvider.OPENAI.value: "gpt-4.1-mini",  # Example, adjust to your config
+        LLMGatewayProvider.ANTHROPIC.value: "claude-3-5-haiku-20241022",  # Example
     }
     model_to_use = model or default_models_map.get(provider_to_use)
 
-    if not model_to_use: # Fallback if no default for provider or model not specified
+    if not model_to_use:  # Fallback if no default for provider or model not specified
         try:
             temp_provider_instance_for_default = await get_provider(provider_to_use)
             model_to_use = temp_provider_instance_for_default.get_default_model()
         except Exception:
-            logger.warning(f"Could not determine default model for provider {provider_to_use}. LLM call might fail if model is required.")
+            logger.warning(
+                f"Could not determine default model for provider {provider_to_use}. LLM call might fail if model is required."
+            )
             # If model is strictly required by provider_instance.generate_completion, this could be an error.
 
     if not prompt_template:
@@ -8147,7 +8916,9 @@ CONCISE SUMMARY:
     try:
         provider_instance = await get_provider(provider_to_use)
         if not provider_instance:
-            raise ToolError(f"Failed to initialize provider '{provider_to_use}'. Check configuration.")
+            raise ToolError(
+                f"Failed to initialize provider '{provider_to_use}'. Check configuration."
+            )
 
         prompt_for_llm = prompt_template.format(
             text_to_summarize=text_to_summarize, target_tokens=target_tokens
@@ -8171,7 +8942,9 @@ CONCISE SUMMARY:
     stored_memory_id = None
     db_write_occurred = False
 
-    if record_summary and workflow_id: # workflow_id confirmed to be present if record_summary is True
+    if (
+        record_summary and workflow_id
+    ):  # workflow_id confirmed to be present if record_summary is True
         db_manager = DBConnection(db_path)
         async with db_manager.transaction() as conn:
             # Validate workflow exists (within the transaction)
@@ -8190,8 +8963,14 @@ CONCISE SUMMARY:
             now_unix = int(time.time())
             description = f"Summary of text ({len(text_to_summarize)} chars)"
             # Ensure MemoryLevel and MemoryType enums are correctly used
-            tags_list = ["summary", "automated", "text_summary", MemoryLevel.SEMANTIC.value, MemoryType.SUMMARY.value]
-            tags_json = json.dumps(list(set(tags_list))) # Ensure unique tags
+            tags_list = [
+                "summary",
+                "automated",
+                "text_summary",
+                MemoryLevel.SEMANTIC.value,
+                MemoryType.SUMMARY.value,
+            ]
+            tags_json = json.dumps(list(set(tags_list)))  # Ensure unique tags
 
             await conn.execute(
                 """
@@ -8201,16 +8980,30 @@ CONCISE SUMMARY:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    memory_id, workflow_id, summary_text, MemoryLevel.SEMANTIC.value,
-                    MemoryType.SUMMARY.value, 6.0, 0.85, description,
-                    "summarize_text_tool", tags_json, now_unix, now_unix, 0,
+                    memory_id,
+                    workflow_id,
+                    summary_text,
+                    MemoryLevel.SEMANTIC.value,
+                    MemoryType.SUMMARY.value,
+                    6.0,
+                    0.85,
+                    description,
+                    "summarize_text_tool",
+                    tags_json,
+                    now_unix,
+                    now_unix,
+                    0,
                 ),
             )
-            stored_memory_id = memory_id # Set after successful insert
+            stored_memory_id = memory_id  # Set after successful insert
 
             await MemoryUtils._log_memory_operation(
-                conn, workflow_id, "create_summary_memory", memory_id, None,
-                {"original_length": len(text_to_summarize), "summary_length": len(summary_text)}
+                conn,
+                workflow_id,
+                "create_summary_memory",
+                memory_id,
+                None,
+                {"original_length": len(text_to_summarize), "summary_length": len(summary_text)},
             )
             db_write_occurred = True
         # Transaction commits here if no exceptions
@@ -8219,12 +9012,15 @@ CONCISE SUMMARY:
             try:
                 await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
             except ToolError as te_wal:
-                logger.warning(f"Passive WAL checkpoint failed after recording summary memory for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded.")
+                logger.warning(
+                    f"Passive WAL checkpoint failed after recording summary memory for workflow {_fmt_id(workflow_id)}: {te_wal}. Main operation succeeded."
+                )
 
     processing_time = time.time() - start_time
     logger.info(
         f"Generated summary of {len(text_to_summarize)} chars text to {len(summary_text)} chars. Stored as: {stored_memory_id or 'Not Stored'}",
-        emoji_key="scissors", time=processing_time,
+        emoji_key="scissors",
+        time=processing_time,
     )
 
     return {
@@ -8251,7 +9047,7 @@ async def delete_expired_memories(db_path: str = agent_memory_config.db_path) ->
     db_manager = DBConnection(db_path)
     async with db_manager.transaction() as conn:
         now_unix = int(time.time())
-        
+
         # Find expired memory IDs and their workflows within the transaction
         # This ensures we are operating on a consistent snapshot for deletion.
         expired_memories_to_delete: List[Dict[str, Any]] = []
@@ -8284,10 +9080,12 @@ async def delete_expired_memories(db_path: str = agent_memory_config.db_path) ->
             placeholders = ", ".join(["?"] * len(batch_ids))
             # Delete from memories table (FK constraints handle related embeddings/links)
             # This happens within the transaction.
-            delete_cursor = await conn.execute( # Capture cursor to check rowcount
+            delete_cursor = await conn.execute(  # Capture cursor to check rowcount
                 f"DELETE FROM memories WHERE memory_id IN ({placeholders})", batch_ids
             )
-            logger.debug(f"Deleted batch of {delete_cursor.rowcount} expired memories.") # Log actual deleted count for batch
+            logger.debug(
+                f"Deleted batch of {delete_cursor.rowcount} expired memories."
+            )  # Log actual deleted count for batch
 
         # Log the operation for each affected workflow (within the transaction)
         for wf_id in workflows_affected_final:
@@ -8312,7 +9110,9 @@ async def delete_expired_memories(db_path: str = agent_memory_config.db_path) ->
     try:
         await DBConnection.force_wal_checkpoint(modes=("PASSIVE",), log_if_unable=True)
     except ToolError as te_wal:
-        logger.warning(f"Passive WAL checkpoint failed after deleting expired memories: {te_wal}. Main operation succeeded.")
+        logger.warning(
+            f"Passive WAL checkpoint failed after deleting expired memories: {te_wal}. Main operation succeeded."
+        )
 
     processing_time = time.time() - start_time
     logger.success(
