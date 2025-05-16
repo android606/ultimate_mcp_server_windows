@@ -6834,7 +6834,16 @@ async def _ensure_initialized():  # Uses MANY globals
     global _vault_allowed_paths_str_global, _max_widgets_global, _max_section_chars_global
     global _dom_fp_limit_global, _llm_model_locator_global, _retry_after_fail_global
     global _seq_cutoff_global, _area_min_global, _high_risk_domains_set_global
-    global _cpu_count
+    global _cpu_count, _pw, _browser, _ctx
+    global _pid, _last_activity
+
+    # Ensure _last_activity has a valid monotonic time ASAP if it's still at its module-load default.
+    # This is a defensive measure.
+    if _last_activity == 0.0:
+        _last_activity = time.monotonic()
+        logger.debug(
+            f"Defensively setting initial _last_activity in _ensure_initialized: {_last_activity}"
+        )
 
     # Quick check if already initialized
     if _is_initialized:

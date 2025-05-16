@@ -12,13 +12,14 @@ import sys
 from functools import partial
 from typing import Callable, List, Optional
 
+from ultimate_mcp_server.tools.unified_memory_system import DBConnection
+
 logger = logging.getLogger("ultimate_mcp_server.shutdown")
 
 # Track registered shutdown handlers and state
 _shutdown_handlers: List[Callable] = []
 _shutdown_in_progress = False
 _original_stderr = None
-
 
 class QuietExit(Exception):
     """Special exception to trigger a clean exit with minimal error output"""
@@ -52,6 +53,15 @@ def register_shutdown_handler(handler: Callable) -> None:
     if handler not in _shutdown_handlers:
         _shutdown_handlers.append(handler)
         logger.debug(f"Registered shutdown handler: {handler.__name__}")
+
+
+# Register DBConnection.close_connection to be called on shutdown
+# This should be done once when the module is loaded.
+# We check if it's already registered to avoid duplicates if this module is reloaded.
+# Note: This assumes DBConnection.close_connection is an async function.
+# If it's a regular function, it will still be called correctly by _execute_shutdown_handlers.
+if DBConnection.close_connection not in _shutdown_handlers:
+    register_shutdown_handler(DBConnection.close_connection)
 
 
 def remove_shutdown_handler(handler: Callable) -> None:

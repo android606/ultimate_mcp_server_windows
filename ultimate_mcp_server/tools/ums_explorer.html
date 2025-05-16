@@ -498,6 +498,8 @@
                         }
                         this.$nextTick(() => initLucide());
                     });
+                    // Automatically attempt to load the default database on startup
+                    await this.loadDefaultDB();
                 },
 
                 cacheTemplates() {
@@ -1747,6 +1749,54 @@
                     return 'arrow-down-up'; // Default icon (sortable but not sorted)
                 },
 
+                // =======================================================================
+                // DEFAULT DATABASE LOADER
+                // =======================================================================
+                // Automatically load default DB and WAL from storage directory
+                async loadDefaultDB() {
+                    try {
+                        this.isLoading = true;
+                        this.loadingMessage = 'Loading default database...';
+                        const dbUrl = '../storage/unified_agent_memory.db';
+                        const resp = await fetch(dbUrl);
+                        if (!resp.ok) throw new Error(`Failed to fetch default DB: ${resp.statusText}`);
+                        const dbData = new Uint8Array(await resp.arrayBuffer());
+                        let walData = null;
+                        const walUrl = '../storage/unified_agent_memory.db-wal';
+                        try {
+                            const walResp = await fetch(walUrl);
+                            if (walResp.ok) {
+                                walData = new Uint8Array(await walResp.arrayBuffer());
+                            }
+                        } catch (e) {
+                            console.warn('Failed to fetch default WAL file', e);
+                        }
+                        if (this.db) { this.db.close(); this.db = null; }
+                        this.db = new SQL.Database(dbData);
+                        if (walData) {
+                            SQL.FS.writeFile('unified_agent_memory.db-wal', walData);
+                            this.db.close();
+                            this.db = new SQL.Database(dbData);
+                            console.log('Default WAL applied.');
+                        }
+                        this.db.exec("PRAGMA foreign_keys = ON;");
+                        this.db.exec("PRAGMA journal_mode = MEMORY;");
+                        const result = this.executeQuery("SELECT count(*) as count FROM workflows;");
+                        if (result && result[0]) {
+                            this.dbLoaded = true;
+                            this.showToast('Default database loaded successfully!', 'success');
+                        } else {
+                            throw new Error('Test query failed on default DB');
+                        }
+                    } catch (err) {
+                        console.warn('Default DB load failed:', err);
+                        this.showToast(`Default DB load failed: ${err.message}`, 'warning');
+                    } finally {
+                        this.isLoading = false;
+                        this.loadingMessage = '';
+                    }
+                },
+
             }; // End of umsExplorer return
         } // End of umsExplorer function
 
@@ -1822,31 +1872,24 @@
             <div class="card bg-base-100 shadow-xl">
                 <div class="card-body">
                     <h2 class="card-title"><i data-lucide="layers-3" class="w-5 h-5 mr-1"></i> Memories by Level</h2>
-                    <div class="max-h-72 overflow-y-auto space-y-1">
+                    <div class="max-h-72 overflow-y-auto">
                     <template x-for="(count, level) in stats.byLevel" :key="level">
-                        <div class="flex justify-between items-center py-1 text-sm">
-                            <span x-text="capitalize(level)"></span>
-                            <span class="badge font-mono" :class="getMemoryLevelColor(level)" x-text="count"></span>
+                        <div class="flex justify-between items-center py-1 border-b border-base-300 last:border-b-0">
+                            <span x-text="capitalize(level)" class="text-sm"></span>
+                            <span class="badge" :class="getMemoryLevelColor(level)" x-text="count"></span>
                         </div>
                     </template>
-                    <p x-if="Object.keys(stats.byLevel || {}).length === 0" class="text-xs text-base-content/70">No memories found.</p>
                     </div>
                 </div>
             </div>
             
-            <!-- Top Tags Card -->
+            <!-- Quick Actions Card -->
             <div class="card bg-base-100 shadow-xl">
                 <div class="card-body">
-                     <h2 class="card-title"><i data-lucide="tags" class="w-5 h-5 mr-1"></i> Top Tags</h2>
-                     <div class="max-h-72 overflow-y-auto space-y-1">
-                        <template x-for="tagInfo in stats.topTags" :key="tagInfo.name">
-                            <div class="flex justify-between items-center py-1 text-sm">
-                                <span class="badge badge-outline cursor-pointer" @click="memoryFilters.tags = [tagInfo.name]; setView('memories');" x-text="tagInfo.name"></span>
-                                <span class="badge badge-ghost font-mono" x-text="tagInfo.count"></span>
-                            </div>
-                        </template>
-                        <p x-if="!stats.topTags || stats.topTags.length === 0" class="text-xs text-base-content/70">No tags found.</p>
-                     </div>
+                    <h2 class="card-title"><i data-lucide="mouse-pointer-square" class="w-5 h-5 mr-1"></i> Quick Actions</h2>
+                    <button class="btn btn-sm btn-outline btn-primary w-full mb-2" @click="setView('memories')">Explore All Memories</button>
+                    <button class="btn btn-sm btn-outline btn-secondary w-full mb-2" @click="setView('memories', { viewMode: 'graph' })">View Memory Graph</button>
+                    <button class="btn btn-sm btn-outline w-full" @click="showStatsModal = true">View Full Statistics</button>
                 </div>
             </div>
        </div>
@@ -2449,84 +2492,85 @@
 
     <template id="memoryDetailModalTemplate">
         <dialog id="memoryDetailModalEl" class="modal" :class="{'modal-open': showMemoryDetailModal}">
-            <div class="modal-box w-11/12 max-w-3xl transform transition-all" 
-                 x-show="showMemoryDetailModal"
-                 x-transition:enter="ease-out duration-300"
-                 x-transition:enter-start="opacity-0 scale-95"
-                 x-transition:enter-end="opacity-100 scale-100"
-                 x-transition:leave="ease-in duration-200"
-                 x-transition:leave-start="opacity-100 scale-100"
-                 x-transition:leave-end="opacity-0 scale-95">
+            <template x-if="showMemoryDetailModal && activeMemory">
+                <div class="modal-box w-11/12 max-w-3xl transform transition-all"
+                     x-transition:enter="ease-out duration-300"
+                     x-transition:enter-start="opacity-0 scale-95"
+                     x-transition:enter-end="opacity-100 scale-100"
+                     x-transition:leave="ease-in duration-200"
+                     x-transition:leave-start="opacity-100 scale-100"
+                     x-transition:leave-end="opacity-0 scale-95">
                 
-                <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="closeMemoryDetailModal()">✕</button>
-                
-                <div x-show="activeMemory" class="modal-content">
-                    <h3 class="font-bold text-lg mb-1 line-clamp-2" x-text="activeMemory.description || 'Memory Detail'"></h3>
-                    <p class="text-xs text-base-content/70 mb-3">ID: <code x-text="activeMemory.memory_id"></code> | Workflow: 
-                        <a href="#" @click.prevent="closeMemoryDetailModal(); setView('workflowDetail', activeMemory.workflow_id)" 
-                           class="link link-hover" 
-                           x-text="truncateText(workflows.find(w=>w.workflow_id === activeMemory.workflow_id)?.title || activeMemory.workflow_id, 25)">
-                        </a>
-                    </p>
+                    <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="closeMemoryDetailModal()">✕</button>
                     
-                    <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-2 text-sm mb-3">
-                        <div><strong>Level:</strong> <span class="badge badge-sm" :class="getMemoryLevelColor(activeMemory.memory_level)" x-text="activeMemory.memory_level"></span></div>
-                        <div><strong>Type:</strong> <span class="badge badge-outline badge-sm" x-text="activeMemory.memory_type"></span></div>
-                        <div><strong>Importance:</strong> <span class="font-mono" x-text="activeMemory.importance?.toFixed(1)"></span></div>
-                        <div><strong>Confidence:</strong> <span class="font-mono" x-text="(activeMemory.confidence * 100).toFixed(0) + '%'"></span></div>
-                        <div class="md:col-span-1"><strong>Created:</strong> <span x-text="formatDate(activeMemory.created_at_raw)"></span></div>
-                        <div class="md:col-span-1"><strong>Last Accessed:</strong> <span x-text="activeMemory.last_accessed ? formatDate(activeMemory.last_accessed) : 'Never'"></span></div>
-                         <div><strong>Access Count:</strong> <span class="font-mono" x-text="activeMemory.access_count || 0"></span></div>
-                         <div><strong>TTL:</strong> <span class="font-mono" x-text="activeMemory.ttl || 'Permanent'"></span></div>
-                    </div>
+                    <div x-show="activeMemory" class="modal-content">
+                        <h3 class="font-bold text-lg mb-1 line-clamp-2" x-text="activeMemory.description || 'Memory Detail'"></h3>
+                        <p class="text-xs text-base-content/70 mb-3">ID: <code x-text="activeMemory.memory_id"></code> | Workflow: 
+                            <a href="#" @click.prevent="closeMemoryDetailModal(); setView('workflowDetail', activeMemory.workflow_id)" 
+                               class="link link-hover" 
+                               x-text="truncateText(workflows.find(w=>w.workflow_id === activeMemory.workflow_id)?.title || activeMemory.workflow_id, 25)">
+                            </a>
+                        </p>
+                        
+                        <div class="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-2 text-sm mb-3">
+                            <div><strong>Level:</strong> <span class="badge badge-sm" :class="getMemoryLevelColor(activeMemory.memory_level)" x-text="activeMemory.memory_level"></span></div>
+                            <div><strong>Type:</strong> <span class="badge badge-outline badge-sm" x-text="activeMemory.memory_type"></span></div>
+                            <div><strong>Importance:</strong> <span class="font-mono" x-text="activeMemory.importance?.toFixed(1)"></span></div>
+                            <div><strong>Confidence:</strong> <span class="font-mono" x-text="(activeMemory.confidence * 100).toFixed(0) + '%'"></span></div>
+                            <div class="md:col-span-1"><strong>Created:</strong> <span x-text="formatDate(activeMemory.created_at_raw)"></span></div>
+                            <div class="md:col-span-1"><strong>Last Accessed:</strong> <span x-text="activeMemory.last_accessed ? formatDate(activeMemory.last_accessed) : 'Never'"></span></div>
+                             <div><strong>Access Count:</strong> <span class="font-mono" x-text="activeMemory.access_count || 0"></span></div>
+                             <div><strong>TTL:</strong> <span class="font-mono" x-text="activeMemory.ttl || 'Permanent'"></span></div>
+                        </div>
 
-                    <div x-show="(activeMemory.tags || []).length > 0" class="mb-3">
-                        <strong>Tags:</strong> 
-                        <span class="flex flex-wrap gap-1 mt-1">
-                        <template x-for="tag in activeMemory.tags" :key="tag"><span class="badge badge-ghost badge-xs" x-text="tag"></span></template>
-                        </span>
-                    </div>
-                    
-                    <div class="space-y-2 text-xs">
-                        <details class="bg-base-200/50 p-2 rounded text-xs">
-                            <summary class="font-semibold cursor-pointer">Content</summary>
-                            <pre class="whitespace-pre-wrap mt-1 max-h-40 overflow-y-auto p-1 bg-base-100 rounded" x-text="activeMemory.content || 'N/A'"></pre>
-                        </details>
-                        <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.reasoning">
-                            <summary class="font-semibold cursor-pointer">Reasoning</summary>
-                            <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="activeMemory.reasoning"></pre>
-                        </details>
-                        <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.source">
-                            <summary class="font-semibold cursor-pointer">Source</summary>
-                            <p class="mt-1 p-1 bg-base-100 rounded" x-text="activeMemory.source"></p>
-                        </details>
-                        <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.context && Object.keys(activeMemory.context).length > 0">
-                            <summary class="font-semibold cursor-pointer">Creation Context</summary>
-                            <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="JSON.stringify(activeMemory.context, null, 1)"></pre>
-                        </details>
-                         <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.metadata && Object.keys(activeMemory.metadata).length > 0">
-                            <summary class="font-semibold cursor-pointer">Metadata</summary>
-                            <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="JSON.stringify(activeMemory.metadata, null, 1)"></pre>
-                        </details>
-                    </div>
+                        <div x-show="(activeMemory.tags || []).length > 0" class="mb-3">
+                            <strong>Tags:</strong> 
+                            <span class="flex flex-wrap gap-1 mt-1">
+                            <template x-for="tag in activeMemory.tags" :key="tag"><span class="badge badge-ghost badge-xs" x-text="tag"></span></template>
+                            </span>
+                        </div>
+                        
+                        <div class="space-y-2 text-xs">
+                            <details class="bg-base-200/50 p-2 rounded text-xs">
+                                <summary class="font-semibold cursor-pointer">Content</summary>
+                                <pre class="whitespace-pre-wrap mt-1 max-h-40 overflow-y-auto p-1 bg-base-100 rounded" x-text="activeMemory.content || 'N/A'"></pre>
+                            </details>
+                            <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.reasoning">
+                                <summary class="font-semibold cursor-pointer">Reasoning</summary>
+                                <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="activeMemory.reasoning"></pre>
+                            </details>
+                            <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.source">
+                                <summary class="font-semibold cursor-pointer">Source</summary>
+                                <p class="mt-1 p-1 bg-base-100 rounded" x-text="activeMemory.source"></p>
+                            </details>
+                            <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.context && Object.keys(activeMemory.context).length > 0">
+                                <summary class="font-semibold cursor-pointer">Creation Context</summary>
+                                <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="JSON.stringify(activeMemory.context, null, 1)"></pre>
+                            </details>
+                             <details class="bg-base-200/50 p-2 rounded text-xs" x-show="activeMemory.metadata && Object.keys(activeMemory.metadata).length > 0">
+                                <summary class="font-semibold cursor-pointer">Metadata</summary>
+                                <pre class="whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto p-1 bg-base-100 rounded" x-text="JSON.stringify(activeMemory.metadata, null, 1)"></pre>
+                            </details>
+                        </div>
 
-                    <div class="mt-3 text-xs">
-                        <h4 class="font-semibold mb-1">Associated Entities:</h4>
-                        <p x-show="activeMemory.action_id"><strong>Action:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('action', actions.find(a=>a.action_id === activeMemory.action_id))" x-text="truncateText(actions.find(a=>a.action_id === activeMemory.action_id)?.title,30) + ` (${activeMemory.action_id.substring(0,6)}..)`"></code></p>
-                        <p x-show="activeMemory.artifact_id"><strong>Artifact:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('artifact', artifacts.find(f=>f.artifact_id === activeMemory.artifact_id))" x-text="truncateText(artifacts.find(f=>f.artifact_id === activeMemory.artifact_id)?.name,30) + ` (${activeMemory.artifact_id.substring(0,6)}..)`"></code></p>
-                        <p x-show="activeMemory.thought_id"><strong>Thought:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('thought', thoughts.find(t=>t.thought_id === activeMemory.thought_id))" x-text="truncateText(thoughts.find(t=>t.thought_id === activeMemory.thought_id)?.content, 30) + ` (${activeMemory.thought_id.substring(0,6)}..)`"></code></p>
+                        <div class="mt-3 text-xs">
+                            <h4 class="font-semibold mb-1">Associated Entities:</h4>
+                            <p x-show="activeMemory.action_id"><strong>Action:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('action', actions.find(a=>a.action_id === activeMemory.action_id))" x-text="truncateText(actions.find(a=>a.action_id === activeMemory.action_id)?.title,30) + ` (${activeMemory.action_id.substring(0,6)}..)`"></code></p>
+                            <p x-show="activeMemory.artifact_id"><strong>Artifact:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('artifact', artifacts.find(f=>f.artifact_id === activeMemory.artifact_id))" x-text="truncateText(artifacts.find(f=>f.artifact_id === activeMemory.artifact_id)?.name,30) + ` (${activeMemory.artifact_id.substring(0,6)}..)`"></code></p>
+                            <p x-show="activeMemory.thought_id"><strong>Thought:</strong> <code class="cursor-pointer hover:underline" @click="openDetailModal('thought', thoughts.find(t=>t.thought_id === activeMemory.thought_id))" x-text="truncateText(thoughts.find(t=>t.thought_id === activeMemory.thought_id)?.content, 30) + ` (${activeMemory.thought_id.substring(0,6)}..)`"></code></p>
+                        </div>
+                    </div>
+                    <div class="modal-action mt-4 pt-3 border-t border-base-300">
+                        <button class="btn btn-sm btn-primary" @click="viewMemoryLinks(activeMemory); closeMemoryDetailModal();">
+                            <i data-lucide="share-2" class="w-4 h-4"></i> View Links
+                        </button>
+                        <button class="btn btn-sm btn-error" @click="confirmDelete(activeMemory.memory_id, 'memory', activeMemory.description || activeMemory.content); closeMemoryDetailModal();">
+                            <i data-lucide="trash-2" class="w-4 h-4"></i> Delete
+                        </button>
+                        <button class="btn btn-sm" @click="closeMemoryDetailModal()">Close</button>
                     </div>
                 </div>
-                <div class="modal-action mt-4 pt-3 border-t border-base-300">
-                    <button class="btn btn-sm btn-primary" @click="viewMemoryLinks(activeMemory); closeMemoryDetailModal();">
-                        <i data-lucide="share-2" class="w-4 h-4"></i> View Links
-                    </button>
-                    <button class="btn btn-sm btn-error" @click="confirmDelete(activeMemory.memory_id, 'memory', activeMemory.description || activeMemory.content); closeMemoryDetailModal();">
-                        <i data-lucide="trash-2" class="w-4 h-4"></i> Delete
-                    </button>
-                    <button class="btn btn-sm" @click="closeMemoryDetailModal()">Close</button>
-                </div>
-            </div>
+            </template>
         </dialog>
     </template>
 
@@ -2710,10 +2754,10 @@
 
     <!-- Detail Modals for Action, Artifact, Thought, Goal -->
     <template id="actionDetailModalTemplate">
-        <dialog class="modal" :class="{'modal-open': showActionDetailModal && activeAction}">
+        <dialog class="modal" x-if="showActionDetailModal && activeAction" :class="{'modal-open': showActionDetailModal && activeAction}">
             <div class="modal-box w-11/12 max-w-2xl">
                 <button class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2" @click="showActionDetailModal = false">✕</button>
-                <div x-show="activeAction" class="modal-content">
+                <div class="modal-content">
                     <h3 class="font-bold text-lg mb-1 line-clamp-2" x-text="activeAction.title || 'Action Detail'"></h3>
                     <p class="text-xs text-base-content/70 mb-3">ID: <code x-text="activeAction.action_id"></code> | Workflow: 
                         <a href="#" @click.prevent="showActionDetailModal = false; setView('workflowDetail', activeAction.workflow_id)" 
