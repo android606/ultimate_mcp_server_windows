@@ -261,7 +261,7 @@ class AgentMemoryConfig(BaseModel):
     # SQLite Optimizations (Defined here, not env vars by default)
     sqlite_pragmas: List[str] = Field(
         default_factory=lambda: [
-            "PRAGMA journal_mode=WAL",
+            "PRAGMA journal_mode=DELETE",
             "PRAGMA synchronous=NORMAL",
             "PRAGMA foreign_keys=ON",
             "PRAGMA temp_store=MEMORY",
