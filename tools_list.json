@@ -104,6 +104,7 @@
   "generate_reflection",
   "get_rich_context_package",
   "get_goal_details",
+  "get_goal_stack",
   "create_goal",
   "update_goal_status",
   "single_shot_synthesis",

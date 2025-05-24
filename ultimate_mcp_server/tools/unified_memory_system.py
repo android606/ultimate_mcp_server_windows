@@ -3111,9 +3111,31 @@ async def record_thought(
     Fix: prevent `None`-deref by using an empty-string sentinel when no
     memory promotion occurs.
     """
-    # ─── validation ───
+    # ─── validation with lenient content handling ───
     if not content or not isinstance(content, str):
         raise ToolInputError("Thought content must be a non-empty string", "content")
+    
+    # Sanitize complex content before validation
+    original_content = content
+    if content:
+        # Handle JSON-like content that might be malformed plan data
+        if content.strip().startswith('{') and '"tool"' in content:
+            # This is likely a malformed plan JSON being recorded as thought
+            logger.debug(f"Detected JSON-like content in thought, truncating for safety: {content[:100]}...")
+            content = f"MALFORMED_PLAN_JSON (truncated): {content[:200]}..."
+        
+        # Ensure content doesn't exceed reasonable length limits for thoughts
+        max_thought_length = 2000  # Reasonable limit for thought content
+        if len(content) > max_thought_length:
+            logger.debug(f"Truncating long thought content from {len(content)} to {max_thought_length} chars")
+            content = content[:max_thought_length-3] + "..."
+        
+        # Additional safety: if content contains complex nested structures, simplify
+        if content.count('{') > 5 or content.count('[') > 5:
+            # Likely complex nested data, create a summary instead
+            content_preview = content[:150].replace('\n', ' ').replace('\r', ' ')
+            content = f"COMPLEX_DATA_SUMMARY: {content_preview}... [Original length: {len(original_content)} chars]"
+    
     try:
         thought_type_enum = ThoughtType(thought_type.lower())
     except ValueError as exc:
@@ -5737,6 +5759,132 @@ async def get_goal_details(
     except Exception as exc:
         logger.error(f"get_goal_details({_fmt_id(goal_id)}) failed: {exc}", exc_info=True)
         raise ToolError(f"Failed to retrieve goal details: {exc}") from exc
+
+
+# --- 10.6 Goal Hierarchy ------------------------------------------------------
+@with_tool_metrics
+@with_error_handling
+async def get_goal_stack(
+    workflow_id: str,
+    *,
+    include_completed: bool = True,           # False → only active / in-progress
+    include_metadata: bool = False,           # serialise & return goal.metadata JSON
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    Return **all goals for *workflow_id*** in a *parent → children* nested tree.
+
+    • Rows are ordered by `sequence_number` inside each sibling list.  
+    • `acceptance_criteria` and `metadata` (optional) are JSON-deserialised.  
+    • When *include_completed* is *False* the filter excludes terminal states
+      (completed / failed / abandoned) **recursively** – i.e. an inactive root
+      goal will omit its entire sub-tree.  
+    • Access is *read-only*; no WAL pressure.
+
+    The payload always contains:
+
+    ```json
+    {
+        "workflow_id": "...",
+        "goal_tree": [ { ...top-level goals… } ],
+        "total_goals": <int>,
+        "success": true,
+        "processing_time": <seconds.float>
+    }
+    ```
+    """
+    if not workflow_id:
+        raise ToolInputError("Workflow ID required.", param_name="workflow_id")
+
+    t0 = time.perf_counter()
+    db = DBConnection(db_path)
+
+    # -------- helper: ISO decoration -------------------
+    def _iso(row: Dict[str, Any], *keys: str) -> None:
+        for k in keys:
+            if (ts := row.get(k)) is not None:
+                row[f"{k}_iso"] = safe_format_timestamp(ts)
+
+    # -------- helper: build tree -----------------------
+    def _build_tree(rows: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        by_parent: dict[str | None, list[Dict[str, Any]]] = defaultdict(list)
+        for r in rows:
+            by_parent[r["parent_goal_id"]].append(r)
+
+        # stable ordering inside siblings
+        for lst in by_parent.values():
+            lst.sort(key=lambda g: g["sequence_number"])
+
+        def _attach(node: Dict[str, Any]) -> Dict[str, Any]:
+            kids = by_parent.get(node["goal_id"], [])
+            node["children"] = [_attach(c) for c in kids]
+            return node
+
+        return [_attach(root) for root in by_parent.get(None, [])]
+
+    async with db.transaction(readonly=True) as conn:
+        # 1️⃣ confirm workflow
+        if not await conn.execute_fetchone(
+            "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
+        ):
+            raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
+
+        # 2️⃣ fetch goal rows
+        where = ["workflow_id = ?"]
+        params: list[Any] = [workflow_id]
+
+        if not include_completed:
+            where.append(
+                "status NOT IN (?, ?, ?)"
+            )
+            params += [
+                GoalStatus.COMPLETED.value,
+                GoalStatus.FAILED.value,
+                GoalStatus.ABANDONED.value,
+            ]
+
+        rows = await conn.execute_fetchall(
+            f"""
+            SELECT *
+            FROM   goals
+            WHERE  {" AND ".join(where)}
+            """,
+            params,
+        )
+
+        goals: list[Dict[str, Any]] = []
+        for r in rows:
+            g = dict(r)
+            # deserialise json cols
+            g["acceptance_criteria"] = await MemoryUtils.deserialize(
+                g.get("acceptance_criteria")
+            )
+            if include_metadata:
+                g["metadata"] = await MemoryUtils.deserialize(g.get("metadata"))
+            else:
+                g.pop("metadata", None)
+
+            _iso(g, "created_at", "updated_at", "completed_at")
+            goals.append(g)
+
+    tree = _build_tree(goals)
+
+    elapsed = time.perf_counter() - t0
+    logger.info(
+        f"Goal stack for {_fmt_id(workflow_id)} returned "
+        f"({len(goals)} rows, include_completed={include_completed}).",
+        emoji_key="evergreen_tree",
+        time=elapsed,
+    )
+
+    return {
+        "workflow_id": workflow_id,
+        "goal_tree": tree,
+        "total_goals": len(goals),
+        "success": True,
+        "processing_time": elapsed,
+    }
+
 
 
 @with_tool_metrics
@@ -10557,6 +10705,7 @@ __all__ = [
     "generate_reflection",
     "get_rich_context_package",
     "get_goal_details",
+    "get_goal_stack",
     "create_goal",
     "update_goal_status",
     "summarize_text",
