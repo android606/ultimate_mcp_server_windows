@@ -4,615 +4,1238 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Ultimate UMS Explorer</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z'/><path d='M5 10a7 7 0 1 0 14 0'/><path d='M15 13a3 3 0 0 0-6 0 v6a3 3 0 0 0 6 0 v-6Z'/></svg>">
     
-    <!-- Tailwind CSS with DaisyUI -->
+    <!-- TailwindCSS (CDN for development - warning is expected) -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#f0f9ff',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            900: '#1e3a8a'
+                        },
+                        secondary: {
+                            500: '#8b5cf6',
+                            600: '#7c3aed'
+                        }
+                    },
+                    animation: {
+                        'slide-in': 'slideIn 0.5s ease-out',
+                        'fade-in': 'fadeIn 0.3s ease-out',
+                        'scale-in': 'scaleIn 0.2s ease-out',
+                        'pulse-ring': 'pulseRing 2s infinite',
+                        'shimmer': 'shimmer 2s infinite',
+                        'bounce-subtle': 'bounceSubtle 1s ease-in-out infinite'
+                    },
+                    backdropBlur: {
+                        xs: '2px'
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- DaisyUI -->
     <link href="https://cdn.jsdelivr.net/npm/daisyui@4.10.1/dist/full.min.css" rel="stylesheet" type="text/css" />
     
     <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.13.8/dist/cdn.min.js"></script>
     
-    <!-- SQL.js for SQLite -->
+    <!-- SQL.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/sql-wasm.js"></script>
     
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
     
-    <!-- Chart.js for visualizations -->
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
     
+    <!-- Toastify -->
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    
+    <!-- Sortable.js for drag & drop -->
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    
+    <!-- Virtual Scroll for performance -->
+    <script src="https://unpkg.com/@tanstack/virtual-core@3.0.0/build/lib/index.umd.js"></script>
+    
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        :root {
+            --color-primary: #3b82f6;
+            --color-secondary: #8b5cf6;
+            --color-success: #10b981;
+            --color-warning: #f59e0b;
+            --color-error: #ef4444;
+        }
+        
+        * {
+            font-family: 'Inter', sans-serif;
+        }
+        
         [x-cloak] { display: none !important; }
-        .memory-card { 
-            transition: all 0.3s ease; 
-            border-left: 4px solid transparent;
-        }
-        .memory-card:hover { 
-            transform: translateY(-2px); 
-            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
-        }
-        .memory-card.working { border-left-color: #fbbf24; }
-        .memory-card.episodic { border-left-color: #3b82f6; }
-        .memory-card.semantic { border-left-color: #10b981; }
-        .memory-card.procedural { border-left-color: #8b5cf6; }
         
-        .workflow-card {
-            transition: all 0.3s ease;
-        }
-        .workflow-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 25px rgba(0,0,0,0.15);
-        }
-        
-        .drop-zone {
-            border: 2px dashed #64748b;
-            transition: all 0.3s ease;
-        }
-        .drop-zone.dragover {
-            border-color: #3b82f6;
-            background-color: rgba(59, 130, 246, 0.1);
-        }
-        
-        .stat-card {
-            background: linear-gradient(135deg, var(--fallback-b1,oklch(var(--b1))), var(--fallback-b2,oklch(var(--b2))));
-        }
-        
-        .fade-in {
-            animation: fadeIn 0.5s ease-in;
+        /* Custom Animations */
+        @keyframes slideIn {
+            from { transform: translateY(20px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
         }
         
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+            from { opacity: 0; }
+            to { opacity: 1; }
         }
         
-        .pulse-ring {
-            animation: pulse-ring 1.5s cubic-bezier(0.455, 0.03, 0.515, 0.955) infinite;
+        @keyframes scaleIn {
+            from { transform: scale(0.95); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
         }
         
-        @keyframes pulse-ring {
+        @keyframes pulseRing {
             0% { transform: scale(0.8); opacity: 1; }
             80%, 100% { transform: scale(1.2); opacity: 0; }
         }
         
-        .search-highlight {
-            background-color: rgba(251, 191, 36, 0.3);
-            padding: 1px 2px;
-            border-radius: 2px;
+        @keyframes shimmer {
+            0% { background-position: -200px 0; }
+            100% { background-position: calc(200px + 100%) 0; }
+        }
+        
+        @keyframes bounceSubtle {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-4px); }
+        }
+        
+        /* Glass morphism effects */
+        .glass {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .glass-dark {
+            background: rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        /* Enhanced cards */
+        .enhanced-card {
+            background: linear-gradient(145deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .enhanced-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+            border-color: rgba(59, 130, 246, 0.3);
+        }
+        
+        /* Memory level colors */
+        .memory-working { border-left: 4px solid #f59e0b; background: linear-gradient(90deg, rgba(245, 158, 11, 0.1), transparent); }
+        .memory-episodic { border-left: 4px solid #3b82f6; background: linear-gradient(90deg, rgba(59, 130, 246, 0.1), transparent); }
+        .memory-semantic { border-left: 4px solid #10b981; background: linear-gradient(90deg, rgba(16, 185, 129, 0.1), transparent); }
+        .memory-procedural { border-left: 4px solid #8b5cf6; background: linear-gradient(90deg, rgba(139, 92, 246, 0.1), transparent); }
+        
+        /* Advanced search */
+        .search-container {
+            position: relative;
+        }
+        
+        .search-suggestions {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 12px;
+            z-index: 50;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        /* Loading skeletons */
+        .skeleton {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200px 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        
+        /* Dark mode adjustments */
+        [data-theme="dark"] .skeleton {
+            background: linear-gradient(90deg, #2a2a2a 25%, #1a1a1a 50%, #2a2a2a 75%);
+        }
+        
+        /* Enhanced scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.1);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb {
+            background: rgba(59, 130, 246, 0.3);
+            border-radius: 4px;
+        }
+        
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(59, 130, 246, 0.5);
+        }
+        
+        /* Status indicators */
+        .status-indicator {
+            position: relative;
+            display: inline-block;
+        }
+        
+        .status-indicator::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: inherit;
+            animation: pulse-ring 2s infinite;
+        }
+        
+        .status-active::before { background: var(--color-success); }
+        .status-completed::before { background: var(--color-primary); }
+        .status-failed::before { background: var(--color-error); }
+        .status-paused::before { background: var(--color-warning); }
+        
+        /* Data table enhancements */
+        .data-table {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            overflow: hidden;
+        }
+        
+        .data-table th {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        
+        .data-table tr:hover {
+            background: rgba(59, 130, 246, 0.1);
+        }
+        
+        /* Floating action button */
+        .fab {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+            color: white;
+            border: none;
+            box-shadow: 0 8px 20px rgba(59, 130, 246, 0.3);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            z-index: 100;
+        }
+        
+        .fab:hover {
+            transform: scale(1.1);
+            box-shadow: 0 12px 30px rgba(59, 130, 246, 0.4);
+        }
+        
+        /* Command palette */
+        .command-palette {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 600px;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 16px;
+            z-index: 1000;
+        }
+        
+        /* Toast customization */
+        .toastify {
+            background: rgba(255, 255, 255, 0.95) !important;
+            backdrop-filter: blur(10px) !important;
+            border: 1px solid rgba(255, 255, 255, 0.2) !important;
+            border-radius: 12px !important;
+            color: #1f2937 !important;
+        }
+        
+        .toastify.success {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.9), rgba(5, 150, 105, 0.9)) !important;
+            color: white !important;
+        }
+        
+        .toastify.error {
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.9), rgba(220, 38, 38, 0.9)) !important;
+            color: white !important;
+        }
+        
+        /* Charts enhancements */
+        .chart-container {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 1.5rem;
+        }
+        
+        /* Responsive improvements */
+        @media (max-width: 768px) {
+            .fab {
+                bottom: 1rem;
+                right: 1rem;
+                width: 48px;
+                height: 48px;
+            }
+            
+            .command-palette {
+                width: 95%;
+            }
+        }
+        
+        /* Performance optimizations */
+        .will-change-transform {
+            will-change: transform;
+        }
+        
+        .gpu-accelerated {
+            transform: translateZ(0);
+            backface-visibility: hidden;
+            perspective: 1000;
+        }
+        
+        /* Advanced micro-interactions */
+        .interactive {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .interactive:active {
+            transform: scale(0.98);
+        }
+        
+        /* Loading states */
+        .loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(4px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+        
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(59, 130, 246, 0.3);
+            border-top: 3px solid var(--color-primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
     </style>
 </head>
-<body class="bg-base-100 min-h-screen" x-data="umsExplorer()" x-cloak>
+<body class="bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 min-h-screen text-white" x-data="umsExplorer()" x-cloak>
 
-    <!-- Toast Notifications -->
-    <div x-show="toast.show" 
-         x-transition:enter="transition ease-out duration-300" 
-         x-transition:enter-start="opacity-0 transform translate-y-2 scale-95" 
-         x-transition:enter-end="opacity-100 transform translate-y-0 scale-100"
-         x-transition:leave="transition ease-in duration-200" 
-         x-transition:leave-start="opacity-100 transform translate-y-0 scale-100" 
-         x-transition:leave-end="opacity-0 transform translate-y-2 scale-95"
-         class="fixed top-4 right-4 z-50 alert max-w-md shadow-lg"
-         :class="{'alert-success': toast.type === 'success', 'alert-error': toast.type === 'error', 'alert-warning': toast.type === 'warning', 'alert-info': toast.type === 'info'}">
-        <div class="flex items-center">
-            <i :data-lucide="getToastIcon(toast.type)" class="w-5 h-5 flex-shrink-0"></i>
-            <span x-text="toast.message" class="flex-1 ml-2"></span>
-            <button @click="toast.show = false" class="btn btn-ghost btn-sm">
-                <i data-lucide="x" class="w-4 h-4"></i>
-            </button>
+    <!-- Command Palette -->
+    <div x-show="showCommandPalette" 
+         x-transition:enter="transition ease-out duration-200" 
+         x-transition:enter-start="opacity-0" 
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-150" 
+         x-transition:leave-start="opacity-100" 
+         x-transition:leave-end="opacity-0"
+         class="fixed inset-0 bg-black/50 z-[1000]" 
+         @click="showCommandPalette = false">
+        <div class="command-palette" @click.stop="">
+            <div class="p-4">
+                <input type="text" 
+                       x-model="commandQuery" 
+                       @input="updateCommands"
+                       @keydown.enter="executeCommand"
+                       @keydown.escape="showCommandPalette = false"
+                       placeholder="Type a command or search..."
+                       class="w-full p-3 rounded-lg bg-transparent border border-white/20 text-lg focus:outline-none focus:border-blue-400">
+                <div class="mt-4 max-h-80 overflow-y-auto">
+                    <template x-for="cmd in filteredCommands" :key="cmd.id">
+                        <div class="p-3 rounded-lg hover:bg-white/10 cursor-pointer transition-colors" 
+                             @click="executeCommand(cmd)">
+                            <div class="flex items-center">
+                                <i :data-lucide="cmd.icon" class="w-5 h-5 mr-3"></i>
+                                <div>
+                                    <div class="font-medium" x-text="cmd.title"></div>
+                                    <div class="text-sm text-gray-400" x-text="cmd.description"></div>
+                                </div>
+                                <div class="ml-auto text-sm text-gray-500" x-text="cmd.shortcut"></div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
         </div>
     </div>
 
-    <!-- Main Application -->
-    <div class="min-h-screen">
-        <!-- Header -->
-        <header class="bg-base-200 shadow-sm border-b border-base-300">
-            <div class="container mx-auto px-4 py-4">
-                <div class="flex items-center justify-between">
+    <!-- Header with enhanced navigation -->
+    <header class="glass-dark border-b border-white/10 sticky top-0 z-40">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <!-- Logo and breadcrumbs -->
+                <div class="flex items-center space-x-4">
                     <div class="flex items-center space-x-3">
                         <div class="relative">
-                            <i data-lucide="brain-circuit" class="w-8 h-8 text-primary"></i>
-                            <div x-show="isProcessing" class="absolute inset-0 pulse-ring border-2 border-primary rounded-full"></div>
+                            <div class="w-10 h-10 rounded-xl bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center">
+                                <i data-lucide="brain-circuit" class="w-6 h-6"></i>
+                            </div>
+                            <div x-show="isProcessing" class="absolute inset-0 rounded-xl border-2 border-blue-400 animate-pulse-ring"></div>
                         </div>
                         <div>
-                            <h1 class="text-2xl font-bold text-base-content">UMS Explorer</h1>
-                            <p class="text-sm text-base-content/60">Unified Memory System Browser</p>
+                            <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                                UMS Explorer
+                            </h1>
+                            <p class="text-xs text-gray-400">Unified Memory System</p>
                         </div>
                     </div>
                     
-                    <div class="flex items-center space-x-4">
-                        <!-- Database Status -->
-                        <div x-show="dbLoaded" class="flex items-center space-x-2 text-sm">
-                            <div class="w-2 h-2 bg-success rounded-full animate-pulse"></div>
-                            <span class="text-base-content/70">Database Connected</span>
+                    <!-- Breadcrumbs -->
+                    <nav x-show="dbLoaded" class="hidden md:flex">
+                        <ol class="flex items-center space-x-2 text-sm">
+                            <li><a href="#" @click="currentView = 'dashboard'" 
+                                   class="text-gray-400 hover:text-white transition-colors"
+                                   :class="{'text-blue-400': currentView === 'dashboard'}">Dashboard</a></li>
+                            <template x-if="currentView !== 'dashboard'">
+                                <li class="text-gray-600">/</li>
+                                <li class="text-blue-400 capitalize" x-text="currentView"></li>
+                            </template>
+                        </ol>
+                    </nav>
+                </div>
+                
+                <!-- Right side controls -->
+                <div class="flex items-center space-x-4">
+                    <!-- Advanced search -->
+                    <div x-show="dbLoaded" class="relative search-container">
+                        <div class="relative">
+                            <input type="text" 
+                                   x-model="globalSearch" 
+                                   @input.debounce.300ms="performGlobalSearch"
+                                   @focus="showSearchSuggestions = true"
+                                   @blur.delay.150ms="showSearchSuggestions = false"
+                                   placeholder="Search everything..." 
+                                   class="w-64 pl-10 pr-4 py-2 bg-white/10 backdrop-blur-md border border-white/20 rounded-xl text-white placeholder-gray-400 focus:outline-none focus:border-blue-400 focus:bg-white/20 transition-all">
+                            <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400"></i>
                         </div>
                         
-                        <!-- Global Search -->
-                        <div x-show="dbLoaded" class="form-control">
-                            <div class="input-group">
-                                <input type="text" 
-                                       x-model="searchQuery" 
-                                       @input.debounce.300ms="performSearch"
-                                       placeholder="Search memories, workflows..." 
-                                       class="input input-bordered input-sm w-64" />
-                                <button class="btn btn-square btn-sm">
-                                    <i data-lucide="search" class="w-4 h-4"></i>
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <!-- Theme Toggle -->
-                        <div class="dropdown dropdown-end">
-                            <button tabindex="0" role="button" class="btn btn-ghost btn-sm">
-                                <i data-lucide="palette" class="w-4 h-4"></i>
-                            </button>
-                            <ul tabindex="0" class="dropdown-content z-[20] menu p-2 shadow bg-base-200 rounded-box w-32">
-                                <li><a @click="setTheme('light')">Light</a></li>
-                                <li><a @click="setTheme('dark')">Dark</a></li>
-                                <li><a @click="setTheme('cupcake')">Cupcake</a></li>
-                                <li><a @click="setTheme('synthwave')">Synthwave</a></li>
-                                <li><a @click="setTheme('dracula')">Dracula</a></li>
-                            </ul>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </header>
-
-        <!-- Main Content -->
-        <main class="container mx-auto px-4 py-6">
-            <!-- Database Loading Screen -->
-            <div x-show="!dbLoaded && !isLoading" class="fade-in">
-                <div class="hero min-h-[60vh]">
-                    <div class="hero-content text-center">
-                        <div class="max-w-md">
-                            <div class="mb-8">
-                                <i data-lucide="database" class="w-24 h-24 text-primary mx-auto mb-4"></i>
-                                <h2 class="text-3xl font-bold mb-4">Load UMS Database</h2>
-                                <p class="text-base-content/70 mb-6">
-                                    Drop your UMS database file here or click to browse
-                                </p>
-                            </div>
-                            
-                            <!-- Drop Zone -->
-                            <div class="drop-zone p-8 rounded-lg text-center cursor-pointer"
-                                 @drop.prevent="handleFileDrop($event)"
-                                 @dragover.prevent="$event.currentTarget.classList.add('dragover')"
-                                 @dragleave.prevent="$event.currentTarget.classList.remove('dragover')"
-                                 @click="$refs.fileInput.click()">
-                                <i data-lucide="upload-cloud" class="w-12 h-12 text-base-content/50 mx-auto mb-4"></i>
-                                <p class="text-lg font-medium mb-2">Drop database file here</p>
-                                <p class="text-sm text-base-content/60">
-                                    Supports .db, .sqlite, .sqlite3 files
-                                </p>
-                                <input type="file" 
-                                       x-ref="fileInput" 
-                                       @change="loadDatabase($event)" 
-                                       accept=".db,.sqlite,.sqlite3" 
-                                       class="hidden" />
-                            </div>
-                            
-                            <div class="mt-6">
-                                <div class="alert alert-info">
-                                    <i data-lucide="info" class="w-5 h-5"></i>
-                                    <span class="text-sm">
-                                        Default location: <code>./storage/unified_agent_memory.db</code>
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Loading State -->
-            <div x-show="isLoading" class="fade-in">
-                <div class="hero min-h-[60vh]">
-                    <div class="hero-content text-center">
-                        <div>
-                            <span class="loading loading-spinner loading-lg text-primary"></span>
-                            <p class="mt-4 text-lg" x-text="loadingMessage"></p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Dashboard -->
-            <div x-show="dbLoaded && currentView === 'dashboard'" class="fade-in space-y-6">
-                <!-- Statistics Overview -->
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                    <div class="stat-card card shadow-lg">
-                        <div class="card-body">
-                            <div class="stat">
-                                <div class="stat-figure text-primary">
-                                    <i data-lucide="brain" class="w-8 h-8"></i>
-                                </div>
-                                <div class="stat-title">Total Memories</div>
-                                <div class="stat-value text-primary" x-text="stats.totalMemories || 0"></div>
-                                <div class="stat-desc">Across all workflows</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="stat-card card shadow-lg">
-                        <div class="card-body">
-                            <div class="stat">
-                                <div class="stat-figure text-secondary">
-                                    <i data-lucide="git-branch" class="w-8 h-8"></i>
-                                </div>
-                                <div class="stat-title">Workflows</div>
-                                <div class="stat-value text-secondary" x-text="stats.totalWorkflows || 0"></div>
-                                <div class="stat-desc">Active projects</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="stat-card card shadow-lg">
-                        <div class="card-body">
-                            <div class="stat">
-                                <div class="stat-figure text-accent">
-                                    <i data-lucide="zap" class="w-8 h-8"></i>
-                                </div>
-                                <div class="stat-title">Actions</div>
-                                <div class="stat-value text-accent" x-text="stats.totalActions || 0"></div>
-                                <div class="stat-desc">Total operations</div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="stat-card card shadow-lg">
-                        <div class="card-body">
-                            <div class="stat">
-                                <div class="stat-figure text-info">
-                                    <i data-lucide="link" class="w-8 h-8"></i>
-                                </div>
-                                <div class="stat-title">Memory Links</div>
-                                <div class="stat-value text-info" x-text="stats.totalLinks || 0"></div>
-                                <div class="stat-desc">Connections made</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Navigation Cards -->
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    <div class="card bg-base-200 shadow-lg workflow-card cursor-pointer" @click="currentView = 'workflows'">
-                        <div class="card-body">
-                            <h3 class="card-title">
-                                <i data-lucide="git-branch" class="w-6 h-6 text-secondary"></i>
-                                Explore Workflows
-                            </h3>
-                            <p class="text-base-content/70">Browse and analyze your AI agent workflows</p>
-                            <div class="card-actions justify-end">
-                                <button class="btn btn-secondary btn-sm">
-                                    Explore <i data-lucide="arrow-right" class="w-4 h-4 ml-1"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="card bg-base-200 shadow-lg workflow-card cursor-pointer" @click="currentView = 'memories'">
-                        <div class="card-body">
-                            <h3 class="card-title">
-                                <i data-lucide="brain" class="w-6 h-6 text-primary"></i>
-                                Memory System
-                            </h3>
-                            <p class="text-base-content/70">Dive into the agent's memory hierarchy</p>
-                            <div class="card-actions justify-end">
-                                <button class="btn btn-primary btn-sm">
-                                    Explore <i data-lucide="arrow-right" class="w-4 h-4 ml-1"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="card bg-base-200 shadow-lg workflow-card cursor-pointer" @click="currentView = 'analytics'">
-                        <div class="card-body">
-                            <h3 class="card-title">
-                                <i data-lucide="bar-chart-3" class="w-6 h-6 text-accent"></i>
-                                Analytics
-                            </h3>
-                            <p class="text-base-content/70">Visualize patterns and insights</p>
-                            <div class="card-actions justify-end">
-                                <button class="btn btn-accent btn-sm">
-                                    Explore <i data-lucide="arrow-right" class="w-4 h-4 ml-1"></i>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Recent Activity -->
-                <div class="card bg-base-200 shadow-lg">
-                    <div class="card-body">
-                        <h3 class="card-title mb-4">
-                            <i data-lucide="clock" class="w-6 h-6"></i>
-                            Recent Activity
-                        </h3>
-                        <div class="space-y-3">
-                            <template x-for="item in recentActivity.slice(0, 5)" :key="item.id">
-                                <div class="flex items-center space-x-3 p-3 bg-base-100 rounded-lg">
-                                    <div class="avatar placeholder">
-                                        <div class="bg-primary text-primary-content rounded-full w-8 h-8">
-                                            <i :data-lucide="item.icon" class="w-4 h-4"></i>
+                        <!-- Search suggestions -->
+                        <div x-show="showSearchSuggestions && searchSuggestions.length > 0" 
+                             class="search-suggestions mt-2 p-2">
+                            <template x-for="suggestion in searchSuggestions.slice(0, 5)" :key="suggestion.id">
+                                <div class="p-2 hover:bg-white/10 rounded-lg cursor-pointer transition-colors" 
+                                     @click="selectSearchSuggestion(suggestion)">
+                                    <div class="flex items-center">
+                                        <i :data-lucide="suggestion.icon" class="w-4 h-4 mr-2 text-gray-400"></i>
+                                        <div>
+                                            <div class="text-sm font-medium" x-text="suggestion.title"></div>
+                                            <div class="text-xs text-gray-500" x-text="suggestion.type"></div>
                                         </div>
                                     </div>
-                                    <div class="flex-1">
-                                        <p class="font-medium" x-text="item.title"></p>
-                                        <p class="text-sm text-base-content/60" x-text="item.description"></p>
-                                    </div>
-                                    <div class="text-sm text-base-content/60" x-text="formatRelativeTime(item.timestamp)"></div>
                                 </div>
                             </template>
                         </div>
                     </div>
-                </div>
-            </div>
-
-            <!-- Workflows View -->
-            <div x-show="dbLoaded && currentView === 'workflows'" class="fade-in space-y-6">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-3">
-                        <button @click="currentView = 'dashboard'" class="btn btn-ghost btn-sm">
-                            <i data-lucide="arrow-left" class="w-4 h-4"></i>
-                        </button>
-                        <h2 class="text-2xl font-bold">Workflows</h2>
-                        <div class="badge badge-neutral" x-text="`${filteredWorkflows.length} total`"></div>
+                    
+                    <!-- Database status -->
+                    <div x-show="dbLoaded" class="hidden md:flex items-center space-x-2">
+                        <div class="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
+                        <span class="text-sm text-gray-300">Connected</span>
                     </div>
                     
-                    <div class="form-control">
-                        <input type="text" 
-                               x-model="workflowFilter" 
-                               placeholder="Filter workflows..." 
-                               class="input input-bordered input-sm w-64" />
-                    </div>
-                </div>
-                
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    <template x-for="workflow in filteredWorkflows" :key="workflow.workflow_id">
-                        <div class="card bg-base-200 shadow-lg workflow-card cursor-pointer" 
-                             @click="selectWorkflow(workflow)">
-                            <div class="card-body">
-                                <div class="flex items-start justify-between">
-                                    <h3 class="card-title text-base" x-text="workflow.title"></h3>
-                                    <div class="badge badge-sm" 
-                                         :class="getWorkflowStatusClass(workflow.status)" 
-                                         x-text="workflow.status"></div>
-                                </div>
-                                
-                                <p class="text-sm text-base-content/70 line-clamp-2" x-text="workflow.description || workflow.goal"></p>
-                                
-                                <div class="card-actions justify-between items-center mt-4">
-                                    <div class="text-xs text-base-content/60">
-                                        <span x-text="formatRelativeTime(workflow.updated_at)"></span>
-                                    </div>
-                                    <button class="btn btn-primary btn-xs">
-                                        View Details
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </template>
-                </div>
-            </div>
-
-            <!-- Memories View -->
-            <div x-show="dbLoaded && currentView === 'memories'" class="fade-in space-y-6">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-3">
-                        <button @click="currentView = 'dashboard'" class="btn btn-ghost btn-sm">
-                            <i data-lucide="arrow-left" class="w-4 h-4"></i>
-                        </button>
-                        <h2 class="text-2xl font-bold">Memory System</h2>
-                        <div class="badge badge-neutral" x-text="`${filteredMemories.length} memories`"></div>
-                    </div>
-                    
-                    <div class="flex items-center space-x-2">
-                        <select x-model="memoryLevelFilter" class="select select-bordered select-sm">
-                            <option value="">All Levels</option>
-                            <option value="working">Working</option>
-                            <option value="episodic">Episodic</option>
-                            <option value="semantic">Semantic</option>
-                            <option value="procedural">Procedural</option>
-                        </select>
-                        
-                        <input type="text" 
-                               x-model="memoryFilter" 
-                               placeholder="Search memories..." 
-                               class="input input-bordered input-sm w-64" />
-                    </div>
-                </div>
-                
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    <template x-for="memory in filteredMemories" :key="memory.memory_id">
-                        <div class="card bg-base-200 shadow-lg memory-card cursor-pointer" 
-                             :class="memory.memory_level"
-                             @click="selectMemory(memory)">
-                            <div class="card-body">
-                                <div class="flex items-start justify-between">
-                                    <div class="badge badge-sm" 
-                                         :class="getMemoryLevelClass(memory.memory_level)" 
-                                         x-text="memory.memory_level"></div>
-                                    <div class="text-xs text-base-content/60" 
-                                         x-text="`Importance: ${memory.importance}/10`"></div>
-                                </div>
-                                
-                                <p class="text-sm font-medium mt-2" x-text="memory.memory_type"></p>
-                                <p class="text-sm text-base-content/70 line-clamp-3" x-text="memory.content"></p>
-                                
-                                <div class="card-actions justify-between items-center mt-4">
-                                    <div class="text-xs text-base-content/60">
-                                        <span x-text="formatRelativeTime(memory.created_at)"></span>
-                                    </div>
-                                    <button class="btn btn-primary btn-xs">
-                                        View Details
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </template>
-                </div>
-            </div>
-
-            <!-- Analytics View -->
-            <div x-show="dbLoaded && currentView === 'analytics'" class="fade-in space-y-6">
-                <div class="flex items-center space-x-3">
-                    <button @click="currentView = 'dashboard'" class="btn btn-ghost btn-sm">
-                        <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                    <!-- Theme toggle -->
+                    <button @click="toggleTheme()" 
+                            class="p-2 rounded-lg bg-white/10 backdrop-blur-md border border-white/20 hover:bg-white/20 transition-all interactive">
+                        <i :data-lucide="theme === 'dark' ? 'sun' : 'moon'" class="w-4 h-4"></i>
                     </button>
-                    <h2 class="text-2xl font-bold">Analytics</h2>
+                    
+                    <!-- Command palette trigger -->
+                    <button @click="showCommandPalette = true" 
+                            class="p-2 rounded-lg bg-white/10 backdrop-blur-md border border-white/20 hover:bg-white/20 transition-all interactive">
+                        <i data-lucide="command" class="w-4 h-4"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main content area -->
+    <main class="container mx-auto px-4 py-6">
+        <!-- Database loading state -->
+        <div x-show="!dbLoaded && !isLoading" class="min-h-[70vh] flex items-center justify-center">
+            <div class="enhanced-card rounded-2xl p-8 max-w-md w-full text-center animate-scale-in">
+                <div class="mb-6">
+                    <div class="w-20 h-20 bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4 animate-bounce-subtle">
+                        <i data-lucide="database" class="w-10 h-10"></i>
+                    </div>
+                    <h2 class="text-2xl font-bold mb-2">Load Your UMS Database</h2>
+                    <p class="text-gray-400">Drag and drop your database file or click to browse</p>
                 </div>
                 
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <!-- Memory Level Distribution -->
-                    <div class="card bg-base-200 shadow-lg">
-                        <div class="card-body">
-                            <h3 class="card-title">Memory Level Distribution</h3>
-                            <canvas x-ref="memoryLevelChart" class="w-full h-64"></canvas>
-                        </div>
+                <div class="drop-zone relative rounded-xl border-2 border-dashed border-gray-600 hover:border-blue-400 transition-colors p-8 cursor-pointer group"
+                     @drop.prevent="handleFileDrop($event)"
+                     @dragover.prevent="$event.currentTarget.classList.add('border-blue-400', 'bg-blue-400/10')"
+                     @dragleave.prevent="$event.currentTarget.classList.remove('border-blue-400', 'bg-blue-400/10')"
+                     @click="$refs.fileInput.click()">
+                    <div class="text-center">
+                        <i data-lucide="upload-cloud" class="w-12 h-12 mx-auto mb-4 text-gray-400 group-hover:text-blue-400 transition-colors"></i>
+                        <p class="font-medium mb-2">Drop your database file here</p>
+                        <p class="text-sm text-gray-500">Supports .db, .sqlite, .sqlite3 files</p>
                     </div>
-                    
-                    <!-- Memory Type Distribution -->
-                    <div class="card bg-base-200 shadow-lg">
-                        <div class="card-body">
-                            <h3 class="card-title">Memory Type Distribution</h3>
-                            <canvas x-ref="memoryTypeChart" class="w-full h-64"></canvas>
-                        </div>
-                    </div>
-                    
-                    <!-- Workflow Status Distribution -->
-                    <div class="card bg-base-200 shadow-lg">
-                        <div class="card-body">
-                            <h3 class="card-title">Workflow Status</h3>
-                            <canvas x-ref="workflowStatusChart" class="w-full h-64"></canvas>
-                        </div>
-                    </div>
-                    
-                    <!-- Activity Timeline -->
-                    <div class="card bg-base-200 shadow-lg">
-                        <div class="card-body">
-                            <h3 class="card-title">Activity Timeline</h3>
-                            <canvas x-ref="activityChart" class="w-full h-64"></canvas>
-                        </div>
+                    <input type="file" 
+                           x-ref="fileInput" 
+                           @change="loadDatabase($event)" 
+                           accept=".db,.sqlite,.sqlite3" 
+                           class="hidden" />
+                </div>
+                
+                <div class="mt-6 p-4 bg-blue-500/10 rounded-lg border border-blue-500/20">
+                    <div class="flex items-center text-sm text-blue-300">
+                        <i data-lucide="info" class="w-4 h-4 mr-2"></i>
+                        <span>Default location: <code class="bg-black/20 px-2 py-1 rounded">./storage/unified_agent_memory.db</code></span>
                     </div>
                 </div>
             </div>
-        </main>
-    </div>
+        </div>
 
-    <!-- Detail Modals -->
-    <div x-show="showWorkflowModal" class="modal modal-open">
-        <div class="modal-box w-11/12 max-w-5xl">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="font-bold text-lg">Workflow Details</h3>
-                <button @click="showWorkflowModal = false" class="btn btn-sm btn-circle btn-ghost">
-                    <i data-lucide="x" class="w-4 h-4"></i>
-                </button>
+        <!-- Loading state -->
+        <div x-show="isLoading" class="min-h-[70vh] flex items-center justify-center">
+            <div class="text-center animate-fade-in">
+                <div class="spinner mb-4 mx-auto"></div>
+                <p class="text-xl font-medium mb-2" x-text="loadingMessage"></p>
+                <p class="text-gray-400">Please wait while we process your data...</p>
+            </div>
+        </div>
+
+        <!-- Dashboard -->
+        <div x-show="dbLoaded && currentView === 'dashboard'" class="space-y-6 animate-slide-in">
+            <!-- Quick stats -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div class="enhanced-card rounded-2xl p-6 group">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                            <i data-lucide="brain" class="w-6 h-6 text-blue-400"></i>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" x-text="stats.totalMemories || 0"></div>
+                            <div class="text-sm text-gray-400">Memories</div>
+                        </div>
+                    </div>
+                    <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-gradient-to-r from-blue-500 to-blue-400 rounded-full transition-all duration-1000" 
+                             :style="`width: ${Math.min(100, (stats.totalMemories / 1000) * 100)}%`"></div>
+                    </div>
+                </div>
+                
+                <div class="enhanced-card rounded-2xl p-6 group">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                            <i data-lucide="git-branch" class="w-6 h-6 text-purple-400"></i>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" x-text="stats.totalWorkflows || 0"></div>
+                            <div class="text-sm text-gray-400">Workflows</div>
+                        </div>
+                    </div>
+                    <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-gradient-to-r from-purple-500 to-purple-400 rounded-full transition-all duration-1000" 
+                             :style="`width: ${Math.min(100, (stats.totalWorkflows / 50) * 100)}%`"></div>
+                    </div>
+                </div>
+                
+                <div class="enhanced-card rounded-2xl p-6 group">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                            <i data-lucide="zap" class="w-6 h-6 text-green-400"></i>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" x-text="stats.totalActions || 0"></div>
+                            <div class="text-sm text-gray-400">Actions</div>
+                        </div>
+                    </div>
+                    <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-gradient-to-r from-green-500 to-green-400 rounded-full transition-all duration-1000" 
+                             :style="`width: ${Math.min(100, (stats.totalActions / 500) * 100)}%`"></div>
+                    </div>
+                </div>
+                
+                <div class="enhanced-card rounded-2xl p-6 group">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="w-12 h-12 bg-yellow-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                            <i data-lucide="link" class="w-6 h-6 text-yellow-400"></i>
+                        </div>
+                        <div class="text-right">
+                            <div class="text-2xl font-bold" x-text="stats.totalLinks || 0"></div>
+                            <div class="text-sm text-gray-400">Links</div>
+                        </div>
+                    </div>
+                    <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-gradient-to-r from-yellow-500 to-yellow-400 rounded-full transition-all duration-1000" 
+                             :style="`width: ${Math.min(100, (stats.totalLinks / 200) * 100)}%`"></div>
+                    </div>
+                </div>
+            </div>
+
+                         <!-- Navigation cards -->
+             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('workflows')">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                             <i data-lucide="git-branch" class="w-6 h-6 text-purple-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Workflows</h3>
+                             <p class="text-sm text-gray-400">Explore AI agent workflows</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">View all workflows</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-purple-400 transition-colors"></i>
+                     </div>
+                 </div>
+                 
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('memories')">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                             <i data-lucide="brain" class="w-6 h-6 text-blue-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Memory System</h3>
+                             <p class="text-sm text-gray-400">Dive into memory hierarchy</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Explore memories</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-blue-400 transition-colors"></i>
+                     </div>
+                 </div>
+                 
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('actions')">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-orange-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                             <i data-lucide="zap" class="w-6 h-6 text-orange-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Actions</h3>
+                             <p class="text-sm text-gray-400">Review executed actions</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Browse actions</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-orange-400 transition-colors"></i>
+                     </div>
+                 </div>
+                 
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('analytics')">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                             <i data-lucide="bar-chart-3" class="w-6 h-6 text-green-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Analytics</h3>
+                             <p class="text-sm text-gray-400">Visualize patterns & insights</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">View analytics</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-green-400 transition-colors"></i>
+                     </div>
+                 </div>
+             </div>
+
+            <!-- Recent activity timeline -->
+            <div class="enhanced-card rounded-2xl p-6">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="text-xl font-semibold">Recent Activity</h3>
+                    <button class="text-sm text-blue-400 hover:text-blue-300 transition-colors">View All</button>
+                </div>
+                <div class="space-y-4">
+                    <template x-for="(item, index) in recentActivity.slice(0, 5)" :key="item.id">
+                        <div class="flex items-center space-x-4 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-colors animate-fade-in"
+                             :style="`animation-delay: ${index * 100}ms`">
+                            <div class="w-10 h-10 rounded-xl bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                                <i :data-lucide="item.icon" class="w-5 h-5"></i>
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="font-medium truncate" x-text="item.title"></p>
+                                <p class="text-sm text-gray-400 truncate" x-text="item.description"></p>
+                            </div>
+                            <div class="text-sm text-gray-500" x-text="formatRelativeTime(item.timestamp)"></div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <!-- Workflows View -->
+        <div x-show="dbLoaded && currentView === 'workflows'" class="animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold">Workflows</h2>
+                    <p class="text-gray-400" x-text="`${filteredWorkflows.length} workflows found`"></p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <select x-model="workflowFilter" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                        <option value="">All Status</option>
+                        <option value="active">Active</option>
+                        <option value="completed">Completed</option>
+                        <option value="paused">Paused</option>
+                        <option value="failed">Failed</option>
+                    </select>
+                    <button class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors interactive">
+                        <i data-lucide="plus" class="w-4 h-4 mr-2 inline"></i>
+                        New Workflow
+                    </button>
+                </div>
             </div>
             
-            <div x-show="selectedWorkflow">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div>
-                        <h4 class="font-semibold mb-2">Basic Info</h4>
-                        <div class="space-y-2 text-sm">
-                            <div><strong>Title:</strong> <span x-text="selectedWorkflow?.title"></span></div>
-                            <div><strong>Status:</strong> 
-                                <span class="badge badge-sm" 
-                                      :class="getWorkflowStatusClass(selectedWorkflow?.status)" 
-                                      x-text="selectedWorkflow?.status"></span>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <template x-for="workflow in filteredWorkflows" :key="workflow.workflow_id">
+                    <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="selectWorkflow(workflow)">
+                        <div class="flex items-start justify-between mb-4">
+                            <h3 class="font-semibold text-lg group-hover:text-blue-400 transition-colors" x-text="workflow.title"></h3>
+                            <div class="status-indicator">
+                                <span class="px-2 py-1 text-xs rounded-full" 
+                                      :class="getWorkflowStatusClass(workflow.status)" 
+                                      x-text="workflow.status"></span>
                             </div>
-                            <div><strong>Created:</strong> <span x-text="formatDate(selectedWorkflow?.created_at)"></span></div>
-                            <div><strong>Updated:</strong> <span x-text="formatDate(selectedWorkflow?.updated_at)"></span></div>
+                        </div>
+                        <p class="text-gray-400 text-sm mb-4 line-clamp-2" x-text="workflow.description || workflow.goal"></p>
+                        <div class="flex items-center justify-between text-sm text-gray-500">
+                            <span x-text="formatRelativeTime(workflow.updated_at)"></span>
+                            <div class="flex items-center space-x-4">
+                                <span x-text="`${workflow.action_count || 0} actions`"></span>
+                                <span x-text="`${workflow.memory_count || 0} memories`"></span>
+                            </div>
+                        </div>
+                    </div>
+                </template>
+            </div>
+        </div>
+
+        <!-- Memories View -->
+        <div x-show="dbLoaded && currentView === 'memories'" class="animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold">Memory System</h2>
+                    <p class="text-gray-400" x-text="`${filteredMemories.length} memories found`"></p>
+                </div>
+                                 <div class="flex items-center space-x-3">
+                     <select x-model="memoryLevelFilter" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                         <option value="">All Levels</option>
+                         <option value="working">Working</option>
+                         <option value="episodic">Episodic</option>
+                         <option value="semantic">Semantic</option>
+                         <option value="procedural">Procedural</option>
+                     </select>
+                     <select x-model="memorySortBy" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                         <option value="created_at">Created Date</option>
+                         <option value="importance">Importance</option>
+                         <option value="confidence">Confidence</option>
+                         <option value="access_count">Access Count</option>
+                         <option value="memory_type">Type</option>
+                     </select>
+                     <button @click="memorySortOrder = memorySortOrder === 'desc' ? 'asc' : 'desc'" 
+                             class="p-2 bg-white/10 border border-white/20 rounded-lg hover:bg-white/20 transition-colors">
+                         <i :data-lucide="memorySortOrder === 'desc' ? 'arrow-down' : 'arrow-up'" class="w-4 h-4"></i>
+                     </button>
+                     <input type="text" 
+                            x-model="memorySearch" 
+                            placeholder="Search memories..." 
+                            class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm w-64">
+                 </div>
+            </div>
+            
+                         <!-- Group memories by workflow -->
+             <template x-for="group in groupedMemories" :key="group.workflowId">
+                 <div class="mb-8">
+                     <div class="flex items-center justify-between mb-4">
+                         <h3 class="text-lg font-semibold flex items-center">
+                             <i data-lucide="folder" class="w-5 h-5 mr-2 text-purple-400"></i>
+                             <span x-text="group.workflowTitle || 'Standalone Memories'"></span>
+                             <span class="ml-2 px-2 py-1 text-xs bg-purple-500/20 text-purple-400 rounded-full" x-text="`${group.memories.length} memories`"></span>
+                         </h3>
+                         <button @click="group.collapsed = !group.collapsed" 
+                                 class="p-1 hover:bg-white/10 rounded transition-colors">
+                             <i :data-lucide="group.collapsed ? 'chevron-right' : 'chevron-down'" class="w-4 h-4"></i>
+                         </button>
+                     </div>
+                     
+                     <div x-show="!group.collapsed" 
+                          x-transition:enter="transition ease-out duration-200" 
+                          x-transition:enter-start="opacity-0 transform scale-95" 
+                          x-transition:enter-end="opacity-100 transform scale-100">
+                         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                             <template x-for="memory in group.memories" :key="memory.memory_id">
+                                 <div class="enhanced-card rounded-xl p-4 cursor-pointer group memory-card transition-all duration-300" 
+                                      :class="`memory-${memory.memory_level}`"
+                                      @click="selectMemory(memory)"
+                                      style="transform: translateY(0); transition: transform 0.3s ease;">
+                                     <div class="flex items-start justify-between mb-3">
+                                         <div class="flex items-center space-x-2">
+                                             <span class="px-2 py-1 text-xs rounded-full" 
+                                                   :class="getMemoryLevelClass(memory.memory_level)" 
+                                                   x-text="memory.memory_level"></span>
+                                             <span class="text-xs text-gray-500" x-text="memory.memory_type"></span>
+                                         </div>
+                                         <div class="flex items-center space-x-2 text-xs text-gray-500">
+                                             <span x-text="`I: ${memory.importance}/10`"></span>
+                                             <span x-text="`C: ${Math.round((memory.confidence || 0) * 100)}%`"></span>
+                                         </div>
+                                     </div>
+                                     <p class="text-gray-300 text-sm mb-3 line-clamp-3" x-text="memory.content"></p>
+                                     <div class="flex items-center justify-between text-sm text-gray-500">
+                                         <span x-text="formatRelativeTime(memory.created_at)"></span>
+                                         <div class="flex items-center space-x-2">
+                                             <i data-lucide="eye" class="w-4 h-4"></i>
+                                             <span x-text="memory.access_count || 0"></span>
+                                         </div>
+                                     </div>
+                                 </div>
+                             </template>
+                         </div>
+                     </div>
+                 </div>
+             </template>
+             
+             <!-- Show ungrouped view if no grouping -->
+             <div x-show="!groupedMemories.length" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                 <template x-for="memory in filteredMemories.slice(0, currentPage * pageSize)" :key="memory.memory_id">
+                     <div class="enhanced-card rounded-2xl p-6 cursor-pointer group memory-card" 
+                          :class="`memory-${memory.memory_level}`"
+                          @click="selectMemory(memory)">
+                         <div class="flex items-start justify-between mb-4">
+                             <div class="flex items-center space-x-2">
+                                 <span class="px-2 py-1 text-xs rounded-full" 
+                                       :class="getMemoryLevelClass(memory.memory_level)" 
+                                       x-text="memory.memory_level"></span>
+                                 <span class="text-xs text-gray-500" x-text="memory.memory_type"></span>
+                             </div>
+                             <div class="flex items-center space-x-2 text-xs text-gray-500">
+                                 <span x-text="`I: ${memory.importance}/10`"></span>
+                                 <span x-text="`C: ${Math.round((memory.confidence || 0) * 100)}%`"></span>
+                             </div>
+                         </div>
+                         <p class="text-gray-300 text-sm mb-4 line-clamp-3" x-text="memory.content"></p>
+                         <div class="flex items-center justify-between text-sm text-gray-500">
+                             <span x-text="formatRelativeTime(memory.created_at)"></span>
+                             <div class="flex items-center space-x-2">
+                                 <i data-lucide="eye" class="w-4 h-4"></i>
+                                 <span x-text="memory.access_count || 0"></span>
+                             </div>
+                         </div>
+                     </div>
+                 </template>
+             </div>
+            
+            <!-- Load more button -->
+            <div x-show="filteredMemories.length > currentPage * pageSize" class="text-center mt-8">
+                <button @click="loadMore()" 
+                        class="px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors interactive">
+                    Load More Memories
+                </button>
+            </div>
+                 </div>
+
+         <!-- Actions View -->
+         <div x-show="dbLoaded && currentView === 'actions'" class="animate-slide-in">
+             <div class="flex items-center justify-between mb-6">
+                 <div>
+                     <h2 class="text-2xl font-bold">Actions</h2>
+                     <p class="text-gray-400" x-text="`${filteredActions.length} actions found`"></p>
+                 </div>
+                 <div class="flex items-center space-x-3">
+                     <select x-model="actionStatusFilter" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                         <option value="">All Status</option>
+                         <option value="completed">Completed</option>
+                         <option value="in_progress">In Progress</option>
+                         <option value="failed">Failed</option>
+                         <option value="planned">Planned</option>
+                     </select>
+                     <select x-model="actionTypeFilter" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                         <option value="">All Types</option>
+                         <option value="tool_use">Tool Use</option>
+                         <option value="reasoning">Reasoning</option>
+                         <option value="planning">Planning</option>
+                         <option value="analysis">Analysis</option>
+                         <option value="research">Research</option>
+                     </select>
+                     <input type="text" 
+                            x-model="actionSearch" 
+                            placeholder="Search actions..." 
+                            class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm w-64">
+                 </div>
+             </div>
+             
+             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                 <template x-for="action in filteredActions.slice(0, currentPage * pageSize)" :key="action.action_id">
+                     <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="selectAction(action)">
+                         <div class="flex items-start justify-between mb-4">
+                             <div class="flex items-center space-x-2">
+                                 <span class="px-2 py-1 text-xs rounded-full" 
+                                       :class="getActionStatusClass(action.status)" 
+                                       x-text="action.status"></span>
+                                 <span class="text-xs text-gray-500" x-text="action.action_type"></span>
+                             </div>
+                             <div class="text-xs text-gray-500" x-text="formatDuration(action.started_at, action.completed_at)"></div>
+                         </div>
+                         <h3 class="font-medium mb-2 group-hover:text-orange-400 transition-colors" x-text="action.title || action.tool_name || action.action_type"></h3>
+                         <p class="text-gray-400 text-sm mb-4 line-clamp-2" x-text="action.reasoning || action.summary || 'No description available'"></p>
+                         <div class="flex items-center justify-between text-sm text-gray-500">
+                             <span x-text="formatRelativeTime(action.started_at)"></span>
+                             <div class="flex items-center space-x-2">
+                                 <i :data-lucide="getActionIcon(action.action_type)" class="w-4 h-4"></i>
+                                 <span x-text="action.workflow_id ? 'Workflow' : 'Standalone'"></span>
+                             </div>
+                         </div>
+                     </div>
+                 </template>
+             </div>
+             
+             <!-- Load more button -->
+             <div x-show="filteredActions.length > currentPage * pageSize" class="text-center mt-8">
+                 <button @click="loadMore()" 
+                         class="px-6 py-3 bg-orange-600 hover:bg-orange-700 rounded-lg font-medium transition-colors interactive">
+                     Load More Actions
+                 </button>
+             </div>
+         </div>
+
+         <!-- Analytics View -->
+        <div x-show="dbLoaded && currentView === 'analytics'" class="space-y-6 animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold">Analytics Dashboard</h2>
+                    <p class="text-gray-400">Visualize your UMS data patterns</p>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="chart-container">
+                    <h3 class="text-lg font-semibold mb-4">Memory Level Distribution</h3>
+                    <canvas x-ref="memoryLevelChart" class="w-full h-64"></canvas>
+                </div>
+                
+                <div class="chart-container">
+                    <h3 class="text-lg font-semibold mb-4">Memory Type Breakdown</h3>
+                    <canvas x-ref="memoryTypeChart" class="w-full h-64"></canvas>
+                </div>
+                
+                <div class="chart-container">
+                    <h3 class="text-lg font-semibold mb-4">Workflow Status</h3>
+                    <canvas x-ref="workflowStatusChart" class="w-full h-64"></canvas>
+                </div>
+                
+                <div class="chart-container">
+                    <h3 class="text-lg font-semibold mb-4">Activity Timeline</h3>
+                    <canvas x-ref="activityChart" class="w-full h-64"></canvas>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Enhanced modals -->
+         <div x-show="showWorkflowModal" 
+          x-transition:enter="transition ease-out duration-300" 
+          x-transition:enter-start="opacity-0" 
+          x-transition:enter-end="opacity-100"
+          x-transition:leave="transition ease-in duration-200" 
+          x-transition:leave-start="opacity-100" 
+          x-transition:leave-end="opacity-0"
+          class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          @click="showWorkflowModal = false">
+        <div class="enhanced-card rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto" 
+             x-transition:enter="transition ease-out duration-300" 
+             x-transition:enter-start="opacity-0 scale-95" 
+             x-transition:enter-end="opacity-100 scale-100"
+             x-transition:leave="transition ease-in duration-200" 
+             x-transition:leave-start="opacity-100 scale-100" 
+             x-transition:leave-end="opacity-0 scale-95"
+             @click.stop="">
+            <div class="p-6">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="text-2xl font-bold">Workflow Details</h3>
+                    <button @click="showWorkflowModal = false" 
+                            class="p-2 rounded-lg hover:bg-white/10 transition-colors">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+                
+                <div x-show="selectedWorkflow" class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <h4 class="font-semibold mb-3">Basic Information</h4>
+                            <div class="space-y-2 text-sm">
+                                <div><span class="text-gray-400">Title:</span> <span x-text="selectedWorkflow?.title"></span></div>
+                                <div><span class="text-gray-400">Status:</span> 
+                                    <span class="px-2 py-1 text-xs rounded-full ml-2" 
+                                          :class="getWorkflowStatusClass(selectedWorkflow?.status)" 
+                                          x-text="selectedWorkflow?.status"></span>
+                                </div>
+                                <div><span class="text-gray-400">Created:</span> <span x-text="formatDate(selectedWorkflow?.created_at)"></span></div>
+                                <div><span class="text-gray-400">Updated:</span> <span x-text="formatDate(selectedWorkflow?.updated_at)"></span></div>
+                            </div>
+                        </div>
+                        
+                        <div>
+                            <h4 class="font-semibold mb-3">Metrics</h4>
+                            <div class="grid grid-cols-3 gap-4">
+                                <div class="text-center">
+                                    <div class="text-2xl font-bold text-blue-400" x-text="selectedWorkflow?.action_count || 0"></div>
+                                    <div class="text-xs text-gray-400">Actions</div>
+                                </div>
+                                <div class="text-center">
+                                    <div class="text-2xl font-bold text-green-400" x-text="selectedWorkflow?.memory_count || 0"></div>
+                                    <div class="text-xs text-gray-400">Memories</div>
+                                </div>
+                                <div class="text-center">
+                                    <div class="text-2xl font-bold text-purple-400" x-text="selectedWorkflow?.artifact_count || 0"></div>
+                                    <div class="text-xs text-gray-400">Artifacts</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     
                     <div>
-                        <h4 class="font-semibold mb-2">Metrics</h4>
-                        <div class="space-y-2 text-sm">
-                            <div><strong>Actions:</strong> <span x-text="selectedWorkflow?.action_count || 0"></span></div>
-                            <div><strong>Memories:</strong> <span x-text="selectedWorkflow?.memory_count || 0"></span></div>
-                            <div><strong>Artifacts:</strong> <span x-text="selectedWorkflow?.artifact_count || 0"></span></div>
-                        </div>
+                        <h4 class="font-semibold mb-3">Description</h4>
+                        <p class="text-gray-300 bg-white/5 p-4 rounded-lg" x-text="selectedWorkflow?.description || selectedWorkflow?.goal || 'No description available'"></p>
                     </div>
-                </div>
-                
-                <div class="mb-4">
-                    <h4 class="font-semibold mb-2">Description</h4>
-                    <p class="text-sm bg-base-100 p-3 rounded" x-text="selectedWorkflow?.description || selectedWorkflow?.goal || 'No description available'"></p>
                 </div>
             </div>
         </div>
     </div>
 
-    <div x-show="showMemoryModal" class="modal modal-open">
-        <div class="modal-box w-11/12 max-w-4xl">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="font-bold text-lg">Memory Details</h3>
-                <button @click="showMemoryModal = false" class="btn btn-sm btn-circle btn-ghost">
-                    <i data-lucide="x" class="w-4 h-4"></i>
-                </button>
-            </div>
-            
-            <div x-show="selectedMemory">
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-                    <div>
-                        <h4 class="font-semibold mb-2">Memory Info</h4>
-                        <div class="space-y-2 text-sm">
-                            <div><strong>Level:</strong> 
-                                <span class="badge badge-sm" 
-                                      :class="getMemoryLevelClass(selectedMemory?.memory_level)" 
-                                      x-text="selectedMemory?.memory_level"></span>
+         <div x-show="showMemoryModal" 
+          x-transition:enter="transition ease-out duration-300" 
+          x-transition:enter-start="opacity-0" 
+          x-transition:enter-end="opacity-100"
+          x-transition:leave="transition ease-in duration-200" 
+          x-transition:leave-start="opacity-100" 
+          x-transition:leave-end="opacity-0"
+          class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          @click="showMemoryModal = false">
+        <div class="enhanced-card rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto" 
+             x-transition:enter="transition ease-out duration-300" 
+             x-transition:enter-start="opacity-0 scale-95" 
+             x-transition:enter-end="opacity-100 scale-100"
+             x-transition:leave="transition ease-in duration-200" 
+             x-transition:leave-start="opacity-100 scale-100" 
+             x-transition:leave-end="opacity-0 scale-95"
+             @click.stop="">
+            <div class="p-6">
+                <div class="flex items-center justify-between mb-6">
+                    <h3 class="text-2xl font-bold">Memory Details</h3>
+                    <button @click="showMemoryModal = false" 
+                            class="p-2 rounded-lg hover:bg-white/10 transition-colors">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+                
+                <div x-show="selectedMemory" class="space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <h4 class="font-semibold mb-3">Memory Information</h4>
+                            <div class="space-y-2 text-sm">
+                                <div><span class="text-gray-400">Level:</span> 
+                                    <span class="px-2 py-1 text-xs rounded-full ml-2" 
+                                          :class="getMemoryLevelClass(selectedMemory?.memory_level)" 
+                                          x-text="selectedMemory?.memory_level"></span>
+                                </div>
+                                <div><span class="text-gray-400">Type:</span> <span x-text="selectedMemory?.memory_type"></span></div>
+                                <div><span class="text-gray-400">Importance:</span> <span x-text="selectedMemory?.importance + '/10'"></span></div>
+                                <div><span class="text-gray-400">Confidence:</span> <span x-text="Math.round((selectedMemory?.confidence || 0) * 100) + '%'"></span></div>
                             </div>
-                            <div><strong>Type:</strong> <span x-text="selectedMemory?.memory_type"></span></div>
-                            <div><strong>Importance:</strong> <span x-text="selectedMemory?.importance + '/10'"></span></div>
-                            <div><strong>Confidence:</strong> <span x-text="Math.round((selectedMemory?.confidence || 0) * 100) + '%'"></span></div>
+                        </div>
+                        
+                        <div>
+                            <h4 class="font-semibold mb-3">Access Information</h4>
+                            <div class="space-y-2 text-sm">
+                                <div><span class="text-gray-400">Created:</span> <span x-text="formatDate(selectedMemory?.created_at)"></span></div>
+                                <div><span class="text-gray-400">Last Access:</span> <span x-text="formatDate(selectedMemory?.last_accessed_at)"></span></div>
+                                <div><span class="text-gray-400">Access Count:</span> <span x-text="selectedMemory?.access_count || 0"></span></div>
+                            </div>
                         </div>
                     </div>
                     
                     <div>
-                        <h4 class="font-semibold mb-2">Timestamps</h4>
-                        <div class="space-y-2 text-sm">
-                            <div><strong>Created:</strong> <span x-text="formatDate(selectedMemory?.created_at)"></span></div>
-                            <div><strong>Last Access:</strong> <span x-text="formatDate(selectedMemory?.last_accessed_at)"></span></div>
-                            <div><strong>Access Count:</strong> <span x-text="selectedMemory?.access_count || 0"></span></div>
+                        <h4 class="font-semibold mb-3">Content</h4>
+                        <div class="bg-white/5 p-4 rounded-lg max-h-64 overflow-y-auto">
+                            <pre class="text-sm whitespace-pre-wrap" x-text="selectedMemory?.content"></pre>
                         </div>
                     </div>
-                </div>
-                
-                <div class="mb-4">
-                    <h4 class="font-semibold mb-2">Content</h4>
-                    <div class="bg-base-100 p-4 rounded max-h-64 overflow-y-auto">
-                        <pre class="text-sm whitespace-pre-wrap" x-text="selectedMemory?.content"></pre>
+                    
+                    <div x-show="selectedMemory?.description">
+                        <h4 class="font-semibold mb-3">Description</h4>
+                        <p class="text-gray-300 bg-white/5 p-4 rounded-lg" x-text="selectedMemory?.description"></p>
                     </div>
                 </div>
-                
-                <div x-show="selectedMemory?.description">
-                    <h4 class="font-semibold mb-2">Description</h4>
-                    <p class="text-sm bg-base-100 p-3 rounded" x-text="selectedMemory?.description"></p>
-                </div>
             </div>
-        </div>
-    </div>
+                 </div>
+     </div>
+
+     <div x-show="showActionModal" 
+          x-transition:enter="transition ease-out duration-300" 
+          x-transition:enter-start="opacity-0" 
+          x-transition:enter-end="opacity-100"
+          x-transition:leave="transition ease-in duration-200" 
+          x-transition:leave-start="opacity-100" 
+          x-transition:leave-end="opacity-0"
+          class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          @click="showActionModal = false">
+         <div class="enhanced-card rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto" 
+              x-transition:enter="transition ease-out duration-300" 
+              x-transition:enter-start="opacity-0 scale-95" 
+              x-transition:enter-end="opacity-100 scale-100"
+              x-transition:leave="transition ease-in duration-200" 
+              x-transition:leave-start="opacity-100 scale-100" 
+              x-transition:leave-end="opacity-0 scale-95"
+              @click.stop="">
+             <div class="p-6">
+                 <div class="flex items-center justify-between mb-6">
+                     <h3 class="text-2xl font-bold">Action Details</h3>
+                     <button @click="showActionModal = false" 
+                             class="p-2 rounded-lg hover:bg-white/10 transition-colors">
+                         <i data-lucide="x" class="w-5 h-5"></i>
+                     </button>
+                 </div>
+                 
+                 <div x-show="selectedAction" class="space-y-6">
+                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <div>
+                             <h4 class="font-semibold mb-3">Action Information</h4>
+                             <div class="space-y-2 text-sm">
+                                 <div><span class="text-gray-400">Type:</span> <span x-text="selectedAction?.action_type"></span></div>
+                                 <div><span class="text-gray-400">Status:</span> 
+                                     <span class="px-2 py-1 text-xs rounded-full ml-2" 
+                                           :class="getActionStatusClass(selectedAction?.status)" 
+                                           x-text="selectedAction?.status"></span>
+                                 </div>
+                                 <div x-show="selectedAction?.tool_name"><span class="text-gray-400">Tool:</span> <span x-text="selectedAction?.tool_name"></span></div>
+                                 <div><span class="text-gray-400">Duration:</span> <span x-text="formatDuration(selectedAction?.started_at, selectedAction?.completed_at)"></span></div>
+                             </div>
+                         </div>
+                         
+                         <div>
+                             <h4 class="font-semibold mb-3">Timing Information</h4>
+                             <div class="space-y-2 text-sm">
+                                 <div><span class="text-gray-400">Started:</span> <span x-text="formatDate(selectedAction?.started_at)"></span></div>
+                                 <div x-show="selectedAction?.completed_at"><span class="text-gray-400">Completed:</span> <span x-text="formatDate(selectedAction?.completed_at)"></span></div>
+                                 <div x-show="selectedAction?.workflow_id"><span class="text-gray-400">Workflow:</span> <span x-text="selectedAction?.workflow_id?.substring(0, 8) + '...'"></span></div>
+                             </div>
+                         </div>
+                     </div>
+                     
+                     <div x-show="selectedAction?.reasoning">
+                         <h4 class="font-semibold mb-3">Reasoning</h4>
+                         <div class="bg-white/5 p-4 rounded-lg max-h-64 overflow-y-auto">
+                             <p class="text-sm whitespace-pre-wrap" x-text="selectedAction?.reasoning"></p>
+                         </div>
+                     </div>
+                     
+                     <div x-show="selectedAction?.tool_args">
+                         <h4 class="font-semibold mb-3">Tool Arguments</h4>
+                         <div class="bg-white/5 p-4 rounded-lg max-h-64 overflow-y-auto">
+                             <pre class="text-sm" x-text="JSON.stringify(JSON.parse(selectedAction?.tool_args || '{}'), null, 2)"></pre>
+                         </div>
+                     </div>
+                     
+                     <div x-show="selectedAction?.tool_result">
+                         <h4 class="font-semibold mb-3">Tool Result</h4>
+                         <div class="bg-white/5 p-4 rounded-lg max-h-64 overflow-y-auto">
+                             <pre class="text-sm" x-text="JSON.stringify(JSON.parse(selectedAction?.tool_result || '{}'), null, 2)"></pre>
+                         </div>
+                     </div>
+                     
+                     <div x-show="selectedAction?.summary">
+                         <h4 class="font-semibold mb-3">Summary</h4>
+                         <p class="text-gray-300 bg-white/5 p-4 rounded-lg" x-text="selectedAction?.summary"></p>
+                     </div>
+                 </div>
+             </div>
+         </div>
+     </div>
+ 
+     <!-- Floating Action Button -->
+    <button class="fab" @click="showCommandPalette = true" title="Open Command Palette (Ctrl+K)">
+        <i data-lucide="command" class="w-6 h-6"></i>
+    </button>
 
     <script>
         // Initialize SQL.js
         let SQL;
         
-        async function initSqlJs() {
-            SQL = await initSqlJs({
-                locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
-            });
+        async function initializeSqlJs() {
+            try {
+                if (typeof initSqlJs === 'undefined') {
+                    throw new Error('SQL.js library not loaded. Please check your internet connection.');
+                }
+                SQL = await initSqlJs({
+                    locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.3/${file}`
+                });
+                console.log('✅ SQL.js initialized successfully');
+            } catch (error) {
+                console.error('❌ Failed to initialize SQL.js:', error);
+                throw error;
+            }
         }
 
         function umsExplorer() {
             return {
-                // Core State
+                // Core state
                 db: null,
                 dbLoaded: false,
                 isLoading: false,
                 isProcessing: false,
                 loadingMessage: '',
                 currentView: 'dashboard',
+                theme: 'dark',
+                
+                // Navigation and UI
+                showCommandPalette: false,
+                showSearchSuggestions: false,
+                commandQuery: '',
+                filteredCommands: [],
+                
+                // Search
+                globalSearch: '',
+                searchSuggestions: [],
                 
                 // Data
                 workflows: [],
@@ -621,10 +1244,18 @@
                 artifacts: [],
                 
                 // Filters
-                searchQuery: '',
                 workflowFilter: '',
-                memoryFilter: '',
                 memoryLevelFilter: '',
+                memorySearch: '',
+                actionStatusFilter: '',
+                actionTypeFilter: '',
+                actionSearch: '',
+                memorySortBy: 'created_at',
+                memorySortOrder: 'desc',
+                
+                // Pagination
+                currentPage: 1,
+                pageSize: 12,
                 
                 // Stats
                 stats: {
@@ -634,63 +1265,224 @@
                     totalLinks: 0
                 },
                 
-                // Selected Items
+                // Selected items
                 selectedWorkflow: null,
                 selectedMemory: null,
+                selectedAction: null,
                 showWorkflowModal: false,
                 showMemoryModal: false,
+                showActionModal: false,
                 
-                // Recent Activity
+                // Recent activity
                 recentActivity: [],
                 
-                // Toast
-                toast: {
-                    show: false,
-                    message: '',
-                    type: 'info'
-                },
-                
                 // Charts
-                memoryLevelChart: null,
-                memoryTypeChart: null,
-                workflowStatusChart: null,
-                activityChart: null,
+                charts: {},
+                
+                // Commands
+                commands: [
+                    { id: 'search', title: 'Search Everything', description: 'Global search across all data', icon: 'search', shortcut: 'Ctrl+F' },
+                    { id: 'workflows', title: 'View Workflows', description: 'Navigate to workflows view', icon: 'git-branch', shortcut: 'W' },
+                    { id: 'memories', title: 'View Memories', description: 'Navigate to memories view', icon: 'brain', shortcut: 'M' },
+                    { id: 'actions', title: 'View Actions', description: 'Navigate to actions view', icon: 'zap', shortcut: 'R' },
+                    { id: 'analytics', title: 'View Analytics', description: 'Navigate to analytics view', icon: 'bar-chart-3', shortcut: 'A' },
+                    { id: 'dashboard', title: 'Dashboard', description: 'Go back to dashboard', icon: 'layout-dashboard', shortcut: 'D' },
+                    { id: 'theme', title: 'Toggle Theme', description: 'Switch between light and dark mode', icon: 'palette', shortcut: 'T' },
+                    { id: 'export', title: 'Export Data', description: 'Export current view as JSON/CSV', icon: 'download', shortcut: 'E' }
+                ],
 
                 async init() {
-                    console.log('UMS Explorer initializing...');
-                    await initSqlJs();
+                    console.log('🚀 UMS Explorer Pro initializing...');
                     
-                    // Initialize icons
-                    this.$nextTick(() => {
-                        if (window.lucide) {
-                            lucide.createIcons();
-                        }
-                    });
-                    
-                    // Watch for view changes to render charts
-                    this.$watch('currentView', (newView) => {
-                        if (newView === 'analytics') {
-                            this.$nextTick(() => this.renderCharts());
-                        }
+                    try {
+                        // Initialize SQL.js
+                        await initializeSqlJs();
+                        
+                        // Load theme
+                        this.loadTheme();
+                        
+                        // Initialize commands
+                        this.filteredCommands = this.commands;
+                        
+                        // Setup keyboard shortcuts
+                        this.setupKeyboardShortcuts();
+                        
+                        // Initialize icons
                         this.$nextTick(() => {
                             if (window.lucide) {
                                 lucide.createIcons();
                             }
                         });
-                    });
-                    
-                    // Try to auto-detect common database locations
-                    this.tryAutoLoad();
+                        
+                        // Watch for view changes
+                        this.$watch('currentView', (newView) => {
+                            if (newView === 'analytics') {
+                                this.$nextTick(() => this.renderCharts());
+                            }
+                            this.$nextTick(() => {
+                                if (window.lucide) {
+                                    lucide.createIcons();
+                                }
+                            });
+                        });
+                        
+                        // Watch for search
+                        this.$watch('globalSearch', (query) => {
+                            this.updateSearchSuggestions(query);
+                        });
+                        
+                        console.log('✅ UMS Explorer Pro initialized successfully');
+                        
+                        // Try to auto-load database from default location
+                        this.tryAutoLoadDatabase();
+                        
+                    } catch (error) {
+                        console.error('❌ Failed to initialize UMS Explorer:', error);
+                        // Show error state to user
+                        this.isLoading = false;
+                        this.loadingMessage = '';
+                        if (window.Toastify) {
+                            this.showToast('Failed to initialize application. Please refresh and try again.', 'error');
+                        } else {
+                            alert('Failed to initialize application. Please refresh and try again.');
+                        }
+                    }
                 },
 
-                async tryAutoLoad() {
-                    // Show hint about common locations but don't auto-load
-                    // Browser security prevents direct file access
-                    console.log('Ready to load database file');
+                async tryAutoLoadDatabase() {
+                    try {
+                        // Try to fetch the default database file from the server
+                        const defaultPaths = [
+                            '/storage/unified_agent_memory.db',       // Server route (FastAPI static mount)
+                            '../../storage/unified_agent_memory.db',  // Fallback: relative path from tools/ directory
+                            '../storage/unified_agent_memory.db',     // Fallback: one level up
+                            './storage/unified_agent_memory.db',      // Fallback: same level
+                            'storage/unified_agent_memory.db'         // Fallback: direct
+                        ];
+                        
+                        for (const path of defaultPaths) {
+                            try {
+                                console.log(`🔍 Checking for database at: ${path}`);
+                                const response = await fetch(path);
+                                if (response.ok) {
+                                    console.log(`✅ Found database at: ${path}`);
+                                    const arrayBuffer = await response.arrayBuffer();
+                                    const data = new Uint8Array(arrayBuffer);
+                                    
+                                    if (this.db) {
+                                        this.db.close();
+                                    }
+                                    
+                                    this.db = new SQL.Database(data);
+                                    this.db.exec("PRAGMA foreign_keys = ON;");
+                                    this.db.exec("PRAGMA journal_mode = MEMORY;");
+                                    
+                                    // Test the database
+                                    const testResult = this.executeQuery("SELECT count(*) as count FROM sqlite_master WHERE type='table';");
+                                    if (testResult && testResult.length > 0) {
+                                        this.dbLoaded = true;
+                                        await this.loadAllData();
+                                        this.showToast(`Database auto-loaded from ${path} 🎉`, 'success');
+                                        return; // Exit once we've successfully loaded
+                                    }
+                                }
+                            } catch (pathError) {
+                                // Silently continue to next path
+                                console.log(`❌ Database not found at: ${path}`);
+                            }
+                        }
+                        
+                        console.log('ℹ️ No database found at default locations');
+                    } catch (error) {
+                        console.log('ℹ️ Auto-load failed, user will need to select database manually');
+                    }
+                },
+
+                setupKeyboardShortcuts() {
+                    document.addEventListener('keydown', (e) => {
+                        // Command palette
+                        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                            e.preventDefault();
+                            this.showCommandPalette = true;
+                        }
+                        
+                        // Quick navigation (only when not in input)
+                        if (!e.target.matches('input, textarea')) {
+                            switch(e.key.toLowerCase()) {
+                                case 'd':
+                                    this.navigateTo('dashboard');
+                                    break;
+                                case 'w':
+                                    this.navigateTo('workflows');
+                                    break;
+                                case 'm':
+                                    this.navigateTo('memories');
+                                    break;
+                                case 'r':
+                                    this.navigateTo('actions');
+                                    break;
+                                case 'a':
+                                    this.navigateTo('analytics');
+                                    break;
+                                case 't':
+                                    this.toggleTheme();
+                                    break;
+                                case 'escape':
+                                    this.showCommandPalette = false;
+                                    this.showWorkflowModal = false;
+                                    this.showMemoryModal = false;
+                                    this.showActionModal = false;
+                                    break;
+                            }
+                        }
+                    });
+                },
+
+                updateCommands() {
+                    if (!this.commandQuery) {
+                        this.filteredCommands = this.commands;
+                        return;
+                    }
+                    
+                    const query = this.commandQuery.toLowerCase();
+                    this.filteredCommands = this.commands.filter(cmd => 
+                        cmd.title.toLowerCase().includes(query) || 
+                        cmd.description.toLowerCase().includes(query)
+                    );
+                },
+
+                executeCommand(cmd = null) {
+                    if (!cmd && this.filteredCommands.length > 0) {
+                        cmd = this.filteredCommands[0];
+                    }
+                    
+                    if (!cmd) return;
+                    
+                    this.showCommandPalette = false;
+                    this.commandQuery = '';
+                    
+                    switch(cmd.id) {
+                        case 'search':
+                            document.querySelector('input[placeholder*="Search everything"]')?.focus();
+                            break;
+                        case 'workflows':
+                        case 'memories':
+                        case 'actions':
+                        case 'analytics':
+                        case 'dashboard':
+                            this.navigateTo(cmd.id);
+                            break;
+                        case 'theme':
+                            this.toggleTheme();
+                            break;
+                        case 'export':
+                            this.exportCurrentView();
+                            break;
+                    }
                 },
 
                 handleFileDrop(event) {
-                    event.currentTarget.classList.remove('dragover');
+                    event.currentTarget.classList.remove('border-blue-400', 'bg-blue-400/10');
                     const files = event.dataTransfer.files;
                     if (files.length > 0) {
                         this.loadDatabaseFromFile(files[0]);
@@ -709,6 +1501,10 @@
                     this.loadingMessage = `Loading ${file.name}...`;
                     
                     try {
+                        if (!SQL) {
+                            throw new Error('SQL.js not initialized. Please refresh the page and try again.');
+                        }
+                        
                         const arrayBuffer = await file.arrayBuffer();
                         const data = new Uint8Array(arrayBuffer);
                         
@@ -718,7 +1514,7 @@
                         
                         this.db = new SQL.Database(data);
                         
-                        // Set pragmas for better performance
+                        // Set pragmas
                         this.db.exec("PRAGMA foreign_keys = ON;");
                         this.db.exec("PRAGMA journal_mode = MEMORY;");
                         
@@ -727,7 +1523,7 @@
                         if (testResult && testResult.length > 0) {
                             this.dbLoaded = true;
                             await this.loadAllData();
-                            this.showToast('Database loaded successfully!', 'success');
+                            this.showToast('Database loaded successfully! 🎉', 'success');
                         } else {
                             throw new Error('Invalid database file');
                         }
@@ -766,9 +1562,10 @@
 
                 async loadAllData() {
                     this.isProcessing = true;
+                    this.loadingMessage = 'Processing data...';
                     
                     try {
-                        // Load workflows
+                        // Load workflows with counts
                         this.workflows = this.executeQuery(`
                             SELECT w.*, 
                                    COUNT(DISTINCT a.action_id) as action_count,
@@ -811,25 +1608,83 @@
                         // Generate recent activity
                         this.generateRecentActivity();
                         
+                        this.loadingMessage = 'Finalizing...';
+                        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay for better UX
+                        
                     } catch (error) {
                         console.error('Error loading data:', error);
                         this.showToast('Error loading some data from database', 'warning');
                     } finally {
                         this.isProcessing = false;
+                        this.loadingMessage = '';
                     }
+                },
+
+                parseActivityContent(content, type) {
+                    if (!content) return 'No description available';
+                    
+                    // Parse thought content like "Thought [1] (Goal): Established new UMS sub-goal: Overall objectives for workflow a1981ba9"
+                    if (type === 'thought') {
+                        const thoughtMatch = content.match(/Thought \[(\d+)\] \(([^)]+)\): (.+)/);
+                        if (thoughtMatch) {
+                            const [, number, thoughtType, description] = thoughtMatch;
+                            return `${thoughtType} #${number}: ${description}`;
+                        }
+                    }
+                    
+                    // Parse goal content 
+                    if (type === 'goal') {
+                        if (content.includes('Established new UMS sub-goal:')) {
+                            return content.replace('Established new UMS sub-goal:', 'New goal:');
+                        }
+                    }
+                    
+                    // Parse action content
+                    if (type === 'action') {
+                        if (content.includes('tool_use:')) {
+                            const tool = content.split('tool_use:')[1]?.split(' ')[0];
+                            return `Used tool: ${tool}`;
+                        }
+                    }
+                    
+                    // Generic parsing - clean up common patterns
+                    return content
+                        .replace(/workflow [a-f0-9-]+/gi, 'workflow')
+                        .replace(/memory [a-f0-9-]+/gi, 'memory')
+                        .replace(/action [a-f0-9-]+/gi, 'action')
+                        .substring(0, 80) + (content.length > 80 ? '...' : '');
                 },
 
                 generateRecentActivity() {
                     const activities = [];
                     
-                    // Recent memories
+                    // Recent memories with better parsing
                     this.memories.slice(0, 3).forEach(memory => {
+                        let title = 'Memory Created';
+                        let description = this.parseActivityContent(memory.content, 'memory');
+                        let icon = 'brain';
+                        
+                        // Determine memory type for better context
+                        if (memory.memory_type === 'thought') {
+                            title = 'Thought Recorded';
+                            description = this.parseActivityContent(memory.content, 'thought');
+                            icon = 'lightbulb';
+                        } else if (memory.memory_type === 'goal') {
+                            title = 'Goal Established';
+                            description = this.parseActivityContent(memory.content, 'goal');
+                            icon = 'target';
+                        } else if (memory.memory_type === 'plan') {
+                            title = 'Plan Created';
+                            icon = 'map';
+                        }
+                        
                         activities.push({
                             id: memory.memory_id,
-                            title: 'Memory Created',
-                            description: memory.content.substring(0, 60) + '...',
+                            title,
+                            description,
                             timestamp: memory.created_at,
-                            icon: 'brain'
+                            icon,
+                            type: 'memory'
                         });
                     });
                     
@@ -838,9 +1693,38 @@
                         activities.push({
                             id: workflow.workflow_id,
                             title: 'Workflow Updated',
-                            description: workflow.title,
+                            description: workflow.title || workflow.goal || 'Workflow activity',
                             timestamp: workflow.updated_at,
-                            icon: 'git-branch'
+                            icon: 'git-branch',
+                            type: 'workflow'
+                        });
+                    });
+                    
+                    // Recent actions with better descriptions
+                    this.actions.slice(0, 2).forEach(action => {
+                        let title = 'Action Executed';
+                        let description = action.title || action.action_type || 'Action performed';
+                        let icon = 'zap';
+                        
+                        if (action.action_type === 'tool_use') {
+                            title = 'Tool Used';
+                            description = action.tool_name ? `Used ${action.tool_name}` : description;
+                            icon = 'wrench';
+                        } else if (action.action_type === 'reasoning') {
+                            title = 'Analysis Performed';
+                            icon = 'brain';
+                        } else if (action.action_type === 'planning') {
+                            title = 'Planning Session';
+                            icon = 'map';
+                        }
+                        
+                        activities.push({
+                            id: action.action_id,
+                            title,
+                            description: this.parseActivityContent(description, 'action'),
+                            timestamp: action.started_at,
+                            icon,
+                            type: 'action'
                         });
                     });
                     
@@ -848,14 +1732,14 @@
                     this.recentActivity = activities.sort((a, b) => b.timestamp - a.timestamp);
                 },
 
+                navigateTo(view) {
+                    this.currentView = view;
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                },
+
                 get filteredWorkflows() {
                     if (!this.workflowFilter) return this.workflows;
-                    const filter = this.workflowFilter.toLowerCase();
-                    return this.workflows.filter(w => 
-                        w.title?.toLowerCase().includes(filter) ||
-                        w.description?.toLowerCase().includes(filter) ||
-                        w.goal?.toLowerCase().includes(filter)
-                    );
+                    return this.workflows.filter(w => w.status === this.workflowFilter);
                 },
 
                 get filteredMemories() {
@@ -865,16 +1749,85 @@
                         filtered = filtered.filter(m => m.memory_level === this.memoryLevelFilter);
                     }
                     
-                    if (this.memoryFilter) {
-                        const filter = this.memoryFilter.toLowerCase();
+                    if (this.memorySearch) {
+                        const search = this.memorySearch.toLowerCase();
                         filtered = filtered.filter(m => 
-                            m.content?.toLowerCase().includes(filter) ||
-                            m.memory_type?.toLowerCase().includes(filter) ||
-                            m.description?.toLowerCase().includes(filter)
+                            m.content?.toLowerCase().includes(search) ||
+                            m.memory_type?.toLowerCase().includes(search) ||
+                            m.description?.toLowerCase().includes(search)
+                        );
+                    }
+                    
+                    // Apply sorting
+                    filtered.sort((a, b) => {
+                        let aVal = a[this.memorySortBy];
+                        let bVal = b[this.memorySortBy];
+                        
+                        if (this.memorySortBy === 'importance' || this.memorySortBy === 'confidence') {
+                            aVal = parseFloat(aVal) || 0;
+                            bVal = parseFloat(bVal) || 0;
+                        }
+                        
+                        if (this.memorySortOrder === 'desc') {
+                            return bVal > aVal ? 1 : -1;
+                        } else {
+                            return aVal > bVal ? 1 : -1;
+                        }
+                    });
+                    
+                    return filtered;
+                },
+
+                get groupedMemories() {
+                    const groups = new Map();
+                    const filtered = this.filteredMemories;
+                    
+                    // Group memories by workflow_id
+                    filtered.forEach(memory => {
+                        const workflowId = memory.workflow_id || 'standalone';
+                        if (!groups.has(workflowId)) {
+                            const workflow = this.workflows.find(w => w.workflow_id === workflowId);
+                            groups.set(workflowId, {
+                                workflowId,
+                                workflowTitle: workflow?.title || workflow?.goal || (workflowId === 'standalone' ? 'Standalone Memories' : `Workflow ${workflowId.substring(0, 8)}`),
+                                memories: [],
+                                collapsed: false
+                            });
+                        }
+                        groups.get(workflowId).memories.push(memory);
+                    });
+                    
+                    // Convert to array and sort by memory count (descending)
+                    return Array.from(groups.values()).sort((a, b) => b.memories.length - a.memories.length);
+                },
+
+                get filteredActions() {
+                    let filtered = this.actions;
+                    
+                    if (this.actionStatusFilter) {
+                        filtered = filtered.filter(a => a.status === this.actionStatusFilter);
+                    }
+                    
+                    if (this.actionTypeFilter) {
+                        filtered = filtered.filter(a => a.action_type === this.actionTypeFilter);
+                    }
+                    
+                    if (this.actionSearch) {
+                        const search = this.actionSearch.toLowerCase();
+                        filtered = filtered.filter(a => 
+                            a.title?.toLowerCase().includes(search) ||
+                            a.action_type?.toLowerCase().includes(search) ||
+                            a.tool_name?.toLowerCase().includes(search) ||
+                            a.reasoning?.toLowerCase().includes(search) ||
+                            a.summary?.toLowerCase().includes(search)
                         );
                     }
                     
                     return filtered;
+                },
+
+                loadMore() {
+                    this.currentPage++;
                 },
 
                 selectWorkflow(workflow) {
@@ -887,50 +1840,143 @@
                     this.showMemoryModal = true;
                 },
 
-                performSearch() {
-                    if (!this.searchQuery) return;
+                selectAction(action) {
+                    this.selectedAction = action;
+                    this.showActionModal = true;
+                },
+
+                performGlobalSearch() {
+                    // Implement global search logic
+                    console.log('Performing global search:', this.globalSearch);
+                },
+
+                updateSearchSuggestions(query) {
+                    if (!query || query.length < 2) {
+                        this.searchSuggestions = [];
+                        return;
+                    }
                     
-                    // Simple global search implementation
-                    console.log('Searching for:', this.searchQuery);
-                    // Could implement more sophisticated search here
+                    const suggestions = [];
+                    const search = query.toLowerCase();
+                    
+                    // Search workflows
+                    this.workflows.forEach(w => {
+                        if (w.title?.toLowerCase().includes(search)) {
+                            suggestions.push({
+                                id: w.workflow_id,
+                                title: w.title,
+                                type: 'Workflow',
+                                icon: 'git-branch'
+                            });
+                        }
+                    });
+                    
+                    // Search memories
+                    this.memories.forEach(m => {
+                        if (m.content?.toLowerCase().includes(search)) {
+                            suggestions.push({
+                                id: m.memory_id,
+                                title: m.content.substring(0, 50) + '...',
+                                type: 'Memory',
+                                icon: 'brain'
+                            });
+                        }
+                    });
+                    
+                    this.searchSuggestions = suggestions.slice(0, 10);
+                },
+
+                selectSearchSuggestion(suggestion) {
+                    this.showSearchSuggestions = false;
+                    this.globalSearch = '';
+                    
+                    if (suggestion.type === 'Workflow') {
+                        const workflow = this.workflows.find(w => w.workflow_id === suggestion.id);
+                        if (workflow) this.selectWorkflow(workflow);
+                    } else if (suggestion.type === 'Memory') {
+                        const memory = this.memories.find(m => m.memory_id === suggestion.id);
+                        if (memory) this.selectMemory(memory);
+                    }
                 },
 
                 showToast(message, type = 'info') {
-                    this.toast = { show: true, message, type };
-                    setTimeout(() => {
-                        this.toast.show = false;
-                    }, 4000);
-                },
-
-                getToastIcon(type) {
-                    const icons = {
-                        success: 'check-circle',
-                        error: 'alert-octagon',
-                        warning: 'alert-triangle',
-                        info: 'info'
+                    const colors = {
+                        success: '#10b981',
+                        error: '#ef4444',
+                        warning: '#f59e0b',
+                        info: '#3b82f6'
                     };
-                    return icons[type] || 'info';
+                    
+                    Toastify({
+                        text: message,
+                        duration: 4000,
+                        gravity: "top",
+                        position: "right",
+                        style: {
+                            background: colors[type]
+                        },
+                        className: type,
+                        close: true
+                    }).showToast();
                 },
 
                 getWorkflowStatusClass(status) {
                     const classes = {
-                        active: 'badge-success',
-                        completed: 'badge-primary',
-                        paused: 'badge-warning',
-                        failed: 'badge-error',
-                        abandoned: 'badge-ghost'
+                        active: 'bg-green-500/20 text-green-400',
+                        completed: 'bg-blue-500/20 text-blue-400',
+                        paused: 'bg-yellow-500/20 text-yellow-400',
+                        failed: 'bg-red-500/20 text-red-400',
+                        abandoned: 'bg-gray-500/20 text-gray-400'
                     };
-                    return classes[status] || 'badge-neutral';
+                    return classes[status] || 'bg-gray-500/20 text-gray-400';
                 },
 
                 getMemoryLevelClass(level) {
                     const classes = {
-                        working: 'badge-warning',
-                        episodic: 'badge-info',
-                        semantic: 'badge-success',
-                        procedural: 'badge-secondary'
+                        working: 'bg-yellow-500/20 text-yellow-400',
+                        episodic: 'bg-blue-500/20 text-blue-400',
+                        semantic: 'bg-green-500/20 text-green-400',
+                        procedural: 'bg-purple-500/20 text-purple-400'
                     };
-                    return classes[level] || 'badge-neutral';
+                    return classes[level] || 'bg-gray-500/20 text-gray-400';
+                },
+
+                getActionStatusClass(status) {
+                    const classes = {
+                        completed: 'bg-green-500/20 text-green-400',
+                        in_progress: 'bg-blue-500/20 text-blue-400',
+                        failed: 'bg-red-500/20 text-red-400',
+                        planned: 'bg-yellow-500/20 text-yellow-400',
+                        skipped: 'bg-gray-500/20 text-gray-400'
+                    };
+                    return classes[status] || 'bg-gray-500/20 text-gray-400';
+                },
+
+                getActionIcon(actionType) {
+                    const icons = {
+                        tool_use: 'wrench',
+                        reasoning: 'brain',
+                        planning: 'map',
+                        analysis: 'search',
+                        research: 'book-open',
+                        decision: 'check-circle',
+                        observation: 'eye',
+                        reflection: 'mirror',
+                        summary: 'file-text',
+                        consolidation: 'layers',
+                        memory_operation: 'database'
+                    };
+                    return icons[actionType] || 'zap';
+                },
+
+                formatDuration(startTime, endTime) {
+                    if (!startTime) return 'N/A';
+                    if (!endTime) return 'In progress';
+                    
+                    const duration = endTime - startTime;
+                    if (duration < 60) return `${Math.round(duration)}s`;
+                    if (duration < 3600) return `${Math.round(duration / 60)}m`;
+                    return `${Math.round(duration / 3600)}h`;
                 },
 
                 formatDate(timestamp) {
@@ -954,27 +2000,29 @@
                     return Math.floor(diff / day) + 'd ago';
                 },
 
-                setTheme(theme) {
-                    document.documentElement.setAttribute('data-theme', theme);
-                    localStorage.setItem('ums-explorer-theme', theme);
+                loadTheme() {
+                    const savedTheme = localStorage.getItem('ums-explorer-theme') || 'dark';
+                    this.theme = savedTheme;
+                    document.documentElement.setAttribute('data-theme', savedTheme);
+                },
+
+                toggleTheme() {
+                    this.theme = this.theme === 'dark' ? 'light' : 'dark';
+                    document.documentElement.setAttribute('data-theme', this.theme);
+                    localStorage.setItem('ums-explorer-theme', this.theme);
+                    this.showToast(`Switched to ${this.theme} mode`, 'info');
                 },
 
                 async renderCharts() {
                     if (!this.dbLoaded || !window.Chart) return;
                     
+                    await this.$nextTick();
+                    
                     try {
-                        // Memory Level Distribution
                         await this.renderMemoryLevelChart();
-                        
-                        // Memory Type Distribution  
                         await this.renderMemoryTypeChart();
-                        
-                        // Workflow Status Distribution
                         await this.renderWorkflowStatusChart();
-                        
-                        // Activity Timeline
                         await this.renderActivityChart();
-                        
                     } catch (error) {
                         console.error('Error rendering charts:', error);
                     }
@@ -984,22 +2032,28 @@
                     const canvas = this.$refs.memoryLevelChart;
                     if (!canvas) return;
                     
+                    // Set fixed canvas size
+                    canvas.height = 256;
+                    canvas.style.height = '256px';
+                    
                     const levels = {};
                     this.memories.forEach(m => {
                         levels[m.memory_level] = (levels[m.memory_level] || 0) + 1;
                     });
                     
-                    if (this.memoryLevelChart) {
-                        this.memoryLevelChart.destroy();
+                    if (this.charts.memoryLevel) {
+                        this.charts.memoryLevel.destroy();
+                        this.charts.memoryLevel = null;
                     }
                     
-                    this.memoryLevelChart = new Chart(canvas, {
+                    this.charts.memoryLevel = new Chart(canvas, {
                         type: 'doughnut',
                         data: {
                             labels: Object.keys(levels),
                             datasets: [{
                                 data: Object.values(levels),
-                                backgroundColor: ['#fbbf24', '#3b82f6', '#10b981', '#8b5cf6']
+                                backgroundColor: ['#f59e0b', '#3b82f6', '#10b981', '#8b5cf6'],
+                                borderWidth: 0
                             }]
                         },
                         options: {
@@ -1007,7 +2061,12 @@
                             maintainAspectRatio: false,
                             plugins: {
                                 legend: {
-                                    position: 'bottom'
+                                    position: 'bottom',
+                                    labels: {
+                                        color: '#e5e7eb',
+                                        usePointStyle: true,
+                                        padding: 20
+                                    }
                                 }
                             }
                         }
@@ -1018,28 +2077,33 @@
                     const canvas = this.$refs.memoryTypeChart;
                     if (!canvas) return;
                     
+                    // Set fixed canvas size
+                    canvas.height = 256;
+                    canvas.style.height = '256px';
+                    
                     const types = {};
                     this.memories.forEach(m => {
                         types[m.memory_type] = (types[m.memory_type] || 0) + 1;
                     });
                     
-                    if (this.memoryTypeChart) {
-                        this.memoryTypeChart.destroy();
+                    if (this.charts.memoryType) {
+                        this.charts.memoryType.destroy();
+                        this.charts.memoryType = null;
                     }
                     
-                    // Get top 8 types
                     const sortedTypes = Object.entries(types)
                         .sort((a, b) => b[1] - a[1])
                         .slice(0, 8);
                     
-                    this.memoryTypeChart = new Chart(canvas, {
+                    this.charts.memoryType = new Chart(canvas, {
                         type: 'bar',
                         data: {
                             labels: sortedTypes.map(([type]) => type),
                             datasets: [{
                                 label: 'Count',
                                 data: sortedTypes.map(([, count]) => count),
-                                backgroundColor: '#3b82f6'
+                                backgroundColor: '#3b82f6',
+                                borderRadius: 8
                             }]
                         },
                         options: {
@@ -1053,7 +2117,19 @@
                             scales: {
                                 x: {
                                     ticks: {
+                                        color: '#9ca3af',
                                         maxRotation: 45
+                                    },
+                                    grid: {
+                                        display: false
+                                    }
+                                },
+                                y: {
+                                    ticks: {
+                                        color: '#9ca3af'
+                                    },
+                                    grid: {
+                                        color: 'rgba(156, 163, 175, 0.1)'
                                     }
                                 }
                             }
@@ -1065,22 +2141,28 @@
                     const canvas = this.$refs.workflowStatusChart;
                     if (!canvas) return;
                     
+                    // Set fixed canvas size
+                    canvas.height = 256;
+                    canvas.style.height = '256px';
+                    
                     const statuses = {};
                     this.workflows.forEach(w => {
                         statuses[w.status] = (statuses[w.status] || 0) + 1;
                     });
                     
-                    if (this.workflowStatusChart) {
-                        this.workflowStatusChart.destroy();
+                    if (this.charts.workflowStatus) {
+                        this.charts.workflowStatus.destroy();
+                        this.charts.workflowStatus = null;
                     }
                     
-                    this.workflowStatusChart = new Chart(canvas, {
+                    this.charts.workflowStatus = new Chart(canvas, {
                         type: 'pie',
                         data: {
                             labels: Object.keys(statuses),
                             datasets: [{
                                 data: Object.values(statuses),
-                                backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#6b7280']
+                                backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#6b7280'],
+                                borderWidth: 0
                             }]
                         },
                         options: {
@@ -1088,7 +2170,12 @@
                             maintainAspectRatio: false,
                             plugins: {
                                 legend: {
-                                    position: 'bottom'
+                                    position: 'bottom',
+                                    labels: {
+                                        color: '#e5e7eb',
+                                        usePointStyle: true,
+                                        padding: 20
+                                    }
                                 }
                             }
                         }
@@ -1099,7 +2186,11 @@
                     const canvas = this.$refs.activityChart;
                     if (!canvas) return;
                     
-                    // Create activity timeline by day
+                    // Set fixed canvas size
+                    canvas.height = 256;
+                    canvas.style.height = '256px';
+                    
+                    // Create activity timeline
                     const now = new Date();
                     const days = [];
                     const activityCounts = [];
@@ -1122,11 +2213,12 @@
                         activityCounts.push(count);
                     }
                     
-                    if (this.activityChart) {
-                        this.activityChart.destroy();
+                    if (this.charts.activity) {
+                        this.charts.activity.destroy();
+                        this.charts.activity = null;
                     }
                     
-                    this.activityChart = new Chart(canvas, {
+                    this.charts.activity = new Chart(canvas, {
                         type: 'line',
                         data: {
                             labels: days,
@@ -1136,7 +2228,11 @@
                                 borderColor: '#10b981',
                                 backgroundColor: 'rgba(16, 185, 129, 0.1)',
                                 fill: true,
-                                tension: 0.4
+                                tension: 0.4,
+                                pointBackgroundColor: '#10b981',
+                                pointBorderColor: '#10b981',
+                                pointRadius: 6,
+                                pointHoverRadius: 8
                             }]
                         },
                         options: {
@@ -1148,22 +2244,39 @@
                                 }
                             },
                             scales: {
+                                x: {
+                                    ticks: {
+                                        color: '#9ca3af'
+                                    },
+                                    grid: {
+                                        display: false
+                                    }
+                                },
                                 y: {
                                     beginAtZero: true,
                                     ticks: {
+                                        color: '#9ca3af',
                                         stepSize: 1
+                                    },
+                                    grid: {
+                                        color: 'rgba(156, 163, 175, 0.1)'
                                     }
                                 }
                             }
                         }
                     });
+                },
+
+                exportCurrentView() {
+                    // Implement export functionality
+                    this.showToast('Export functionality coming soon!', 'info');
                 }
             }
         }
 
         // Initialize when DOM is ready
         document.addEventListener('DOMContentLoaded', () => {
-            // Load saved theme
+            // Load theme
             const savedTheme = localStorage.getItem('ums-explorer-theme') || 'dark';
             document.documentElement.setAttribute('data-theme', savedTheme);
         });

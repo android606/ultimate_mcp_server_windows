@@ -7,6 +7,7 @@ the application with minimal error outputs during shutdown.
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from functools import partial
@@ -91,7 +92,6 @@ async def _handle_shutdown(sig_name):
         # On second SIGINT, just exit immediately with os._exit
         # This is more forceful than sys.exit and bypasses any pending async operations
         print("\n[Emergency Exit] Forcing immediate shutdown...", file=_original_stderr or sys.stderr)
-        import os
         os._exit(1)  # Force exit without cleanup
         return  # This line won't execute, but keeping for clarity
         
@@ -114,10 +114,16 @@ async def _handle_shutdown(sig_name):
     except Exception as e:
         logger.error(f"Error during graceful shutdown: {e}")
     finally:
-        # Use a cleaner approach to exit in async context
-        # This will still use our custom excepthook for QuietExit
-        loop = asyncio.get_running_loop()
-        loop.call_soon(lambda: sys.exit(0))
+        # Force exit the process - more reliable than loop.call_soon
+        try:
+            loop = asyncio.get_running_loop()
+            # Schedule an immediate exit that can't be ignored
+            loop.call_soon_threadsafe(lambda: os._exit(0))
+            # Also schedule a backup exit in case the above doesn't work
+            loop.call_later(0.1, lambda: os._exit(0))
+        except:
+            # If we can't schedule through the loop, force exit immediately
+            os._exit(0)
 
 
 def setup_signal_handlers(loop: Optional[asyncio.AbstractEventLoop] = None) -> None:

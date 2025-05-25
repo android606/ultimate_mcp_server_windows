@@ -22,9 +22,6 @@ from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.state_store import StateStore
 from ultimate_mcp_server.graceful_shutdown import (
     handle_quiet_exit,
-    redirect_stderr_during_shutdown,
-    register_shutdown_handler,
-    setup_signal_handlers,
 )
 from ultimate_mcp_server.tools.smart_browser import (
     _ensure_initialized as smart_browser_ensure_initialized,
@@ -2054,6 +2051,23 @@ def create_server() -> FastAPI:
         allow_headers=["*"],
     )
     
+    # Add static file serving for UMS Explorer and database access
+    from pathlib import Path
+
+    from fastapi.staticfiles import StaticFiles
+    
+    # Get the project root directory (where storage/ is located)
+    project_root = Path(__file__).parent.parent.parent
+    tools_dir = project_root / "ultimate_mcp_server" / "tools"
+    storage_dir = project_root / "storage"
+    
+    # Mount static files for tools (UMS Explorer)
+    app.mount("/tools", StaticFiles(directory=str(tools_dir)), name="tools")
+    
+    # Mount storage directory for database access
+    if storage_dir.exists():
+        app.mount("/storage", StaticFiles(directory=str(storage_dir)), name="storage")
+    
     # Add health check endpoint
     @app.get("/health")
     async def health():
@@ -2081,6 +2095,18 @@ def create_server() -> FastAPI:
             "status": "ok",
             "version": "0.1.0",
         }
+    
+    # Add UMS Explorer endpoint
+    @app.get("/ums-explorer")
+    async def ums_explorer():
+        """
+        UMS Explorer web interface.
+        
+        Redirects to the UMS Explorer HTML interface for viewing and analyzing
+        the Unified Memory System database through a web browser.
+        """
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/tools/ums_explorer.html")
     
     # Store the app instance
     _server_app = app
@@ -2267,31 +2293,6 @@ def start_server(
         if os.path.exists("mcp_tool_context_estimator.py"):
             threading.Thread(target=run_tool_context_estimator, daemon=True).start()
         
-        # Get the SSE app from FastMCP
-        app = _gateway_instance.mcp.sse_app()
-        
-        # Add root endpoint to the SSE app for MCP discovery
-        from fastapi.responses import JSONResponse
-        
-        async def root_endpoint(request):
-            """Root endpoint for MCP server discovery"""
-            response = JSONResponse({
-                "type": "mcp-server",
-                "version": "1.0.0",
-                "transport": "sse",
-                "endpoint": "/sse"
-            })
-            response.headers["X-MCP-Server"] = "true"
-            response.headers["X-MCP-Version"] = "1.0.0"
-            response.headers["X-MCP-Transport"] = "sse"
-            return response
-            
-        # Add the root endpoint to the app using add_route
-        app.add_route("/", root_endpoint)
-        
-        # Log SSE endpoint
-        print(f"SSE endpoint available at: http://{server_host}:{server_port}/sse", file=sys.stderr)
-        
         # Setup graceful shutdown
         logger = logging.getLogger("ultimate_mcp_server.server")
         
@@ -2345,35 +2346,63 @@ def start_server(
                 # This is expected - we're just giving a short grace period
                 pass
         
-        # Register our shutdown handler
-        register_shutdown_handler(cleanup_resources)
+        # Get the SSE app from FastMCP
+        app = _gateway_instance.mcp.sse_app()
         
-        # Define a custom Uvicorn server configuration with our signal handling
-        class GracefulUvicornServer(uvicorn.Server):
-            """Uvicorn server with enhanced signal handling for clean shutdown"""
+        # Add cleanup as FastAPI shutdown event instead of signal handler override
+        @app.on_event("shutdown")
+        async def shutdown_event():
+            """FastAPI shutdown event handler"""
+            logger.info("FastAPI shutdown event triggered")
+            await cleanup_resources()
+        
+        # Add static file serving for UMS Explorer and database access to SSE app
+        from pathlib import Path
+
+        from fastapi.staticfiles import StaticFiles
+        
+        # Get the project root directory (where storage/ is located)
+        project_root = Path(__file__).parent.parent.parent
+        tools_dir = project_root / "ultimate_mcp_server" / "tools"
+        storage_dir = project_root / "storage"
+        
+        # Mount static files for tools (UMS Explorer)
+        app.mount("/tools", StaticFiles(directory=str(tools_dir)), name="tools")
+        
+        # Mount storage directory for database access
+        if storage_dir.exists():
+            app.mount("/storage", StaticFiles(directory=str(storage_dir)), name="storage")
+        
+        # Add UMS Explorer endpoint to SSE app
+        @app.get("/ums-explorer")
+        async def ums_explorer():
+            """UMS Explorer web interface."""
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url="/tools/ums_explorer.html")
+        
+        # Add root endpoint to the SSE app for MCP discovery
+        from fastapi.responses import JSONResponse
+        
+        async def root_endpoint(request):
+            """Root endpoint for MCP server discovery"""
+            response = JSONResponse({
+                "type": "mcp-server",
+                "version": "1.0.0",
+                "transport": "sse",
+                "endpoint": "/sse"
+            })
+            response.headers["X-MCP-Server"] = "true"
+            response.headers["X-MCP-Version"] = "1.0.0"
+            response.headers["X-MCP-Transport"] = "sse"
+            return response
             
-            def run(self, sockets=None):
-                self.config.setup_event_loop()
-                loop = asyncio.get_event_loop()
-                
-                # Set up signal handlers with our custom logic
-                setup_signal_handlers(loop)
-                
-                                # Redirect stderr during shutdown to reduce error spam
-                register_shutdown_handler(redirect_stderr_during_shutdown)
-                
-                # Run the server with better exception handling
-                try:
-                    return loop.run_until_complete(self.serve(sockets=sockets))
-                except RuntimeError as e:
-                    # Handle "Event loop stopped before Future completed" gracefully
-                    if "Event loop stopped before Future completed" in str(e):
-                        logger.warning("Event loop stopped during shutdown - this is expected during forced exit")
-                        return None
-                    # Re-raise other runtime errors
-                    raise
+        # Add the root endpoint to the app using add_route
+        app.add_route("/", root_endpoint)
         
-        # Create and run the server with our custom configuration
+        # Log SSE endpoint
+        print(f"SSE endpoint available at: http://{server_host}:{server_port}/sse", file=sys.stderr)
+        
+        # Use standard Uvicorn server (let it handle signals properly)
         config = uvicorn.Config(
             app,
             host=server_host,
@@ -2381,25 +2410,76 @@ def start_server(
             log_config=LOGGING_CONFIG,
             log_level=final_log_level.lower(),
         )
-        server = GracefulUvicornServer(config=config)
+        server = uvicorn.Server(config)
         server.run()
     else: # stdio mode
         # --- Stdio Mode Execution ---
         logger.info("Running in stdio mode...")
-        # Setup signal handling for the current event loop in stdio mode
-        try:
-             loop = asyncio.get_event_loop()
-             setup_signal_handlers(loop)
-             register_shutdown_handler(cleanup_resources)
-             register_shutdown_handler(redirect_stderr_during_shutdown)
-        except RuntimeError:
-             logger.warning("Could not get event loop for stdio signal handler setup. Graceful shutdown might be affected.")
-
+        
+        # Create a shutdown handler for stdio mode cleanup
+        async def cleanup_resources():
+            """Performs cleanup for various components during shutdown."""
+            
+            # First attempt quick tasks then long tasks with timeouts
+            logger.info("Cleaning up Gateway instance and associated resources...")
+            
+            # Shutdown SQL Tools with timeout
+            logger.info("Shutting down SQL Tools module...")
+            try:
+                # Add a timeout to SQL tools shutdown
+                await asyncio.wait_for(shutdown_sql_tools(), timeout=5.0)
+                logger.info("SQL Tools module shutdown complete.")
+            except asyncio.TimeoutError:
+                logger.warning("SQL Tools shutdown timed out after 5 seconds")
+            except Exception as e:
+                logger.error(f"Error during SQL Tools shutdown: {e}")
+            
+            # Shutdown Connection Manager with timeout
+            logger.info("Shutting down Connection Manager...")
+            try:
+                # Get connection manager from global state
+                from ultimate_mcp_server.tools.sql_databases import _connection_manager
+                await asyncio.wait_for(_connection_manager.shutdown(), timeout=3.0)
+                logger.info("Connection Manager shutdown complete.")
+            except asyncio.TimeoutError:
+                logger.warning("Connection Manager shutdown timed out after 3 seconds")
+            except Exception as e:
+                logger.error(f"Error during Connection Manager shutdown: {e}")
+            
+            # Shutdown Smart Browser with timeout
+            logger.info("Initiating explicit Smart Browser shutdown...")
+            try:
+                await asyncio.wait_for(smart_browser_shutdown(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning("Smart Browser shutdown timed out after 10 seconds!")
+            except Exception as e:
+                logger.error(f"Error during Smart Browser shutdown: {e}")
+        
         # Configure custom excepthook for clean exits on unhandled exceptions
         handle_quiet_exit()
-
-        # Run the FastMCP stdio loop
-        _gateway_instance.mcp.run() # Blocks here
+        
+        # Add shutdown handler to the MCP server's lifespan context
+        # The Gateway's _server_lifespan method will handle cleanup on exit
+        
+        try:
+            # Run the FastMCP stdio loop - this will block until interrupted
+            _gateway_instance.mcp.run()
+        except KeyboardInterrupt:
+            logger.info("Received keyboard interrupt in stdio mode")
+            # Run cleanup manually for stdio mode since lifespan might not trigger
+            try:
+                asyncio.run(cleanup_resources())
+            except Exception as e:
+                logger.error(f"Error during stdio cleanup: {e}")
+        except Exception as e:
+            logger.error(f"Error in stdio mode: {e}")
+            # Run cleanup on any error
+            try:
+                asyncio.run(cleanup_resources())
+            except Exception as cleanup_e:
+                logger.error(f"Error during error cleanup: {cleanup_e}")
+        finally:
+            logger.info("Stdio mode exiting")
         # --- End Stdio Mode ---
 
     # --- Post-Server Exit ---
