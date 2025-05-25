@@ -67,6 +67,11 @@
     <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
     <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
     
+    <!-- Tippy.js for beautiful tooltips -->
+    <script src="https://unpkg.com/@popperjs/core@2"></script>
+    <script src="https://unpkg.com/tippy.js@6"></script>
+    <link rel="stylesheet" href="https://unpkg.com/tippy.js@6/animations/scale.css">
+    
     <!-- Sortable.js for drag & drop -->
     <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
     
@@ -415,6 +420,126 @@
             transform: translateZ(0);
             backface-visibility: hidden;
             perspective: 1000;
+        }
+
+        /* Artifact Gallery Masonry Grid */
+        .masonry-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1.5rem;
+            align-items: start;
+        }
+        
+        .masonry-item {
+            break-inside: avoid;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            will-change: transform;
+        }
+        
+        .masonry-item:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+        }
+        
+        @media (max-width: 768px) {
+            .masonry-grid {
+                grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+                gap: 1rem;
+            }
+        }
+        
+        @media (max-width: 640px) {
+            .masonry-grid {
+                grid-template-columns: 1fr;
+                gap: 1rem;
+            }
+        }
+        
+        /* Artifact type colors */
+        .type-image { background-color: #10b981; }
+        .type-document { background-color: #3b82f6; }
+        .type-code { background-color: #10b981; }
+        .type-data { background-color: #8b5cf6; }
+        .type-model { background-color: #f59e0b; }
+        .type-default { background-color: #6b7280; }
+        
+        /* Line clamp utilities */
+        .line-clamp-1 {
+            display: -webkit-box;
+            -webkit-line-clamp: 1;
+            line-clamp: 1;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        
+        .line-clamp-2 {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        
+        .line-clamp-3 {
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            line-clamp: 3;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        
+        /* Artifact preview animations */
+        .artifact-preview {
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .artifact-preview::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s ease;
+        }
+        
+        .artifact-preview:hover::before {
+            left: 100%;
+        }
+        
+        /* Image loading states */
+        .image-loading {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: shimmer 1.5s infinite;
+        }
+        
+        [data-theme="dark"] .image-loading {
+            background: linear-gradient(90deg, #2a2a2a 25%, #1a1a1a 50%, #2a2a2a 75%);
+            background-size: 200% 100%;
+        }
+        
+        /* Artifact relationship indicators */
+        .relationship-indicator {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, 
+                transparent 0%, 
+                var(--color-primary) 20%, 
+                var(--color-secondary) 50%, 
+                var(--color-primary) 80%, 
+                transparent 100%);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .masonry-item:hover .relationship-indicator {
+            opacity: 1;
         }
         
         /* Thought Chain Flow Diagram Styles */
@@ -864,6 +989,42 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        /* Custom Tippy.js styles */
+        .tippy-box[data-theme~='custom'] {
+            background: linear-gradient(135deg, rgba(30, 30, 46, 0.95) 0%, rgba(49, 46, 129, 0.95) 100%);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            font-size: 14px;
+            max-width: 350px;
+        }
+        
+        .tippy-box[data-theme~='custom'] .tippy-content {
+            padding: 20px;
+            color: #ffffff;
+            line-height: 1.5;
+        }
+        
+        .tippy-box[data-theme~='custom'] .tippy-arrow {
+            color: rgba(30, 30, 46, 0.95);
+        }
+        
+        .tooltip-content h4 {
+            font-size: 16px;
+            margin-bottom: 8px;
+        }
+        
+        .tooltip-content p {
+            margin-bottom: 8px;
+            font-size: 13px;
+            opacity: 0.9;
+        }
+        
+        .tooltip-content strong {
+            color: #e2e8f0;
+        }
     </style>
 </head>
 <body class="min-h-screen transition-colors duration-300" x-data="umsExplorer()" x-cloak 
@@ -914,18 +1075,18 @@
             <div class="flex items-center justify-between">
                 <!-- Logo and breadcrumbs -->
                 <div class="flex items-center space-x-4">
-                    <div class="flex items-center space-x-3">
+                    <div class="flex items-center space-x-3 cursor-pointer group" @click="navigateTo('dashboard')">
                         <div class="relative">
-                            <div class="w-10 h-10 rounded-xl bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center">
+                            <div class="w-10 h-10 rounded-xl bg-gradient-to-r from-blue-500 to-purple-600 flex items-center justify-center group-hover:scale-105 transition-transform">
                                 <i data-lucide="brain-circuit" class="w-6 h-6"></i>
                             </div>
                             <div x-show="isProcessing" class="absolute inset-0 rounded-xl border-2 border-blue-400 animate-pulse-ring"></div>
                         </div>
                         <div>
-                            <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+                            <h1 class="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent group-hover:from-blue-300 group-hover:to-purple-300 transition-colors">
                                 UMS Explorer
                             </h1>
-                            <p class="text-xs text-gray-400">Unified Memory System</p>
+                            <p class="text-xs text-gray-400 group-hover:text-gray-300 transition-colors">Unified Memory System</p>
                         </div>
                     </div>
                     
@@ -1117,7 +1278,9 @@
 
                          <!-- Navigation cards -->
              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('workflows')">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('workflows')" 
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-purple-400 mb-2'>🔄 Workflows</h4><p>Explore and analyze AI agent execution workflows - complete journeys from start to finish.</p><p><strong>What it does:</strong> Shows step-by-step progression of AI tasks, including planning, execution, and completion phases.</p><p><strong>Why it's useful:</strong> Understand how your AI agents solve problems, identify bottlenecks, and optimize processes.</p><p><strong>Best used for:</strong> Debugging agent behavior, performance analysis, and workflow optimization.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="git-branch" class="w-6 h-6 text-purple-400"></i>
@@ -1133,7 +1296,9 @@
                      </div>
                  </div>
                  
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('memories')">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('memories')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-blue-400 mb-2'>🧠 Memory System</h4><p>Dive deep into the hierarchical memory structure that powers AI cognition and learning.</p><p><strong>What it does:</strong> Displays episodic, semantic, and working memory with relationships and retrieval patterns.</p><p><strong>Why it's useful:</strong> Understand memory formation, recall mechanisms, and knowledge organization.</p><p><strong>Best used for:</strong> Memory debugging, knowledge base analysis, and cognitive architecture understanding.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="brain" class="w-6 h-6 text-blue-400"></i>
@@ -1149,7 +1314,9 @@
                      </div>
                  </div>
                  
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('actions')">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('actions')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-orange-400 mb-2'>⚡ Actions</h4><p>Review and analyze all executed actions with detailed execution metrics and outcomes.</p><p><strong>What it does:</strong> Provides comprehensive logs of tool usage, execution times, success rates, and error analysis.</p><p><strong>Why it's useful:</strong> Track performance, identify slow operations, and debug failed actions.</p><p><strong>Best used for:</strong> Performance optimization, error investigation, and tool usage analysis.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-orange-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="zap" class="w-6 h-6 text-orange-400"></i>
@@ -1165,7 +1332,9 @@
                      </div>
                  </div>
                  
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('goals')">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('goals')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-yellow-400 mb-2'>🎯 Goal Hierarchy</h4><p>Interactive tree visualization of goals, sub-goals, and their dependencies with progress tracking.</p><p><strong>What it does:</strong> Shows goal decomposition, priority levels, completion status, and blocking relationships.</p><p><strong>Why it's useful:</strong> Understand goal planning, track progress, and identify bottlenecks in task completion.</p><p><strong>Best used for:</strong> Project management, goal alignment, and progress monitoring.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-yellow-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="target" class="w-6 h-6 text-yellow-400"></i>
@@ -1181,7 +1350,9 @@
                      </div>
                  </div>
                  
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('analytics')">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('analytics')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-green-400 mb-2'>📊 Analytics</h4><p>Visualize patterns, insights, and trends across all system components with interactive charts.</p><p><strong>What it does:</strong> Generates comprehensive reports on performance, usage patterns, and behavioral trends.</p><p><strong>Why it's useful:</strong> Data-driven decision making, pattern recognition, and system optimization.</p><p><strong>Best used for:</strong> Performance analysis, trend identification, and strategic planning.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="bar-chart-3" class="w-6 h-6 text-green-400"></i>
@@ -1200,7 +1371,9 @@
 
              <!-- Second row of navigation cards -->
              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('graph')">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('graph')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-cyan-400 mb-2'>🌐 Memory Graph</h4><p>Interactive network visualization showing relationships between memories, concepts, and entities.</p><p><strong>What it does:</strong> Creates force-directed graphs with clustering, filtering, and path-finding capabilities.</p><p><strong>Why it's useful:</strong> Discover hidden connections, understand knowledge structure, and explore semantic relationships.</p><p><strong>Best used for:</strong> Knowledge exploration, relationship discovery, and semantic analysis.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-cyan-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="network" class="w-6 h-6 text-cyan-400"></i>
@@ -1216,7 +1389,9 @@
                      </div>
                  </div>
                  
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('thought-chains')">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('thought-chains')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-indigo-400 mb-2'>🔗 Thought Chains</h4><p>Visualize reasoning flow diagrams showing how thoughts connect and evolve over time.</p><p><strong>What it does:</strong> Maps logical progression of ideas, decision points, and reasoning branches.</p><p><strong>Why it's useful:</strong> Understand AI reasoning processes, identify logical gaps, and trace decision paths.</p><p><strong>Best used for:</strong> Reasoning analysis, logic debugging, and cognitive process understanding.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="git-branch-plus" class="w-6 h-6 text-indigo-400"></i>
@@ -1232,7 +1407,9 @@
                      </div>
                  </div>
                  
-                                     <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('semantic-search')">
+                                     <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('semantic-search')"
+                         data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-rose-400 mb-2'>🔍 Semantic Search</h4><p>Vector similarity search with intelligent clustering and contextual understanding.</p><p><strong>What it does:</strong> Uses AI embeddings to find conceptually similar content, not just keyword matches.</p><p><strong>Why it's useful:</strong> Discover related information, find implicit connections, and search by meaning rather than exact terms.</p><p><strong>Best used for:</strong> Research, content discovery, and exploring thematic relationships.</p></div>"
+                         data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                         <div class="flex items-center mb-4">
                             <div class="w-12 h-12 bg-rose-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                                 <i data-lucide="search" class="w-6 h-6 text-rose-400"></i>
@@ -1248,7 +1425,9 @@
                         </div>
                     </div>
                     
-                    <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('working-memory')">
+                    <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('working-memory')"
+                         data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-amber-400 mb-2'>💾 Working Memory</h4><p>Real-time memory management with live optimization and interactive controls.</p><p><strong>What it does:</strong> Monitors active memory usage, provides manual memory management, and shows memory loading/unloading in real-time.</p><p><strong>Why it's useful:</strong> Optimize memory usage, prevent memory overload, and fine-tune cognitive performance.</p><p><strong>Best used for:</strong> Performance tuning, memory debugging, and real-time system optimization.</p></div>"
+                         data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                         <div class="flex items-center mb-4">
                             <div class="w-12 h-12 bg-amber-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                                 <i data-lucide="cpu" class="w-6 h-6 text-amber-400"></i>
@@ -1264,7 +1443,9 @@
                         </div>
                     </div>
                     
-                    <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('cognitive-timeline')">
+                    <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('cognitive-timeline')"
+                         data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-emerald-400 mb-2'>📈 Cognitive Timeline</h4><p>State snapshots with diff views, pattern analysis, and cognitive state restoration capabilities.</p><p><strong>What it does:</strong> Captures cognitive states over time, analyzes patterns in AI behavior, and enables rollback to previous states.</p><p><strong>Why it's useful:</strong> Debug cognitive drift, understand learning patterns, and recover from suboptimal states.</p><p><strong>Best used for:</strong> Cognitive debugging, pattern analysis, and state management.</p></div>"
+                         data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                         <div class="flex items-center mb-4">
                             <div class="w-12 h-12 bg-emerald-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                                 <i data-lucide="activity" class="w-6 h-6 text-emerald-400"></i>
@@ -1280,7 +1461,9 @@
                         </div>
                     </div>
                     
-                    <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('workflow-dependencies')">
+                    <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('workflow-dependencies')"
+                         data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-violet-400 mb-2'>🔀 Workflow Dependencies</h4><p>Gantt chart and network scheduling with critical path analysis and resource optimization.</p><p><strong>What it does:</strong> Maps workflow dependencies, identifies critical paths, and optimizes resource allocation across parallel tasks.</p><p><strong>Why it's useful:</strong> Optimize workflow scheduling, reduce bottlenecks, and improve overall system efficiency.</p><p><strong>Best used for:</strong> Project planning, resource optimization, and workflow scheduling.</p></div>"
+                         data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                         <div class="flex items-center mb-4">
                             <div class="w-12 h-12 bg-violet-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                                 <i data-lucide="git-merge" class="w-6 h-6 text-violet-400"></i>
@@ -1295,6 +1478,45 @@
                             <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-violet-400 transition-colors"></i>
                         </div>
                     </div>
+             </div>
+
+             <!-- Third row of navigation cards -->
+             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('action-monitor')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-orange-400 mb-2'>📊 Action Monitor</h4><p>Real-time execution tracking and performance metrics with live monitoring capabilities.</p><p><strong>What it does:</strong> Shows currently running actions, queue status, performance metrics, and real-time system health.</p><p><strong>Why it's useful:</strong> Monitor system performance, identify bottlenecks, and track execution efficiency in real-time.</p><p><strong>Best used for:</strong> Live system monitoring, performance optimization, and operational oversight.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-orange-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
+                             <i data-lucide="activity" class="w-6 h-6 text-orange-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Action Monitor</h3>
+                             <p class="text-sm text-gray-400">Real-time execution tracking & metrics</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Live performance monitoring</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-orange-400 transition-colors"></i>
+                     </div>
+                 </div>
+                 
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('artifact-gallery')"
+                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-pink-400 mb-2'>🖼️ Artifact Gallery</h4><p>Pinterest-style visual artifact browsing with rich metadata and relationship mapping.</p><p><strong>What it does:</strong> Displays files, images, documents, and generated content in an intuitive visual gallery with search and filtering.</p><p><strong>Why it's useful:</strong> Quickly browse and manage generated artifacts, track creation workflows, and visualize artifact relationships.</p><p><strong>Best used for:</strong> Content management, artifact discovery, and visual workflow tracking.</p></div>"
+                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-pink-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
+                             <i data-lucide="image" class="w-6 h-6 text-pink-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Artifact Gallery</h3>
+                             <p class="text-sm text-gray-400">Pinterest-style artifact browsing</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Visual artifact management</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-pink-400 transition-colors"></i>
+                     </div>
+                 </div>
              </div>
 
             <!-- Recent activity timeline -->
@@ -3330,6 +3552,426 @@
             </div>
         </div>
 
+        <!-- Action Execution Monitor -->
+        <div x-show="dbLoaded && currentView === 'action-monitor'" class="space-y-6 animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold flex items-center">
+                        <i data-lucide="activity" class="w-8 h-8 mr-3 text-orange-400"></i>
+                        Action Execution Monitor
+                    </h2>
+                    <p class="text-gray-400">Real-time monitoring of action execution with performance metrics and error tracking</p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <div class="flex items-center space-x-2">
+                        <div :class="{'bg-green-400': actionMonitorStatus.connected, 'bg-red-400': !actionMonitorStatus.connected}" 
+                             class="w-2 h-2 rounded-full animate-pulse"></div>
+                        <span class="text-sm text-gray-400" x-text="actionMonitorStatus.connected ? 'Live Monitoring' : 'Disconnected'"></span>
+                    </div>
+                    <button @click="toggleActionMonitoring()" 
+                            :class="{'bg-green-600 hover:bg-green-700': !isMonitoringActions, 'bg-red-600 hover:bg-red-700': isMonitoringActions}"
+                            class="px-4 py-2 rounded-lg text-sm font-medium transition-colors">
+                        <i :data-lucide="isMonitoringActions ? 'stop-circle' : 'play-circle'" class="w-4 h-4 mr-2 inline"></i>
+                        <span x-text="isMonitoringActions ? 'Stop Monitoring' : 'Start Monitoring'"></span>
+                    </button>
+                    <button @click="refreshActionMonitor()" 
+                            class="px-4 py-2 bg-orange-600 hover:bg-orange-700 rounded-lg text-sm font-medium transition-colors">
+                        <i data-lucide="refresh-cw" class="w-4 h-4 mr-2 inline"></i>
+                        Refresh
+                    </button>
+                    <button @click="exportActionReport()" 
+                            class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors">
+                        <i data-lucide="download" class="w-4 h-4 mr-2 inline"></i>
+                        Export Report
+                    </button>
+                </div>
+            </div>
+
+            <!-- Real-time Metrics Dashboard -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-orange-400" x-text="realtimeMetrics.actionsPerSecond.toFixed(2)"></div>
+                    <div class="text-xs text-gray-400">Actions/sec</div>
+                    <div class="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-orange-400 rounded-full transition-all duration-500" 
+                             :style="`width: ${Math.min(100, realtimeMetrics.actionsPerSecond * 10)}%`"></div>
+                    </div>
+                </div>
+                
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-blue-400" x-text="realtimeMetrics.avgResponseTime + 'ms'"></div>
+                    <div class="text-xs text-gray-400">Avg Response</div>
+                    <div class="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-blue-400 rounded-full transition-all duration-500" 
+                             :style="`width: ${Math.max(0, 100 - (realtimeMetrics.avgResponseTime / 1000) * 100)}%`"></div>
+                    </div>
+                </div>
+                
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-green-400" x-text="actionMonitorStatus.successRate + '%'"></div>
+                    <div class="text-xs text-gray-400">Success Rate</div>
+                    <div class="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-green-400 rounded-full transition-all duration-500" 
+                             :style="`width: ${actionMonitorStatus.successRate}%`"></div>
+                    </div>
+                </div>
+                
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-red-400" x-text="realtimeMetrics.errorCount"></div>
+                    <div class="text-xs text-gray-400">Errors (24h)</div>
+                    <div class="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-red-400 rounded-full transition-all duration-500" 
+                             :style="`width: ${Math.min(100, realtimeMetrics.errorCount * 5)}%`"></div>
+                    </div>
+                </div>
+                
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-purple-400" x-text="actionMonitorData.queuedActions.length"></div>
+                    <div class="text-xs text-gray-400">Queued Actions</div>
+                    <div class="mt-2 h-1 bg-gray-700 rounded-full overflow-hidden">
+                        <div class="h-full bg-purple-400 rounded-full transition-all duration-500" 
+                             :style="`width: ${Math.min(100, actionMonitorData.queuedActions.length * 10)}%`"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-12 gap-6">
+                <!-- Main Monitoring Dashboard -->
+                <div class="col-span-12 lg:col-span-8 space-y-6">
+                    <!-- Action Status Cards -->
+                    <div class="enhanced-card rounded-2xl p-6">
+                        <div class="flex items-center justify-between mb-6">
+                            <h3 class="text-lg font-semibold">Running Actions</h3>
+                            <div class="flex items-center space-x-3">
+                                <div class="flex items-center space-x-2">
+                                    <input type="text" 
+                                           x-model="actionSearchQuery" 
+                                           @input="filterActionMonitor()"
+                                           placeholder="Search actions..." 
+                                           class="w-48 px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-sm">
+                                </div>
+                                <select x-model="actionFilterType" @change="filterActionMonitor()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                                    <option value="all">All Actions</option>
+                                    <option value="running">Running</option>
+                                    <option value="queued">Queued</option>
+                                    <option value="completed">Completed</option>
+                                    <option value="failed">Failed</option>
+                                </select>
+                                <select x-model="actionFilterTool" @change="filterActionMonitor()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                                    <option value="">All Tools</option>
+                                    <template x-for="tool in getUniqueTools()" :key="tool">
+                                        <option :value="tool" x-text="tool"></option>
+                                    </template>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <!-- Action Cards Grid -->
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 max-h-96 overflow-y-auto">
+                            <!-- Running Actions -->
+                            <template x-for="action in getFilteredActions('running')" :key="action.action_id">
+                                <div class="p-4 bg-blue-500/10 border border-blue-500/30 rounded-lg hover:bg-blue-500/20 transition-colors cursor-pointer"
+                                     @click="selectActionForDetails(action)">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <div class="flex items-center space-x-2">
+                                            <div class="w-3 h-3 bg-blue-400 rounded-full animate-pulse"></div>
+                                            <span class="text-sm font-medium text-blue-400">Running</span>
+                                        </div>
+                                        <div class="text-xs text-gray-400" x-text="formatElapsedTime(action.started_at)"></div>
+                                    </div>
+                                    <h4 class="font-semibold mb-2" x-text="action.title || action.tool_name || action.action_type"></h4>
+                                    <p class="text-sm text-gray-300 mb-3 line-clamp-2" x-text="action.description || action.reasoning || 'No description'"></p>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs text-gray-500" x-text="action.tool_name || action.action_type"></span>
+                                        <div class="flex items-center space-x-2">
+                                            <div class="w-2 h-2 rounded-full" :class="getActionPriorityColor(action.priority)"></div>
+                                            <span class="text-xs" x-text="action.priority || 'normal'"></span>
+                                        </div>
+                                    </div>
+                                    <!-- Progress bar for running actions -->
+                                    <div class="mt-3 w-full bg-gray-700 rounded-full h-1">
+                                        <div class="bg-blue-400 h-1 rounded-full transition-all duration-300" 
+                                             :style="`width: ${action.progress || 0}%`"></div>
+                                    </div>
+                                </div>
+                            </template>
+                            
+                            <!-- Queued Actions -->
+                            <template x-for="action in getFilteredActions('queued')" :key="action.action_id">
+                                <div class="p-4 bg-purple-500/10 border border-purple-500/30 rounded-lg hover:bg-purple-500/20 transition-colors cursor-pointer"
+                                     @click="selectActionForDetails(action)">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <div class="flex items-center space-x-2">
+                                            <div class="w-3 h-3 bg-purple-400 rounded-full"></div>
+                                            <span class="text-sm font-medium text-purple-400">Queued</span>
+                                        </div>
+                                        <div class="text-xs text-gray-400" x-text="`Position: ${action.queue_position || '?'}`"></div>
+                                    </div>
+                                    <h4 class="font-semibold mb-2" x-text="action.title || action.tool_name || action.action_type"></h4>
+                                    <p class="text-sm text-gray-300 mb-3 line-clamp-2" x-text="action.description || action.reasoning || 'No description'"></p>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs text-gray-500" x-text="action.tool_name || action.action_type"></span>
+                                        <span class="text-xs text-gray-400" x-text="`ETA: ${action.estimated_start || 'Unknown'}`"></span>
+                                    </div>
+                                </div>
+                            </template>
+                            
+                            <!-- Recently Completed Actions -->
+                            <template x-for="action in getFilteredActions('completed').slice(0, 4)" :key="action.action_id">
+                                <div class="p-4 bg-green-500/10 border border-green-500/30 rounded-lg hover:bg-green-500/20 transition-colors cursor-pointer"
+                                     @click="selectActionForDetails(action)">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <div class="flex items-center space-x-2">
+                                            <div class="w-3 h-3 bg-green-400 rounded-full"></div>
+                                            <span class="text-sm font-medium text-green-400">Completed</span>
+                                        </div>
+                                        <div class="text-xs text-gray-400" x-text="formatElapsedTime(action.completed_at)"></div>
+                                    </div>
+                                    <h4 class="font-semibold mb-2" x-text="action.title || action.tool_name || action.action_type"></h4>
+                                    <p class="text-sm text-gray-300 mb-3 line-clamp-2" x-text="action.description || action.reasoning || 'No description'"></p>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs text-gray-500" x-text="action.tool_name || action.action_type"></span>
+                                        <span class="text-xs text-green-400" x-text="`${action.execution_time || 0}ms`"></span>
+                                    </div>
+                                </div>
+                            </template>
+                            
+                            <!-- Failed Actions -->
+                            <template x-for="action in getFilteredActions('failed')" :key="action.action_id">
+                                <div class="p-4 bg-red-500/10 border border-red-500/30 rounded-lg hover:bg-red-500/20 transition-colors cursor-pointer"
+                                     @click="selectActionForDetails(action)">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <div class="flex items-center space-x-2">
+                                            <div class="w-3 h-3 bg-red-400 rounded-full"></div>
+                                            <span class="text-sm font-medium text-red-400">Failed</span>
+                                        </div>
+                                        <div class="text-xs text-gray-400" x-text="formatElapsedTime(action.failed_at)"></div>
+                                    </div>
+                                    <h4 class="font-semibold mb-2" x-text="action.title || action.tool_name || action.action_type"></h4>
+                                    <p class="text-sm text-red-300 mb-3 line-clamp-2" x-text="action.error_message || action.error || 'Unknown error'"></p>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs text-gray-500" x-text="action.tool_name || action.action_type"></span>
+                                        <button @click.stop="retryAction(action)" 
+                                                class="px-2 py-1 bg-red-600 hover:bg-red-700 rounded text-xs transition-colors">
+                                            Retry
+                                        </button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Performance Charts -->
+                    <div class="enhanced-card rounded-2xl p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-lg font-semibold">Performance Metrics</h3>
+                            <div class="flex items-center space-x-2">
+                                <select x-model="performanceChartTimeRange" @change="updatePerformanceCharts()" class="bg-white/10 border border-white/20 rounded px-2 py-1 text-sm">
+                                    <option value="1h">Last Hour</option>
+                                    <option value="6h">Last 6 Hours</option>
+                                    <option value="24h">Last 24 Hours</option>
+                                    <option value="7d">Last 7 Days</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            <!-- Execution Time Chart -->
+                            <div class="chart-container">
+                                <h4 class="text-sm font-medium mb-3">Execution Time Trend</h4>
+                                <canvas x-ref="executionTimeChart" class="w-full h-48"></canvas>
+                            </div>
+                            
+                            <!-- Throughput Chart -->
+                            <div class="chart-container">
+                                <h4 class="text-sm font-medium mb-3">Action Throughput</h4>
+                                <canvas x-ref="throughputChart" class="w-full h-48"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Batch Operations -->
+                    <div class="enhanced-card rounded-2xl p-6" x-show="actionMonitorData.batchOperations.length > 0">
+                        <h3 class="text-lg font-semibold mb-4">Batch Operations</h3>
+                        <div class="space-y-4">
+                            <template x-for="batch in actionMonitorData.batchOperations" :key="batch.batch_id">
+                                <div class="p-4 bg-white/5 rounded-lg border border-white/10">
+                                    <div class="flex items-center justify-between mb-3">
+                                        <h4 class="font-semibold" x-text="batch.name"></h4>
+                                        <div class="flex items-center space-x-2">
+                                            <span class="text-sm" x-text="`${batch.completed}/${batch.total}`"></span>
+                                            <span class="text-xs text-gray-400" x-text="`${Math.round((batch.completed / batch.total) * 100)}%`"></span>
+                                        </div>
+                                    </div>
+                                    <div class="w-full bg-gray-700 rounded-full h-2 mb-3">
+                                        <div class="bg-orange-400 h-2 rounded-full transition-all duration-300" 
+                                             :style="`width: ${(batch.completed / batch.total) * 100}%`"></div>
+                                    </div>
+                                    <div class="flex items-center justify-between text-sm text-gray-400">
+                                        <span x-text="`Started: ${formatRelativeTime(batch.started_at)}`"></span>
+                                        <span x-text="`ETA: ${batch.estimated_completion || 'Unknown'}`"></span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sidebar -->
+                <div class="col-span-12 lg:col-span-4 space-y-6">
+                    <!-- Tool Usage Statistics -->
+                    <div class="enhanced-card rounded-2xl p-6">
+                        <h3 class="text-lg font-semibold mb-4 flex items-center">
+                            <i data-lucide="wrench" class="w-5 h-5 mr-2 text-blue-400"></i>
+                            Tool Usage
+                        </h3>
+                        
+                        <div class="space-y-3 max-h-64 overflow-y-auto">
+                            <template x-for="(stats, tool) in actionMonitorData.toolUsageStats" :key="tool">
+                                <div class="flex items-center justify-between p-3 bg-white/5 rounded-lg">
+                                    <div class="flex-1">
+                                        <div class="font-medium text-sm" x-text="tool"></div>
+                                        <div class="text-xs text-gray-400" x-text="`Avg: ${stats.avg_time}ms | Success: ${stats.success_rate}%`"></div>
+                                    </div>
+                                    <div class="text-right">
+                                        <div class="text-lg font-bold text-blue-400" x-text="stats.count"></div>
+                                        <div class="text-xs text-gray-500">uses</div>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Error Log -->
+                    <div class="enhanced-card rounded-2xl p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-lg font-semibold flex items-center">
+                                <i data-lucide="alert-triangle" class="w-5 h-5 mr-2 text-red-400"></i>
+                                Recent Errors
+                            </h3>
+                            <button @click="clearErrorLog()" 
+                                    class="px-2 py-1 bg-red-600 hover:bg-red-700 rounded text-xs transition-colors">
+                                Clear
+                            </button>
+                        </div>
+                        
+                        <div x-show="actionMonitorData.errorLog.length === 0" class="text-center text-gray-500 py-4">
+                            <i data-lucide="check-circle" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>
+                            <div class="text-sm">No recent errors</div>
+                        </div>
+                        
+                        <div class="space-y-3 max-h-64 overflow-y-auto">
+                            <template x-for="error in actionMonitorData.errorLog.slice(0, 10)" :key="error.id">
+                                <div class="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
+                                    <div class="flex items-center justify-between mb-2">
+                                        <span class="text-sm font-medium text-red-400" x-text="error.type"></span>
+                                        <span class="text-xs text-gray-400" x-text="formatRelativeTime(error.timestamp)"></span>
+                                    </div>
+                                    <p class="text-xs text-gray-300 mb-2 line-clamp-2" x-text="error.message"></p>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-xs text-gray-500" x-text="error.action_type || 'Unknown'"></span>
+                                        <button @click="showErrorDetails(error)" 
+                                                class="text-xs text-red-400 hover:text-red-300">
+                                            Details
+                                        </button>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Action Queue -->
+                    <div class="enhanced-card rounded-2xl p-6">
+                        <div class="flex items-center justify-between mb-4">
+                            <h3 class="text-lg font-semibold flex items-center">
+                                <i data-lucide="clock" class="w-5 h-5 mr-2 text-purple-400"></i>
+                                Action Queue
+                            </h3>
+                            <div class="text-sm text-gray-400" x-text="`${actionMonitorData.queuedActions.length} queued`"></div>
+                        </div>
+                        
+                        <div x-show="actionMonitorData.queuedActions.length === 0" class="text-center text-gray-500 py-4">
+                            <i data-lucide="check-circle" class="w-8 h-8 mx-auto mb-2 opacity-50"></i>
+                            <div class="text-sm">Queue is empty</div>
+                        </div>
+                        
+                        <div class="space-y-3 max-h-48 overflow-y-auto">
+                            <template x-for="(action, index) in actionMonitorData.queuedActions.slice(0, 5)" :key="action.action_id">
+                                <div class="flex items-center space-x-3 p-3 bg-white/5 rounded-lg">
+                                    <div class="w-6 h-6 rounded-full bg-purple-500/20 flex items-center justify-center text-xs font-bold text-purple-400" 
+                                         x-text="index + 1"></div>
+                                    <div class="flex-1 min-w-0">
+                                        <div class="text-sm font-medium truncate" x-text="action.title || action.tool_name"></div>
+                                        <div class="text-xs text-gray-400" x-text="`ETA: ${action.estimated_start || 'Soon'}`"></div>
+                                    </div>
+                                    <button @click="cancelQueuedAction(action)" 
+                                            class="p-1 text-gray-400 hover:text-red-400 transition-colors">
+                                        <i data-lucide="x" class="w-3 h-3"></i>
+                                    </button>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+
+                    <!-- Monitor Settings -->
+                    <div class="enhanced-card rounded-2xl p-6">
+                        <h3 class="text-lg font-semibold mb-4 flex items-center">
+                            <i data-lucide="settings" class="w-5 h-5 mr-2 text-gray-400"></i>
+                            Monitor Settings
+                        </h3>
+                        
+                        <div class="space-y-4">
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm">Auto Refresh</span>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" x-model="actionMonitorSettings.autoRefresh" @change="updateMonitorSettings()" class="sr-only peer">
+                                    <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+                                </label>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Refresh Interval (ms)</label>
+                                <input type="range" 
+                                       x-model.number="actionMonitorSettings.refreshInterval" 
+                                       @input="updateMonitorSettings()"
+                                       min="500" max="10000" step="500" 
+                                       class="w-full">
+                                <div class="flex justify-between text-xs text-gray-400 mt-1">
+                                    <span>500ms</span>
+                                    <span x-text="actionMonitorSettings.refreshInterval + 'ms'"></span>
+                                    <span>10s</span>
+                                </div>
+                            </div>
+                            
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm">Show Completed</span>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" x-model="actionMonitorSettings.showCompleted" class="sr-only peer">
+                                    <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+                                </label>
+                            </div>
+                            
+                            <div class="flex items-center justify-between">
+                                <span class="text-sm">Sound Alerts</span>
+                                <label class="relative inline-flex items-center cursor-pointer">
+                                    <input type="checkbox" x-model="actionMonitorSettings.soundAlerts" class="sr-only peer">
+                                    <div class="w-11 h-6 bg-gray-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-600"></div>
+                                </label>
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Max History Items</label>
+                                <input type="number" 
+                                       x-model.number="actionMonitorSettings.maxHistoryItems" 
+                                       min="10" max="1000" step="10"
+                                       class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg text-sm">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Working Memory Dashboard -->
         <div x-show="dbLoaded && currentView === 'working-memory'" class="space-y-6 animate-slide-in">
             <div class="flex items-center justify-between mb-6">
@@ -3659,6 +4301,388 @@
                             </template>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Artifact Gallery View -->
+        <div x-show="dbLoaded && currentView === 'artifact-gallery'" class="space-y-6 animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold flex items-center">
+                        <i data-lucide="image" class="w-8 h-8 mr-3 text-pink-400"></i>
+                        Artifact Gallery
+                    </h2>
+                    <p class="text-gray-400">Pinterest-style artifact browsing with preview generation and version tracking</p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <div class="flex items-center space-x-2">
+                        <select x-model="artifactViewMode" @change="loadArtifacts()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                            <option value="masonry">Masonry Grid</option>
+                            <option value="list">List View</option>
+                            <option value="timeline">Timeline</option>
+                        </select>
+                        <select x-model="artifactTypeFilter" @change="loadArtifacts()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                            <option value="">All Types</option>
+                            <option value="image">Images</option>
+                            <option value="document">Documents</option>
+                            <option value="code">Code</option>
+                            <option value="data">Data</option>
+                            <option value="model">Models</option>
+                        </select>
+                        <select x-model="artifactSortBy" @change="loadArtifacts()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                            <option value="created_at">Created Date</option>
+                            <option value="updated_at">Updated Date</option>
+                            <option value="importance">Importance</option>
+                            <option value="access_count">Most Viewed</option>
+                            <option value="name">Name</option>
+                        </select>
+                    </div>
+                    <button @click="showArtifactUpload = true" 
+                            class="px-4 py-2 bg-pink-600 hover:bg-pink-700 rounded-lg text-sm font-medium transition-colors">
+                        <i data-lucide="upload" class="w-4 h-4 mr-2 inline"></i>
+                        Upload Artifact
+                    </button>
+                </div>
+            </div>
+
+            <!-- Gallery Stats -->
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-pink-400" x-text="artifactStats.total_artifacts || 0"></div>
+                    <div class="text-xs text-gray-400">Total Artifacts</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-blue-400" x-text="artifactStats.unique_workflows || 0"></div>
+                    <div class="text-xs text-gray-400">Workflows</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-green-400" x-text="artifactStats.total_file_size_human || '0 B'"></div>
+                    <div class="text-xs text-gray-400">Total Size</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-yellow-400" x-text="artifactStats.recent_artifacts_24h || 0"></div>
+                    <div class="text-xs text-gray-400">Recent (24h)</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-purple-400" x-text="artifactStats.total_relationships || 0"></div>
+                    <div class="text-xs text-gray-400">Relationships</div>
+                </div>
+            </div>
+
+            <!-- Gallery Search and Filters -->
+            <div class="enhanced-card rounded-2xl p-6 mb-6">
+                <div class="flex items-center space-x-4">
+                    <div class="flex-1 relative">
+                        <i data-lucide="search" class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400"></i>
+                        <input type="text" 
+                               x-model="artifactSearchQuery" 
+                               @input.debounce.300ms="searchArtifacts()"
+                               placeholder="Search artifacts by name, description, or tags..." 
+                               class="w-full pl-10 pr-4 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-pink-400 transition-colors">
+                    </div>
+                    <div class="flex items-center space-x-2">
+                        <button @click="showTagFilter = !showTagFilter" 
+                                :class="{'bg-pink-600': showTagFilter, 'bg-white/10': !showTagFilter}"
+                                class="px-3 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-pink-600">
+                            <i data-lucide="tag" class="w-4 h-4 mr-2 inline"></i>
+                            Tags
+                        </button>
+                        <button @click="showWorkflowFilter = !showWorkflowFilter" 
+                                :class="{'bg-blue-600': showWorkflowFilter, 'bg-white/10': !showWorkflowFilter}"
+                                class="px-3 py-2 rounded-lg text-sm font-medium transition-colors hover:bg-blue-600">
+                            <i data-lucide="git-branch" class="w-4 h-4 mr-2 inline"></i>
+                            Workflows
+                        </button>
+                        <button @click="clearAllFilters()" 
+                                class="px-3 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium transition-colors">
+                            <i data-lucide="x" class="w-4 h-4 mr-2 inline"></i>
+                            Clear
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Tag Filter Panel -->
+                <div x-show="showTagFilter" 
+                     x-transition:enter="transition ease-out duration-200" 
+                     x-transition:enter-start="opacity-0 transform scale-95" 
+                     x-transition:enter-end="opacity-100 transform scale-100"
+                     class="mt-4 p-4 bg-white/5 rounded-lg">
+                    <h4 class="text-sm font-medium mb-3">Filter by Tags</h4>
+                    <div class="flex flex-wrap gap-2">
+                        <template x-for="tag in availableTags" :key="tag">
+                            <button @click="toggleTagFilter(tag)" 
+                                    :class="{'bg-pink-600': selectedTags.includes(tag), 'bg-white/10': !selectedTags.includes(tag)}"
+                                    class="px-3 py-1 rounded-full text-xs font-medium transition-colors hover:bg-pink-600">
+                                <span x-text="tag"></span>
+                            </button>
+                        </template>
+                    </div>
+                </div>
+
+                <!-- Workflow Filter Panel -->
+                <div x-show="showWorkflowFilter" 
+                     x-transition:enter="transition ease-out duration-200" 
+                     x-transition:enter-start="opacity-0 transform scale-95" 
+                     x-transition:enter-end="opacity-100 transform scale-100"
+                     class="mt-4 p-4 bg-white/5 rounded-lg">
+                    <h4 class="text-sm font-medium mb-3">Filter by Workflows</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 max-h-32 overflow-y-auto">
+                        <template x-for="workflow in availableWorkflows" :key="workflow.id">
+                            <label class="flex items-center space-x-2 text-sm cursor-pointer hover:bg-white/5 p-2 rounded">
+                                <input type="checkbox" 
+                                       :value="workflow.id" 
+                                       x-model="selectedWorkflows" 
+                                       @change="loadArtifacts()"
+                                       class="rounded border-gray-300">
+                                <span x-text="workflow.title"></span>
+                            </label>
+                        </template>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gallery Content -->
+            <div class="space-y-6">
+                <!-- Masonry Grid View -->
+                <div x-show="artifactViewMode === 'masonry'" class="masonry-grid" x-ref="masonryContainer">
+                    <template x-for="artifact in filteredArtifacts" :key="artifact.artifact_id">
+                        <div class="masonry-item enhanced-card rounded-xl overflow-hidden cursor-pointer group transform transition-all duration-300 hover:scale-105 hover:shadow-2xl"
+                             @click="selectArtifact(artifact)"
+                             :style="`min-height: ${getMasonryItemHeight(artifact)}px`">
+                            
+                            <!-- Artifact Preview -->
+                            <div class="relative overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900"
+                                 :style="`height: ${getPreviewHeight(artifact)}px`">
+                                
+                                <!-- Image Preview -->
+                                <template x-if="artifact.artifact_type === 'image'">
+                                    <img :src="getArtifactPreview(artifact)" 
+                                         :alt="artifact.name"
+                                         class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-110"
+                                         @error="handleImageError($event, artifact)">
+                                </template>
+                                
+                                <!-- Document Preview -->
+                                <template x-if="artifact.artifact_type === 'document'">
+                                    <div class="w-full h-full flex items-center justify-center">
+                                        <div class="text-center">
+                                            <i data-lucide="file-text" class="w-16 h-16 mx-auto mb-2 text-blue-400"></i>
+                                            <div class="text-sm font-medium" x-text="artifact.name"></div>
+                                            <div class="text-xs text-gray-400" x-text="artifact.file_size_human"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                                
+                                <!-- Code Preview -->
+                                <template x-if="artifact.artifact_type === 'code'">
+                                    <div class="w-full h-full p-4 bg-gray-900">
+                                        <div class="flex items-center mb-2">
+                                            <i data-lucide="code" class="w-4 h-4 mr-2 text-green-400"></i>
+                                            <span class="text-xs text-green-400" x-text="getCodeLanguage(artifact)"></span>
+                                        </div>
+                                        <pre class="text-xs text-gray-300 overflow-hidden" x-text="getCodePreview(artifact)"></pre>
+                                    </div>
+                                </template>
+                                
+                                <!-- Default Preview -->
+                                <template x-if="!['image', 'document', 'code'].includes(artifact.artifact_type)">
+                                    <div class="w-full h-full flex items-center justify-center">
+                                        <div class="text-center">
+                                            <i :data-lucide="getArtifactIcon(artifact.artifact_type)" class="w-16 h-16 mx-auto mb-2 text-purple-400"></i>
+                                            <div class="text-sm font-medium" x-text="artifact.name"></div>
+                                            <div class="text-xs text-gray-400" x-text="artifact.artifact_type"></div>
+                                        </div>
+                                    </div>
+                                </template>
+                                
+                                <!-- Overlay Icons -->
+                                <div class="absolute top-2 right-2 flex items-center space-x-1">
+                                    <template x-if="artifact.version_count > 1">
+                                        <div class="bg-black/60 backdrop-blur-sm rounded-full px-2 py-1 text-xs text-white">
+                                            <i data-lucide="git-branch" class="w-3 h-3 mr-1 inline"></i>
+                                            <span x-text="artifact.version_count"></span>
+                                        </div>
+                                    </template>
+                                    <template x-if="artifact.relationship_count > 0">
+                                        <div class="bg-black/60 backdrop-blur-sm rounded-full px-2 py-1 text-xs text-white">
+                                            <i data-lucide="link" class="w-3 h-3 mr-1 inline"></i>
+                                            <span x-text="artifact.relationship_count"></span>
+                                        </div>
+                                    </template>
+                                </div>
+                                
+                                <!-- Importance indicator -->
+                                <div class="absolute top-2 left-2">
+                                    <div class="flex">
+                                        <template x-for="i in Math.round(artifact.importance * 5)" :key="i">
+                                            <i data-lucide="star" class="w-3 h-3 text-yellow-400 fill-current"></i>
+                                        </template>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Artifact Info -->
+                            <div class="p-4">
+                                <div class="flex items-start justify-between mb-2">
+                                    <h3 class="font-semibold text-white line-clamp-1 flex-1 mr-2" x-text="artifact.name"></h3>
+                                    <div class="flex items-center space-x-1 text-xs text-gray-400">
+                                        <i data-lucide="eye" class="w-3 h-3"></i>
+                                        <span x-text="artifact.access_count || 0"></span>
+                                    </div>
+                                </div>
+                                
+                                <p class="text-sm text-gray-400 line-clamp-2 mb-3" x-text="artifact.description || 'No description'"></p>
+                                
+                                <!-- Tags -->
+                                <div class="flex flex-wrap gap-1 mb-3">
+                                    <template x-for="tag in artifact.tags.slice(0, 3)" :key="tag">
+                                        <span class="px-2 py-1 bg-pink-500/20 text-pink-300 rounded-full text-xs" x-text="tag"></span>
+                                    </template>
+                                    <template x-if="artifact.tags.length > 3">
+                                        <span class="px-2 py-1 bg-gray-500/20 text-gray-400 rounded-full text-xs" x-text="`+${artifact.tags.length - 3}`"></span>
+                                    </template>
+                                </div>
+                                
+                                <!-- Metadata -->
+                                <div class="flex items-center justify-between text-xs text-gray-500">
+                                    <div class="flex items-center space-x-2">
+                                        <span x-text="formatRelativeTime(artifact.created_at)"></span>
+                                        <template x-if="artifact.workflow_title">
+                                            <span class="flex items-center">
+                                                <i data-lucide="git-branch" class="w-3 h-3 mr-1"></i>
+                                                <span x-text="artifact.workflow_title"></span>
+                                            </span>
+                                        </template>
+                                    </div>
+                                    <div class="flex items-center space-x-1">
+                                        <div :class="getArtifactTypeColor(artifact.artifact_type)" class="w-2 h-2 rounded-full"></div>
+                                        <span x-text="artifact.artifact_type"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- List View -->
+                <div x-show="artifactViewMode === 'list'" class="space-y-3">
+                    <template x-for="artifact in filteredArtifacts" :key="artifact.artifact_id">
+                        <div class="enhanced-card rounded-xl p-4 cursor-pointer group hover:bg-white/10 transition-all duration-300"
+                             @click="selectArtifact(artifact)">
+                            <div class="flex items-center space-x-4">
+                                <!-- Preview Thumbnail -->
+                                <div class="w-16 h-16 rounded-lg overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900 flex-shrink-0">
+                                    <template x-if="artifact.artifact_type === 'image'">
+                                        <img :src="getArtifactPreview(artifact)" 
+                                             :alt="artifact.name"
+                                             class="w-full h-full object-cover">
+                                    </template>
+                                    <template x-if="artifact.artifact_type !== 'image'">
+                                        <div class="w-full h-full flex items-center justify-center">
+                                            <i :data-lucide="getArtifactIcon(artifact.artifact_type)" class="w-8 h-8 text-purple-400"></i>
+                                        </div>
+                                    </template>
+                                </div>
+                                
+                                <!-- Artifact Info -->
+                                <div class="flex-1 min-w-0">
+                                    <div class="flex items-start justify-between mb-2">
+                                        <h3 class="font-semibold text-white truncate mr-4" x-text="artifact.name"></h3>
+                                        <div class="flex items-center space-x-2 text-xs text-gray-400 flex-shrink-0">
+                                            <div class="flex">
+                                                <template x-for="i in Math.round(artifact.importance * 5)" :key="i">
+                                                    <i data-lucide="star" class="w-3 h-3 text-yellow-400 fill-current"></i>
+                                                </template>
+                                            </div>
+                                            <span x-text="artifact.file_size_human"></span>
+                                        </div>
+                                    </div>
+                                    
+                                    <p class="text-sm text-gray-400 line-clamp-1 mb-2" x-text="artifact.description || 'No description'"></p>
+                                    
+                                    <div class="flex items-center justify-between">
+                                        <div class="flex flex-wrap gap-1">
+                                            <template x-for="tag in artifact.tags.slice(0, 3)" :key="tag">
+                                                <span class="px-2 py-1 bg-pink-500/20 text-pink-300 rounded-full text-xs" x-text="tag"></span>
+                                            </template>
+                                        </div>
+                                        
+                                        <div class="flex items-center space-x-4 text-xs text-gray-500">
+                                            <span x-text="formatRelativeTime(artifact.created_at)"></span>
+                                            <span class="flex items-center">
+                                                <i data-lucide="eye" class="w-3 h-3 mr-1"></i>
+                                                <span x-text="artifact.access_count || 0"></span>
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Timeline View -->
+                <div x-show="artifactViewMode === 'timeline'" class="space-y-6">
+                    <template x-for="group in groupedArtifactsByDate" :key="group.date">
+                        <div>
+                            <h3 class="text-lg font-semibold mb-4 flex items-center">
+                                <div class="w-3 h-3 bg-pink-400 rounded-full mr-3"></div>
+                                <span x-text="group.date"></span>
+                                <span class="ml-2 px-2 py-1 bg-pink-500/20 text-pink-300 rounded-full text-xs" x-text="`${group.artifacts.length} artifacts`"></span>
+                            </h3>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 ml-6">
+                                <template x-for="artifact in group.artifacts" :key="artifact.artifact_id">
+                                    <div class="enhanced-card rounded-xl overflow-hidden cursor-pointer group transform transition-all duration-300 hover:scale-105"
+                                         @click="selectArtifact(artifact)">
+                                        <!-- Same content as masonry items but smaller -->
+                                        <div class="relative overflow-hidden bg-gradient-to-br from-gray-800 to-gray-900 h-32">
+                                            <template x-if="artifact.artifact_type === 'image'">
+                                                <img :src="getArtifactPreview(artifact)" 
+                                                     :alt="artifact.name"
+                                                     class="w-full h-full object-cover">
+                                            </template>
+                                            <template x-if="artifact.artifact_type !== 'image'">
+                                                <div class="w-full h-full flex items-center justify-center">
+                                                    <i :data-lucide="getArtifactIcon(artifact.artifact_type)" class="w-8 h-8 text-purple-400"></i>
+                                                </div>
+                                            </template>
+                                        </div>
+                                        
+                                        <div class="p-3">
+                                            <h4 class="font-medium text-white line-clamp-1 mb-1" x-text="artifact.name"></h4>
+                                            <div class="flex items-center justify-between text-xs text-gray-500">
+                                                <span x-text="artifact.artifact_type"></span>
+                                                <span x-text="formatTime(artifact.created_at)"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Load More -->
+                <div x-show="hasMoreArtifacts" class="text-center py-6">
+                    <button @click="loadMoreArtifacts()" 
+                            :disabled="isLoadingMoreArtifacts"
+                            class="px-6 py-3 bg-pink-600 hover:bg-pink-700 disabled:bg-gray-600 rounded-lg font-medium transition-colors">
+                        <span x-text="isLoadingMoreArtifacts ? 'Loading...' : 'Load More Artifacts'"></span>
+                    </button>
+                </div>
+
+                <!-- Empty State -->
+                <div x-show="filteredArtifacts.length === 0 && !isLoadingArtifacts" class="text-center py-12">
+                    <i data-lucide="image" class="w-16 h-16 mx-auto mb-4 text-gray-400 opacity-50"></i>
+                    <h3 class="text-xl font-semibold mb-2">No Artifacts Found</h3>
+                    <p class="text-gray-400 mb-4" x-text="artifactSearchQuery ? 'Try adjusting your search or filters' : 'Upload your first artifact to get started'"></p>
+                    <button @click="showArtifactUpload = true" 
+                            class="px-6 py-3 bg-pink-600 hover:bg-pink-700 rounded-lg font-medium transition-colors">
+                        <i data-lucide="upload" class="w-4 h-4 mr-2 inline"></i>
+                        Upload Artifact
+                    </button>
                 </div>
             </div>
         </div>
@@ -4150,6 +5174,36 @@
                 actions: [],
                 artifacts: [],
                 goals: [],
+
+                // Artifact Gallery state
+                artifactViewMode: 'masonry',
+                artifactTypeFilter: '',
+                artifactSortBy: 'created_at',
+                artifactSortOrder: 'desc',
+                artifactSearchQuery: '',
+                filteredArtifacts: [],
+                artifactStats: {
+                    total_artifacts: 0,
+                    unique_workflows: 0,
+                    total_file_size_human: '0 B',
+                    recent_artifacts_24h: 0,
+                    total_relationships: 0
+                },
+                selectedArtifact: null,
+                showArtifactModal: false,
+                showArtifactUpload: false,
+                showTagFilter: false,
+                showWorkflowFilter: false,
+                selectedTags: [],
+                selectedWorkflows: [],
+                availableTags: [],
+                availableWorkflows: [],
+                groupedArtifactsByDate: [],
+                hasMoreArtifacts: false,
+                isLoadingArtifacts: false,
+                isLoadingMoreArtifacts: false,
+                artifactCurrentPage: 1,
+                artifactPageSize: 20,
                 
                 // Filters
                 workflowFilter: '',
@@ -4201,6 +5255,7 @@
                     { id: 'semantic-search', title: 'Semantic Search', description: 'Advanced vector similarity search with clustering', icon: 'search', shortcut: 'S' },
                     { id: 'working-memory', title: 'Working Memory', description: 'Real-time memory management dashboard', icon: 'cpu', shortcut: 'U' },
                     { id: 'workflow-dependencies', title: 'Workflow Dependencies', description: 'Gantt chart + network diagram for workflow scheduling', icon: 'git-merge', shortcut: 'Y' },
+                    { id: 'action-monitor', title: 'Action Monitor', description: 'Real-time action execution monitoring with performance metrics', icon: 'activity', shortcut: 'X' },
                     { id: 'dashboard', title: 'Dashboard', description: 'Go back to dashboard', icon: 'layout-dashboard', shortcut: 'D' },
                     { id: 'theme', title: 'Toggle Theme', description: 'Switch between light and dark mode', icon: 'palette', shortcut: 'T' },
                     { id: 'export', title: 'Export Data', description: 'Export current view as JSON/CSV', icon: 'download', shortcut: 'E' }
@@ -4404,6 +5459,53 @@
                 ganttXScale: null,
                 ganttYScale: null,
 
+                // Action Monitor state
+                actionMonitorData: {
+                    realTimeActions: [],
+                    queuedActions: [],
+                    completedActions: [],
+                    batchOperations: [],
+                    toolUsageStats: {},
+                    performanceMetrics: {},
+                    errorLog: []
+                },
+                actionMonitorSettings: {
+                    autoRefresh: true,
+                    refreshInterval: 1000, // 1 second
+                    showCompleted: true,
+                    maxHistoryItems: 100,
+                    enableNotifications: true,
+                    soundAlerts: false
+                },
+                actionMonitorStatus: {
+                    connected: false,
+                    lastUpdate: null,
+                    totalActions: 0,
+                    avgExecutionTime: 0,
+                    successRate: 0,
+                    errorRate: 0
+                },
+                selectedActionDetail: null,
+                actionFilterType: 'all', // 'all', 'running', 'queued', 'completed', 'failed'
+                actionFilterTool: '',
+                actionSearchQuery: '',
+                showActionDetailModal: false,
+                actionMonitorInterval: null,
+                actionWebSocket: null,
+                isMonitoringActions: false,
+                actionPerformanceCharts: {},
+                batchOperationProgress: {},
+                realtimeMetrics: {
+                    actionsPerSecond: 0,
+                    avgResponseTime: 0,
+                    cpuUsage: 0,
+                    memoryUsage: 0,
+                    errorCount: 0
+                },
+                
+                // Performance chart settings
+                performanceChartTimeRange: '24h',
+
                 async init() {
                     console.log('🚀 UMS Explorer Pro initializing...');
                     
@@ -4456,6 +5558,10 @@
                                 this.$nextTick(() => this.initializeWorkflowDependencies());
                             } else if (newView === 'cognitive-timeline') {
                                 this.$nextTick(() => this.initializeCognitiveTimeline());
+                            } else if (newView === 'action-monitor') {
+                                this.$nextTick(() => this.initializeActionMonitor());
+                            } else if (newView === 'artifact-gallery') {
+                                this.$nextTick(() => this.initializeArtifactGallery());
                             }
                             
                             this.$nextTick(() => {
@@ -4584,6 +5690,9 @@
                                 case 'y':
                                     this.navigateTo('workflow-dependencies');
                                     break;
+                                case 'x':
+                                    this.navigateTo('action-monitor');
+                                    break;
                                 case 't':
                                     this.toggleTheme();
                                     break;
@@ -4636,6 +5745,7 @@
                         case 'semantic-search':
                         case 'working-memory':
                         case 'workflow-dependencies':
+                        case 'action-monitor':
                         case 'dashboard':
                             this.navigateTo(cmd.id);
                             break;
@@ -5048,6 +6158,396 @@
                 selectAction(action) {
                     this.selectedAction = action;
                     this.showActionModal = true;
+                },
+
+                // Artifact Gallery Methods
+                async loadArtifacts() {
+                    this.isLoadingArtifacts = true;
+                    
+                    try {
+                        const params = new URLSearchParams({
+                            artifact_type: this.artifactTypeFilter,
+                            search: this.artifactSearchQuery,
+                            sort_by: this.artifactSortBy,
+                            sort_order: this.artifactSortOrder,
+                            limit: this.artifactPageSize,
+                            offset: (this.artifactCurrentPage - 1) * this.artifactPageSize
+                        });
+
+                        // Add workflow filter
+                        if (this.selectedWorkflows.length > 0) {
+                            params.append('workflow_id', this.selectedWorkflows.join(','));
+                        }
+
+                        // Add tag filter
+                        if (this.selectedTags.length > 0) {
+                            params.append('tags', this.selectedTags.join(','));
+                        }
+
+                        const response = await fetch(`/api/artifacts?${params}`);
+                        
+                        // Check if response is okay and contains JSON
+                        if (!response.ok) {
+                            if (response.status === 404) {
+                                console.log('ℹ️ Artifacts API not available, falling back to database query');
+                                return this.loadArtifactsFromDatabase();
+                            }
+                            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                        }
+                        
+                        const contentType = response.headers.get('content-type');
+                        if (!contentType || !contentType.includes('application/json')) {
+                            throw new Error('Response is not JSON');
+                        }
+                        
+                        const data = await response.json();
+
+                        if (this.artifactCurrentPage === 1) {
+                            this.filteredArtifacts = data.artifacts || [];
+                        } else {
+                            this.filteredArtifacts.push(...(data.artifacts || []));
+                        }
+
+                        this.hasMoreArtifacts = data.has_more || false;
+                        this.updateGroupedArtifactsByDate();
+                        await this.loadArtifactStats();
+                        await this.loadAvailableFilters();
+
+                    } catch (error) {
+                        console.error('Error loading artifacts:', error);
+                        // Fall back to database query if API fails
+                        this.loadArtifactsFromDatabase();
+                    } finally {
+                        this.isLoadingArtifacts = false;
+                    }
+                },
+
+                // Fallback method to load artifacts directly from database
+                async loadArtifactsFromDatabase() {
+                    try {
+                        if (!this.db) {
+                            this.filteredArtifacts = [];
+                            this.hasMoreArtifacts = false;
+                            return;
+                        }
+
+                        // Build SQL query based on filters
+                        let sql = `SELECT * FROM artifacts WHERE 1=1`;
+                        const params = [];
+
+                        if (this.artifactTypeFilter) {
+                            sql += ` AND artifact_type = ?`;
+                            params.push(this.artifactTypeFilter);
+                        }
+
+                        if (this.artifactSearchQuery) {
+                            sql += ` AND (name LIKE ? OR description LIKE ?)`;
+                            const searchTerm = `%${this.artifactSearchQuery}%`;
+                            params.push(searchTerm, searchTerm);
+                        }
+
+                        // Add ordering
+                        sql += ` ORDER BY ${this.artifactSortBy} ${this.artifactSortOrder.toUpperCase()}`;
+                        
+                        // Add pagination
+                        const limit = this.artifactPageSize;
+                        const offset = (this.artifactCurrentPage - 1) * this.artifactPageSize;
+                        sql += ` LIMIT ? OFFSET ?`;
+                        params.push(limit, offset);
+
+                        const results = this.executeQuery(sql, params);
+                        
+                        // Process results to add missing fields
+                        const processedResults = results.map(artifact => ({
+                            ...artifact,
+                            tags: artifact.tags ? JSON.parse(artifact.tags) : [],
+                            metadata: artifact.metadata ? JSON.parse(artifact.metadata) : {}
+                        }));
+
+                        if (this.artifactCurrentPage === 1) {
+                            this.filteredArtifacts = processedResults;
+                        } else {
+                            this.filteredArtifacts.push(...processedResults);
+                        }
+
+                        // Check if there are more artifacts
+                        const countSql = `SELECT COUNT(*) as total FROM artifacts WHERE 1=1`;
+                        const countResults = this.executeQuery(countSql);
+                        const totalArtifacts = countResults[0]?.total || 0;
+                        this.hasMoreArtifacts = (this.artifactCurrentPage * this.artifactPageSize) < totalArtifacts;
+
+                        this.updateGroupedArtifactsByDate();
+                        await this.loadAvailableFilters();
+
+                    } catch (error) {
+                        console.error('Error loading artifacts from database:', error);
+                        this.filteredArtifacts = [];
+                        this.hasMoreArtifacts = false;
+                        this.showToast('Error loading artifacts from database', 'error');
+                    }
+                },
+
+                async loadArtifactStats() {
+                    try {
+                        const response = await fetch('/api/artifacts/stats');
+                        
+                        // Check if response is okay and contains JSON
+                        if (!response.ok) {
+                            if (response.status === 404) {
+                                console.log('ℹ️ Artifacts stats API not available, using database fallback');
+                                return this.loadArtifactStatsFromDatabase();
+                            }
+                            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                        }
+                        
+                        const contentType = response.headers.get('content-type');
+                        if (!contentType || !contentType.includes('application/json')) {
+                            throw new Error('Response is not JSON');
+                        }
+                        
+                        const data = await response.json();
+                        this.artifactStats = data.overall;
+                    } catch (error) {
+                        console.error('Error loading artifact stats:', error);
+                        this.loadArtifactStatsFromDatabase();
+                    }
+                },
+
+                // Fallback method to load artifact stats from database
+                async loadArtifactStatsFromDatabase() {
+                    try {
+                        if (!this.db) {
+                            this.artifactStats = {
+                                total_artifacts: 0,
+                                unique_workflows: 0,
+                                total_file_size_human: '0 B',
+                                recent_artifacts_24h: 0,
+                                total_relationships: 0
+                            };
+                            return;
+                        }
+
+                        // Calculate stats from database
+                        const totalArtifacts = this.executeQuery('SELECT COUNT(*) as count FROM artifacts')[0]?.count || 0;
+                        const uniqueWorkflows = this.executeQuery('SELECT COUNT(DISTINCT workflow_id) as count FROM artifacts')[0]?.count || 0;
+                        
+                        // Calculate recent artifacts (last 24 hours)
+                        const yesterday = Math.floor(Date.now() / 1000) - (24 * 60 * 60);
+                        const recentArtifacts = this.executeQuery('SELECT COUNT(*) as count FROM artifacts WHERE created_at > ?', [yesterday])[0]?.count || 0;
+
+                        this.artifactStats = {
+                            total_artifacts: totalArtifacts,
+                            unique_workflows: uniqueWorkflows,
+                            total_file_size_human: 'N/A',
+                            recent_artifacts_24h: recentArtifacts,
+                            total_relationships: 0
+                        };
+
+                    } catch (error) {
+                        console.error('Error loading artifact stats from database:', error);
+                        this.artifactStats = {
+                            total_artifacts: 0,
+                            unique_workflows: 0,
+                            total_file_size_human: '0 B',
+                            recent_artifacts_24h: 0,
+                            total_relationships: 0
+                        };
+                    }
+                },
+
+                async loadAvailableFilters() {
+                    try {
+                        // Load available tags
+                        const allTags = new Set();
+                        this.filteredArtifacts.forEach(artifact => {
+                            artifact.tags.forEach(tag => allTags.add(tag));
+                        });
+                        this.availableTags = Array.from(allTags).sort();
+
+                        // Load available workflows
+                        this.availableWorkflows = this.workflows.map(w => ({
+                            id: w.workflow_id,
+                            title: w.title || w.goal || `Workflow ${w.workflow_id.substring(0, 8)}`
+                        }));
+
+                    } catch (error) {
+                        console.error('Error loading filters:', error);
+                    }
+                },
+
+                updateGroupedArtifactsByDate() {
+                    const groups = new Map();
+                    
+                    this.filteredArtifacts.forEach(artifact => {
+                        const date = new Date(artifact.created_at * 1000).toDateString();
+                        if (!groups.has(date)) {
+                            groups.set(date, {
+                                date,
+                                artifacts: []
+                            });
+                        }
+                        groups.get(date).artifacts.push(artifact);
+                    });
+
+                    this.groupedArtifactsByDate = Array.from(groups.values())
+                        .sort((a, b) => new Date(b.date) - new Date(a.date));
+                },
+
+                async loadMoreArtifacts() {
+                    if (this.isLoadingMoreArtifacts || !this.hasMoreArtifacts) return;
+                    
+                    this.isLoadingMoreArtifacts = true;
+                    this.artifactCurrentPage++;
+                    await this.loadArtifacts();
+                    this.isLoadingMoreArtifacts = false;
+                },
+
+                async searchArtifacts() {
+                    this.artifactCurrentPage = 1;
+                    await this.loadArtifacts();
+                },
+
+                selectArtifact(artifact) {
+                    this.selectedArtifact = artifact;
+                    this.showArtifactModal = true;
+                },
+
+                toggleTagFilter(tag) {
+                    const index = this.selectedTags.indexOf(tag);
+                    if (index > -1) {
+                        this.selectedTags.splice(index, 1);
+                    } else {
+                        this.selectedTags.push(tag);
+                    }
+                    this.searchArtifacts();
+                },
+
+                clearAllFilters() {
+                    this.selectedTags = [];
+                    this.selectedWorkflows = [];
+                    this.artifactSearchQuery = '';
+                    this.artifactTypeFilter = '';
+                    this.showTagFilter = false;
+                    this.showWorkflowFilter = false;
+                    this.searchArtifacts();
+                },
+
+                getArtifactPreview(artifact) {
+                    if (artifact.thumbnail_path) {
+                        return artifact.thumbnail_path;
+                    }
+                    
+                    if (artifact.file_path && artifact.artifact_type === 'image') {
+                        return artifact.file_path;
+                    }
+                    
+                    // Return placeholder for non-image types
+                    return `data:image/svg+xml;base64,${btoa(`
+                        <svg xmlns="http://www.w3.org/2000/svg" width="200" height="150" viewBox="0 0 200 150">
+                            <rect width="200" height="150" fill="#374151"/>
+                            <text x="100" y="75" text-anchor="middle" fill="#9CA3AF" font-family="Arial" font-size="14">
+                                ${artifact.artifact_type.toUpperCase()}
+                            </text>
+                        </svg>
+                    `)}`;
+                },
+
+                getArtifactIcon(artifactType) {
+                    const icons = {
+                        image: 'image',
+                        document: 'file-text',
+                        code: 'code',
+                        data: 'database',
+                        model: 'cpu',
+                        video: 'video',
+                        audio: 'volume-2',
+                        archive: 'archive'
+                    };
+                    return icons[artifactType] || 'file';
+                },
+
+                getArtifactTypeColor(artifactType) {
+                    const colors = {
+                        image: 'type-image',
+                        document: 'type-document',
+                        code: 'type-code',
+                        data: 'type-data',
+                        model: 'type-model'
+                    };
+                    return colors[artifactType] || 'type-default';
+                },
+
+                getMasonryItemHeight(artifact) {
+                    // Calculate dynamic height based on content
+                    const baseHeight = 200;
+                    const contentHeight = Math.min(150, (artifact.description?.length || 0) / 2);
+                    const tagHeight = Math.min(30, artifact.tags.length * 6);
+                    
+                    return baseHeight + contentHeight + tagHeight;
+                },
+
+                getPreviewHeight(artifact) {
+                    if (artifact.artifact_type === 'image') {
+                        return Math.min(300, Math.max(150, this.getMasonryItemHeight(artifact) * 0.6));
+                    }
+                    return 150;
+                },
+
+                getCodeLanguage(artifact) {
+                    if (artifact.metadata && artifact.metadata.language) {
+                        return artifact.metadata.language;
+                    }
+                    
+                    // Try to detect from file extension
+                    const ext = artifact.name?.split('.').pop()?.toLowerCase();
+                    const languages = {
+                        js: 'JavaScript',
+                        py: 'Python',
+                        ts: 'TypeScript',
+                        jsx: 'React',
+                        vue: 'Vue',
+                        html: 'HTML',
+                        css: 'CSS',
+                        json: 'JSON',
+                        sql: 'SQL'
+                    };
+                    
+                    return languages[ext] || 'Code';
+                },
+
+                getCodePreview(artifact) {
+                    if (artifact.metadata && artifact.metadata.preview) {
+                        return artifact.metadata.preview.substring(0, 200) + '...';
+                    }
+                    
+                    return `// ${artifact.name}\n// Preview not available`;
+                },
+
+                handleImageError(event, artifact) {
+                    event.target.style.display = 'none';
+                    event.target.parentNode.innerHTML = `
+                        <div class="w-full h-full flex items-center justify-center bg-gray-800">
+                            <div class="text-center">
+                                <i data-lucide="${this.getArtifactIcon(artifact.artifact_type)}" class="w-16 h-16 mx-auto mb-2 text-gray-400"></i>
+                                <div class="text-sm text-gray-400">Preview unavailable</div>
+                            </div>
+                        </div>
+                    `;
+                },
+
+                formatTime(timestamp) {
+                    return new Date(timestamp * 1000).toLocaleTimeString();
+                },
+
+                async initializeArtifactGallery() {
+                    console.log('🖼️ Initializing Artifact Gallery...');
+                    try {
+                        await this.loadArtifacts();
+                        console.log('✅ Artifact Gallery initialized');
+                    } catch (error) {
+                        console.error('❌ Failed to initialize Artifact Gallery:', error);
+                        this.showToast('Failed to initialize Artifact Gallery', 'error');
+                    }
                 },
 
                 performGlobalSearch() {
@@ -10294,6 +11794,668 @@
                         .style("fill", "#9ca3af")
                         .style("font-size", "16px")
                         .text("Network visualization coming soon");
+                },
+
+                // =================== ACTION MONITOR METHODS ===================
+
+                async initializeActionMonitor() {
+                    console.log('📊 Initializing Action Execution Monitor...');
+                    
+                    try {
+                        // Initialize action monitor data
+                        await this.loadActionMonitorData();
+                        
+                        // Initialize performance charts
+                        await this.$nextTick();
+                        this.renderActionPerformanceCharts();
+                        
+                        // Start real-time monitoring if enabled
+                        if (this.actionMonitorSettings.autoRefresh) {
+                            this.startActionMonitoring();
+                        }
+                        
+                        // Initialize WebSocket connection for real-time updates
+                        this.initializeActionWebSocket();
+                        
+                        console.log('✅ Action Execution Monitor initialized successfully');
+                        
+                    } catch (error) {
+                        console.error('❌ Error initializing action monitor:', error);
+                        this.showToast('Error initializing action monitor', 'error');
+                    }
+                },
+
+                async loadActionMonitorData() {
+                    try {
+                        // Generate sample data based on existing actions
+                        this.generateActionMonitorSampleData();
+                        
+                        // Calculate real-time metrics
+                        this.updateActionMetrics();
+                        
+                        // Update tool usage statistics
+                        this.calculateToolUsageStats();
+                        
+                        // Update status
+                        this.actionMonitorStatus.lastUpdate = Date.now();
+                        this.actionMonitorStatus.connected = true;
+                        
+                    } catch (error) {
+                        console.error('Error loading action monitor data:', error);
+                        this.actionMonitorStatus.connected = false;
+                        throw error;
+                    }
+                },
+
+                generateActionMonitorSampleData() {
+                    const now = Date.now() / 1000;
+                    
+                    // Generate running actions (simulated from recent actions)
+                    this.actionMonitorData.realTimeActions = this.actions
+                        .filter(a => a.status === 'in_progress' || Math.random() < 0.1)
+                        .slice(0, 3)
+                        .map(action => ({
+                            ...action,
+                            action_id: action.action_id || `action_${Date.now()}_${Math.random()}`,
+                            status: 'running',
+                            started_at: now - Math.random() * 300,
+                            progress: Math.random() * 80 + 10,
+                            priority: ['high', 'normal', 'low'][Math.floor(Math.random() * 3)],
+                            estimated_completion: now + Math.random() * 600
+                        }));
+
+                    // Generate queued actions
+                    this.actionMonitorData.queuedActions = Array.from({ length: Math.floor(Math.random() * 8) }, (_, i) => ({
+                        action_id: `queued_${Date.now()}_${i}`,
+                        title: `Queued Action ${i + 1}`,
+                        tool_name: ['file_reader', 'web_scraper', 'data_analyzer', 'code_generator'][Math.floor(Math.random() * 4)],
+                        action_type: 'tool_use',
+                        status: 'queued',
+                        queue_position: i + 1,
+                        priority: ['high', 'normal', 'low'][Math.floor(Math.random() * 3)],
+                        estimated_start: `${Math.floor(Math.random() * 10) + 1} min`,
+                        created_at: now - Math.random() * 60
+                    }));
+
+                    // Generate completed actions (recent)
+                    this.actionMonitorData.completedActions = this.actions
+                        .filter(a => a.status === 'completed')
+                        .slice(0, 10)
+                        .map(action => ({
+                            ...action,
+                            execution_time: Math.random() * 2000 + 100,
+                            completed_at: action.completed_at || (now - Math.random() * 3600)
+                        }));
+
+                    // Generate batch operations
+                    this.actionMonitorData.batchOperations = Math.random() < 0.3 ? [{
+                        batch_id: `batch_${Date.now()}`,
+                        name: 'Data Processing Batch',
+                        total: 50,
+                        completed: Math.floor(Math.random() * 30) + 10,
+                        started_at: now - Math.random() * 1800,
+                        estimated_completion: '15 min'
+                    }] : [];
+
+                    // Generate error log
+                    this.actionMonitorData.errorLog = Array.from({ length: Math.floor(Math.random() * 5) }, (_, i) => ({
+                        id: `error_${Date.now()}_${i}`,
+                        type: ['Timeout', 'Permission Denied', 'Network Error', 'Invalid Input'][Math.floor(Math.random() * 4)],
+                        message: 'Sample error message for demonstration',
+                        timestamp: now - Math.random() * 86400,
+                        action_type: 'tool_use',
+                        severity: ['high', 'medium', 'low'][Math.floor(Math.random() * 3)]
+                    }));
+                },
+
+                updateActionMetrics() {
+                    const now = Date.now() / 1000;
+                    const hourAgo = now - 3600;
+                    
+                    // Calculate actions per second
+                    const recentActions = this.actionMonitorData.completedActions.filter(a => a.completed_at > hourAgo);
+                    this.realtimeMetrics.actionsPerSecond = recentActions.length / 3600;
+                    
+                    // Calculate average response time
+                    if (recentActions.length > 0) {
+                        this.realtimeMetrics.avgResponseTime = Math.round(
+                            recentActions.reduce((sum, a) => sum + (a.execution_time || 500), 0) / recentActions.length
+                        );
+                    } else {
+                        this.realtimeMetrics.avgResponseTime = 250;
+                    }
+                    
+                    // Calculate success rate
+                    const totalRecentActions = this.actionMonitorData.completedActions.length + this.actionMonitorData.errorLog.length;
+                    if (totalRecentActions > 0) {
+                        this.actionMonitorStatus.successRate = Math.round(
+                            (this.actionMonitorData.completedActions.length / totalRecentActions) * 100
+                        );
+                    } else {
+                        this.actionMonitorStatus.successRate = 95;
+                    }
+                    
+                    // Update error count
+                    this.realtimeMetrics.errorCount = this.actionMonitorData.errorLog.length;
+                    
+                    // Update total actions
+                    this.actionMonitorStatus.totalActions = this.actionMonitorData.realTimeActions.length + 
+                                                           this.actionMonitorData.completedActions.length + 
+                                                           this.actionMonitorData.queuedActions.length;
+                    
+                    // Calculate average execution time
+                    if (this.actionMonitorData.completedActions.length > 0) {
+                        this.actionMonitorStatus.avgExecutionTime = Math.round(
+                            this.actionMonitorData.completedActions.reduce((sum, a) => sum + (a.execution_time || 500), 0) / 
+                            this.actionMonitorData.completedActions.length
+                        );
+                    }
+                },
+
+                calculateToolUsageStats() {
+                    const stats = {};
+                    
+                    // Process all actions to build tool usage statistics
+                    [...this.actionMonitorData.realTimeActions, ...this.actionMonitorData.completedActions, ...this.actionMonitorData.queuedActions]
+                        .forEach(action => {
+                            const tool = action.tool_name || action.action_type || 'Unknown';
+                            
+                            if (!stats[tool]) {
+                                stats[tool] = {
+                                    count: 0,
+                                    total_time: 0,
+                                    successes: 0,
+                                    failures: 0
+                                };
+                            }
+                            
+                            stats[tool].count++;
+                            
+                            if (action.status === 'completed' || action.status === 'running') {
+                                stats[tool].successes++;
+                                stats[tool].total_time += action.execution_time || 500;
+                            }
+                            
+                            if (action.status === 'failed') {
+                                stats[tool].failures++;
+                            }
+                        });
+                    
+                    // Calculate derived statistics
+                    Object.keys(stats).forEach(tool => {
+                        const toolStats = stats[tool];
+                        toolStats.avg_time = toolStats.total_time > 0 ? Math.round(toolStats.total_time / Math.max(1, toolStats.successes)) : 0;
+                        toolStats.success_rate = Math.round((toolStats.successes / Math.max(1, toolStats.count)) * 100);
+                    });
+                    
+                    this.actionMonitorData.toolUsageStats = stats;
+                },
+
+                // Real-time monitoring controls
+                startActionMonitoring() {
+                    if (this.actionMonitorInterval) {
+                        clearInterval(this.actionMonitorInterval);
+                    }
+                    
+                    this.isMonitoringActions = true;
+                    this.actionMonitorInterval = setInterval(() => {
+                        this.refreshActionMonitor();
+                    }, this.actionMonitorSettings.refreshInterval);
+                    
+                    this.showToast('Action monitoring started 🔄', 'success');
+                },
+
+                stopActionMonitoring() {
+                    if (this.actionMonitorInterval) {
+                        clearInterval(this.actionMonitorInterval);
+                        this.actionMonitorInterval = null;
+                    }
+                    
+                    this.isMonitoringActions = false;
+                    this.showToast('Action monitoring stopped', 'info');
+                },
+
+                toggleActionMonitoring() {
+                    if (this.isMonitoringActions) {
+                        this.stopActionMonitoring();
+                    } else {
+                        this.startActionMonitoring();
+                    }
+                },
+
+                async refreshActionMonitor() {
+                    try {
+                        await this.loadActionMonitorData();
+                        
+                        // Update performance metrics
+                        this.updateActionMetrics();
+                        
+                        // Update charts if visible
+                        if (this.currentView === 'action-monitor') {
+                            this.updatePerformanceCharts();
+                        }
+                        
+                        // Check for alerts
+                        this.checkActionAlerts();
+                        
+                    } catch (error) {
+                        console.error('Error refreshing action monitor:', error);
+                    }
+                },
+
+                checkActionAlerts() {
+                    // Check for high error rate
+                    if (this.actionMonitorStatus.successRate < 70) {
+                        if (this.actionMonitorSettings.enableNotifications) {
+                            this.showToast(`Warning: Success rate dropped to ${this.actionMonitorStatus.successRate}%`, 'warning');
+                        }
+                        if (this.actionMonitorSettings.soundAlerts) {
+                            this.playAlertSound('warning');
+                        }
+                    }
+                    
+                    // Check for queue backup
+                    if (this.actionMonitorData.queuedActions.length > 10) {
+                        if (this.actionMonitorSettings.enableNotifications) {
+                            this.showToast(`Queue backup: ${this.actionMonitorData.queuedActions.length} actions queued`, 'warning');
+                        }
+                    }
+                    
+                    // Check for long-running actions
+                    const now = Date.now() / 1000;
+                    this.actionMonitorData.realTimeActions.forEach(action => {
+                        const runtime = now - action.started_at;
+                        if (runtime > 300 && this.actionMonitorSettings.enableNotifications) { // 5 minutes
+                            this.showToast(`Long-running action: ${action.title || action.tool_name} (${Math.round(runtime/60)}m)`, 'info');
+                        }
+                    });
+                },
+
+                playAlertSound(type) {
+                    // Simple beep using Web Audio API
+                    try {
+                        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                        const oscillator = audioContext.createOscillator();
+                        const gainNode = audioContext.createGain();
+                        
+                        oscillator.connect(gainNode);
+                        gainNode.connect(audioContext.destination);
+                        
+                        oscillator.frequency.value = type === 'warning' ? 800 : 400;
+                        oscillator.type = 'sine';
+                        
+                        gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+                        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                        
+                        oscillator.start(audioContext.currentTime);
+                        oscillator.stop(audioContext.currentTime + 0.5);
+                    } catch (error) {
+                        console.warn('Could not play alert sound:', error);
+                    }
+                },
+
+                // WebSocket connection for real-time updates
+                initializeActionWebSocket() {
+                    // In a real implementation, this would connect to the FastAPI WebSocket endpoint
+                    try {
+                        // Simulate WebSocket connection
+                        console.log('Action Monitor WebSocket connection simulated');
+                        this.actionMonitorStatus.connected = true;
+                    } catch (error) {
+                        console.error('Error initializing action WebSocket:', error);
+                        this.actionMonitorStatus.connected = false;
+                    }
+                },
+
+                // Filtering and search
+                filterActionMonitor() {
+                    // The filtering is handled in the getFilteredActions method
+                    // This method can trigger additional processing if needed
+                },
+
+                getFilteredActions(status) {
+                    let actions = [];
+                    
+                    switch (status) {
+                        case 'running':
+                            actions = this.actionMonitorData.realTimeActions;
+                            break;
+                        case 'queued':
+                            actions = this.actionMonitorData.queuedActions;
+                            break;
+                        case 'completed':
+                            actions = this.actionMonitorData.completedActions;
+                            break;
+                        case 'failed':
+                            actions = this.actionMonitorData.errorLog.map(error => ({
+                                action_id: error.id,
+                                title: `Failed: ${error.type}`,
+                                tool_name: error.action_type,
+                                error_message: error.message,
+                                failed_at: error.timestamp,
+                                status: 'failed'
+                            }));
+                            break;
+                        default:
+                            actions = [
+                                ...this.actionMonitorData.realTimeActions,
+                                ...this.actionMonitorData.queuedActions,
+                                ...this.actionMonitorData.completedActions
+                            ];
+                    }
+                    
+                    // Apply filters
+                    if (this.actionFilterType !== 'all' && this.actionFilterType !== status && status === 'all') {
+                        return this.getFilteredActions(this.actionFilterType);
+                    }
+                    
+                    if (this.actionFilterTool) {
+                        actions = actions.filter(action => 
+                            action.tool_name === this.actionFilterTool || action.action_type === this.actionFilterTool
+                        );
+                    }
+                    
+                    if (this.actionSearchQuery) {
+                        const query = this.actionSearchQuery.toLowerCase();
+                        actions = actions.filter(action =>
+                            action.title?.toLowerCase().includes(query) ||
+                            action.tool_name?.toLowerCase().includes(query) ||
+                            action.action_type?.toLowerCase().includes(query) ||
+                            action.description?.toLowerCase().includes(query) ||
+                            action.reasoning?.toLowerCase().includes(query)
+                        );
+                    }
+                    
+                    return actions;
+                },
+
+                getUniqueTools() {
+                    const tools = new Set();
+                    
+                    [...this.actionMonitorData.realTimeActions, ...this.actionMonitorData.queuedActions, ...this.actionMonitorData.completedActions]
+                        .forEach(action => {
+                            if (action.tool_name) tools.add(action.tool_name);
+                            if (action.action_type) tools.add(action.action_type);
+                        });
+                    
+                    return Array.from(tools).sort();
+                },
+
+                // Action interaction methods
+                selectActionForDetails(action) {
+                    this.selectedActionDetail = action;
+                    this.showActionDetailModal = true;
+                },
+
+                async retryAction(action) {
+                    try {
+                        this.showToast(`Retrying action: ${action.title || action.tool_name}`, 'info');
+                        
+                        // In a real implementation, this would call the retry API
+                        // For now, we'll simulate by moving the action back to queued
+                        const newAction = {
+                            ...action,
+                            action_id: `retry_${action.action_id}`,
+                            status: 'queued',
+                            queue_position: this.actionMonitorData.queuedActions.length + 1,
+                            created_at: Date.now() / 1000
+                        };
+                        
+                        this.actionMonitorData.queuedActions.push(newAction);
+                        
+                        // Remove from error log
+                        this.actionMonitorData.errorLog = this.actionMonitorData.errorLog.filter(e => e.id !== action.action_id);
+                        
+                        this.showToast('Action queued for retry', 'success');
+                        
+                    } catch (error) {
+                        console.error('Error retrying action:', error);
+                        this.showToast('Error retrying action', 'error');
+                    }
+                },
+
+                async cancelQueuedAction(action) {
+                    try {
+                        // Remove from queue
+                        this.actionMonitorData.queuedActions = this.actionMonitorData.queuedActions.filter(a => a.action_id !== action.action_id);
+                        
+                        // Update queue positions
+                        this.actionMonitorData.queuedActions.forEach((a, index) => {
+                            a.queue_position = index + 1;
+                        });
+                        
+                        this.showToast(`Cancelled: ${action.title || action.tool_name}`, 'info');
+                        
+                    } catch (error) {
+                        console.error('Error cancelling action:', error);
+                        this.showToast('Error cancelling action', 'error');
+                    }
+                },
+
+                // Error handling
+                showErrorDetails(error) {
+                    alert(`Error Details:\n\nType: ${error.type}\nMessage: ${error.message}\nTime: ${new Date(error.timestamp * 1000).toLocaleString()}\nSeverity: ${error.severity}`);
+                },
+
+                clearErrorLog() {
+                    this.actionMonitorData.errorLog = [];
+                    this.showToast('Error log cleared', 'info');
+                },
+
+                // Performance charts
+                async renderActionPerformanceCharts() {
+                    if (!window.Chart) return;
+                    
+                    await this.$nextTick();
+                    
+                    try {
+                        await this.renderExecutionTimeChart();
+                        await this.renderThroughputChart();
+                    } catch (error) {
+                        console.error('Error rendering action performance charts:', error);
+                    }
+                },
+
+                async renderExecutionTimeChart() {
+                    const canvas = this.$refs.executionTimeChart;
+                    if (!canvas) return;
+                    
+                    // Clear any existing chart first
+                    if (this.actionPerformanceCharts.executionTime) {
+                        this.actionPerformanceCharts.executionTime.destroy();
+                        this.actionPerformanceCharts.executionTime = null;
+                    }
+                    
+                    // Reset canvas dimensions
+                    canvas.width = canvas.offsetWidth || 400;
+                    canvas.height = 192;
+                    canvas.style.width = '';
+                    canvas.style.height = '192px';
+                    
+                    // Generate sample data
+                    const timeData = [];
+                    const now = new Date();
+                    for (let i = 11; i >= 0; i--) {
+                        const time = new Date(now.getTime() - i * 300000); // 5 minute intervals
+                        timeData.push({
+                            time: time,
+                            avgTime: Math.random() * 500 + 200,
+                            count: Math.floor(Math.random() * 10) + 1
+                        });
+                    }
+                    
+                    this.actionPerformanceCharts.executionTime = new Chart(canvas, {
+                        type: 'line',
+                        data: {
+                            labels: timeData.map(d => d.time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })),
+                            datasets: [{
+                                label: 'Avg Execution Time (ms)',
+                                data: timeData.map(d => d.avgTime),
+                                borderColor: '#f97316',
+                                backgroundColor: 'rgba(249, 115, 22, 0.1)',
+                                fill: true,
+                                tension: 0.4,
+                                pointRadius: 4,
+                                pointHoverRadius: 6
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        color: '#9ca3af',
+                                        callback: value => value + 'ms'
+                                    },
+                                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                                },
+                                x: {
+                                    ticks: { color: '#9ca3af' },
+                                    grid: { display: false }
+                                }
+                            },
+                            plugins: {
+                                legend: { display: false }
+                            }
+                        }
+                    });
+                },
+
+                async renderThroughputChart() {
+                    const canvas = this.$refs.throughputChart;
+                    if (!canvas) return;
+                    
+                    // Clear any existing chart first
+                    if (this.actionPerformanceCharts.throughput) {
+                        this.actionPerformanceCharts.throughput.destroy();
+                        this.actionPerformanceCharts.throughput = null;
+                    }
+                    
+                    // Reset canvas dimensions
+                    canvas.width = canvas.offsetWidth || 400;
+                    canvas.height = 192;
+                    canvas.style.width = '';
+                    canvas.style.height = '192px';
+                    
+                    // Generate sample data
+                    const throughputData = [];
+                    const now = new Date();
+                    for (let i = 11; i >= 0; i--) {
+                        const time = new Date(now.getTime() - i * 300000); // 5 minute intervals
+                        throughputData.push({
+                            time: time,
+                            actionsPerMin: Math.random() * 20 + 5
+                        });
+                    }
+                    
+                    this.actionPerformanceCharts.throughput = new Chart(canvas, {
+                        type: 'bar',
+                        data: {
+                            labels: throughputData.map(d => d.time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })),
+                            datasets: [{
+                                label: 'Actions per 5min',
+                                data: throughputData.map(d => d.actionsPerMin),
+                                backgroundColor: '#3b82f6',
+                                borderRadius: 4,
+                                borderSkipped: false
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    ticks: {
+                                        color: '#9ca3af',
+                                        stepSize: 5
+                                    },
+                                    grid: { color: 'rgba(156, 163, 175, 0.1)' }
+                                },
+                                x: {
+                                    ticks: { color: '#9ca3af' },
+                                    grid: { display: false }
+                                }
+                            },
+                            plugins: {
+                                legend: { display: false }
+                            }
+                        }
+                    });
+                },
+
+                updatePerformanceCharts() {
+                    this.renderExecutionTimeChart();
+                    this.renderThroughputChart();
+                },
+
+                // Settings and export
+                updateMonitorSettings() {
+                    // Update monitoring interval if auto-refresh is enabled
+                    if (this.actionMonitorSettings.autoRefresh && this.isMonitoringActions) {
+                        this.stopActionMonitoring();
+                        this.startActionMonitoring();
+                    }
+                    
+                    // Save settings to localStorage
+                    try {
+                        localStorage.setItem('ums-action-monitor-settings', JSON.stringify(this.actionMonitorSettings));
+                    } catch (e) {
+                        console.warn('Failed to save action monitor settings:', e);
+                    }
+                },
+
+                exportActionReport() {
+                    const report = {
+                        generated_at: new Date().toISOString(),
+                        summary: {
+                            total_actions: this.actionMonitorStatus.totalActions,
+                            success_rate: this.actionMonitorStatus.successRate,
+                            avg_execution_time: this.actionMonitorStatus.avgExecutionTime,
+                            errors_24h: this.realtimeMetrics.errorCount
+                        },
+                        real_time_actions: this.actionMonitorData.realTimeActions,
+                        queued_actions: this.actionMonitorData.queuedActions,
+                        completed_actions: this.actionMonitorData.completedActions.slice(0, 50),
+                        batch_operations: this.actionMonitorData.batchOperations,
+                        tool_usage_stats: this.actionMonitorData.toolUsageStats,
+                        error_log: this.actionMonitorData.errorLog,
+                        realtime_metrics: this.realtimeMetrics,
+                        performance_metrics: this.actionMonitorData.performanceMetrics
+                    };
+                    
+                    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `action-monitor-report-${Date.now()}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    
+                    this.showToast('Action monitoring report exported! 📁', 'success');
+                },
+
+                // Utility methods
+                formatElapsedTime(timestamp) {
+                    if (!timestamp) return 'Unknown';
+                    
+                    const now = Date.now() / 1000;
+                    const elapsed = now - timestamp;
+                    
+                    if (elapsed < 60) return `${Math.floor(elapsed)}s ago`;
+                    if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m ago`;
+                    return `${Math.floor(elapsed / 3600)}h ago`;
+                },
+
+                getActionPriorityColor(priority) {
+                    const colors = {
+                        high: 'bg-red-400',
+                        normal: 'bg-yellow-400',
+                        low: 'bg-blue-400'
+                    };
+                    return colors[priority] || 'bg-gray-400';
                 }
             }
         }
@@ -10310,7 +12472,38 @@
             if (window.lucide) {
                 lucide.createIcons();
             }
+            
+            // Initialize Tippy.js tooltips after a short delay to ensure DOM is ready
+            setTimeout(initializeTooltips, 500);
         });
+
+        // Initialize Tippy.js tooltips
+        function initializeTooltips() {
+            if (typeof tippy !== 'undefined') {
+                tippy('.dashboard-tooltip', {
+                    theme: 'custom',
+                    animation: 'scale',
+                    duration: [300, 200],
+                    delay: [500, 0],
+                    interactive: false,
+                    hideOnClick: true,
+                    placement: 'top',
+                    maxWidth: 350,
+                    offset: [0, 10],
+                    allowHTML: true,
+                    onShow(instance) {
+                        return true;
+                    },
+                    onHidden(instance) {
+                        // Clean up any lingering tooltips
+                    }
+                });
+                console.log('✅ Tippy.js tooltips initialized successfully');
+            } else {
+                console.warn('⚠️ Tippy.js not found, retrying in 100ms...');
+                setTimeout(initializeTooltips, 100);
+            }
+        }
     </script>
 </body>
 </html>

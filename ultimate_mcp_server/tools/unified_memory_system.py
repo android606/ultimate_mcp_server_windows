@@ -385,9 +385,24 @@ SCHEMA_STATEMENTS = [
         name TEXT NOT NULL, description TEXT, path TEXT, content TEXT, metadata TEXT,
         created_at INTEGER NOT NULL, is_output BOOLEAN DEFAULT FALSE,
         idempotency_key TEXT NULL,
+        file_path TEXT, file_size INTEGER DEFAULT 0, content_hash TEXT, thumbnail_path TEXT,
+        version INTEGER DEFAULT 1, parent_artifact_id TEXT, tags TEXT,
+        importance REAL DEFAULT 0.5, access_count INTEGER DEFAULT 0, updated_at INTEGER DEFAULT 0, last_accessed_at INTEGER,
         FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE,
         FOREIGN KEY (action_id) REFERENCES actions(action_id) ON DELETE SET NULL,
+        FOREIGN KEY (parent_artifact_id) REFERENCES artifacts(artifact_id) ON DELETE SET NULL,
         UNIQUE(workflow_id, idempotency_key)
+    );""",
+    """CREATE TABLE IF NOT EXISTS artifact_relationships (
+        relationship_id TEXT PRIMARY KEY,
+        source_artifact_id TEXT NOT NULL,
+        target_artifact_id TEXT NOT NULL,
+        relationship_type TEXT NOT NULL,
+        strength REAL DEFAULT 1.0,
+        created_at INTEGER DEFAULT (unixepoch()),
+        FOREIGN KEY (source_artifact_id) REFERENCES artifacts (artifact_id) ON DELETE CASCADE,
+        FOREIGN KEY (target_artifact_id) REFERENCES artifacts (artifact_id) ON DELETE CASCADE,
+        UNIQUE(source_artifact_id, target_artifact_id, relationship_type)
     );""",
     """CREATE TABLE IF NOT EXISTS thought_chains (
         thought_chain_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, action_id TEXT, title TEXT NOT NULL, created_at INTEGER NOT NULL,
@@ -496,6 +511,16 @@ SCHEMA_STATEMENTS = [
         last_active INTEGER,                        
         FOREIGN KEY (workflow_id) REFERENCES workflows(workflow_id) ON DELETE CASCADE
     );""",
+    """CREATE TABLE IF NOT EXISTS cognitive_timeline_states (
+        state_id TEXT PRIMARY KEY,
+        timestamp REAL NOT NULL,
+        state_type TEXT NOT NULL,
+        state_data TEXT NOT NULL,
+        workflow_id TEXT,
+        description TEXT,
+        created_at REAL DEFAULT (unixepoch()),
+        FOREIGN KEY (workflow_id) REFERENCES workflows (workflow_id) ON DELETE CASCADE
+    );""",
     """CREATE TABLE IF NOT EXISTS reflections (
         reflection_id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
         reflection_type TEXT NOT NULL, created_at INTEGER NOT NULL, referenced_memories TEXT,
@@ -525,6 +550,10 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_artifacts_workflow_id ON artifacts(workflow_id);",
     "CREATE INDEX IF NOT EXISTS idx_artifacts_action_id ON artifacts(action_id);",
     "CREATE INDEX IF NOT EXISTS idx_artifacts_type ON artifacts(artifact_type);",
+    "CREATE INDEX IF NOT EXISTS idx_artifacts_created_at ON artifacts(created_at);",
+    "CREATE INDEX IF NOT EXISTS idx_artifacts_tags ON artifacts(tags);",
+    "CREATE INDEX IF NOT EXISTS idx_artifact_relationships_source ON artifact_relationships(source_artifact_id);",
+    "CREATE INDEX IF NOT EXISTS idx_artifact_relationships_target ON artifact_relationships(target_artifact_id);",
     "CREATE INDEX IF NOT EXISTS idx_thought_chains_workflow ON thought_chains(workflow_id);",
     "CREATE INDEX IF NOT EXISTS idx_thoughts_chain ON thoughts(thought_chain_id);",
     "CREATE INDEX IF NOT EXISTS idx_thoughts_sequence ON thoughts(thought_chain_id, sequence_number);",
@@ -548,6 +577,9 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_embeddings_dimension ON embeddings(dimension);",
     "CREATE INDEX IF NOT EXISTS idx_cognitive_states_workflow ON cognitive_states(workflow_id);",
     "CREATE INDEX IF NOT EXISTS idx_cognitive_states_latest ON cognitive_states(workflow_id, is_latest);",
+    "CREATE INDEX IF NOT EXISTS idx_cognitive_timeline_states_timestamp ON cognitive_timeline_states(timestamp);",
+    "CREATE INDEX IF NOT EXISTS idx_cognitive_timeline_states_type ON cognitive_timeline_states(state_type);",
+    "CREATE INDEX IF NOT EXISTS idx_cognitive_timeline_states_workflow ON cognitive_timeline_states(workflow_id);",
     "CREATE INDEX IF NOT EXISTS idx_reflections_workflow ON reflections(workflow_id);",
     "CREATE INDEX IF NOT EXISTS idx_operations_workflow ON memory_operations(workflow_id);",
     "CREATE INDEX IF NOT EXISTS idx_operations_memory ON memory_operations(memory_id);",
