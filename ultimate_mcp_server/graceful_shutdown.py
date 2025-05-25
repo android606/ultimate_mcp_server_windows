@@ -2,7 +2,7 @@
 Graceful shutdown utilities for Ultimate MCP Server.
 
 This module provides utilities to handle signals and gracefully terminate
-the application with minimal error outputs during shutdown.
+the application with ZERO error outputs during shutdown using OS-level redirection.
 """
 
 import asyncio
@@ -10,186 +10,187 @@ import logging
 import os
 import signal
 import sys
+import warnings
+from contextlib import suppress
 from functools import partial
 from typing import Callable, List, Optional
-
-from ultimate_mcp_server.config import get_config
-from ultimate_mcp_server.tools.unified_memory_system import DBConnection
 
 logger = logging.getLogger("ultimate_mcp_server.shutdown")
 
 # Track registered shutdown handlers and state
 _shutdown_handlers: List[Callable] = []
 _shutdown_in_progress = False
-_original_stderr = None
-
-class QuietExit(Exception):
-    """Special exception to trigger a clean exit with minimal error output"""
-    pass
+_original_stderr_fd = None
+_devnull_fd = None
 
 
-def redirect_stderr_during_shutdown():
-    """Redirect stderr to /dev/null or NUL during shutdown to prevent error spam"""
-    global _original_stderr
+def _redirect_stderr_to_devnull():
+    """Redirect stderr to /dev/null at the OS level"""
+    global _original_stderr_fd, _devnull_fd
     
-    if _original_stderr is None:
-        _original_stderr = sys.stderr
-        try:
-            # Use null device, which is OS-dependent
-            null_device = '/dev/null' if sys.platform != 'win32' else 'NUL'
-            sys.stderr = open(null_device, 'w')
-            logger.info("Redirected stderr to prevent shutdown noise")
-        except Exception as e:
-            # If we can't redirect, restore the original stderr
-            sys.stderr = _original_stderr
-            _original_stderr = None
-            logger.warning(f"Failed to redirect stderr: {e}")
+    try:
+        if _original_stderr_fd is None:
+            # Save original stderr file descriptor
+            _original_stderr_fd = os.dup(sys.stderr.fileno())
+            
+            # Open /dev/null
+            _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+            
+            # Redirect stderr to /dev/null
+            os.dup2(_devnull_fd, sys.stderr.fileno())
+            
+    except Exception:
+        # If redirection fails, just continue
+        pass
+
+
+def _restore_stderr():
+    """Restore original stderr"""
+    global _original_stderr_fd, _devnull_fd
+    
+    try:
+        if _original_stderr_fd is not None:
+            os.dup2(_original_stderr_fd, sys.stderr.fileno())
+            os.close(_original_stderr_fd)
+            _original_stderr_fd = None
+            
+        if _devnull_fd is not None:
+            os.close(_devnull_fd)
+            _devnull_fd = None
+            
+    except Exception:
+        pass
 
 
 def register_shutdown_handler(handler: Callable) -> None:
-    """Register a function to be called during graceful shutdown.
-    
-    Args:
-        handler: Async or sync callable to execute during shutdown
-    """
+    """Register a function to be called during graceful shutdown."""
     if handler not in _shutdown_handlers:
         _shutdown_handlers.append(handler)
-        logger.debug(f"Registered shutdown handler: {handler.__name__}")
+
 
 def remove_shutdown_handler(handler: Callable) -> None:
-    """Remove a previously registered shutdown handler.
-    
-    Args:
-        handler: Previously registered handler to remove
-    """
+    """Remove a previously registered shutdown handler."""
     if handler in _shutdown_handlers:
         _shutdown_handlers.remove(handler)
-        logger.debug(f"Removed shutdown handler: {handler.__name__}")
 
 
 async def _execute_shutdown_handlers():
-    """Execute all registered shutdown handlers with error handling"""
+    """Execute all registered shutdown handlers with complete error suppression"""
     for handler in _shutdown_handlers:
-        try:
+        with suppress(Exception):  # Suppress ALL exceptions
             if asyncio.iscoroutinefunction(handler):
-                # Add a timeout to each handler to prevent hanging
-                try:
-                    await asyncio.wait_for(handler(), timeout=15.0)
-                except asyncio.TimeoutError:
-                    logger.warning(f"Shutdown handler {handler.__name__} timed out after 15 seconds")
+                with suppress(asyncio.TimeoutError, asyncio.CancelledError):
+                    await asyncio.wait_for(handler(), timeout=3.0)
             else:
                 handler()
-        except Exception as e:
-            logger.error(f"Error in shutdown handler {handler.__name__}: {e}")
 
 
-async def _handle_shutdown(sig_name):
-    """Handle shutdown signals gracefully"""
+def _handle_shutdown_signal(signum, frame):
+    """Handle shutdown signals - IMMEDIATE TERMINATION"""
     global _shutdown_in_progress
     
     if _shutdown_in_progress:
-        logger.warning(f"Received {sig_name} while shutdown in progress - forcing exit")
-        # On second SIGINT, just exit immediately with os._exit
-        # This is more forceful than sys.exit and bypasses any pending async operations
-        print("\n[Emergency Exit] Forcing immediate shutdown...", file=_original_stderr or sys.stderr)
-        os._exit(1)  # Force exit without cleanup
-        return  # This line won't execute, but keeping for clarity
+        # Force immediate exit on second signal
+        os._exit(1)
+        return
         
     _shutdown_in_progress = True
     
-    logger.info(f"Received {sig_name} signal. Initiating graceful shutdown...")
-    
-    # Print a clear message to the console
-    print("\n[Graceful Shutdown] Closing connections and cleaning up...", file=_original_stderr or sys.stderr)
-    
+    # Print final message to original stderr if possible
     try:
-        # Add an overall timeout for all shutdown handlers
-        try:
-            await asyncio.wait_for(_execute_shutdown_handlers(), timeout=30.0)
-        except asyncio.TimeoutError:
-            logger.warning("Graceful shutdown timed out after 30 seconds")
-        
-        logger.info("Graceful shutdown completed successfully")
-        print("[Graceful Shutdown] Done.", file=_original_stderr or sys.stderr)
-    except Exception as e:
-        logger.error(f"Error during graceful shutdown: {e}")
-    finally:
-        # Force exit the process - more reliable than loop.call_soon
-        try:
-            loop = asyncio.get_running_loop()
-            # Schedule an immediate exit that can't be ignored
-            loop.call_soon_threadsafe(lambda: os._exit(0))
-            # Also schedule a backup exit in case the above doesn't work
-            loop.call_later(0.1, lambda: os._exit(0))
-        except:
-            # If we can't schedule through the loop, force exit immediately
-            os._exit(0)
+        if _original_stderr_fd:
+            os.write(_original_stderr_fd, b"\n[Graceful Shutdown] Signal received. Exiting...\n")
+        else:
+            print("\n[Graceful Shutdown] Signal received. Exiting...", file=sys.__stderr__)
+    except:
+        pass
+    
+    # Immediately redirect stderr to suppress any error output
+    _redirect_stderr_to_devnull()
+    
+    # Suppress all warnings
+    warnings.filterwarnings("ignore")
+    
+    # Try to run shutdown handlers quickly, but don't wait long
+    try:
+        loop = asyncio.get_running_loop()
+        # Create a task but don't wait for it - just exit
+        task = asyncio.create_task(_execute_shutdown_handlers())
+        # Give it a tiny bit of time then exit
+        loop.call_later(0.5, lambda: os._exit(0))
+    except RuntimeError:
+        # No running loop - just exit immediately
+        os._exit(0)
 
 
 def setup_signal_handlers(loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
-    """Set up signal handlers for graceful shutdown
+    """Set up signal handlers for immediate shutdown"""
+    # Use traditional signal handlers for immediate termination
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
     
-    Args:
-        loop: Optional asyncio event loop to use for scheduling shutdown
-              If not provided, the current running loop will be used
-    """
-    if loop is None:
+    # Also try to set up async handlers if we have a loop
+    if loop is not None:
         try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            logger.warning("Cannot set up signal handlers - no running asyncio loop")
-            return
-            
-    # Define handlers for common termination signals
-    for sig_name, sig_num in [('SIGINT', signal.SIGINT), ('SIGTERM', signal.SIGTERM)]:
-        try:
-            # Create partial with the signal name for better logging
-            handler = partial(_handle_shutdown, sig_name)
-            
-            # Add signal handler to event loop - handle the task properly
-            loop.add_signal_handler(
-                sig_num,
-                lambda h=handler: _create_shutdown_task(h)
-            )
-            logger.info(f"Registered {sig_name} handler for graceful shutdown")
-        except NotImplementedError:
-            # Windows doesn't support add_signal_handler
-            logger.warning(f"Could not set up {sig_name} handler via asyncio (Windows?)")
-            # Fall back to traditional signal handling on Windows
-            if sys.platform == 'win32':
-                signal.signal(sig_num, lambda s, f, h=handler: _create_shutdown_task(h))
-                logger.info(f"Registered {sig_name} handler via signal module (Windows)")
+            for sig in [signal.SIGINT, signal.SIGTERM]:
+                try:
+                    loop.add_signal_handler(sig, lambda: _handle_shutdown_signal(sig, None))
+                except (NotImplementedError, OSError):
+                    # Platform doesn't support async signal handlers
+                    pass
+        except Exception:
+            # Fallback is already set up with signal.signal above
+            pass
 
 
-def _create_shutdown_task(coro_func):
-    """Create and register a shutdown task with proper exception handling"""
-    async def _run_and_handle_exceptions():
-        try:
-            await coro_func()
-        except QuietExit:
-            # This is expected during shutdown, handle it gracefully
-            logger.debug("QuietExit raised during shutdown - handling gracefully")
-            # Exit process cleanly via the excepthook
-            sys.exit(0)
-        except Exception as e:
-            logger.error(f"Unhandled exception in shutdown task: {e}", exc_info=True)
-            sys.exit(1)
-            
-    # Create task and return it
-    task = asyncio.create_task(_run_and_handle_exceptions())
-    return task
-
-
-def handle_quiet_exit():
-    """Add custom excepthook to handle QuietExit without traceback"""
-    original_excepthook = sys.excepthook
+def enable_quiet_shutdown():
+    """Enable comprehensive quiet shutdown - immediate termination approach"""
+    # Set up signal handlers immediately
+    setup_signal_handlers()
     
-    def custom_excepthook(exc_type, exc_value, exc_traceback):
-        if issubclass(exc_type, QuietExit):
-            # Exit cleanly without showing the exception traceback
-            sys.exit(0)
-        else:
-            # For other exceptions, use the original excepthook
-            original_excepthook(exc_type, exc_value, exc_traceback)
+    # Suppress asyncio debug mode
+    try:
+        asyncio.get_event_loop().set_debug(False)
+    except RuntimeError:
+        pass
     
-    sys.excepthook = custom_excepthook 
+    # Suppress warnings
+    warnings.filterwarnings("ignore")
+
+
+def force_silent_exit():
+    """Force immediate silent exit with no output whatsoever"""
+    global _shutdown_in_progress
+    _shutdown_in_progress = True
+    _redirect_stderr_to_devnull()
+    os._exit(0)
+
+
+class QuietUvicornServer:
+    """Custom Uvicorn server that overrides signal handling for quiet shutdown"""
+    
+    def __init__(self, config):
+        import uvicorn
+        self.config = config
+        self.server = uvicorn.Server(config)
+        
+    def install_signal_handlers(self):
+        """Override uvicorn's signal handlers with our quiet ones"""
+        # Set up our own signal handlers instead of uvicorn's
+        setup_signal_handlers()
+        
+    def run(self):
+        """Run the server with custom signal handling"""
+        # Patch the server's install_signal_handlers method
+        self.server.install_signal_handlers = self.install_signal_handlers
+        
+        # Set up our signal handlers immediately
+        setup_signal_handlers()
+        
+        # Run the server
+        self.server.run()
+
+
+def create_quiet_server(config):
+    """Create a uvicorn server with quiet shutdown handling"""
+    return QuietUvicornServer(config) 

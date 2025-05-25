@@ -57,6 +57,12 @@
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
     
+    <!-- D3.js for graph visualization -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    
+    <!-- Mermaid.js for flowcharts -->
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.0/dist/mermaid.min.js"></script>
+    
     <!-- Toastify -->
     <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
     <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
@@ -76,6 +82,32 @@
             --color-success: #10b981;
             --color-warning: #f59e0b;
             --color-error: #ef4444;
+        }
+        
+        /* Light theme variables */
+        [data-theme="light"] {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f8fafc;
+            --bg-tertiary: #f1f5f9;
+            --text-primary: #1e293b;
+            --text-secondary: #475569;
+            --text-tertiary: #64748b;
+            --border-color: #e2e8f0;
+            --glass-bg: rgba(255, 255, 255, 0.8);
+            --card-bg: rgba(255, 255, 255, 0.9);
+        }
+        
+        /* Dark theme variables */
+        [data-theme="dark"] {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-tertiary: #334155;
+            --text-primary: #f1f5f9;
+            --text-secondary: #e2e8f0;
+            --text-tertiary: #cbd5e1;
+            --border-color: rgba(255, 255, 255, 0.1);
+            --glass-bg: rgba(15, 23, 42, 0.8);
+            --card-bg: rgba(15, 23, 42, 0.9);
         }
         
         * {
@@ -116,30 +148,55 @@
         }
         
         /* Glass morphism effects */
-        .glass {
+        [data-theme="dark"] .glass {
             background: rgba(255, 255, 255, 0.1);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.2);
         }
         
-        .glass-dark {
+        [data-theme="light"] .glass {
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+        }
+        
+        [data-theme="dark"] .glass-dark {
             background: rgba(0, 0, 0, 0.2);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255, 255, 255, 0.1);
         }
         
+        [data-theme="light"] .glass-dark {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+        }
+        
         /* Enhanced cards */
-        .enhanced-card {
+        [data-theme="dark"] .enhanced-card {
             background: linear-gradient(145deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255,255,255,0.1);
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
         
-        .enhanced-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+        [data-theme="light"] .enhanced-card {
+            background: linear-gradient(145deg, rgba(255,255,255,0.9), rgba(255,255,255,0.7));
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0,0,0,0.1);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        [data-theme="dark"] .enhanced-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.15);
             border-color: rgba(59, 130, 246, 0.3);
+        }
+        
+        [data-theme="light"] .enhanced-card:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+            border-color: rgba(59, 130, 246, 0.4);
         }
         
         /* Memory level colors */
@@ -256,11 +313,14 @@
             cursor: pointer;
             transition: all 0.3s ease;
             z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
         
         .fab:hover {
-            transform: scale(1.1);
-            box-shadow: 0 12px 30px rgba(59, 130, 246, 0.4);
+            transform: scale(1.05);
+            box-shadow: 0 8px 20px rgba(59, 130, 246, 0.4);
         }
         
         /* Command palette */
@@ -271,11 +331,38 @@
             transform: translate(-50%, -50%);
             width: 90%;
             max-width: 600px;
-            background: rgba(255, 255, 255, 0.95);
             backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.2);
             border-radius: 16px;
             z-index: 1000;
+            transition: all 0.3s ease;
+        }
+        
+        [data-theme="dark"] .command-palette {
+            background: rgba(15, 23, 42, 0.95);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #e5e7eb;
+        }
+        
+        [data-theme="light"] .command-palette {
+            background: rgba(255, 255, 255, 0.95);
+            border: 1px solid rgba(0, 0, 0, 0.1);
+            color: #1e293b;
+        }
+        
+        [data-theme="dark"] .command-palette input {
+            color: #e5e7eb;
+        }
+        
+        [data-theme="light"] .command-palette input {
+            color: #1e293b;
+        }
+        
+        [data-theme="dark"] .command-palette input::placeholder {
+            color: #9ca3af;
+        }
+        
+        [data-theme="light"] .command-palette input::placeholder {
+            color: #64748b;
         }
         
         /* Toast customization */
@@ -330,6 +417,419 @@
             perspective: 1000;
         }
         
+        /* Thought Chain Flow Diagram Styles */
+        .thought-chain-container {
+            background: rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+            min-height: 70vh;
+        }
+        
+        .mermaid-container {
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            padding: 2rem;
+        }
+        
+        .timeline-scrubber {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(10px);
+            padding: 1.5rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        
+        .timeline-slider {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: linear-gradient(90deg, #374151, #6b7280);
+            outline: none;
+            opacity: 0.8;
+            transition: opacity 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .timeline-slider:hover {
+            opacity: 1;
+        }
+        
+        .timeline-slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            cursor: pointer;
+            box-shadow: 0 4px 8px rgba(59, 130, 246, 0.4);
+            transition: all 0.2s ease;
+        }
+        
+        .timeline-slider::-webkit-slider-thumb:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 12px rgba(59, 130, 246, 0.6);
+        }
+        
+        .timeline-slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 4px 8px rgba(59, 130, 246, 0.4);
+        }
+        
+        .playback-controls {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        
+        .playback-btn {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+            border: none;
+            color: white;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+        }
+        
+        .playback-btn:hover {
+            transform: scale(1.02);
+            box-shadow: 0 6px 16px rgba(59, 130, 246, 0.4);
+        }
+        
+        .playback-btn:active {
+            transform: scale(0.95);
+        }
+        
+        .playback-btn.secondary {
+            background: linear-gradient(135deg, #6b7280, #4b5563);
+            box-shadow: 0 4px 12px rgba(107, 114, 128, 0.3);
+        }
+        
+        .timeline-markers {
+            position: relative;
+            height: 20px;
+            margin: 0.5rem 0;
+        }
+        
+        .timeline-marker {
+            position: absolute;
+            width: 2px;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.3);
+            top: 0;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .timeline-marker:hover {
+            background: rgba(59, 130, 246, 0.8);
+            width: 4px;
+            margin-left: -1px;
+        }
+        
+        .timeline-marker.major {
+            background: rgba(255, 255, 255, 0.5);
+            height: 100%;
+        }
+        
+        .timeline-marker.current {
+            background: #3b82f6;
+            width: 4px;
+            margin-left: -1px;
+            box-shadow: 0 0 8px rgba(59, 130, 246, 0.6);
+        }
+        
+        .thought-node {
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .thought-node.active {
+            filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.8));
+            transform: scale(1.02);
+        }
+        
+        .thought-node.dimmed {
+            opacity: 0.3;
+        }
+        
+        .thought-node.highlighted {
+            filter: drop-shadow(0 0 12px rgba(34, 197, 94, 0.8));
+        }
+        
+        .chain-sidebar {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 1.5rem;
+            height: fit-content;
+            max-height: calc(100vh - 16rem);
+            overflow-y: auto;
+        }
+        
+        .chain-metadata {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 1rem;
+            border-radius: 12px;
+            margin-bottom: 1rem;
+        }
+        
+        .thought-details {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 1rem;
+            border-radius: 12px;
+            border-left: 4px solid #3b82f6;
+        }
+        
+        .branch-indicator {
+            position: relative;
+            margin: 0.5rem 0;
+        }
+        
+        .branch-indicator::before {
+            content: '';
+            position: absolute;
+            left: -1rem;
+            top: 50%;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #8b5cf6;
+            transform: translateY(-50%);
+        }
+        
+        .chain-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        
+        .chain-stat {
+            text-align: center;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+        }
+        
+        .chain-stat-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #3b82f6;
+        }
+        
+        .chain-stat-label {
+            font-size: 0.75rem;
+            color: #9ca3af;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        /* Mermaid diagram customization */
+        .mermaid .node rect {
+            stroke: rgba(59, 130, 246, 0.5) !important;
+            stroke-width: 2px !important;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+        }
+        
+        .mermaid .node.active rect {
+            stroke: #3b82f6 !important;
+            stroke-width: 3px !important;
+            filter: drop-shadow(0 4px 8px rgba(59,130,246,0.5));
+        }
+        
+        .mermaid .edgePath path {
+            stroke: rgba(255, 255, 255, 0.4) !important;
+            stroke-width: 2px !important;
+        }
+        
+        .mermaid .edgePath.active path {
+            stroke: #3b82f6 !important;
+            stroke-width: 3px !important;
+            filter: drop-shadow(0 2px 4px rgba(59,130,246,0.5));
+        }
+        
+        .mermaid .nodeLabel {
+            color: #e5e7eb !important;
+            font-family: 'Inter', sans-serif !important;
+            font-size: 12px !important;
+            font-weight: 500 !important;
+        }
+        
+        /* Speed control styling */
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-left: 1rem;
+        }
+        
+        .speed-btn {
+            padding: 0.25rem 0.5rem;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 6px;
+            color: #e5e7eb;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        
+        .speed-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .speed-btn.active {
+            background: #3b82f6;
+            border-color: #3b82f6;
+            color: white;
+        }
+        
+        /* Graph visualization styles */
+        .graph-container {
+            background: rgba(0, 0, 0, 0.2);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .graph-svg {
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+        
+        .graph-svg:active {
+            cursor: grabbing;
+        }
+        
+        .graph-node {
+            cursor: pointer;
+            stroke-width: 2px;
+            filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+            transition: all 0.2s ease;
+        }
+        
+        .graph-node:hover {
+            stroke-width: 3px;
+            filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));
+        }
+        
+        .graph-node.selected {
+            stroke-width: 4px;
+            filter: drop-shadow(0 6px 12px rgba(59,130,246,0.5));
+        }
+        
+        .graph-link {
+            stroke-opacity: 0.6;
+            transition: stroke-opacity 0.2s ease;
+        }
+        
+        .graph-link.highlighted {
+            stroke-opacity: 1;
+            stroke-width: 3px;
+        }
+        
+        .graph-text {
+            font-family: 'Inter', sans-serif;
+            font-size: 10px;
+            font-weight: 500;
+            fill: #e5e7eb;
+            text-anchor: middle;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+        
+        .graph-controls {
+            position: absolute;
+            top: 1rem;
+            left: 1rem;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        .graph-sidebar {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 1.5rem;
+            height: fit-content;
+            max-height: calc(100vh - 12rem);
+            overflow-y: auto;
+        }
+        
+        .graph-legend {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 1rem;
+            min-width: 200px;
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+        }
+        
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            margin-right: 0.5rem;
+            border: 2px solid rgba(255,255,255,0.3);
+        }
+        
+        .cluster-outline {
+            fill: none;
+            stroke: rgba(255,255,255,0.2);
+            stroke-width: 2;
+            stroke-dasharray: 5,5;
+            opacity: 0.7;
+        }
+        
+        .graph-tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.9);
+            backdrop-filter: blur(10px);
+            color: white;
+            padding: 0.75rem;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            pointer-events: none;
+            z-index: 1000;
+            max-width: 300px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        
         /* Advanced micro-interactions */
         .interactive {
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -366,7 +866,9 @@
         }
     </style>
 </head>
-<body class="bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 min-h-screen text-white" x-data="umsExplorer()" x-cloak>
+<body class="min-h-screen transition-colors duration-300" x-data="umsExplorer()" x-cloak 
+      :class="theme === 'light' ? 'bg-gradient-to-br from-slate-50 via-blue-50 to-slate-50 text-slate-900' : 'bg-gradient-to-br from-slate-900 via-blue-900 to-slate-900 text-white'"
+      :style="`background: ${theme === 'light' ? 'linear-gradient(135deg, #f8fafc, #eff6ff, #f8fafc)' : 'linear-gradient(135deg, #0f172a, #1e3a8a, #0f172a)'}`">
 
     <!-- Command Palette -->
     <div x-show="showCommandPalette" 
@@ -550,7 +1052,7 @@
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                 <div class="enhanced-card rounded-2xl p-6 group">
                     <div class="flex items-center justify-between mb-4">
-                        <div class="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                        <div class="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center group-hover:scale-105 transition-transform">
                             <i data-lucide="brain" class="w-6 h-6 text-blue-400"></i>
                         </div>
                         <div class="text-right">
@@ -566,7 +1068,7 @@
                 
                 <div class="enhanced-card rounded-2xl p-6 group">
                     <div class="flex items-center justify-between mb-4">
-                        <div class="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                        <div class="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center group-hover:scale-105 transition-transform">
                             <i data-lucide="git-branch" class="w-6 h-6 text-purple-400"></i>
                         </div>
                         <div class="text-right">
@@ -582,7 +1084,7 @@
                 
                 <div class="enhanced-card rounded-2xl p-6 group">
                     <div class="flex items-center justify-between mb-4">
-                        <div class="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
+                        <div class="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center group-hover:scale-105 transition-transform">
                             <i data-lucide="zap" class="w-6 h-6 text-green-400"></i>
                         </div>
                         <div class="text-right">
@@ -598,17 +1100,17 @@
                 
                 <div class="enhanced-card rounded-2xl p-6 group">
                     <div class="flex items-center justify-between mb-4">
-                        <div class="w-12 h-12 bg-yellow-500/20 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform">
-                            <i data-lucide="link" class="w-6 h-6 text-yellow-400"></i>
+                        <div class="w-12 h-12 bg-yellow-500/20 rounded-xl flex items-center justify-center group-hover:scale-105 transition-transform">
+                            <i data-lucide="target" class="w-6 h-6 text-yellow-400"></i>
                         </div>
                         <div class="text-right">
-                            <div class="text-2xl font-bold" x-text="stats.totalLinks || 0"></div>
-                            <div class="text-sm text-gray-400">Links</div>
+                            <div class="text-2xl font-bold" x-text="stats.totalGoals || 0"></div>
+                            <div class="text-sm text-gray-400">Goals</div>
                         </div>
                     </div>
                     <div class="h-2 bg-gray-700 rounded-full overflow-hidden">
                         <div class="h-full bg-gradient-to-r from-yellow-500 to-yellow-400 rounded-full transition-all duration-1000" 
-                             :style="`width: ${Math.min(100, (stats.totalLinks / 200) * 100)}%`"></div>
+                             :style="`width: ${Math.min(100, (stats.totalGoals / 100) * 100)}%`"></div>
                     </div>
                 </div>
             </div>
@@ -617,7 +1119,7 @@
              <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
                  <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('workflows')">
                      <div class="flex items-center mb-4">
-                         <div class="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                         <div class="w-12 h-12 bg-purple-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="git-branch" class="w-6 h-6 text-purple-400"></i>
                          </div>
                          <div>
@@ -633,7 +1135,7 @@
                  
                  <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('memories')">
                      <div class="flex items-center mb-4">
-                         <div class="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                         <div class="w-12 h-12 bg-blue-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="brain" class="w-6 h-6 text-blue-400"></i>
                          </div>
                          <div>
@@ -649,7 +1151,7 @@
                  
                  <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('actions')">
                      <div class="flex items-center mb-4">
-                         <div class="w-12 h-12 bg-orange-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                         <div class="w-12 h-12 bg-orange-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="zap" class="w-6 h-6 text-orange-400"></i>
                          </div>
                          <div>
@@ -663,9 +1165,25 @@
                      </div>
                  </div>
                  
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('goals')">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-yellow-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
+                             <i data-lucide="target" class="w-6 h-6 text-yellow-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Goal Hierarchy</h3>
+                             <p class="text-sm text-gray-400">Interactive goal tree & dependencies</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Manage goals</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-yellow-400 transition-colors"></i>
+                     </div>
+                 </div>
+                 
                  <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('analytics')">
                      <div class="flex items-center mb-4">
-                         <div class="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-110 transition-transform">
+                         <div class="w-12 h-12 bg-green-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="bar-chart-3" class="w-6 h-6 text-green-400"></i>
                          </div>
                          <div>
@@ -676,6 +1194,41 @@
                      <div class="flex items-center justify-between">
                          <span class="text-sm text-gray-500">View analytics</span>
                          <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-green-400 transition-colors"></i>
+                     </div>
+                 </div>
+             </div>
+
+             <!-- Second row of navigation cards -->
+             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('graph')">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-cyan-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
+                             <i data-lucide="network" class="w-6 h-6 text-cyan-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Memory Graph</h3>
+                             <p class="text-sm text-gray-400">Interactive network visualization</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Explore connections</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-cyan-400 transition-colors"></i>
+                     </div>
+                 </div>
+                 
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group" @click="navigateTo('thought-chains')">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-indigo-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
+                             <i data-lucide="git-branch-plus" class="w-6 h-6 text-indigo-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Thought Chains</h3>
+                             <p class="text-sm text-gray-400">Reasoning flow diagrams</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Trace reasoning paths</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-indigo-400 transition-colors"></i>
                      </div>
                  </div>
              </div>
@@ -969,6 +1522,758 @@
                 </div>
             </div>
         </div>
+
+        <!-- Graph View -->
+        <div x-show="dbLoaded && currentView === 'graph'" class="space-y-6 animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold">Memory Network Graph</h2>
+                    <p class="text-gray-400" x-text="`${graphData.nodes?.length || 0} memories • ${graphData.links?.length || 0} connections`"></p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <select x-model="graphSettings.layout" @change="updateGraphLayout()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                        <option value="force">Force Layout</option>
+                        <option value="hierarchical">Hierarchical</option>
+                        <option value="circular">Circular</option>
+                        <option value="cluster">Clustered</option>
+                    </select>
+                    <select x-model="graphSettings.colorBy" @change="updateGraphColors()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                        <option value="memory_level">Memory Level</option>
+                        <option value="memory_type">Memory Type</option>
+                        <option value="workflow">Workflow</option>
+                        <option value="importance">Importance</option>
+                    </select>
+                    <button @click="resetGraphView()" class="px-4 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg text-sm font-medium transition-colors interactive">
+                        <i data-lucide="refresh-cw" class="w-4 h-4 mr-2 inline"></i>
+                        Reset View
+                    </button>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-12 gap-6">
+                <!-- Graph Container -->
+                <div class="col-span-12 lg:col-span-9">
+                    <div class="graph-container" style="height: 70vh;">
+                        <!-- Graph Controls -->
+                        <div class="graph-controls">
+                            <div class="enhanced-card p-3 space-y-2">
+                                <div class="text-xs text-gray-400 mb-2">Physics</div>
+                                <div class="flex items-center space-x-2">
+                                    <label class="text-xs text-gray-300">Strength:</label>
+                                    <input type="range" x-model.number="graphSettings.forceStrength" @input="updatePhysics()" 
+                                           min="-100" max="100" step="10" class="w-16 h-1 bg-gray-600 rounded-lg appearance-none slider">
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <label class="text-xs text-gray-300">Distance:</label>
+                                    <input type="range" x-model.number="graphSettings.linkDistance" @input="updatePhysics()" 
+                                           min="10" max="200" step="10" class="w-16 h-1 bg-gray-600 rounded-lg appearance-none slider">
+                                </div>
+                                <button @click="togglePhysics()" class="w-full px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-700 transition-colors"
+                                        :class="{'bg-red-600 hover:bg-red-700': !graphSettings.physicsEnabled}">
+                                    <span x-text="graphSettings.physicsEnabled ? 'Pause' : 'Resume'"></span>
+                                </button>
+                            </div>
+                            
+                            <div class="enhanced-card p-3 space-y-2">
+                                <div class="text-xs text-gray-400 mb-2">Filters</div>
+                                <div class="space-y-1">
+                                    <template x-for="level in ['working', 'episodic', 'semantic', 'procedural']" :key="level">
+                                        <label class="flex items-center text-xs">
+                                            <input type="checkbox" :checked="graphSettings.visibleLevels.includes(level)" 
+                                                   @change="toggleMemoryLevel(level)" class="mr-1 rounded">
+                                            <span class="capitalize" x-text="level"></span>
+                                        </label>
+                                    </template>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Graph Legend -->
+                        <div x-show="graphSettings.showLegend" class="graph-legend">
+                            <div class="text-sm font-semibold mb-3">Legend</div>
+                            <template x-for="item in currentLegend" :key="item.key">
+                                <div class="legend-item">
+                                    <div class="legend-color" :style="`background-color: ${item.color}`"></div>
+                                    <span x-text="item.label"></span>
+                                </div>
+                            </template>
+                            <div class="mt-3 pt-3 border-t border-white/20">
+                                <div class="text-xs text-gray-400 mb-2">Link Types</div>
+                                <div class="text-xs space-y-1">
+                                    <div class="flex items-center">
+                                        <div class="w-4 h-0.5 bg-blue-400 mr-2"></div>
+                                        <span>References</span>
+                                    </div>
+                                    <div class="flex items-center">
+                                        <div class="w-4 h-0.5 bg-green-400 mr-2"></div>
+                                        <span>Causal</span>
+                                    </div>
+                                    <div class="flex items-center">
+                                        <div class="w-4 h-0.5 bg-purple-400 mr-2"></div>
+                                        <span>Similarity</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Main Graph SVG -->
+                        <svg x-ref="graphSvg" class="graph-svg"></svg>
+                        
+                        <!-- Graph Tooltip -->
+                        <div x-show="graphTooltip.visible" 
+                             x-transition:enter="transition ease-out duration-200" 
+                             x-transition:enter-start="opacity-0 scale-95" 
+                             x-transition:enter-end="opacity-100 scale-100"
+                             class="graph-tooltip"
+                             :style="`left: ${graphTooltip.x}px; top: ${graphTooltip.y}px;`">
+                            <div class="font-semibold mb-1" x-text="graphTooltip.title"></div>
+                            <div class="text-xs text-gray-300 mb-2" x-text="graphTooltip.subtitle"></div>
+                            <div class="text-sm" x-text="graphTooltip.content"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Sidebar -->
+                <div class="col-span-12 lg:col-span-3">
+                    <div class="graph-sidebar">
+                        <div x-show="!selectedGraphNode" class="text-center text-gray-400">
+                            <i data-lucide="mouse-pointer-click" class="w-12 h-12 mx-auto mb-4 opacity-50"></i>
+                            <p class="text-sm">Click on a memory node to view details and explore connections</p>
+                            
+                            <div class="mt-6 p-4 bg-white/5 rounded-lg">
+                                <h4 class="font-semibold mb-3">Graph Stats</h4>
+                                <div class="space-y-2 text-sm">
+                                    <div class="flex justify-between">
+                                        <span>Nodes:</span>
+                                        <span x-text="graphData.nodes?.length || 0"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Links:</span>
+                                        <span x-text="graphData.links?.length || 0"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Clusters:</span>
+                                        <span x-text="graphClusters.length"></span>
+                                    </div>
+                                    <div class="flex justify-between">
+                                        <span>Density:</span>
+                                        <span x-text="calculateGraphDensity()"></span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div x-show="selectedGraphNode" class="space-y-4">
+                            <div class="flex items-center justify-between">
+                                <h4 class="font-semibold">Memory Details</h4>
+                                <button @click="selectedGraphNode = null" class="p-1 hover:bg-white/10 rounded transition-colors">
+                                    <i data-lucide="x" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                            
+                            <div x-show="selectedGraphNode" class="space-y-3">
+                                <div>
+                                    <div class="text-xs text-gray-400 mb-1">Type & Level</div>
+                                    <div class="flex items-center space-x-2">
+                                        <span class="px-2 py-1 text-xs rounded-full" 
+                                              :class="getMemoryLevelClass(selectedGraphNode?.memory_level)" 
+                                              x-text="selectedGraphNode?.memory_level"></span>
+                                        <span class="text-sm text-gray-300" x-text="selectedGraphNode?.memory_type"></span>
+                                    </div>
+                                </div>
+                                
+                                <div>
+                                    <div class="text-xs text-gray-400 mb-1">Content</div>
+                                    <div class="text-sm bg-white/5 p-3 rounded-lg max-h-32 overflow-y-auto">
+                                        <p x-text="selectedGraphNode?.content"></p>
+                                    </div>
+                                </div>
+                                
+                                <div class="grid grid-cols-2 gap-3">
+                                    <div>
+                                        <div class="text-xs text-gray-400">Importance</div>
+                                        <div class="text-lg font-semibold" x-text="selectedGraphNode?.importance + '/10'"></div>
+                                    </div>
+                                    <div>
+                                        <div class="text-xs text-gray-400">Confidence</div>
+                                        <div class="text-lg font-semibold" x-text="Math.round((selectedGraphNode?.confidence || 0) * 100) + '%'"></div>
+                                    </div>
+                                </div>
+                                
+                                <div>
+                                    <div class="text-xs text-gray-400 mb-2">Connections</div>
+                                    <div class="space-y-2 max-h-40 overflow-y-auto">
+                                        <template x-for="connection in getNodeConnections(selectedGraphNode)" :key="connection.id">
+                                            <div class="flex items-center justify-between p-2 bg-white/5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer"
+                                                 @click="focusOnNode(connection.target)">
+                                                <div class="flex-1 min-w-0">
+                                                    <div class="text-sm font-medium truncate" x-text="connection.target.memory_type"></div>
+                                                    <div class="text-xs text-gray-400 truncate" x-text="connection.target.content.substring(0, 30) + '...'"></div>
+                                                </div>
+                                                <div class="text-xs text-gray-500" x-text="connection.link_type"></div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                                
+                                <div class="flex space-x-2">
+                                    <button @click="selectMemory(selectedGraphNode); showMemoryModal = true" 
+                                            class="flex-1 px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors">
+                                        View Details
+                                    </button>
+                                    <button @click="expandNeighborhood(selectedGraphNode)" 
+                                            class="flex-1 px-3 py-2 bg-cyan-600 hover:bg-cyan-700 rounded-lg text-sm font-medium transition-colors">
+                                        Expand
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Goals View -->
+        <div x-show="dbLoaded && currentView === 'goals'" class="space-y-6 animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold">Goal Hierarchy</h2>
+                    <p class="text-gray-400" x-text="`${goalStats.total} goals • ${goalStats.completionRate}% completion rate`"></p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <select x-model="goalFilter" @change="filterGoals()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                        <option value="">All Goals</option>
+                        <option value="active">Active</option>
+                        <option value="completed">Completed</option>
+                        <option value="pending">Pending</option>
+                        <option value="overdue">Overdue</option>
+                    </select>
+                    <select x-model="goalTreeSettings.groupBy" @change="rebuildGoalTree()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                        <option value="none">No Grouping</option>
+                        <option value="priority">By Priority</option>
+                        <option value="status">By Status</option>
+                        <option value="owner">By Owner</option>
+                    </select>
+                    <button @click="expandAllGoals()" class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg text-sm font-medium transition-colors interactive">
+                        <i data-lucide="expand" class="w-4 h-4 mr-2 inline"></i>
+                        Expand All
+                    </button>
+                    <button @click="showNewGoalModal()" class="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg text-sm font-medium transition-colors interactive">
+                        <i data-lucide="plus" class="w-4 h-4 mr-2 inline"></i>
+                        New Goal
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Goal Statistics -->
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-yellow-400" x-text="goalStats.total"></div>
+                    <div class="text-xs text-gray-400">Total Goals</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-green-400" x-text="goalStats.completed"></div>
+                    <div class="text-xs text-gray-400">Completed</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-blue-400" x-text="goalStats.inProgress"></div>
+                    <div class="text-xs text-gray-400">In Progress</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-gray-400" x-text="goalStats.pending"></div>
+                    <div class="text-xs text-gray-400">Pending</div>
+                </div>
+                <div class="enhanced-card rounded-xl p-4 text-center">
+                    <div class="text-2xl font-bold text-red-400" x-text="goalStats.overdue"></div>
+                    <div class="text-xs text-gray-400">Overdue</div>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-12 gap-6">
+                <!-- Goal Tree Container -->
+                <div class="col-span-12 lg:col-span-9">
+                    <div class="enhanced-card rounded-2xl p-6" style="min-height: 70vh;">
+                        <!-- Tree Controls -->
+                        <div class="flex items-center justify-between mb-6">
+                            <div class="flex items-center space-x-4">
+                                <div class="flex items-center space-x-2">
+                                    <label class="text-sm text-gray-400">Show:</label>
+                                    <label class="flex items-center text-sm">
+                                        <input type="checkbox" x-model="goalTreeSettings.showCompleted" @change="rebuildGoalTree()" class="mr-1 rounded">
+                                        <span>Completed</span>
+                                    </label>
+                                    <label class="flex items-center text-sm">
+                                        <input type="checkbox" x-model="goalTreeSettings.showProgress" @change="rebuildGoalTree()" class="mr-1 rounded">
+                                        <span>Progress</span>
+                                    </label>
+                                </div>
+                                <div class="flex items-center space-x-2">
+                                    <label class="text-sm text-gray-400">Sort:</label>
+                                    <select x-model="goalTreeSettings.sortBy" @change="rebuildGoalTree()" class="bg-white/10 border border-white/20 rounded px-2 py-1 text-sm">
+                                        <option value="created">Created Date</option>
+                                        <option value="priority">Priority</option>
+                                        <option value="progress">Progress</option>
+                                        <option value="title">Title</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <input type="text" 
+                                       x-model="goalSearch" 
+                                       @input="filterGoals()"
+                                       placeholder="Search goals..." 
+                                       class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm w-48">
+                                <button @click="collapseAllGoals()" class="p-2 hover:bg-white/10 rounded-lg transition-colors">
+                                    <i data-lucide="minimize-2" class="w-4 h-4"></i>
+                                </button>
+                                <button @click="resetGoalTreeView()" class="p-2 hover:bg-white/10 rounded-lg transition-colors">
+                                    <i data-lucide="refresh-cw" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Goal Tree SVG Container -->
+                        <div class="relative" style="height: calc(70vh - 8rem);">
+                            <svg x-ref="goalTreeSvg" class="w-full h-full cursor-grab" style="background: rgba(0,0,0,0.1); border-radius: 12px;"></svg>
+                            
+                            <!-- Tree Legend -->
+                            <div class="absolute top-4 right-4 bg-black/80 backdrop-blur-lg rounded-lg p-3 min-w-[200px]">
+                                <div class="text-sm font-semibold mb-3 text-white">Goal Status</div>
+                                <div class="space-y-2 text-xs">
+                                    <div class="flex items-center">
+                                        <div class="w-3 h-3 rounded-full bg-green-400 mr-2"></div>
+                                        <span class="text-white">Completed</span>
+                                    </div>
+                                    <div class="flex items-center">
+                                        <div class="w-3 h-3 rounded-full bg-blue-400 mr-2"></div>
+                                        <span class="text-white">In Progress</span>
+                                    </div>
+                                    <div class="flex items-center">
+                                        <div class="w-3 h-3 rounded-full bg-gray-400 mr-2"></div>
+                                        <span class="text-white">Pending</span>
+                                    </div>
+                                    <div class="flex items-center">
+                                        <div class="w-3 h-3 rounded-full bg-red-400 mr-2"></div>
+                                        <span class="text-white">Overdue</span>
+                                    </div>
+                                </div>
+                                <div class="mt-3 pt-3 border-t border-white/20">
+                                    <div class="text-sm font-semibold mb-2 text-white">Priority</div>
+                                    <div class="space-y-1 text-xs">
+                                        <div class="flex items-center">
+                                            <div class="w-2 h-2 rounded-full bg-red-500 mr-2"></div>
+                                            <span class="text-white">High</span>
+                                        </div>
+                                        <div class="flex items-center">
+                                            <div class="w-2 h-2 rounded-full bg-yellow-500 mr-2"></div>
+                                            <span class="text-white">Medium</span>
+                                        </div>
+                                        <div class="flex items-center">
+                                            <div class="w-2 h-2 rounded-full bg-blue-500 mr-2"></div>
+                                            <span class="text-white">Low</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Drop Zones for Drag & Drop -->
+                            <div x-show="isDragging" class="absolute inset-0 pointer-events-none">
+                                <div class="absolute top-4 left-4 w-48 h-16 border-2 border-dashed border-yellow-400 rounded-lg bg-yellow-400/10 flex items-center justify-center pointer-events-auto"
+                                     @drop.prevent="handleGoalDrop($event, 'root')"
+                                     @dragover.prevent="highlightDropZone($event, 'root')"
+                                     @dragleave.prevent="unhighlightDropZone($event)">
+                                    <span class="text-yellow-400 text-sm font-medium">Make Root Goal</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Goal Details Sidebar -->
+                <div class="col-span-12 lg:col-span-3">
+                    <div class="enhanced-card rounded-2xl p-6 sticky top-24" style="max-height: calc(100vh - 8rem); overflow-y: auto;">
+                        <div x-show="!selectedGoal" class="text-center text-gray-400">
+                            <i data-lucide="target" class="w-12 h-12 mx-auto mb-4 opacity-50"></i>
+                            <h4 class="font-semibold mb-2">No Goal Selected</h4>
+                            <p class="text-sm">Click on a goal in the tree to view details and manage dependencies</p>
+                            
+                            <div class="mt-6 space-y-3">
+                                <button @click="showNewGoalModal()" class="w-full px-4 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg text-sm font-medium transition-colors">
+                                    <i data-lucide="plus" class="w-4 h-4 mr-2 inline"></i>
+                                    Create New Goal
+                                </button>
+                                <button @click="importGoalsFromMemories()" class="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors">
+                                    <i data-lucide="download" class="w-4 h-4 mr-2 inline"></i>
+                                    Import from Memories
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div x-show="selectedGoal" class="space-y-4">
+                            <div class="flex items-center justify-between">
+                                <h4 class="font-semibold">Goal Details</h4>
+                                <div class="flex items-center space-x-2">
+                                    <button @click="editGoal(selectedGoal)" class="p-1 hover:bg-white/10 rounded transition-colors">
+                                        <i data-lucide="edit-2" class="w-4 h-4"></i>
+                                    </button>
+                                    <button @click="selectedGoal = null" class="p-1 hover:bg-white/10 rounded transition-colors">
+                                        <i data-lucide="x" class="w-4 h-4"></i>
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div x-show="selectedGoal" class="space-y-4">
+                                <div>
+                                    <h5 class="font-medium mb-2" x-text="selectedGoal?.title"></h5>
+                                    <p class="text-sm text-gray-300 mb-3" x-text="selectedGoal?.description"></p>
+                                    
+                                    <div class="grid grid-cols-2 gap-3 text-sm">
+                                        <div>
+                                            <span class="text-gray-400">Status:</span>
+                                            <div class="mt-1">
+                                                <span class="px-2 py-1 text-xs rounded-full" 
+                                                      :class="getGoalStatusClass(selectedGoal?.status)" 
+                                                      x-text="selectedGoal?.status"></span>
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <span class="text-gray-400">Priority:</span>
+                                            <div class="mt-1">
+                                                <span class="px-2 py-1 text-xs rounded-full" 
+                                                      :class="getGoalPriorityClass(selectedGoal?.priority)" 
+                                                      x-text="selectedGoal?.priority"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <div x-show="selectedGoal?.progress !== undefined" class="mt-3">
+                                        <div class="flex items-center justify-between text-sm mb-1">
+                                            <span class="text-gray-400">Progress</span>
+                                            <span x-text="`${selectedGoal?.progress || 0}%`"></span>
+                                        </div>
+                                        <div class="w-full bg-gray-700 rounded-full h-2">
+                                            <div class="bg-yellow-400 h-2 rounded-full transition-all duration-300" 
+                                                 :style="`width: ${selectedGoal?.progress || 0}%`"></div>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div x-show="selectedGoal?.due_date">
+                                    <span class="text-gray-400 text-sm">Due Date:</span>
+                                    <div class="text-sm" x-text="formatDate(selectedGoal?.due_date)"></div>
+                                </div>
+                                
+                                <div x-show="selectedGoal?.dependencies?.length > 0">
+                                    <h6 class="font-medium mb-2">Dependencies</h6>
+                                    <div class="space-y-2 max-h-24 overflow-y-auto">
+                                        <template x-for="dep in selectedGoal?.dependencies" :key="dep.id">
+                                            <div class="flex items-center justify-between p-2 bg-white/5 rounded-lg text-sm">
+                                                <span x-text="dep.title"></span>
+                                                <span class="text-xs" :class="getGoalStatusClass(dep.status)" x-text="dep.status"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                                
+                                <div x-show="selectedGoal?.subgoals?.length > 0">
+                                    <h6 class="font-medium mb-2">Subgoals</h6>
+                                    <div class="space-y-2 max-h-32 overflow-y-auto">
+                                        <template x-for="subgoal in selectedGoal?.subgoals" :key="subgoal.id">
+                                            <div class="flex items-center justify-between p-2 bg-white/5 rounded-lg text-sm cursor-pointer hover:bg-white/10 transition-colors"
+                                                 @click="selectGoal(subgoal)">
+                                                <span x-text="subgoal.title"></span>
+                                                <span class="text-xs" :class="getGoalStatusClass(subgoal.status)" x-text="subgoal.status"></span>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </div>
+                                
+                                <div class="space-y-2 pt-4 border-t border-white/10">
+                                    <button @click="addSubgoal(selectedGoal)" class="w-full px-3 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg text-sm font-medium transition-colors">
+                                        <i data-lucide="plus" class="w-4 h-4 mr-2 inline"></i>
+                                        Add Subgoal
+                                    </button>
+                                    <button @click="markGoalComplete(selectedGoal)" 
+                                            x-show="selectedGoal?.status !== 'completed'"
+                                            class="w-full px-3 py-2 bg-green-600 hover:bg-green-700 rounded-lg text-sm font-medium transition-colors">
+                                        <i data-lucide="check" class="w-4 h-4 mr-2 inline"></i>
+                                        Mark Complete
+                                    </button>
+                                    <button @click="deleteGoal(selectedGoal)" class="w-full px-3 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium transition-colors">
+                                        <i data-lucide="trash-2" class="w-4 h-4 mr-2 inline"></i>
+                                        Delete Goal
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Thought Chains View -->
+        <div x-show="dbLoaded && currentView === 'thought-chains'" class="space-y-6 animate-slide-in">
+            <div class="flex items-center justify-between mb-6">
+                <div>
+                    <h2 class="text-2xl font-bold">Thought Chain Flow Diagrams</h2>
+                    <p class="text-gray-400" x-text="`${thoughtChainStats.totalChains} chains • ${thoughtChainStats.totalThoughts} thoughts • ${thoughtChainStats.branchingPoints} branches`"></p>
+                </div>
+                <div class="flex items-center space-x-3">
+                    <select x-model="chainFilter" @change="filterThoughtChains()" class="bg-white/10 border border-white/20 rounded-lg px-3 py-2 text-sm">
+                        <option value="">All Chains</option>
+                        <option value="workflow">By Workflow</option>
+                        <option value="recent">Recent Only</option>
+                        <option value="complex">Complex (5+ thoughts)</option>
+                        <option value="branching">With Branches</option>
+                    </select>
+                    <button @click="resetThoughtChainView()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm font-medium transition-colors interactive">
+                        <i data-lucide="refresh-cw" class="w-4 h-4 mr-2 inline"></i>
+                        Reset View
+                    </button>
+                    <button @click="exportThoughtChain()" class="px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg text-sm font-medium transition-colors interactive">
+                        <i data-lucide="download" class="w-4 h-4 mr-2 inline"></i>
+                        Export
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Chain Statistics -->
+            <div class="chain-stats">
+                <div class="chain-stat">
+                    <div class="chain-stat-value" x-text="thoughtChainStats.totalChains"></div>
+                    <div class="chain-stat-label">Total Chains</div>
+                </div>
+                <div class="chain-stat">
+                    <div class="chain-stat-value" x-text="thoughtChainStats.totalThoughts"></div>
+                    <div class="chain-stat-label">Total Thoughts</div>
+                </div>
+                <div class="chain-stat">
+                    <div class="chain-stat-value" x-text="thoughtChainStats.avgChainLength.toFixed(1)"></div>
+                    <div class="chain-stat-label">Avg Chain Length</div>
+                </div>
+                <div class="chain-stat">
+                    <div class="chain-stat-value" x-text="thoughtChainStats.branchingPoints"></div>
+                    <div class="chain-stat-label">Branching Points</div>
+                </div>
+            </div>
+            
+            <div class="grid grid-cols-12 gap-6">
+                <!-- Main Diagram Container -->
+                <div class="col-span-12 lg:col-span-9">
+                    <div class="thought-chain-container">
+                        <!-- Diagram Area -->
+                        <div x-show="currentChain" class="mermaid-container">
+                            <div x-ref="mermaidContainer" class="w-full h-full"></div>
+                        </div>
+                        
+                        <!-- Empty State -->
+                        <div x-show="!currentChain" class="flex items-center justify-center h-full">
+                            <div class="text-center text-gray-400">
+                                <i data-lucide="git-branch-plus" class="w-16 h-16 mx-auto mb-4 opacity-50"></i>
+                                <h3 class="text-xl font-semibold mb-2">No Thought Chain Selected</h3>
+                                <p class="text-sm">Select a thought chain from the sidebar to view its flow diagram</p>
+                            </div>
+                        </div>
+                        
+                        <!-- Timeline Scrubber -->
+                        <div x-show="currentChain" class="timeline-scrubber">
+                            <!-- Playback Controls -->
+                            <div class="playback-controls">
+                                <button @click="stepBackward()" class="playback-btn secondary" title="Previous Step">
+                                    <i data-lucide="skip-back" class="w-5 h-5"></i>
+                                </button>
+                                <button @click="togglePlayback()" class="playback-btn" :title="isPlaybackActive ? 'Pause' : 'Play'">
+                                    <i :data-lucide="isPlaybackActive ? 'pause' : 'play'" class="w-6 h-6"></i>
+                                </button>
+                                <button @click="stepForward()" class="playback-btn secondary" title="Next Step">
+                                    <i data-lucide="skip-forward" class="w-5 h-5"></i>
+                                </button>
+                                
+                                <!-- Speed Control -->
+                                <div class="speed-control">
+                                    <span class="text-xs text-gray-400">Speed:</span>
+                                    <button @click="setPlaybackSpeed(0.5)" 
+                                            :class="{'active': playbackSpeed === 0.5}" 
+                                            class="speed-btn">0.5x</button>
+                                    <button @click="setPlaybackSpeed(1)" 
+                                            :class="{'active': playbackSpeed === 1}" 
+                                            class="speed-btn">1x</button>
+                                    <button @click="setPlaybackSpeed(2)" 
+                                            :class="{'active': playbackSpeed === 2}" 
+                                            class="speed-btn">2x</button>
+                                    <button @click="setPlaybackSpeed(3)" 
+                                            :class="{'active': playbackSpeed === 3}" 
+                                            class="speed-btn">3x</button>
+                                </div>
+                            </div>
+                            
+                            <!-- Timeline Markers -->
+                            <div class="timeline-markers">
+                                <template x-for="(thought, index) in thoughtsInCurrentChain" :key="thought.memory_id">
+                                    <div class="timeline-marker" 
+                                         :class="{
+                                             'current': index === currentThoughtIndex,
+                                             'major': thought.hasChildren || thought.isBranch
+                                         }"
+                                         :style="`left: ${(index / (thoughtsInCurrentChain.length - 1)) * 100}%`"
+                                         @click="jumpToThought(index)"
+                                         :title="`${thought.memory_type} - ${thought.content.substring(0, 50)}...`">
+                                    </div>
+                                </template>
+                            </div>
+                            
+                            <!-- Timeline Slider -->
+                            <input type="range" 
+                                   x-model.number="thoughtTimelinePosition" 
+                                   @input="seekToPosition($event.target.value)"
+                                   :min="0" 
+                                   :max="thoughtTimelineLength - 1" 
+                                   :step="1"
+                                   class="timeline-slider">
+                            
+                            <!-- Timeline Info -->
+                            <div class="flex items-center justify-between mt-3 text-sm text-gray-400">
+                                <div>
+                                    <span x-text="`Step ${currentThoughtIndex + 1} of ${thoughtsInCurrentChain.length}`"></span>
+                                    <span x-show="thoughtsInCurrentChain[currentThoughtIndex]" 
+                                          class="ml-2" 
+                                          x-text="`${thoughtsInCurrentChain[currentThoughtIndex]?.memory_type}`"></span>
+                                </div>
+                                <div x-show="thoughtsInCurrentChain[currentThoughtIndex]">
+                                    <span x-text="formatDate(thoughtsInCurrentChain[currentThoughtIndex]?.created_at)"></span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Sidebar -->
+                <div class="col-span-12 lg:col-span-3">
+                    <div class="chain-sidebar">
+                        <!-- Chain List -->
+                        <div x-show="!currentChain" class="space-y-4">
+                            <h4 class="font-semibold flex items-center">
+                                <i data-lucide="list" class="w-4 h-4 mr-2"></i>
+                                Available Chains
+                            </h4>
+                            
+                            <div class="space-y-2 max-h-80 overflow-y-auto">
+                                <template x-for="chain in thoughtChains" :key="chain.id">
+                                    <div class="p-3 bg-white/5 rounded-lg hover:bg-white/10 transition-colors cursor-pointer group"
+                                         @click="selectThoughtChain(chain)">
+                                        <div class="flex items-center justify-between mb-2">
+                                            <span class="text-sm font-medium text-indigo-400" x-text="chain.title"></span>
+                                            <span class="text-xs text-gray-500" x-text="`${chain.thoughts.length} thoughts`"></span>
+                                        </div>
+                                        <p class="text-xs text-gray-400 line-clamp-2" x-text="chain.description"></p>
+                                        <div class="flex items-center justify-between mt-2 text-xs text-gray-500">
+                                            <span x-text="formatRelativeTime(chain.created_at)"></span>
+                                            <div class="flex items-center space-x-2">
+                                                <span x-show="chain.hasBranches" title="Has branches">
+                                                    <i data-lucide="git-branch" class="w-3 h-3"></i>
+                                                </span>
+                                                <span x-text="chain.complexity" :class="{
+                                                    'text-green-400': chain.complexity === 'Simple',
+                                                    'text-yellow-400': chain.complexity === 'Medium',
+                                                    'text-red-400': chain.complexity === 'Complex'
+                                                }"></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                        
+                        <!-- Current Chain Details -->
+                        <div x-show="currentChain" class="space-y-4">
+                            <div class="flex items-center justify-between">
+                                <h4 class="font-semibold">Chain Details</h4>
+                                <button @click="currentChain = null; stopPlayback()" 
+                                        class="p-1 hover:bg-white/10 rounded transition-colors">
+                                    <i data-lucide="x" class="w-4 h-4"></i>
+                                </button>
+                            </div>
+                            
+                            <div class="chain-metadata">
+                                <h5 class="font-medium mb-2" x-text="currentChain?.title"></h5>
+                                <p class="text-sm text-gray-300 mb-3" x-text="currentChain?.description"></p>
+                                
+                                <div class="grid grid-cols-2 gap-2 text-xs">
+                                    <div>
+                                        <span class="text-gray-400">Thoughts:</span>
+                                        <span x-text="currentChain?.thoughts.length"></span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">Duration:</span>
+                                        <span x-text="calculateChainDuration(currentChain)"></span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">Branches:</span>
+                                        <span x-text="currentChain?.branchCount || 0"></span>
+                                    </div>
+                                    <div>
+                                        <span class="text-gray-400">Complexity:</span>
+                                        <span x-text="currentChain?.complexity" :class="{
+                                            'text-green-400': currentChain?.complexity === 'Simple',
+                                            'text-yellow-400': currentChain?.complexity === 'Medium',
+                                            'text-red-400': currentChain?.complexity === 'Complex'
+                                        }"></span>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Current Thought Details -->
+                            <div x-show="thoughtsInCurrentChain[currentThoughtIndex]" class="thought-details">
+                                <h6 class="font-medium mb-2">Current Thought</h6>
+                                <div class="space-y-2">
+                                    <div class="flex items-center space-x-2">
+                                        <span class="px-2 py-1 text-xs rounded-full bg-indigo-500/20 text-indigo-400">
+                                            <span x-text="thoughtsInCurrentChain[currentThoughtIndex]?.memory_type"></span>
+                                        </span>
+                                        <span class="text-xs text-gray-500" 
+                                              x-text="`${currentThoughtIndex + 1}/${thoughtsInCurrentChain.length}`"></span>
+                                    </div>
+                                    <p class="text-sm" x-text="thoughtsInCurrentChain[currentThoughtIndex]?.content"></p>
+                                    
+                                    <div x-show="thoughtsInCurrentChain[currentThoughtIndex]?.hasChildren" 
+                                         class="branch-indicator">
+                                        <span class="text-xs text-purple-400">Branching Point</span>
+                                    </div>
+                                </div>
+                                
+                                <button @click="selectThought(thoughtsInCurrentChain[currentThoughtIndex]); showThoughtModal = true" 
+                                        class="w-full mt-3 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm font-medium transition-colors">
+                                    View Full Details
+                                </button>
+                            </div>
+                            
+                            <!-- Chain Navigation -->
+                            <div class="space-y-2">
+                                <h6 class="font-medium text-sm">Quick Navigation</h6>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <button @click="jumpToFirstBranch()" 
+                                            class="px-2 py-1 text-xs bg-purple-600/20 text-purple-400 rounded hover:bg-purple-600/30 transition-colors">
+                                        First Branch
+                                    </button>
+                                    <button @click="jumpToLastThought()" 
+                                            class="px-2 py-1 text-xs bg-blue-600/20 text-blue-400 rounded hover:bg-blue-600/30 transition-colors">
+                                        Last Thought
+                                    </button>
+                                    <button @click="jumpToKeyDecision()" 
+                                            class="px-2 py-1 text-xs bg-green-600/20 text-green-400 rounded hover:bg-green-600/30 transition-colors">
+                                        Key Decision
+                                    </button>
+                                    <button @click="jumpToConclusion()" 
+                                            class="px-2 py-1 text-xs bg-orange-600/20 text-orange-400 rounded hover:bg-orange-600/30 transition-colors">
+                                        Conclusion
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- Enhanced modals -->
@@ -1191,6 +2496,220 @@
              </div>
          </div>
      </div>
+
+     <!-- Goal Modal -->
+     <div x-show="showGoalModal" 
+          x-transition:enter="transition ease-out duration-300" 
+          x-transition:enter-start="opacity-0" 
+          x-transition:enter-end="opacity-100"
+          x-transition:leave="transition ease-in duration-200" 
+          x-transition:leave-start="opacity-100" 
+          x-transition:leave-end="opacity-0"
+          class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          @click="showGoalModal = false">
+         <div class="enhanced-card rounded-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto" 
+              x-transition:enter="transition ease-out duration-300" 
+              x-transition:enter-start="opacity-0 scale-95" 
+              x-transition:enter-end="opacity-100 scale-100"
+              x-transition:leave="transition ease-in duration-200" 
+              x-transition:leave-start="opacity-100 scale-100" 
+              x-transition:leave-end="opacity-0 scale-95"
+              @click.stop="">
+             <div class="p-6">
+                 <div class="flex items-center justify-between mb-6">
+                     <h3 class="text-2xl font-bold" x-text="editingGoal ? 'Edit Goal' : 'Create New Goal'"></h3>
+                     <button @click="showGoalModal = false; editingGoal = null" 
+                             class="p-2 rounded-lg hover:bg-white/10 transition-colors">
+                         <i data-lucide="x" class="w-5 h-5"></i>
+                     </button>
+                 </div>
+                 
+                 <form @submit.prevent="saveGoal()" class="space-y-4">
+                     <div>
+                         <label class="block text-sm font-medium mb-2">Title *</label>
+                         <input type="text" 
+                                x-model="goalForm.title" 
+                                required 
+                                class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400 transition-colors"
+                                placeholder="Enter goal title">
+                     </div>
+                     
+                     <div>
+                         <label class="block text-sm font-medium mb-2">Description</label>
+                         <textarea x-model="goalForm.description" 
+                                   rows="3"
+                                   class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400 transition-colors"
+                                   placeholder="Describe the goal in detail"></textarea>
+                     </div>
+                     
+                     <div class="grid grid-cols-2 gap-4">
+                         <div>
+                             <label class="block text-sm font-medium mb-2">Priority</label>
+                             <select x-model="goalForm.priority" 
+                                     class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400">
+                                 <option value="low">Low</option>
+                                 <option value="medium">Medium</option>
+                                 <option value="high">High</option>
+                             </select>
+                         </div>
+                         
+                         <div>
+                             <label class="block text-sm font-medium mb-2">Status</label>
+                             <select x-model="goalForm.status" 
+                                     class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400">
+                                 <option value="pending">Pending</option>
+                                 <option value="active">Active</option>
+                                 <option value="in_progress">In Progress</option>
+                                 <option value="completed">Completed</option>
+                                 <option value="cancelled">Cancelled</option>
+                             </select>
+                         </div>
+                     </div>
+                     
+                     <div class="grid grid-cols-2 gap-4">
+                         <div>
+                             <label class="block text-sm font-medium mb-2">Progress (%)</label>
+                             <input type="number" 
+                                    x-model.number="goalForm.progress" 
+                                    min="0" 
+                                    max="100"
+                                    class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400 transition-colors">
+                         </div>
+                         
+                         <div>
+                             <label class="block text-sm font-medium mb-2">Due Date</label>
+                             <input type="date" 
+                                    x-model="goalForm.due_date"
+                                    class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400 transition-colors">
+                         </div>
+                     </div>
+                     
+                     <div x-show="!editingGoal">
+                         <label class="block text-sm font-medium mb-2">Parent Goal</label>
+                         <select x-model="goalForm.parent_goal_id" 
+                                 class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400">
+                             <option value="">None (Root Goal)</option>
+                             <template x-for="goal in goals.filter(g => g.goal_id !== editingGoal?.goal_id)" :key="goal.goal_id">
+                                 <option :value="goal.goal_id" x-text="goal.title"></option>
+                             </template>
+                         </select>
+                     </div>
+                     
+                     <div x-show="editingGoal">
+                         <label class="block text-sm font-medium mb-2">Notes</label>
+                         <textarea x-model="goalForm.notes" 
+                                   rows="2"
+                                   class="w-full px-3 py-2 bg-white/10 border border-white/20 rounded-lg focus:outline-none focus:border-yellow-400 transition-colors"
+                                   placeholder="Add any updates or notes"></textarea>
+                     </div>
+                     
+                     <div class="flex items-center justify-end space-x-3 pt-4 border-t border-white/10">
+                         <button type="button" 
+                                 @click="showGoalModal = false; editingGoal = null"
+                                 class="px-4 py-2 text-gray-400 hover:text-white transition-colors">
+                             Cancel
+                         </button>
+                         <button type="submit" 
+                                 class="px-6 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg font-medium transition-colors">
+                             <span x-text="editingGoal ? 'Update Goal' : 'Create Goal'"></span>
+                         </button>
+                     </div>
+                 </form>
+             </div>
+         </div>
+     </div>
+
+     <!-- Thought Modal -->
+     <div x-show="showThoughtModal" 
+          x-transition:enter="transition ease-out duration-300" 
+          x-transition:enter-start="opacity-0" 
+          x-transition:enter-end="opacity-100"
+          x-transition:leave="transition ease-in duration-200" 
+          x-transition:leave-start="opacity-100" 
+          x-transition:leave-end="opacity-0"
+          class="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+          @click="showThoughtModal = false">
+         <div class="enhanced-card rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-y-auto" 
+              x-transition:enter="transition ease-out duration-300" 
+              x-transition:enter-start="opacity-0 scale-95" 
+              x-transition:enter-end="opacity-100 scale-100"
+              x-transition:leave="transition ease-in duration-200" 
+              x-transition:leave-start="opacity-100 scale-100" 
+              x-transition:leave-end="opacity-0 scale-95"
+              @click.stop="">
+             <div class="p-6">
+                 <div class="flex items-center justify-between mb-6">
+                     <h3 class="text-2xl font-bold">Thought Details</h3>
+                     <button @click="showThoughtModal = false" 
+                             class="p-2 rounded-lg hover:bg-white/10 transition-colors">
+                         <i data-lucide="x" class="w-5 h-5"></i>
+                     </button>
+                 </div>
+                 
+                 <div x-show="selectedThought" class="space-y-6">
+                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                         <div>
+                             <h4 class="font-semibold mb-3">Thought Information</h4>
+                             <div class="space-y-2 text-sm">
+                                 <div><span class="text-gray-400">Type:</span> 
+                                     <span class="px-2 py-1 text-xs rounded-full ml-2 bg-indigo-500/20 text-indigo-400" 
+                                           x-text="selectedThought?.memory_type"></span>
+                                 </div>
+                                 <div><span class="text-gray-400">Level:</span> 
+                                     <span class="px-2 py-1 text-xs rounded-full ml-2" 
+                                           :class="getMemoryLevelClass(selectedThought?.memory_level)" 
+                                           x-text="selectedThought?.memory_level"></span>
+                                 </div>
+                                 <div><span class="text-gray-400">Importance:</span> <span x-text="selectedThought?.importance + '/10'"></span></div>
+                                 <div><span class="text-gray-400">Confidence:</span> <span x-text="Math.round((selectedThought?.confidence || 0) * 100) + '%'"></span></div>
+                             </div>
+                         </div>
+                         
+                         <div>
+                             <h4 class="font-semibold mb-3">Chain Context</h4>
+                             <div class="space-y-2 text-sm">
+                                 <div><span class="text-gray-400">Position:</span> <span x-text="`${currentThoughtIndex + 1} of ${thoughtsInCurrentChain.length}`"></span></div>
+                                 <div><span class="text-gray-400">Created:</span> <span x-text="formatDate(selectedThought?.created_at)"></span></div>
+                                 <div x-show="selectedThought?.workflow_id"><span class="text-gray-400">Workflow:</span> <span x-text="selectedThought?.workflow_id?.substring(0, 8) + '...'"></span></div>
+                                 <div x-show="selectedThought?.hasChildren">
+                                     <span class="text-gray-400">Branches:</span> 
+                                     <span class="text-purple-400">Yes</span>
+                                 </div>
+                             </div>
+                         </div>
+                     </div>
+                     
+                     <div>
+                         <h4 class="font-semibold mb-3">Thought Content</h4>
+                         <div class="bg-white/5 p-4 rounded-lg max-h-64 overflow-y-auto">
+                             <p class="text-sm whitespace-pre-wrap" x-text="selectedThought?.content"></p>
+                         </div>
+                     </div>
+                     
+                     <div x-show="selectedThought?.description">
+                         <h4 class="font-semibold mb-3">Description</h4>
+                         <p class="text-gray-300 bg-white/5 p-4 rounded-lg" x-text="selectedThought?.description"></p>
+                     </div>
+                     
+                     <!-- Chain Navigation in Modal -->
+                     <div class="grid grid-cols-2 gap-4">
+                         <button @click="navigateToPreviousThought()" 
+                                 :disabled="currentThoughtIndex === 0"
+                                 class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors flex items-center justify-center">
+                             <i data-lucide="chevron-left" class="w-4 h-4 mr-2"></i>
+                             Previous Thought
+                         </button>
+                         <button @click="navigateToNextThought()" 
+                                 :disabled="currentThoughtIndex === thoughtsInCurrentChain.length - 1"
+                                 class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-600 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors flex items-center justify-center">
+                             Next Thought
+                             <i data-lucide="chevron-right" class="w-4 h-4 ml-2"></i>
+                         </button>
+                     </div>
+                 </div>
+             </div>
+         </div>
+     </div>
  
      <!-- Floating Action Button -->
     <button class="fab" @click="showCommandPalette = true" title="Open Command Palette (Ctrl+K)">
@@ -1242,6 +2761,7 @@
                 memories: [],
                 actions: [],
                 artifacts: [],
+                goals: [],
                 
                 // Filters
                 workflowFilter: '',
@@ -1262,6 +2782,7 @@
                     totalMemories: 0,
                     totalWorkflows: 0,
                     totalActions: 0,
+                    totalGoals: 0,
                     totalLinks: 0
                 },
                 
@@ -1285,11 +2806,92 @@
                     { id: 'workflows', title: 'View Workflows', description: 'Navigate to workflows view', icon: 'git-branch', shortcut: 'W' },
                     { id: 'memories', title: 'View Memories', description: 'Navigate to memories view', icon: 'brain', shortcut: 'M' },
                     { id: 'actions', title: 'View Actions', description: 'Navigate to actions view', icon: 'zap', shortcut: 'R' },
+                    { id: 'goals', title: 'Goal Hierarchy', description: 'Interactive goal tree with dependencies', icon: 'target', shortcut: 'L' },
                     { id: 'analytics', title: 'View Analytics', description: 'Navigate to analytics view', icon: 'bar-chart-3', shortcut: 'A' },
+                    { id: 'graph', title: 'Memory Graph', description: 'Interactive network visualization', icon: 'network', shortcut: 'G' },
+                    { id: 'thought-chains', title: 'Thought Chains', description: 'Reasoning flow diagrams with timeline', icon: 'git-branch-plus', shortcut: 'C' },
                     { id: 'dashboard', title: 'Dashboard', description: 'Go back to dashboard', icon: 'layout-dashboard', shortcut: 'D' },
                     { id: 'theme', title: 'Toggle Theme', description: 'Switch between light and dark mode', icon: 'palette', shortcut: 'T' },
                     { id: 'export', title: 'Export Data', description: 'Export current view as JSON/CSV', icon: 'download', shortcut: 'E' }
                 ],
+                
+                // Graph-specific state
+                graphData: { nodes: [], links: [] },
+                graphSettings: {
+                    layout: 'force',
+                    colorBy: 'memory_level',
+                    forceStrength: -30,
+                    linkDistance: 80,
+                    physicsEnabled: true,
+                    showLegend: true,
+                    visibleLevels: ['working', 'episodic', 'semantic', 'procedural']
+                },
+                selectedGraphNode: null,
+                graphClusters: [],
+                graphTooltip: { visible: false, x: 0, y: 0, title: '', subtitle: '', content: '' },
+                currentLegend: [],
+                
+                // D3 objects
+                svg: null,
+                simulation: null,
+                zoom: null,
+                
+                // Thought Chain state
+                thoughtChains: [],
+                currentChain: null,
+                thoughtTimelinePosition: 0,
+                thoughtTimelineLength: 0,
+                thoughtsInCurrentChain: [],
+                currentThoughtIndex: 0,
+                isPlaybackActive: false,
+                playbackSpeed: 1,
+                playbackInterval: null,
+                mermaidDiagram: '',
+                chainFilter: '',
+                selectedThought: null,
+                showThoughtModal: false,
+                thoughtChainStats: {
+                    totalChains: 0,
+                    totalThoughts: 0,
+                    avgChainLength: 0,
+                    branchingPoints: 0
+                },
+
+                // Goal Hierarchy state
+                goalTreeData: { children: [] },
+                goalTreeSettings: {
+                    showCompleted: true,
+                    showProgress: true,
+                    groupBy: 'none', // 'none', 'priority', 'status', 'owner'
+                    sortBy: 'created', // 'created', 'priority', 'progress', 'title'
+                    expandLevel: 2 // Auto-expand to this level
+                },
+                selectedGoal: null,
+                goalFilter: '',
+                goalSearch: '',
+                showGoalModal: false,
+                editingGoal: null,
+                goalForm: {
+                    title: '',
+                    description: '',
+                    priority: 'medium',
+                    status: 'pending',
+                    progress: 0,
+                    due_date: '',
+                    parent_goal_id: '',
+                    notes: ''
+                },
+                isDragging: false,
+                draggedGoal: null,
+                dropTarget: null,
+                goalStats: {
+                    total: 0,
+                    completed: 0,
+                    inProgress: 0,
+                    pending: 0,
+                    overdue: 0,
+                    completionRate: 0
+                },
 
                 async init() {
                     console.log('🚀 UMS Explorer Pro initializing...');
@@ -1314,10 +2916,24 @@
                             }
                         });
                         
+                        // Initialize Mermaid
+                        if (window.mermaid) {
+                            mermaid.initialize({
+                                startOnLoad: false,
+                                theme: 'dark'
+                            });
+                        }
+                        
                         // Watch for view changes
                         this.$watch('currentView', (newView) => {
                             if (newView === 'analytics') {
                                 this.$nextTick(() => this.renderCharts());
+                            } else if (newView === 'graph') {
+                                this.$nextTick(() => this.initializeGraph());
+                            } else if (newView === 'thought-chains') {
+                                this.$nextTick(() => this.initializeThoughtChains());
+                            } else if (newView === 'goals') {
+                                this.$nextTick(() => this.initializeGoalTree());
                             }
                             this.$nextTick(() => {
                                 if (window.lucide) {
@@ -1421,8 +3037,17 @@
                                 case 'r':
                                     this.navigateTo('actions');
                                     break;
+                                case 'l':
+                                    this.navigateTo('goals');
+                                    break;
                                 case 'a':
                                     this.navigateTo('analytics');
+                                    break;
+                                case 'g':
+                                    this.navigateTo('graph');
+                                    break;
+                                case 'c':
+                                    this.navigateTo('thought-chains');
                                     break;
                                 case 't':
                                     this.toggleTheme();
@@ -1432,6 +3057,7 @@
                                     this.showWorkflowModal = false;
                                     this.showMemoryModal = false;
                                     this.showActionModal = false;
+                                    this.selectedGraphNode = null;
                                     break;
                             }
                         }
@@ -1468,7 +3094,10 @@
                         case 'workflows':
                         case 'memories':
                         case 'actions':
+                        case 'goals':
                         case 'analytics':
+                        case 'graph':
+                        case 'thought-chains':
                         case 'dashboard':
                             this.navigateTo(cmd.id);
                             break;
@@ -1597,16 +3226,35 @@
                             ORDER BY created_at DESC
                         `);
 
+                        // Load goals
+                        this.goals = this.executeQuery(`
+                            SELECT * FROM goals 
+                            ORDER BY created_at DESC
+                        `);
+
                         // Calculate stats
                         this.stats = {
                             totalMemories: this.memories.length,
                             totalWorkflows: this.workflows.length,
                             totalActions: this.actions.length,
+                            totalGoals: this.goals.length,
                             totalLinks: this.executeQuery("SELECT COUNT(*) as count FROM memory_links")[0]?.count || 0
                         };
 
                         // Generate recent activity
                         this.generateRecentActivity();
+                        
+                        // Load graph data
+                        this.loadingMessage = 'Building graph data...';
+                        await this.loadGraphData();
+                        
+                        // Load thought chain data
+                        this.loadingMessage = 'Building thought chains...';
+                        await this.loadThoughtChainData();
+                        
+                        // Load goal tree data
+                        this.loadingMessage = 'Building goal hierarchy...';
+                        await this.loadGoalTreeData();
                         
                         this.loadingMessage = 'Finalizing...';
                         await new Promise(resolve => setTimeout(resolve, 500)); // Small delay for better UX
@@ -2270,6 +3918,1849 @@
                 exportCurrentView() {
                     // Implement export functionality
                     this.showToast('Export functionality coming soon!', 'info');
+                },
+
+                // =================== GRAPH METHODS ===================
+
+                async loadGraphData() {
+                    try {
+                        // Load memory links
+                        const links = this.executeQuery(`
+                            SELECT ml.*, 
+                                   m1.memory_type as source_type,
+                                   m1.memory_level as source_level,
+                                   m1.content as source_content,
+                                   m1.importance as source_importance,
+                                   m2.memory_type as target_type,
+                                   m2.memory_level as target_level,
+                                   m2.content as target_content,
+                                   m2.importance as target_importance
+                            FROM memory_links ml
+                            LEFT JOIN memories m1 ON ml.source_memory_id = m1.memory_id
+                            LEFT JOIN memories m2 ON ml.target_memory_id = m2.memory_id
+                            WHERE m1.memory_id IS NOT NULL AND m2.memory_id IS NOT NULL
+                        `);
+
+                        // Create nodes from memories
+                        const nodeMap = new Map();
+                        
+                        // Add all memories as potential nodes
+                        this.memories.forEach(memory => {
+                            nodeMap.set(memory.memory_id, {
+                                id: memory.memory_id,
+                                ...memory,
+                                x: Math.random() * 800,
+                                y: Math.random() * 600,
+                                connections: 0,
+                                cluster: null
+                            });
+                        });
+                        
+                        // Process links and update connection counts
+                        const processedLinks = [];
+                        links.forEach(link => {
+                            if (nodeMap.has(link.source_memory_id) && nodeMap.has(link.target_memory_id)) {
+                                processedLinks.push({
+                                    source: link.source_memory_id,
+                                    target: link.target_memory_id,
+                                    link_type: link.link_type,
+                                    strength: link.strength || 1,
+                                    created_at: link.created_at
+                                });
+                                
+                                // Update connection counts
+                                nodeMap.get(link.source_memory_id).connections++;
+                                nodeMap.get(link.target_memory_id).connections++;
+                            }
+                        });
+                        
+                        // Only include nodes that have connections
+                        const connectedNodes = Array.from(nodeMap.values()).filter(node => node.connections > 0);
+                        
+                        this.graphData = {
+                            nodes: connectedNodes,
+                            links: processedLinks
+                        };
+                        
+                        // Generate clusters
+                        this.generateClusters();
+                        
+                        console.log(`Graph loaded: ${this.graphData.nodes.length} nodes, ${this.graphData.links.length} links`);
+                        
+                    } catch (error) {
+                        console.error('Error loading graph data:', error);
+                        this.showToast('Error loading graph data', 'error');
+                    }
+                },
+
+                generateClusters() {
+                    // Simple clustering by memory level and type
+                    const clusters = new Map();
+                    
+                    this.graphData.nodes.forEach(node => {
+                        const clusterKey = `${node.memory_level}-${node.memory_type}`;
+                        if (!clusters.has(clusterKey)) {
+                            clusters.set(clusterKey, {
+                                id: clusterKey,
+                                label: `${node.memory_level} - ${node.memory_type}`,
+                                nodes: [],
+                                color: this.getNodeColor(node)
+                            });
+                        }
+                        clusters.get(clusterKey).nodes.push(node);
+                        node.cluster = clusterKey;
+                    });
+                    
+                    this.graphClusters = Array.from(clusters.values());
+                },
+
+                async initializeGraph() {
+                    if (!window.d3 || !this.graphData.nodes.length) {
+                        console.log('D3 not available or no graph data');
+                        return;
+                    }
+                    
+                    try {
+                        const svg = d3.select(this.$refs.graphSvg);
+                        const container = this.$refs.graphSvg.parentElement;
+                        const rect = container.getBoundingClientRect();
+                        
+                        const width = rect.width;
+                        const height = rect.height;
+                        
+                        // Clear previous content
+                        svg.selectAll("*").remove();
+                        
+                        // Set dimensions
+                        svg.attr("width", width).attr("height", height);
+                        
+                        // Initialize zoom
+                        this.zoom = d3.zoom()
+                            .scaleExtent([0.1, 10])
+                            .on("zoom", (event) => {
+                                svg.select(".graph-content").attr("transform", event.transform);
+                            });
+                        
+                        svg.call(this.zoom);
+                        
+                        // Create main group for all graph content
+                        const g = svg.append("g").attr("class", "graph-content");
+                        
+                        // Initialize force simulation
+                        this.simulation = d3.forceSimulation(this.graphData.nodes)
+                            .force("link", d3.forceLink(this.graphData.links)
+                                .id(d => d.id)
+                                .distance(this.graphSettings.linkDistance))
+                            .force("charge", d3.forceManyBody()
+                                .strength(this.graphSettings.forceStrength))
+                            .force("center", d3.forceCenter(width / 2, height / 2))
+                            .force("collision", d3.forceCollide().radius(15));
+                        
+                        // Draw links
+                        const link = g.append("g")
+                            .attr("class", "links")
+                            .selectAll("line")
+                            .data(this.graphData.links)
+                            .enter().append("line")
+                            .attr("class", "graph-link")
+                            .attr("stroke", d => this.getLinkColor(d.link_type))
+                            .attr("stroke-width", d => Math.sqrt(d.strength || 1) * 2);
+                        
+                        // Draw nodes
+                        const node = g.append("g")
+                            .attr("class", "nodes")
+                            .selectAll("circle")
+                            .data(this.graphData.nodes)
+                            .enter().append("circle")
+                            .attr("class", "graph-node")
+                            .attr("r", d => Math.max(5, Math.min(15, 5 + Math.sqrt(d.connections * 2))))
+                            .attr("fill", d => this.getNodeColor(d))
+                            .attr("stroke", d => d3.color(this.getNodeColor(d)).darker(1))
+                            .call(this.createDrag());
+                        
+                        // Add labels
+                        const labels = g.append("g")
+                            .attr("class", "labels")
+                            .selectAll("text")
+                            .data(this.graphData.nodes)
+                            .enter().append("text")
+                            .attr("class", "graph-text")
+                            .text(d => d.memory_type.substring(0, 8))
+                            .attr("dy", "0.35em");
+                        
+                        // Add interactions
+                        node
+                            .on("mouseover", (event, d) => this.showGraphTooltip(event, d))
+                            .on("mouseout", () => this.hideGraphTooltip())
+                            .on("click", (event, d) => this.selectGraphNode(d));
+                        
+                        // Update positions on simulation tick
+                        this.simulation.on("tick", () => {
+                            link
+                                .attr("x1", d => d.source.x)
+                                .attr("y1", d => d.source.y)
+                                .attr("x2", d => d.target.x)
+                                .attr("y2", d => d.target.y);
+                            
+                            node
+                                .attr("cx", d => d.x)
+                                .attr("cy", d => d.y);
+                            
+                            labels
+                                .attr("x", d => d.x)
+                                .attr("y", d => d.y + 20);
+                        });
+                        
+                        // Store references
+                        this.svg = svg;
+                        this.updateLegend();
+                        
+                        console.log('Graph initialized successfully');
+                        
+                    } catch (error) {
+                        console.error('Error initializing graph:', error);
+                        this.showToast('Error initializing graph', 'error');
+                    }
+                },
+
+                createDrag() {
+                    return d3.drag()
+                        .on("start", (event, d) => {
+                            if (!event.active) this.simulation.alphaTarget(0.3).restart();
+                            d.fx = d.x;
+                            d.fy = d.y;
+                        })
+                        .on("drag", (event, d) => {
+                            d.fx = event.x;
+                            d.fy = event.y;
+                        })
+                        .on("end", (event, d) => {
+                            if (!event.active) this.simulation.alphaTarget(0);
+                            d.fx = null;
+                            d.fy = null;
+                        });
+                },
+
+                getNodeColor(node) {
+                    switch (this.graphSettings.colorBy) {
+                        case 'memory_level':
+                            const levelColors = {
+                                working: '#f59e0b',
+                                episodic: '#3b82f6',
+                                semantic: '#10b981',
+                                procedural: '#8b5cf6'
+                            };
+                            return levelColors[node.memory_level] || '#6b7280';
+                        
+                        case 'memory_type':
+                            // Generate color based on memory type hash
+                            const hash = node.memory_type.split('').reduce((a, b) => {
+                                a = ((a << 5) - a) + b.charCodeAt(0);
+                                return a & a;
+                            }, 0);
+                            const hue = Math.abs(hash) % 360;
+                            return `hsl(${hue}, 70%, 60%)`;
+                        
+                        case 'workflow':
+                            if (!node.workflow_id) return '#6b7280';
+                            const workflowHash = node.workflow_id.split('').reduce((a, b) => {
+                                a = ((a << 5) - a) + b.charCodeAt(0);
+                                return a & a;
+                            }, 0);
+                            const workflowHue = Math.abs(workflowHash) % 360;
+                            return `hsl(${workflowHue}, 60%, 50%)`;
+                        
+                        case 'importance':
+                            const importance = node.importance || 0;
+                            const intensity = importance / 10;
+                            return d3.interpolateReds(intensity);
+                        
+                        default:
+                            return '#3b82f6';
+                    }
+                },
+
+                getLinkColor(linkType) {
+                    const colors = {
+                        'references': '#3b82f6',
+                        'causal': '#10b981',
+                        'similarity': '#8b5cf6',
+                        'temporal': '#f59e0b',
+                        'spatial': '#ef4444'
+                    };
+                    return colors[linkType] || '#6b7280';
+                },
+
+                updateLegend() {
+                    const legend = [];
+                    
+                    switch (this.graphSettings.colorBy) {
+                        case 'memory_level':
+                            legend.push(
+                                { key: 'working', label: 'Working', color: '#f59e0b' },
+                                { key: 'episodic', label: 'Episodic', color: '#3b82f6' },
+                                { key: 'semantic', label: 'Semantic', color: '#10b981' },
+                                { key: 'procedural', label: 'Procedural', color: '#8b5cf6' }
+                            );
+                            break;
+                        
+                        case 'memory_type':
+                            const types = [...new Set(this.graphData.nodes.map(n => n.memory_type))];
+                            types.slice(0, 8).forEach(type => {
+                                const hash = type.split('').reduce((a, b) => {
+                                    a = ((a << 5) - a) + b.charCodeAt(0);
+                                    return a & a;
+                                }, 0);
+                                const hue = Math.abs(hash) % 360;
+                                legend.push({
+                                    key: type,
+                                    label: type,
+                                    color: `hsl(${hue}, 70%, 60%)`
+                                });
+                            });
+                            break;
+                        
+                        case 'importance':
+                            legend.push(
+                                { key: 'low', label: 'Low (1-3)', color: d3.interpolateReds(0.3) },
+                                { key: 'medium', label: 'Medium (4-6)', color: d3.interpolateReds(0.6) },
+                                { key: 'high', label: 'High (7-10)', color: d3.interpolateReds(0.9) }
+                            );
+                            break;
+                    }
+                    
+                    this.currentLegend = legend;
+                },
+
+                showGraphTooltip(event, node) {
+                    this.graphTooltip = {
+                        visible: true,
+                        x: event.pageX + 10,
+                        y: event.pageY - 10,
+                        title: node.memory_type,
+                        subtitle: `${node.memory_level} • ${node.connections} connections`,
+                        content: node.content.substring(0, 100) + (node.content.length > 100 ? '...' : '')
+                    };
+                },
+
+                hideGraphTooltip() {
+                    this.graphTooltip.visible = false;
+                },
+
+                selectGraphNode(node) {
+                    this.selectedGraphNode = node;
+                    
+                    // Highlight connected nodes and links
+                    if (this.svg) {
+                        this.svg.selectAll('.graph-node')
+                            .classed('selected', d => d.id === node.id);
+                        
+                        this.svg.selectAll('.graph-link')
+                            .classed('highlighted', d => 
+                                d.source.id === node.id || d.target.id === node.id
+                            );
+                    }
+                },
+
+                getNodeConnections(node) {
+                    if (!node) return [];
+                    
+                    return this.graphData.links
+                        .filter(link => link.source.id === node.id || link.target.id === node.id)
+                        .map(link => ({
+                            id: link.source.id === node.id ? link.target.id : link.source.id,
+                            target: link.source.id === node.id ? link.target : link.source,
+                            link_type: link.link_type,
+                            strength: link.strength
+                        }));
+                },
+
+                focusOnNode(node) {
+                    this.selectGraphNode(node);
+                    
+                    if (this.svg && this.zoom) {
+                        const scale = 2;
+                        const translate = [
+                            this.svg.node().clientWidth / 2 - node.x * scale,
+                            this.svg.node().clientHeight / 2 - node.y * scale
+                        ];
+                        
+                        this.svg.transition().duration(750).call(
+                            this.zoom.transform,
+                            d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+                        );
+                    }
+                },
+
+                expandNeighborhood(node) {
+                    // Find neighbors that aren't currently visible
+                    const connectedIds = new Set(this.getNodeConnections(node).map(c => c.id));
+                    const visibleIds = new Set(this.graphData.nodes.map(n => n.id));
+                    
+                    // Add any missing connected memories to the graph
+                    const nodesToAdd = this.memories.filter(memory => 
+                        connectedIds.has(memory.memory_id) && !visibleIds.has(memory.memory_id)
+                    );
+                    
+                    if (nodesToAdd.length > 0) {
+                        this.graphData.nodes.push(...nodesToAdd.map(memory => ({
+                            id: memory.memory_id,
+                            ...memory,
+                            x: node.x + (Math.random() - 0.5) * 100,
+                            y: node.y + (Math.random() - 0.5) * 100,
+                            connections: 0,
+                            cluster: null
+                        })));
+                        
+                        this.initializeGraph();
+                        this.showToast(`Expanded neighborhood: +${nodesToAdd.length} nodes`, 'success');
+                    } else {
+                        this.showToast('No additional connections to expand', 'info');
+                    }
+                },
+
+                updateGraphLayout() {
+                    if (!this.simulation) return;
+                    
+                    switch (this.graphSettings.layout) {
+                        case 'force':
+                            this.simulation
+                                .force("charge", d3.forceManyBody().strength(this.graphSettings.forceStrength))
+                                .force("center", d3.forceCenter(
+                                    this.svg.node().clientWidth / 2, 
+                                    this.svg.node().clientHeight / 2
+                                ));
+                            break;
+                        
+                        case 'hierarchical':
+                            this.applyHierarchicalLayout();
+                            break;
+                        
+                        case 'circular':
+                            this.applyCircularLayout();
+                            break;
+                        
+                        case 'cluster':
+                            this.applyClusterLayout();
+                            break;
+                    }
+                    
+                    this.simulation.alpha(1).restart();
+                },
+
+                applyHierarchicalLayout() {
+                    const levels = ['working', 'episodic', 'semantic', 'procedural'];
+                    const width = this.svg.node().clientWidth;
+                    const height = this.svg.node().clientHeight;
+                    
+                    this.graphData.nodes.forEach((node, i) => {
+                        const levelIndex = levels.indexOf(node.memory_level);
+                        node.fx = (levelIndex + 1) * (width / (levels.length + 1));
+                        node.fy = (i % 10) * (height / 10) + height / 20;
+                    });
+                },
+
+                applyCircularLayout() {
+                    const width = this.svg.node().clientWidth;
+                    const height = this.svg.node().clientHeight;
+                    const radius = Math.min(width, height) / 3;
+                    const centerX = width / 2;
+                    const centerY = height / 2;
+                    
+                    this.graphData.nodes.forEach((node, i) => {
+                        const angle = (i / this.graphData.nodes.length) * 2 * Math.PI;
+                        node.fx = centerX + radius * Math.cos(angle);
+                        node.fy = centerY + radius * Math.sin(angle);
+                    });
+                },
+
+                applyClusterLayout() {
+                    const width = this.svg.node().clientWidth;
+                    const height = this.svg.node().clientHeight;
+                    const clusters = this.graphClusters;
+                    
+                    clusters.forEach((cluster, clusterIndex) => {
+                        const clusterCenterX = (clusterIndex % 3) * (width / 3) + width / 6;
+                        const clusterCenterY = Math.floor(clusterIndex / 3) * (height / 3) + height / 6;
+                        const clusterRadius = 80;
+                        
+                        cluster.nodes.forEach((node, nodeIndex) => {
+                            const angle = (nodeIndex / cluster.nodes.length) * 2 * Math.PI;
+                            node.fx = clusterCenterX + clusterRadius * Math.cos(angle);
+                            node.fy = clusterCenterY + clusterRadius * Math.sin(angle);
+                        });
+                    });
+                },
+
+                updateGraphColors() {
+                    if (!this.svg) return;
+                    
+                    this.svg.selectAll('.graph-node')
+                        .attr('fill', d => this.getNodeColor(d))
+                        .attr('stroke', d => d3.color(this.getNodeColor(d)).darker(1));
+                    
+                    this.updateLegend();
+                },
+
+                updatePhysics() {
+                    if (!this.simulation) return;
+                    
+                    this.simulation
+                        .force("charge", d3.forceManyBody().strength(this.graphSettings.forceStrength))
+                        .force("link", d3.forceLink(this.graphData.links)
+                            .id(d => d.id)
+                            .distance(this.graphSettings.linkDistance));
+                    
+                    this.simulation.alpha(0.3).restart();
+                },
+
+                togglePhysics() {
+                    this.graphSettings.physicsEnabled = !this.graphSettings.physicsEnabled;
+                    
+                    if (this.simulation) {
+                        if (this.graphSettings.physicsEnabled) {
+                            this.simulation.alpha(0.3).restart();
+                        } else {
+                            this.simulation.stop();
+                        }
+                    }
+                },
+
+                toggleMemoryLevel(level) {
+                    const index = this.graphSettings.visibleLevels.indexOf(level);
+                    if (index > -1) {
+                        this.graphSettings.visibleLevels.splice(index, 1);
+                    } else {
+                        this.graphSettings.visibleLevels.push(level);
+                    }
+                    
+                    this.filterGraphNodes();
+                },
+
+                filterGraphNodes() {
+                    if (!this.svg) return;
+                    
+                    this.svg.selectAll('.graph-node')
+                        .style('opacity', d => 
+                            this.graphSettings.visibleLevels.includes(d.memory_level) ? 1 : 0.1
+                        );
+                    
+                    this.svg.selectAll('.graph-link')
+                        .style('opacity', d => 
+                            this.graphSettings.visibleLevels.includes(d.source.memory_level) && 
+                            this.graphSettings.visibleLevels.includes(d.target.memory_level) ? 0.6 : 0.1
+                        );
+                },
+
+                resetGraphView() {
+                    if (this.zoom && this.svg) {
+                        this.svg.transition().duration(750).call(
+                            this.zoom.transform,
+                            d3.zoomIdentity
+                        );
+                    }
+                    
+                    this.selectedGraphNode = null;
+                    
+                    if (this.svg) {
+                        this.svg.selectAll('.graph-node').classed('selected', false);
+                        this.svg.selectAll('.graph-link').classed('highlighted', false);
+                    }
+                    
+                    // Reset node positions
+                    if (this.simulation) {
+                        this.graphData.nodes.forEach(node => {
+                            node.fx = null;
+                            node.fy = null;
+                        });
+                        this.simulation.alpha(1).restart();
+                    }
+                },
+
+                calculateGraphDensity() {
+                    const nodeCount = this.graphData.nodes.length;
+                    const linkCount = this.graphData.links.length;
+                    const maxPossibleLinks = (nodeCount * (nodeCount - 1)) / 2;
+                    
+                    if (maxPossibleLinks === 0) return '0%';
+                    
+                    const density = (linkCount / maxPossibleLinks) * 100;
+                    return density.toFixed(1) + '%';
+                },
+                
+                // =================== THOUGHT CHAIN METHODS ===================
+
+                async initializeThoughtChains() {
+                    if (!this.dbLoaded || !window.mermaid) {
+                        console.log('Database not loaded or Mermaid not available');
+                        return;
+                    }
+                    
+                    try {
+                        // Initialize Mermaid with dark theme
+                        mermaid.initialize({
+                            theme: 'dark',
+                            themeVariables: {
+                                primaryColor: '#3b82f6',
+                                primaryTextColor: '#e5e7eb',
+                                primaryBorderColor: '#1d4ed8',
+                                lineColor: 'rgba(255, 255, 255, 0.4)',
+                                secondaryColor: '#1f2937',
+                                tertiaryColor: '#374151',
+                                background: 'transparent',
+                                mainBkg: '#1f2937',
+                                secondBkg: '#374151',
+                                tertiaryBkg: '#4b5563'
+                            },
+                            flowchart: {
+                                nodeSpacing: 50,
+                                rankSpacing: 80,
+                                curve: 'basis',
+                                padding: 20
+                            },
+                            fontSize: 14,
+                            fontFamily: 'Inter, sans-serif'
+                        });
+                        
+                        // Load thought chain data
+                        await this.loadThoughtChainData();
+                        
+                        console.log('✅ Thought Chains initialized successfully');
+                        
+                    } catch (error) {
+                        console.error('❌ Error initializing thought chains:', error);
+                        this.showToast('Error initializing thought chains', 'error');
+                    }
+                },
+
+                async loadThoughtChainData() {
+                    if (!this.dbLoaded) {
+                        console.log('Database not loaded, skipping thought chain data');
+                        return;
+                    }
+                    
+                    this.isProcessing = true;
+                    this.loadingMessage = 'Loading thought chains...';
+                    
+                    try {
+                        // Load thoughts (memories with type = 'thought')
+                        const thoughts = this.executeQuery(`
+                            SELECT * FROM memories 
+                            WHERE memory_type = 'thought' 
+                            ORDER BY created_at ASC
+                        `);
+                        
+                        // If no thoughts found, try to load any memories that might contain reasoning
+                        let allThoughts = thoughts;
+                        if (thoughts.length === 0) {
+                            // Fallback: load memories that contain reasoning-like content
+                            allThoughts = this.executeQuery(`
+                                SELECT * FROM memories 
+                                WHERE (content LIKE '%reasoning%' OR 
+                                       content LIKE '%thinking%' OR 
+                                       content LIKE '%decision%' OR
+                                       content LIKE '%analysis%' OR
+                                       memory_type IN ('goal', 'plan', 'observation'))
+                                ORDER BY created_at ASC
+                            `);
+                        }
+                        
+                        // Load memory links to understand parent-child relationships
+                        let thoughtLinks = [];
+                        if (allThoughts.length > 0) {
+                            const thoughtIds = allThoughts.map(t => `'${t.memory_id}'`).join(',');
+                            thoughtLinks = this.executeQuery(`
+                                SELECT ml.*, 
+                                       m1.memory_type as source_type,
+                                       m2.memory_type as target_type
+                                FROM memory_links ml
+                                LEFT JOIN memories m1 ON ml.source_memory_id = m1.memory_id
+                                LEFT JOIN memories m2 ON ml.target_memory_id = m2.memory_id
+                                WHERE (m1.memory_id IN (${thoughtIds}) OR 
+                                       m2.memory_id IN (${thoughtIds}))
+                                AND ml.link_type IN ('causal', 'temporal', 'references')
+                                ORDER BY ml.created_at ASC
+                            `);
+                        }
+                        
+                        // Build thought chains
+                        this.thoughtChains = this.buildThoughtChains(allThoughts, thoughtLinks);
+                        
+                        // Calculate statistics
+                        this.calculateThoughtChainStats();
+                        
+                        console.log(`Loaded ${this.thoughtChains.length} thought chains from ${allThoughts.length} thoughts`);
+                        
+                    } catch (error) {
+                        console.error('Error loading thought chain data:', error);
+                        // Don't show error toast for missing thought data, just log it
+                        console.log('No thought chain data available or error in processing');
+                        this.thoughtChains = [];
+                        this.calculateThoughtChainStats();
+                    } finally {
+                        this.isProcessing = false;
+                        this.loadingMessage = '';
+                    }
+                },
+
+                buildThoughtChains(thoughts, links) {
+                    // Create a map of thought relationships
+                    const thoughtMap = new Map();
+                    const childrenMap = new Map();
+                    const parentMap = new Map();
+                    
+                    // Index all thoughts
+                    thoughts.forEach(thought => {
+                        thoughtMap.set(thought.memory_id, {
+                            ...thought,
+                            children: [],
+                            hasChildren: false,
+                            isBranch: false
+                        });
+                        childrenMap.set(thought.memory_id, []);
+                    });
+                    
+                    // Build parent-child relationships from links
+                    links.forEach(link => {
+                        const sourceId = link.source_memory_id;
+                        const targetId = link.target_memory_id;
+                        
+                        if (thoughtMap.has(sourceId) && thoughtMap.has(targetId)) {
+                            childrenMap.get(sourceId).push(targetId);
+                            parentMap.set(targetId, sourceId);
+                            
+                            const sourceThought = thoughtMap.get(sourceId);
+                            sourceThought.children.push(targetId);
+                            sourceThought.hasChildren = true;
+                            
+                            // Mark as branch if more than one child
+                            if (sourceThought.children.length > 1) {
+                                sourceThought.isBranch = true;
+                            }
+                        }
+                    });
+                    
+                    // Find root thoughts (thoughts with no parents or workflow starts)
+                    const rootThoughts = thoughts.filter(thought => 
+                        !parentMap.has(thought.memory_id) || 
+                        this.isWorkflowStart(thought)
+                    );
+                    
+                    // Build chains from each root
+                    const chains = [];
+                    const processedThoughts = new Set();
+                    
+                    rootThoughts.forEach(root => {
+                        if (!processedThoughts.has(root.memory_id)) {
+                            const chain = this.buildChainFromRoot(root, thoughtMap, childrenMap, processedThoughts);
+                            if (chain.thoughts.length > 1) { // Only include chains with multiple thoughts
+                                chains.push(chain);
+                            }
+                        }
+                    });
+                    
+                    // Handle orphaned thoughts by creating simple chains
+                    thoughts.forEach(thought => {
+                        if (!processedThoughts.has(thought.memory_id)) {
+                            const chain = {
+                                id: `chain-${thought.memory_id}`,
+                                title: `Single Thought: ${thought.memory_type}`,
+                                description: thought.content.substring(0, 100) + '...',
+                                thoughts: [thoughtMap.get(thought.memory_id)],
+                                created_at: thought.created_at,
+                                hasBranches: false,
+                                branchCount: 0,
+                                complexity: 'Simple',
+                                workflow_id: thought.workflow_id
+                            };
+                            chains.push(chain);
+                            processedThoughts.add(thought.memory_id);
+                        }
+                    });
+                    
+                    return chains.sort((a, b) => b.created_at - a.created_at);
+                },
+
+                buildChainFromRoot(root, thoughtMap, childrenMap, processedThoughts) {
+                    const chainThoughts = [];
+                    const visited = new Set();
+                    let branchCount = 0;
+                    
+                    // Traverse the chain using DFS
+                    const traverse = (thoughtId, depth = 0) => {
+                        if (visited.has(thoughtId) || depth > 50) return; // Prevent infinite loops
+                        
+                        visited.add(thoughtId);
+                        processedThoughts.add(thoughtId);
+                        
+                        const thought = thoughtMap.get(thoughtId);
+                        if (thought) {
+                            chainThoughts.push(thought);
+                            
+                            // Count branches
+                            if (thought.children.length > 1) {
+                                branchCount++;
+                            }
+                            
+                            // Follow the main path (first child) and note branches
+                            thought.children.forEach((childId, index) => {
+                                if (index === 0) {
+                                    // Main path
+                                    traverse(childId, depth + 1);
+                                } else {
+                                    // Branch - for now, just note it exists
+                                    // In a more complex implementation, we'd create sub-chains
+                                    branchCount++;
+                                }
+                            });
+                        }
+                    };
+                    
+                    traverse(root.memory_id);
+                    
+                    // Determine complexity
+                    let complexity = 'Simple';
+                    if (chainThoughts.length > 10 || branchCount > 2) {
+                        complexity = 'Complex';
+                    } else if (chainThoughts.length > 5 || branchCount > 0) {
+                        complexity = 'Medium';
+                    }
+                    
+                    // Generate title and description
+                    const title = this.generateChainTitle(chainThoughts, root);
+                    const description = this.generateChainDescription(chainThoughts);
+                    
+                    return {
+                        id: `chain-${root.memory_id}`,
+                        title,
+                        description,
+                        thoughts: chainThoughts,
+                        created_at: root.created_at,
+                        hasBranches: branchCount > 0,
+                        branchCount,
+                        complexity,
+                        workflow_id: root.workflow_id
+                    };
+                },
+
+                generateChainTitle(thoughts, root) {
+                    const workflow = this.workflows.find(w => w.workflow_id === root.workflow_id);
+                    
+                    if (workflow) {
+                        return `${workflow.title || 'Workflow'} - Reasoning Chain`;
+                    }
+                    
+                    // Generate title based on thought types
+                    const types = [...new Set(thoughts.map(t => t.memory_type))];
+                    if (types.length === 1) {
+                        return `${types[0]} Chain (${thoughts.length} steps)`;
+                    } else {
+                        return `Mixed Reasoning Chain (${thoughts.length} steps)`;
+                    }
+                },
+
+                generateChainDescription(thoughts) {
+                    if (thoughts.length === 0) return 'Empty chain';
+                    
+                    const first = thoughts[0];
+                    const last = thoughts[thoughts.length - 1];
+                    
+                    return `From: ${first.content.substring(0, 50)}... To: ${last.content.substring(0, 50)}...`;
+                },
+
+                isWorkflowStart(thought) {
+                    // Check if this thought appears to be the start of a workflow
+                    return thought.content.toLowerCase().includes('goal') || 
+                           thought.content.toLowerCase().includes('objective') ||
+                           thought.content.toLowerCase().includes('task');
+                },
+
+                calculateThoughtChainStats() {
+                    const totalChains = this.thoughtChains.length;
+                    const totalThoughts = this.thoughtChains.reduce((sum, chain) => sum + chain.thoughts.length, 0);
+                    const totalBranches = this.thoughtChains.reduce((sum, chain) => sum + chain.branchCount, 0);
+                    const avgChainLength = totalChains > 0 ? totalThoughts / totalChains : 0;
+                    
+                    this.thoughtChainStats = {
+                        totalChains,
+                        totalThoughts,
+                        avgChainLength,
+                        branchingPoints: totalBranches
+                    };
+                },
+
+                selectThoughtChain(chain) {
+                    this.currentChain = chain;
+                    this.thoughtsInCurrentChain = [...chain.thoughts];
+                    this.thoughtTimelineLength = chain.thoughts.length;
+                    this.thoughtTimelinePosition = 0;
+                    this.currentThoughtIndex = 0;
+                    
+                    // Generate and render the mermaid diagram
+                    this.generateMermaidDiagram(chain);
+                    this.renderMermaidDiagram();
+                },
+
+                generateMermaidDiagram(chain) {
+                    let diagram = 'flowchart TD\n';
+                    
+                    chain.thoughts.forEach((thought, index) => {
+                        const nodeId = `T${index}`;
+                        const label = this.sanitizeForMermaid(thought.memory_type);
+                        const nodeClass = this.getMermaidNodeClass(thought);
+                        
+                        // Add node
+                        diagram += `    ${nodeId}[${label}]:::${nodeClass}\n`;
+                        
+                        // Add connections to next thoughts
+                        if (index < chain.thoughts.length - 1) {
+                            diagram += `    ${nodeId} --> T${index + 1}\n`;
+                        }
+                        
+                        // Add branches if they exist
+                        if (thought.children && thought.children.length > 1) {
+                            thought.children.slice(1).forEach((childId, branchIndex) => {
+                                const branchNodeId = `B${index}_${branchIndex}`;
+                                diagram += `    ${branchNodeId}[Branch ${branchIndex + 1}]:::branch\n`;
+                                diagram += `    ${nodeId} --> ${branchNodeId}\n`;
+                            });
+                        }
+                    });
+                    
+                    // Add styling
+                    diagram += `
+    classDef default fill:#1f2937,stroke:#3b82f6,stroke-width:2px,color:#e5e7eb
+    classDef active fill:#3b82f6,stroke:#1d4ed8,stroke-width:3px,color:#ffffff
+    classDef branch fill:#8b5cf6,stroke:#7c3aed,stroke-width:2px,color:#ffffff
+    classDef decision fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#ffffff
+    classDef conclusion fill:#10b981,stroke:#059669,stroke-width:2px,color:#ffffff
+    `;
+                    
+                    this.mermaidDiagram = diagram;
+                },
+
+                sanitizeForMermaid(text) {
+                    // Clean text for Mermaid diagram
+                    return text.replace(/[^\w\s]/g, '').substring(0, 20);
+                },
+
+                getMermaidNodeClass(thought) {
+                    const content = thought.content.toLowerCase();
+                    
+                    if (content.includes('decision') || content.includes('choose')) {
+                        return 'decision';
+                    } else if (content.includes('conclusion') || content.includes('result')) {
+                        return 'conclusion';
+                    } else if (thought.isBranch) {
+                        return 'branch';
+                    }
+                    
+                    return 'default';
+                },
+
+                async renderMermaidDiagram() {
+                    if (!this.mermaidDiagram || !this.$refs.mermaidContainer) return;
+                    
+                    try {
+                        // Clear previous diagram
+                        this.$refs.mermaidContainer.innerHTML = '';
+                        
+                        // Generate unique ID for this diagram
+                        const diagramId = `mermaid-${Date.now()}`;
+                        
+                        // Render the diagram
+                        const { svg } = await mermaid.render(diagramId, this.mermaidDiagram);
+                        this.$refs.mermaidContainer.innerHTML = svg;
+                        
+                        // Add event listeners to nodes
+                        this.addMermaidNodeInteractions();
+                        
+                        // Highlight current thought
+                        this.updateDiagramHighlight();
+                        
+                    } catch (error) {
+                        console.error('Error rendering Mermaid diagram:', error);
+                        this.showToast('Error rendering thought chain diagram', 'error');
+                    }
+                },
+
+                addMermaidNodeInteractions() {
+                    const nodes = this.$refs.mermaidContainer.querySelectorAll('.node');
+                    
+                    nodes.forEach((node, index) => {
+                        if (index < this.thoughtsInCurrentChain.length) {
+                            node.style.cursor = 'pointer';
+                            node.addEventListener('click', () => {
+                                this.jumpToThought(index);
+                            });
+                        }
+                    });
+                },
+
+                updateDiagramHighlight() {
+                    if (!this.$refs.mermaidContainer) return;
+                    
+                    const nodes = this.$refs.mermaidContainer.querySelectorAll('.node');
+                    
+                    nodes.forEach((node, index) => {
+                        node.classList.remove('active');
+                        if (index === this.currentThoughtIndex) {
+                            node.classList.add('active');
+                        }
+                        
+                        // Dim nodes that haven't been reached yet
+                        if (index > this.currentThoughtIndex) {
+                            node.style.opacity = '0.3';
+                        } else {
+                            node.style.opacity = '1';
+                        }
+                    });
+                },
+
+                // Playback control methods
+                togglePlayback() {
+                    if (this.isPlaybackActive) {
+                        this.stopPlayback();
+                    } else {
+                        this.startPlayback();
+                    }
+                },
+
+                startPlayback() {
+                    if (!this.currentChain || this.currentThoughtIndex >= this.thoughtsInCurrentChain.length - 1) {
+                        return;
+                    }
+                    
+                    this.isPlaybackActive = true;
+                    const interval = 2000 / this.playbackSpeed; // Base interval of 2 seconds
+                    
+                    this.playbackInterval = setInterval(() => {
+                        if (this.currentThoughtIndex < this.thoughtsInCurrentChain.length - 1) {
+                            this.stepForward();
+                        } else {
+                            this.stopPlayback();
+                        }
+                    }, interval);
+                },
+
+                stopPlayback() {
+                    this.isPlaybackActive = false;
+                    if (this.playbackInterval) {
+                        clearInterval(this.playbackInterval);
+                        this.playbackInterval = null;
+                    }
+                },
+
+                stepForward() {
+                    if (this.currentThoughtIndex < this.thoughtsInCurrentChain.length - 1) {
+                        this.currentThoughtIndex++;
+                        this.thoughtTimelinePosition = this.currentThoughtIndex;
+                        this.updateDiagramHighlight();
+                        this.updateSelectedThought();
+                    }
+                },
+
+                stepBackward() {
+                    if (this.currentThoughtIndex > 0) {
+                        this.currentThoughtIndex--;
+                        this.thoughtTimelinePosition = this.currentThoughtIndex;
+                        this.updateDiagramHighlight();
+                        this.updateSelectedThought();
+                    }
+                },
+
+                setPlaybackSpeed(speed) {
+                    this.playbackSpeed = speed;
+                    
+                    // Restart playback with new speed if currently playing
+                    if (this.isPlaybackActive) {
+                        this.stopPlayback();
+                        this.startPlayback();
+                    }
+                },
+
+                jumpToThought(index) {
+                    if (index >= 0 && index < this.thoughtsInCurrentChain.length) {
+                        this.currentThoughtIndex = index;
+                        this.thoughtTimelinePosition = index;
+                        this.updateDiagramHighlight();
+                        this.updateSelectedThought();
+                    }
+                },
+
+                seekToPosition(position) {
+                    this.jumpToThought(parseInt(position));
+                },
+
+                updateSelectedThought() {
+                    if (this.thoughtsInCurrentChain[this.currentThoughtIndex]) {
+                        this.selectedThought = this.thoughtsInCurrentChain[this.currentThoughtIndex];
+                    }
+                },
+
+                // Navigation helpers
+                jumpToFirstBranch() {
+                    const branchIndex = this.thoughtsInCurrentChain.findIndex(thought => thought.isBranch);
+                    if (branchIndex !== -1) {
+                        this.jumpToThought(branchIndex);
+                    }
+                },
+
+                jumpToLastThought() {
+                    this.jumpToThought(this.thoughtsInCurrentChain.length - 1);
+                },
+
+                jumpToKeyDecision() {
+                    const decisionIndex = this.thoughtsInCurrentChain.findIndex(thought => 
+                        thought.content.toLowerCase().includes('decision') || 
+                        thought.content.toLowerCase().includes('choose')
+                    );
+                    if (decisionIndex !== -1) {
+                        this.jumpToThought(decisionIndex);
+                    }
+                },
+
+                jumpToConclusion() {
+                    const conclusionIndex = this.thoughtsInCurrentChain.findIndex(thought => 
+                        thought.content.toLowerCase().includes('conclusion') || 
+                        thought.content.toLowerCase().includes('result')
+                    );
+                    if (conclusionIndex !== -1) {
+                        this.jumpToThought(conclusionIndex);
+                    } else {
+                        this.jumpToLastThought();
+                    }
+                },
+
+                // Modal navigation
+                navigateToPreviousThought() {
+                    this.stepBackward();
+                },
+
+                navigateToNextThought() {
+                    this.stepForward();
+                },
+
+                selectThought(thought) {
+                    this.selectedThought = thought;
+                },
+
+                // Chain management
+                filterThoughtChains() {
+                    // Implementation for filtering chains based on this.chainFilter
+                    // This would filter this.thoughtChains based on the selected filter
+                },
+
+                resetThoughtChainView() {
+                    this.currentChain = null;
+                    this.thoughtsInCurrentChain = [];
+                    this.currentThoughtIndex = 0;
+                    this.thoughtTimelinePosition = 0;
+                    this.stopPlayback();
+                    this.selectedThought = null;
+                    this.chainFilter = '';
+                },
+
+                exportThoughtChain() {
+                    if (!this.currentChain) {
+                        this.showToast('Please select a thought chain to export', 'warning');
+                        return;
+                    }
+                    
+                    const exportData = {
+                        chain: this.currentChain,
+                        diagram: this.mermaidDiagram,
+                        timestamp: new Date().toISOString()
+                    };
+                    
+                    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `thought-chain-${this.currentChain.id}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                    
+                    this.showToast('Thought chain exported successfully! 📁', 'success');
+                },
+
+                calculateChainDuration(chain) {
+                    if (!chain || chain.thoughts.length < 2) return 'N/A';
+                    
+                    const start = chain.thoughts[0].created_at;
+                    const end = chain.thoughts[chain.thoughts.length - 1].created_at;
+                    const duration = end - start;
+                    
+                    if (duration < 60) return `${duration}s`;
+                    if (duration < 3600) return `${Math.round(duration / 60)}m`;
+                    return `${Math.round(duration / 3600)}h`;
+                },
+
+                // =================== GOAL HIERARCHY METHODS ===================
+
+                async loadGoalTreeData() {
+                    if (!this.dbLoaded) {
+                        console.log('Database not loaded, skipping goal tree data');
+                        return;
+                    }
+                    
+                    try {
+                        // If no goals table exists, create mock data for demonstration
+                        let goals = this.goals;
+                        
+                        if (goals.length === 0) {
+                            console.log('No goals found, creating sample data for demonstration');
+                            goals = this.createSampleGoals();
+                        }
+                        
+                        // Build tree structure
+                        this.goalTreeData = this.buildGoalTree(goals);
+                        
+                        // Calculate goal statistics
+                        this.calculateGoalStats(goals);
+                        
+                        console.log(`Goal tree loaded: ${goals.length} goals`);
+                        
+                    } catch (error) {
+                        console.error('Error loading goal tree data:', error);
+                        // Create sample data if there's an error
+                        const sampleGoals = this.createSampleGoals();
+                        this.goalTreeData = this.buildGoalTree(sampleGoals);
+                        this.calculateGoalStats(sampleGoals);
+                        console.log('Using sample goal data for demonstration');
+                    }
+                },
+
+                createSampleGoals() {
+                    const now = Date.now() / 1000;
+                    return [
+                        {
+                            goal_id: 'g1',
+                            title: 'Improve AI Agent Capabilities',
+                            description: 'Enhance the overall performance and capabilities of the AI agent system',
+                            priority: 'high',
+                            status: 'in_progress',
+                            progress: 65,
+                            due_date: now + (30 * 24 * 60 * 60), // 30 days from now
+                            parent_goal_id: null,
+                            created_at: now - (10 * 24 * 60 * 60),
+                            updated_at: now - (2 * 60 * 60),
+                            owner: 'AI Team'
+                        },
+                        {
+                            goal_id: 'g2',
+                            title: 'Optimize Memory System',
+                            description: 'Improve memory retrieval speed and accuracy',
+                            priority: 'high',
+                            status: 'active',
+                            progress: 40,
+                            due_date: now + (15 * 24 * 60 * 60),
+                            parent_goal_id: 'g1',
+                            created_at: now - (8 * 24 * 60 * 60),
+                            updated_at: now - (1 * 60 * 60),
+                            owner: 'Memory Team'
+                        },
+                        {
+                            goal_id: 'g3',
+                            title: 'Implement Hierarchical Memory',
+                            description: 'Add support for different memory levels and priorities',
+                            priority: 'medium',
+                            status: 'completed',
+                            progress: 100,
+                            due_date: now - (5 * 24 * 60 * 60),
+                            parent_goal_id: 'g2',
+                            created_at: now - (15 * 24 * 60 * 60),
+                            updated_at: now - (5 * 24 * 60 * 60),
+                            owner: 'Memory Team'
+                        },
+                        {
+                            goal_id: 'g4',
+                            title: 'Enhance Reasoning Chains',
+                            description: 'Improve the logical flow and coherence of reasoning processes',
+                            priority: 'medium',
+                            status: 'in_progress',
+                            progress: 30,
+                            due_date: now + (20 * 24 * 60 * 60),
+                            parent_goal_id: 'g1',
+                            created_at: now - (6 * 24 * 60 * 60),
+                            updated_at: now - (6 * 60 * 60),
+                            owner: 'Reasoning Team'
+                        },
+                        {
+                            goal_id: 'g5',
+                            title: 'Build Goal Management System',
+                            description: 'Create an interactive interface for managing AI goals and dependencies',
+                            priority: 'medium',
+                            status: 'active',
+                            progress: 85,
+                            due_date: now + (7 * 24 * 60 * 60),
+                            parent_goal_id: null,
+                            created_at: now - (4 * 24 * 60 * 60),
+                            updated_at: now - (30 * 60),
+                            owner: 'UI Team'
+                        },
+                        {
+                            goal_id: 'g6',
+                            title: 'Performance Optimization',
+                            description: 'Optimize database queries and reduce response times',
+                            priority: 'high',
+                            status: 'pending',
+                            progress: 0,
+                            due_date: now + (45 * 24 * 60 * 60),
+                            parent_goal_id: null,
+                            created_at: now - (1 * 24 * 60 * 60),
+                            updated_at: now - (1 * 24 * 60 * 60),
+                            owner: 'Performance Team'
+                        }
+                    ];
+                },
+
+                buildGoalTree(goals) {
+                    // Create a map for quick lookup
+                    const goalMap = new Map();
+                    goals.forEach(goal => {
+                        goalMap.set(goal.goal_id, {
+                            ...goal,
+                            children: [],
+                            subgoals: [],
+                            dependencies: [],
+                            x: 0,
+                            y: 0,
+                            expanded: true
+                        });
+                    });
+                    
+                    // Build parent-child relationships
+                    const rootGoals = [];
+                    goals.forEach(goal => {
+                        const goalNode = goalMap.get(goal.goal_id);
+                        if (goal.parent_goal_id && goalMap.has(goal.parent_goal_id)) {
+                            const parent = goalMap.get(goal.parent_goal_id);
+                            parent.children.push(goalNode);
+                            parent.subgoals.push(goalNode);
+                        } else {
+                            rootGoals.push(goalNode);
+                        }
+                    });
+                    
+                    return { children: rootGoals, name: 'Goals' };
+                },
+
+                calculateGoalStats(goals) {
+                    if (!goals || goals.length === 0) {
+                        this.goalStats = {
+                            total: 0,
+                            completed: 0,
+                            inProgress: 0,
+                            pending: 0,
+                            overdue: 0,
+                            completionRate: 0
+                        };
+                        return;
+                    }
+                    
+                    const now = Date.now() / 1000;
+                    const stats = {
+                        total: goals.length,
+                        completed: 0,
+                        inProgress: 0,
+                        pending: 0,
+                        overdue: 0,
+                        completionRate: 0
+                    };
+                    
+                    goals.forEach(goal => {
+                        switch (goal.status) {
+                            case 'completed':
+                                stats.completed++;
+                                break;
+                            case 'in_progress':
+                            case 'active':
+                                stats.inProgress++;
+                                if (goal.due_date && goal.due_date < now) {
+                                    stats.overdue++;
+                                }
+                                break;
+                            case 'pending':
+                                stats.pending++;
+                                if (goal.due_date && goal.due_date < now) {
+                                    stats.overdue++;
+                                }
+                                break;
+                        }
+                    });
+                    
+                    stats.completionRate = Math.round((stats.completed / stats.total) * 100);
+                    this.goalStats = stats;
+                },
+
+                async initializeGoalTree() {
+                    if (!window.d3 || !this.goalTreeData.children.length) {
+                        console.log('D3 not available or no goal data');
+                        return;
+                    }
+                    
+                    try {
+                        await this.renderGoalTree();
+                        console.log('✅ Goal tree initialized successfully');
+                    } catch (error) {
+                        console.error('❌ Error initializing goal tree:', error);
+                        this.showToast('Error initializing goal tree', 'error');
+                    }
+                },
+
+                async renderGoalTree() {
+                    const svg = d3.select(this.$refs.goalTreeSvg);
+                    const container = this.$refs.goalTreeSvg.parentElement;
+                    const rect = container.getBoundingClientRect();
+                    
+                    const width = rect.width;
+                    const height = rect.height;
+                    
+                    // Clear previous content
+                    svg.selectAll("*").remove();
+                    
+                    // Set dimensions
+                    svg.attr("width", width).attr("height", height);
+                    
+                    // Create tree layout
+                    const treeLayout = d3.tree()
+                        .size([height - 100, width - 200])
+                        .separation((a, b) => a.parent === b.parent ? 1 : 2);
+                    
+                    // Create hierarchy
+                    const root = d3.hierarchy(this.goalTreeData);
+                    const treeData = treeLayout(root);
+                    
+                    // Create main group for all content
+                    const g = svg.append("g")
+                        .attr("class", "goal-tree-content")
+                        .attr("transform", "translate(100, 50)");
+                    
+                    // Add zoom behavior
+                    const zoom = d3.zoom()
+                        .scaleExtent([0.3, 3])
+                        .on("zoom", (event) => {
+                            g.attr("transform", `translate(100, 50) ${event.transform}`);
+                        });
+                    
+                    svg.call(zoom);
+                    
+                    // Draw links
+                    const links = g.selectAll(".goal-link")
+                        .data(treeData.links())
+                        .enter().append("path")
+                        .attr("class", "goal-link")
+                        .attr("fill", "none")
+                        .attr("stroke", "#4b5563")
+                        .attr("stroke-width", 2)
+                        .attr("d", d3.linkHorizontal()
+                            .x(d => d.y)
+                            .y(d => d.x));
+                    
+                    // Draw nodes
+                    const nodes = g.selectAll(".goal-node")
+                        .data(treeData.descendants())
+                        .enter().append("g")
+                        .attr("class", "goal-node")
+                        .attr("transform", d => `translate(${d.y}, ${d.x})`)
+                        .style("cursor", "pointer");
+                    
+                    // Node backgrounds
+                    nodes.append("rect")
+                        .attr("class", "goal-node-bg")
+                        .attr("x", -80)
+                        .attr("y", -25)
+                        .attr("width", 160)
+                        .attr("height", 50)
+                        .attr("rx", 8)
+                        .attr("fill", d => this.getGoalNodeColor(d.data))
+                        .attr("stroke", d => this.getGoalBorderColor(d.data))
+                        .attr("stroke-width", 2)
+                        .style("filter", "drop-shadow(0 2px 4px rgba(0,0,0,0.3))")
+                        .on("click", (event, d) => this.selectGoal(d.data))
+                        .on("mouseover", (event, d) => this.showGoalTooltip(event, d.data))
+                        .on("mouseout", () => this.hideGoalTooltip());
+                    
+                    // Node titles
+                    nodes.append("text")
+                        .attr("class", "goal-node-title")
+                        .attr("dy", "-5")
+                        .attr("text-anchor", "middle")
+                        .style("fill", "#ffffff")
+                        .style("font-size", "12px")
+                        .style("font-weight", "600")
+                        .style("pointer-events", "none")
+                        .text(d => this.truncateText(d.data.title || d.data.name, 20));
+                    
+                    // Progress bars (if enabled)
+                    if (this.goalTreeSettings.showProgress) {
+                        nodes.filter(d => d.data.progress !== undefined)
+                            .append("rect")
+                            .attr("class", "goal-progress-bg")
+                            .attr("x", -70)
+                            .attr("y", 8)
+                            .attr("width", 140)
+                            .attr("height", 4)
+                            .attr("rx", 2)
+                            .attr("fill", "rgba(255,255,255,0.2)");
+                        
+                        nodes.filter(d => d.data.progress !== undefined)
+                            .append("rect")
+                            .attr("class", "goal-progress-bar")
+                            .attr("x", -70)
+                            .attr("y", 8)
+                            .attr("width", d => (d.data.progress / 100) * 140)
+                            .attr("height", 4)
+                            .attr("rx", 2)
+                            .attr("fill", "#fbbf24");
+                    }
+                    
+                    // Priority indicators
+                    nodes.filter(d => d.data.priority)
+                        .append("circle")
+                        .attr("class", "goal-priority")
+                        .attr("cx", 65)
+                        .attr("cy", -15)
+                        .attr("r", 4)
+                        .attr("fill", d => this.getGoalPriorityColor(d.data.priority));
+                    
+                    // Status text
+                    nodes.append("text")
+                        .attr("class", "goal-node-status")
+                        .attr("dy", "8")
+                        .attr("text-anchor", "middle")
+                        .style("fill", "#d1d5db")
+                        .style("font-size", "10px")
+                        .style("pointer-events", "none")
+                        .text(d => d.data.status || '');
+                    
+                    // Add drag behavior
+                    nodes.call(this.createGoalDrag());
+                    
+                    // Store references
+                    this.goalTreeSvg = svg;
+                    this.goalTreeNodes = nodes;
+                    this.goalTreeLinks = links;
+                },
+
+                createGoalDrag() {
+                    return d3.drag()
+                        .on("start", (event, d) => {
+                            this.isDragging = true;
+                            this.draggedGoal = d.data;
+                            event.sourceEvent.stopPropagation();
+                        })
+                        .on("drag", (event, d) => {
+                            d3.select(event.sourceEvent.target.parentNode)
+                                .attr("transform", `translate(${event.x}, ${event.y})`);
+                        })
+                        .on("end", (event, d) => {
+                            this.isDragging = false;
+                            this.draggedGoal = null;
+                            // Reset position for now - in a real implementation, 
+                            // you'd update the tree structure here
+                            this.renderGoalTree();
+                        });
+                },
+
+                getGoalNodeColor(goal) {
+                    if (!goal.status) return '#6b7280';
+                    
+                    const colors = {
+                        completed: '#10b981',
+                        in_progress: '#3b82f6',
+                        active: '#3b82f6',
+                        pending: '#6b7280',
+                        cancelled: '#ef4444',
+                        overdue: '#ef4444'
+                    };
+                    
+                    // Check if overdue
+                    if (goal.due_date && goal.due_date < (Date.now() / 1000) && goal.status !== 'completed') {
+                        return colors.overdue;
+                    }
+                    
+                    return colors[goal.status] || colors.pending;
+                },
+
+                getGoalBorderColor(goal) {
+                    return d3.color(this.getGoalNodeColor(goal)).darker(0.5);
+                },
+
+                getGoalPriorityColor(priority) {
+                    const colors = {
+                        high: '#ef4444',
+                        medium: '#f59e0b',
+                        low: '#3b82f6'
+                    };
+                    return colors[priority] || colors.medium;
+                },
+
+                getGoalStatusClass(status) {
+                    const classes = {
+                        completed: 'bg-green-500/20 text-green-400',
+                        in_progress: 'bg-blue-500/20 text-blue-400',
+                        active: 'bg-blue-500/20 text-blue-400',
+                        pending: 'bg-gray-500/20 text-gray-400',
+                        cancelled: 'bg-red-500/20 text-red-400',
+                        overdue: 'bg-red-500/20 text-red-400'
+                    };
+                    return classes[status] || classes.pending;
+                },
+
+                getGoalPriorityClass(priority) {
+                    const classes = {
+                        high: 'bg-red-500/20 text-red-400',
+                        medium: 'bg-yellow-500/20 text-yellow-400',
+                        low: 'bg-blue-500/20 text-blue-400'
+                    };
+                    return classes[priority] || classes.medium;
+                },
+
+                selectGoal(goal) {
+                    this.selectedGoal = goal;
+                    
+                    // Highlight selected node
+                    if (this.goalTreeNodes) {
+                        this.goalTreeNodes.selectAll('.goal-node-bg')
+                            .attr('stroke-width', d => d.data === goal ? 4 : 2)
+                            .attr('stroke', d => d.data === goal ? '#fbbf24' : this.getGoalBorderColor(d.data));
+                    }
+                },
+
+                showGoalTooltip(event, goal) {
+                    // Implementation for goal tooltip
+                    // Similar to graph tooltip but with goal-specific content
+                },
+
+                hideGoalTooltip() {
+                    // Hide tooltip
+                },
+
+                truncateText(text, maxLength) {
+                    if (!text) return '';
+                    return text.length > maxLength ? text.substring(0, maxLength) + '...' : text;
+                },
+
+                // Goal management methods
+                showNewGoalModal() {
+                    this.editingGoal = null;
+                    this.goalForm = {
+                        title: '',
+                        description: '',
+                        priority: 'medium',
+                        status: 'pending',
+                        progress: 0,
+                        due_date: '',
+                        parent_goal_id: this.selectedGoal?.goal_id || '',
+                        notes: ''
+                    };
+                    this.showGoalModal = true;
+                },
+
+                editGoal(goal) {
+                    this.editingGoal = goal;
+                    this.goalForm = {
+                        title: goal.title || '',
+                        description: goal.description || '',
+                        priority: goal.priority || 'medium',
+                        status: goal.status || 'pending',
+                        progress: goal.progress || 0,
+                        due_date: goal.due_date ? new Date(goal.due_date * 1000).toISOString().split('T')[0] : '',
+                        parent_goal_id: goal.parent_goal_id || '',
+                        notes: goal.notes || ''
+                    };
+                    this.showGoalModal = true;
+                },
+
+                async saveGoal() {
+                    try {
+                        const goalData = {
+                            ...this.goalForm,
+                            due_date: this.goalForm.due_date ? new Date(this.goalForm.due_date).getTime() / 1000 : null,
+                            updated_at: Date.now() / 1000
+                        };
+                        
+                        if (this.editingGoal) {
+                            // Update existing goal
+                            goalData.goal_id = this.editingGoal.goal_id;
+                            const index = this.goals.findIndex(g => g.goal_id === this.editingGoal.goal_id);
+                            if (index !== -1) {
+                                this.goals[index] = { ...this.goals[index], ...goalData };
+                            }
+                            this.showToast('Goal updated successfully! ✅', 'success');
+                        } else {
+                            // Create new goal
+                            goalData.goal_id = 'g' + Date.now();
+                            goalData.created_at = Date.now() / 1000;
+                            this.goals.push(goalData);
+                            this.showToast('Goal created successfully! 🎯', 'success');
+                        }
+                        
+                        // Rebuild tree
+                        await this.loadGoalTreeData();
+                        if (this.currentView === 'goals') {
+                            await this.renderGoalTree();
+                        }
+                        
+                        // Close modal
+                        this.showGoalModal = false;
+                        this.editingGoal = null;
+                        
+                    } catch (error) {
+                        console.error('Error saving goal:', error);
+                        this.showToast('Error saving goal', 'error');
+                    }
+                },
+
+                addSubgoal(parentGoal) {
+                    this.selectedGoal = parentGoal;
+                    this.showNewGoalModal();
+                },
+
+                async markGoalComplete(goal) {
+                    try {
+                        goal.status = 'completed';
+                        goal.progress = 100;
+                        goal.updated_at = Date.now() / 1000;
+                        
+                        await this.loadGoalTreeData();
+                        if (this.currentView === 'goals') {
+                            await this.renderGoalTree();
+                        }
+                        
+                        this.showToast(`Goal "${goal.title}" marked as complete! 🎉`, 'success');
+                        
+                    } catch (error) {
+                        console.error('Error completing goal:', error);
+                        this.showToast('Error updating goal status', 'error');
+                    }
+                },
+
+                async deleteGoal(goal) {
+                    if (!confirm(`Are you sure you want to delete "${goal.title}"? This will also delete all subgoals.`)) {
+                        return;
+                    }
+                    
+                    try {
+                        // Remove from goals array
+                        this.goals = this.goals.filter(g => g.goal_id !== goal.goal_id && g.parent_goal_id !== goal.goal_id);
+                        
+                        await this.loadGoalTreeData();
+                        if (this.currentView === 'goals') {
+                            await this.renderGoalTree();
+                        }
+                        
+                        this.selectedGoal = null;
+                        this.showToast('Goal deleted successfully', 'success');
+                        
+                    } catch (error) {
+                        console.error('Error deleting goal:', error);
+                        this.showToast('Error deleting goal', 'error');
+                    }
+                },
+
+                filterGoals() {
+                    // Filter logic would update the tree display
+                    this.rebuildGoalTree();
+                },
+
+                rebuildGoalTree() {
+                    if (this.goals.length > 0) {
+                        this.goalTreeData = this.buildGoalTree(this.goals);
+                        if (this.currentView === 'goals') {
+                            this.renderGoalTree();
+                        }
+                    }
+                },
+
+                expandAllGoals() {
+                    // Expand all nodes in the tree
+                    this.goalTreeSettings.expandLevel = 999;
+                    this.rebuildGoalTree();
+                    this.showToast('All goals expanded', 'info');
+                },
+
+                collapseAllGoals() {
+                    // Collapse all nodes except root level
+                    this.goalTreeSettings.expandLevel = 1;
+                    this.rebuildGoalTree();
+                    this.showToast('All goals collapsed', 'info');
+                },
+
+                resetGoalTreeView() {
+                    this.selectedGoal = null;
+                    this.goalFilter = '';
+                    this.goalSearch = '';
+                    this.goalTreeSettings.groupBy = 'none';
+                    this.goalTreeSettings.sortBy = 'created';
+                    this.goalTreeSettings.expandLevel = 2;
+                    this.rebuildGoalTree();
+                    this.showToast('Goal tree view reset', 'info');
+                },
+
+                importGoalsFromMemories() {
+                    // Extract goal-like memories and create goals
+                    const goalMemories = this.memories.filter(m => 
+                        m.memory_type === 'goal' || 
+                        m.content.toLowerCase().includes('goal') ||
+                        m.content.toLowerCase().includes('objective') ||
+                        m.content.toLowerCase().includes('task')
+                    );
+                    
+                    let importedCount = 0;
+                    goalMemories.forEach(memory => {
+                        const goal = {
+                            goal_id: 'g_import_' + memory.memory_id,
+                            title: memory.content.substring(0, 50) + (memory.content.length > 50 ? '...' : ''),
+                            description: memory.content,
+                            priority: memory.importance > 7 ? 'high' : memory.importance > 4 ? 'medium' : 'low',
+                            status: 'pending',
+                            progress: 0,
+                            created_at: memory.created_at,
+                            updated_at: memory.created_at,
+                            parent_goal_id: null,
+                            workflow_id: memory.workflow_id
+                        };
+                        
+                        // Check if already exists
+                        if (!this.goals.find(g => g.title === goal.title)) {
+                            this.goals.push(goal);
+                            importedCount++;
+                        }
+                    });
+                    
+                    if (importedCount > 0) {
+                        this.loadGoalTreeData();
+                        this.showToast(`Imported ${importedCount} goals from memories! 📥`, 'success');
+                    } else {
+                        this.showToast('No new goals found to import', 'info');
+                    }
+                },
+
+                // Drag and drop handlers
+                handleGoalDrop(event, target) {
+                    if (!this.draggedGoal) return;
+                    
+                    if (target === 'root') {
+                        this.draggedGoal.parent_goal_id = null;
+                    } else {
+                        this.draggedGoal.parent_goal_id = target.goal_id;
+                    }
+                    
+                    this.rebuildGoalTree();
+                    this.showToast('Goal hierarchy updated', 'success');
+                },
+
+                highlightDropZone(event, zone) {
+                    event.currentTarget.style.opacity = '1';
+                    event.currentTarget.style.transform = 'scale(1.05)';
+                },
+
+                unhighlightDropZone(event) {
+                    event.currentTarget.style.opacity = '0.7';
+                    event.currentTarget.style.transform = 'scale(1)';
                 }
             }
         }

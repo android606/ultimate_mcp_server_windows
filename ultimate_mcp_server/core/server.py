@@ -21,7 +21,9 @@ from ultimate_mcp_server.config import get_config, load_config
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.state_store import StateStore
 from ultimate_mcp_server.graceful_shutdown import (
-    handle_quiet_exit,
+    create_quiet_server,
+    enable_quiet_shutdown,
+    register_shutdown_handler,
 )
 from ultimate_mcp_server.tools.smart_browser import (
     _ensure_initialized as smart_browser_ensure_initialized,
@@ -2051,22 +2053,49 @@ def create_server() -> FastAPI:
         allow_headers=["*"],
     )
     
-    # Add static file serving for UMS Explorer and database access
+    # Add custom endpoints for UMS Explorer and database access
     from pathlib import Path
 
-    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse, JSONResponse
     
     # Get the project root directory (where storage/ is located)
     project_root = Path(__file__).parent.parent.parent
     tools_dir = project_root / "ultimate_mcp_server" / "tools"
     storage_dir = project_root / "storage"
     
-    # Mount static files for tools (UMS Explorer)
-    app.mount("/tools", StaticFiles(directory=str(tools_dir)), name="tools")
+    # Add custom endpoint for UMS Explorer HTML file
+    @app.get("/tools/ums_explorer.html")
+    async def serve_ums_explorer():
+        """Serve the UMS Explorer HTML file."""
+        html_path = tools_dir / "ums_explorer.html"
+        if html_path.exists():
+            # Don't set filename to avoid Content-Disposition: attachment header
+            return FileResponse(
+                path=str(html_path),
+                media_type="text/html"
+            )
+        else:
+            return JSONResponse(
+                {"error": "UMS Explorer HTML file not found"},
+                status_code=404
+            )
     
-    # Mount storage directory for database access
-    if storage_dir.exists():
-        app.mount("/storage", StaticFiles(directory=str(storage_dir)), name="storage")
+    # Add custom endpoint for database file
+    @app.get("/storage/unified_agent_memory.db")
+    async def serve_database():
+        """Serve the unified agent memory database file."""
+        db_path = storage_dir / "unified_agent_memory.db"
+        if db_path.exists():
+            return FileResponse(
+                path=str(db_path),
+                media_type="application/x-sqlite3",
+                filename="unified_agent_memory.db"
+            )
+        else:
+            return JSONResponse(
+                {"error": "Database file not found"},
+                status_code=404
+            )
     
     # Add health check endpoint
     @app.get("/health")
@@ -2296,92 +2325,112 @@ def start_server(
         # Setup graceful shutdown
         logger = logging.getLogger("ultimate_mcp_server.server")
         
-        # Configure custom excepthook for clean exits
-        handle_quiet_exit()
+        # Configure graceful shutdown with error suppression
+        enable_quiet_shutdown()
         
         # Create a shutdown handler for gateway cleanup
         async def cleanup_resources():
             """Performs cleanup for various components during shutdown."""
             
             # First attempt quick tasks then long tasks with timeouts
-            logger.info("Cleaning up Gateway instance and associated resources...")
+            print("Cleaning up Gateway instance and associated resources...", file=sys.stderr)
             
             # Shutdown SQL Tools with timeout
-            logger.info("Shutting down SQL Tools module...")
             try:
-                # Add a timeout to SQL tools shutdown
-                await asyncio.wait_for(shutdown_sql_tools(), timeout=5.0)
-                logger.info("SQL Tools module shutdown complete.")
-            except asyncio.TimeoutError:
-                logger.warning("SQL Tools shutdown timed out after 5 seconds")
-            except Exception as e:
-                logger.error(f"Error during SQL Tools shutdown: {e}")
+                await asyncio.wait_for(shutdown_sql_tools(), timeout=3.0)
+            except (asyncio.TimeoutError, Exception):
+                pass  # Suppress errors during shutdown
             
             # Shutdown Connection Manager with timeout
-            logger.info("Shutting down Connection Manager...")
             try:
-                # Get connection manager from global state
                 from ultimate_mcp_server.tools.sql_databases import _connection_manager
-                await asyncio.wait_for(_connection_manager.shutdown(), timeout=3.0)
-                logger.info("Connection Manager shutdown complete.")
-            except asyncio.TimeoutError:
-                logger.warning("Connection Manager shutdown timed out after 3 seconds")
-            except Exception as e:
-                logger.error(f"Error during Connection Manager shutdown: {e}")
+                await asyncio.wait_for(_connection_manager.shutdown(), timeout=2.0)
+            except (asyncio.TimeoutError, Exception):
+                pass  # Suppress errors during shutdown
             
             # Shutdown Smart Browser with timeout
-            logger.info("Initiating explicit Smart Browser shutdown...")
             try:
-                await asyncio.wait_for(smart_browser_shutdown(), timeout=10.0)
-            except asyncio.TimeoutError:
-                logger.warning("Smart Browser shutdown timed out after 10 seconds!")
-            except Exception as e:
-                logger.error(f"Error during Smart Browser shutdown: {e}")
-            
-            # Give a very short window for connections to drain
-            try:
-                logger.info("Waiting for connections to close. (CTRL+C to force quit)")
-                await asyncio.wait_for(asyncio.sleep(2), timeout=2)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                # This is expected - we're just giving a short grace period
-                pass
+                await asyncio.wait_for(smart_browser_shutdown(), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):
+                pass  # Suppress errors during shutdown
+        
+        # Register the cleanup function with the graceful shutdown system
+        register_shutdown_handler(cleanup_resources)
         
         # Get the SSE app from FastMCP
         app = _gateway_instance.mcp.sse_app()
-        
-        # Add cleanup as FastAPI shutdown event instead of signal handler override
-        @app.on_event("shutdown")
-        async def shutdown_event():
-            """FastAPI shutdown event handler"""
-            logger.info("FastAPI shutdown event triggered")
-            await cleanup_resources()
+        print(f"[DEBUG] SSE app type: {type(app)}", file=sys.stderr)
+        print(f"[DEBUG] SSE app routes before adding custom routes: {len(app.routes) if hasattr(app, 'routes') else 'unknown'}", file=sys.stderr)
         
         # Add static file serving for UMS Explorer and database access to SSE app
         from pathlib import Path
 
-        from fastapi.staticfiles import StaticFiles
+        from starlette.responses import FileResponse
         
         # Get the project root directory (where storage/ is located)
         project_root = Path(__file__).parent.parent.parent
         tools_dir = project_root / "ultimate_mcp_server" / "tools"
         storage_dir = project_root / "storage"
         
-        # Mount static files for tools (UMS Explorer)
-        app.mount("/tools", StaticFiles(directory=str(tools_dir)), name="tools")
+        # Add custom endpoint for UMS Explorer HTML file instead of mounting tools directory
+        async def serve_ums_explorer(request):
+            """Serve the UMS Explorer HTML file."""
+            html_path = tools_dir / "ums_explorer.html"
+            if html_path.exists():
+                # Don't set filename to avoid Content-Disposition: attachment header
+                return FileResponse(
+                    path=str(html_path),
+                    media_type="text/html"
+                )
+            else:
+                from starlette.responses import JSONResponse
+                return JSONResponse(
+                    {"error": "UMS Explorer HTML file not found"},
+                    status_code=404
+                )
         
-        # Mount storage directory for database access
-        if storage_dir.exists():
-            app.mount("/storage", StaticFiles(directory=str(storage_dir)), name="storage")
+        app.add_route("/tools/ums_explorer.html", serve_ums_explorer, methods=["GET"])
+        print("[DEBUG] Registered UMS Explorer endpoint: /tools/ums_explorer.html", file=sys.stderr)
+        print(f"[DEBUG] Tools directory path: {tools_dir}", file=sys.stderr)
+        print(f"[DEBUG] UMS Explorer file exists: {(tools_dir / 'ums_explorer.html').exists()}", file=sys.stderr)
+        
+        # Add custom endpoint for database file instead of mounting storage directory
+        async def serve_database(request):
+            """Serve the unified agent memory database file."""
+            db_path = storage_dir / "unified_agent_memory.db"
+            print(f"[DEBUG] Database endpoint called. Looking for: {db_path}", file=sys.stderr)
+            print(f"[DEBUG] Database file exists: {db_path.exists()}", file=sys.stderr)
+            if db_path.exists():
+                print(f"[DEBUG] Serving database file: {db_path}", file=sys.stderr)
+                return FileResponse(
+                    path=str(db_path),
+                    media_type="application/x-sqlite3",
+                    filename="unified_agent_memory.db"
+                )
+            else:
+                print(f"[DEBUG] Database file not found at: {db_path}", file=sys.stderr)
+                from starlette.responses import JSONResponse
+                return JSONResponse(
+                    {"error": f"Database file not found at {db_path}"},
+                    status_code=404
+                )
+        
+        app.add_route("/storage/unified_agent_memory.db", serve_database, methods=["GET"])
+        print("[DEBUG] Registered database endpoint: /storage/unified_agent_memory.db", file=sys.stderr)
+        print(f"[DEBUG] Storage directory path: {storage_dir}", file=sys.stderr)
+        print(f"[DEBUG] Storage directory exists: {storage_dir.exists()}", file=sys.stderr)
         
         # Add UMS Explorer endpoint to SSE app
-        @app.get("/ums-explorer")
-        async def ums_explorer():
+        from starlette.responses import RedirectResponse
+        
+        async def ums_explorer(request):
             """UMS Explorer web interface."""
-            from fastapi.responses import RedirectResponse
             return RedirectResponse(url="/tools/ums_explorer.html")
         
+        app.add_route("/ums-explorer", ums_explorer, methods=["GET"])
+        
         # Add root endpoint to the SSE app for MCP discovery
-        from fastapi.responses import JSONResponse
+        from starlette.responses import JSONResponse
         
         async def root_endpoint(request):
             """Root endpoint for MCP server discovery"""
@@ -2402,7 +2451,7 @@ def start_server(
         # Log SSE endpoint
         print(f"SSE endpoint available at: http://{server_host}:{server_port}/sse", file=sys.stderr)
         
-        # Use standard Uvicorn server (let it handle signals properly)
+        # Use our custom quiet Uvicorn server for silent shutdown
         config = uvicorn.Config(
             app,
             host=server_host,
@@ -2410,76 +2459,53 @@ def start_server(
             log_config=LOGGING_CONFIG,
             log_level=final_log_level.lower(),
         )
-        server = uvicorn.Server(config)
+        
+        server = create_quiet_server(config)
         server.run()
     else: # stdio mode
         # --- Stdio Mode Execution ---
         logger.info("Running in stdio mode...")
         
-        # Create a shutdown handler for stdio mode cleanup
+        # Create a shutdown handler for stdio mode cleanup  
         async def cleanup_resources():
             """Performs cleanup for various components during shutdown."""
             
-            # First attempt quick tasks then long tasks with timeouts
-            logger.info("Cleaning up Gateway instance and associated resources...")
+            print("Cleaning up Gateway instance and associated resources...", file=sys.stderr)
             
             # Shutdown SQL Tools with timeout
-            logger.info("Shutting down SQL Tools module...")
             try:
-                # Add a timeout to SQL tools shutdown
-                await asyncio.wait_for(shutdown_sql_tools(), timeout=5.0)
-                logger.info("SQL Tools module shutdown complete.")
-            except asyncio.TimeoutError:
-                logger.warning("SQL Tools shutdown timed out after 5 seconds")
-            except Exception as e:
-                logger.error(f"Error during SQL Tools shutdown: {e}")
+                await asyncio.wait_for(shutdown_sql_tools(), timeout=3.0)
+            except (asyncio.TimeoutError, Exception):
+                pass  # Suppress errors during shutdown
             
             # Shutdown Connection Manager with timeout
-            logger.info("Shutting down Connection Manager...")
             try:
-                # Get connection manager from global state
                 from ultimate_mcp_server.tools.sql_databases import _connection_manager
-                await asyncio.wait_for(_connection_manager.shutdown(), timeout=3.0)
-                logger.info("Connection Manager shutdown complete.")
-            except asyncio.TimeoutError:
-                logger.warning("Connection Manager shutdown timed out after 3 seconds")
-            except Exception as e:
-                logger.error(f"Error during Connection Manager shutdown: {e}")
+                await asyncio.wait_for(_connection_manager.shutdown(), timeout=2.0)
+            except (asyncio.TimeoutError, Exception):
+                pass  # Suppress errors during shutdown
             
             # Shutdown Smart Browser with timeout
-            logger.info("Initiating explicit Smart Browser shutdown...")
             try:
-                await asyncio.wait_for(smart_browser_shutdown(), timeout=10.0)
-            except asyncio.TimeoutError:
-                logger.warning("Smart Browser shutdown timed out after 10 seconds!")
-            except Exception as e:
-                logger.error(f"Error during Smart Browser shutdown: {e}")
+                await asyncio.wait_for(smart_browser_shutdown(), timeout=5.0)
+            except (asyncio.TimeoutError, Exception):
+                pass  # Suppress errors during shutdown
         
-        # Configure custom excepthook for clean exits on unhandled exceptions
-        handle_quiet_exit()
+        # Configure graceful shutdown with error suppression
+        enable_quiet_shutdown()
         
-        # Add shutdown handler to the MCP server's lifespan context
-        # The Gateway's _server_lifespan method will handle cleanup on exit
+        # Register the same cleanup function for stdio mode
+        register_shutdown_handler(cleanup_resources)
         
         try:
             # Run the FastMCP stdio loop - this will block until interrupted
             _gateway_instance.mcp.run()
-        except KeyboardInterrupt:
-            logger.info("Received keyboard interrupt in stdio mode")
-            # Run cleanup manually for stdio mode since lifespan might not trigger
-            try:
-                asyncio.run(cleanup_resources())
-            except Exception as e:
-                logger.error(f"Error during stdio cleanup: {e}")
-        except Exception as e:
-            logger.error(f"Error in stdio mode: {e}")
-            # Run cleanup on any error
-            try:
-                asyncio.run(cleanup_resources())
-            except Exception as cleanup_e:
-                logger.error(f"Error during error cleanup: {cleanup_e}")
-        finally:
-            logger.info("Stdio mode exiting")
+        except (KeyboardInterrupt, SystemExit):
+            # Normal shutdown - handled by graceful shutdown system
+            pass
+        except Exception:
+            # Any other error - also handled by graceful shutdown
+            pass
         # --- End Stdio Mode ---
 
     # --- Post-Server Exit ---
