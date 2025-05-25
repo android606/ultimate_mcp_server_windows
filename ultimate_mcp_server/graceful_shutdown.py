@@ -12,7 +12,6 @@ import signal
 import sys
 import warnings
 from contextlib import suppress
-from functools import partial
 from typing import Callable, List, Optional
 
 logger = logging.getLogger("ultimate_mcp_server.shutdown")
@@ -102,7 +101,7 @@ def _handle_shutdown_signal(signum, frame):
             os.write(_original_stderr_fd, b"\n[Graceful Shutdown] Signal received. Exiting...\n")
         else:
             print("\n[Graceful Shutdown] Signal received. Exiting...", file=sys.__stderr__)
-    except:
+    except Exception:
         pass
     
     # Immediately redirect stderr to suppress any error output
@@ -115,7 +114,7 @@ def _handle_shutdown_signal(signum, frame):
     try:
         loop = asyncio.get_running_loop()
         # Create a task but don't wait for it - just exit
-        task = asyncio.create_task(_execute_shutdown_handlers())
+        asyncio.create_task(_execute_shutdown_handlers())
         # Give it a tiny bit of time then exit
         loop.call_later(0.5, lambda: os._exit(0))
     except RuntimeError:
@@ -134,7 +133,7 @@ def setup_signal_handlers(loop: Optional[asyncio.AbstractEventLoop] = None) -> N
         try:
             for sig in [signal.SIGINT, signal.SIGTERM]:
                 try:
-                    loop.add_signal_handler(sig, lambda: _handle_shutdown_signal(sig, None))
+                    loop.add_signal_handler(sig, lambda s=sig: _handle_shutdown_signal(s, None))
                 except (NotImplementedError, OSError):
                     # Platform doesn't support async signal handlers
                     pass

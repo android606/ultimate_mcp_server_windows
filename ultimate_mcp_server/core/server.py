@@ -2137,6 +2137,8 @@ def create_server() -> FastAPI:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/tools/ums_explorer.html")
     
+
+    
     # Store the app instance
     _server_app = app
     

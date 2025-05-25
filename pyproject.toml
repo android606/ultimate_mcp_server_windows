@@ -30,40 +30,32 @@ dependencies = [
     "anthropic>=0",
     "openai>=0",
     "google-genai>=0",
-
     # Async utilities
     "httpx>=0",
     "aiofiles>=0",
-
     # Data processing
     "pydantic>=0",
-    "tenacity>=0",  # For retry logic
-
+    "tenacity>=0", # For retry logic
     # Caching and persistence
     "diskcache>=0", # Persistent disk cache
-    "msgpack>=0",   # Efficient serialization
-
+    "msgpack>=0", # Efficient serialization
     # Vector database for semantic caching
     "numpy>=0",
-    "sentence-transformers>=0",  # For embeddings
-    "chromadb>=0",              # Vector DB
-    
+    "sentence-transformers>=0", # For embeddings
+    "chromadb>=0", # Vector DB
     # Analytics and monitoring
     "prometheus-client>=0",
     "pandas>=0",
-    "rich>=0",    # Console output formatting
-    
+    "rich>=0", # Console output formatting
     # Templating for prompt management
     "jinja2>=0",
-    
     # Multi-modal support
-    "pillow>=0",  # Image processing
-    
+    "pillow>=0", # Image processing
     # Utilities
-    "python-slugify>=0",  # For URL-friendly strings
-    "colorama>=0",        # Terminal colors
-    "tqdm>=0",           # Progress bars
-    "tiktoken>=0",       # Token counting
+    "python-slugify>=0", # For URL-friendly strings
+    "colorama>=0", # Terminal colors
+    "tqdm>=0", # Progress bars
+    "tiktoken>=0", # Token counting
     "python-decouple>=0", # .env management
     "pydantic-settings>=0",
     "jsonschema>=0",
@@ -91,9 +83,9 @@ dependencies = [
     "trafilatura>=0",
     "markdown>=0",
     "jsonpatch>=0",
-    "jsonpointer>=0",    
+    "jsonpointer>=0",
     "pygments>=0",
-    "typer>=0",  # For CLI interface
+    "typer>=0", # For CLI interface
     "docling>=0", # For document conversion
     "aiohttp>=0",
     "boto3>=0", # For AWS secrets management
@@ -104,6 +96,8 @@ dependencies = [
     "tabula-py>=0",
     "brotli>=0",
     "pygments>=0",
+    "fastapi>=0.115.9",
+    "uvicorn>=0.34.2",
 ]
 
 [project.optional-dependencies]

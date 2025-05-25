@@ -309,11 +309,31 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "python-dateutil" },
-    { name = "urllib3" },
+    { name = "urllib3", marker = "python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c1/c7/ceb0746552fe003b1e43150d32b0ef523a8bdb83ca198ff70fd24de57692/botocore-1.38.5.tar.gz", hash = "sha256:506e8274f7ddb84ca4ec85f7f9229de59fb43702e2e0b1400bea07f7f4a7ba82", size = 13861816 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/4f/8a9f684f5864b4f25f5d6d15b012cd43839f3765f805e861e8c97cb02101/botocore-1.38.5-py3-none-any.whl", hash = "sha256:df1dc1dfe3607e3f802ddeb1f25a9f0abc8909ea674032480f71362e96c3c548", size = 13523287 },
+]
+
+[[package]]
+name = "brotli"
+version = "1.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/c2/f9e977608bdf958650638c3f1e28f85a1b075f075ebbe77db8555463787b/Brotli-1.1.0.tar.gz", hash = "sha256:81de08ac11bcb85841e440c13611c00b67d3bf82698314928d0b676362546724", size = 7372270 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/9f/fb37bb8ffc52a8da37b1c03c459a8cd55df7a57bdccd8831d500e994a0ca/Brotli-1.1.0-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:8bf32b98b75c13ec7cf774164172683d6e7891088f6316e54425fde1efc276d5", size = 815681 },
+    { url = "https://files.pythonhosted.org/packages/06/b3/dbd332a988586fefb0aa49c779f59f47cae76855c2d00f450364bb574cac/Brotli-1.1.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:7bc37c4d6b87fb1017ea28c9508b36bbcb0c3d18b4260fcdf08b200c74a6aee8", size = 422475 },
+    { url = "https://files.pythonhosted.org/packages/bb/80/6aaddc2f63dbcf2d93c2d204e49c11a9ec93a8c7c63261e2b4bd35198283/Brotli-1.1.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:3c0ef38c7a7014ffac184db9e04debe495d317cc9c6fb10071f7fefd93100a4f", size = 2906173 },
+    { url = "https://files.pythonhosted.org/packages/ea/1d/e6ca79c96ff5b641df6097d299347507d39a9604bde8915e76bf026d6c77/Brotli-1.1.0-cp313-cp313-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:91d7cc2a76b5567591d12c01f019dd7afce6ba8cba6571187e21e2fc418ae648", size = 2943803 },
+    { url = "https://files.pythonhosted.org/packages/ac/a3/d98d2472e0130b7dd3acdbb7f390d478123dbf62b7d32bda5c830a96116d/Brotli-1.1.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a93dde851926f4f2678e704fadeb39e16c35d8baebd5252c9fd94ce8ce68c4a0", size = 2918946 },
+    { url = "https://files.pythonhosted.org/packages/c4/a5/c69e6d272aee3e1423ed005d8915a7eaa0384c7de503da987f2d224d0721/Brotli-1.1.0-cp313-cp313-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:f0db75f47be8b8abc8d9e31bc7aad0547ca26f24a54e6fd10231d623f183d089", size = 2845707 },
+    { url = "https://files.pythonhosted.org/packages/58/9f/4149d38b52725afa39067350696c09526de0125ebfbaab5acc5af28b42ea/Brotli-1.1.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:6967ced6730aed543b8673008b5a391c3b1076d834ca438bbd70635c73775368", size = 2936231 },
+    { url = "https://files.pythonhosted.org/packages/5a/5a/145de884285611838a16bebfdb060c231c52b8f84dfbe52b852a15780386/Brotli-1.1.0-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:7eedaa5d036d9336c95915035fb57422054014ebdeb6f3b42eac809928e40d0c", size = 2848157 },
+    { url = "https://files.pythonhosted.org/packages/50/ae/408b6bfb8525dadebd3b3dd5b19d631da4f7d46420321db44cd99dcf2f2c/Brotli-1.1.0-cp313-cp313-musllinux_1_2_ppc64le.whl", hash = "sha256:d487f5432bf35b60ed625d7e1b448e2dc855422e87469e3f450aa5552b0eb284", size = 3035122 },
+    { url = "https://files.pythonhosted.org/packages/af/85/a94e5cfaa0ca449d8f91c3d6f78313ebf919a0dbd55a100c711c6e9655bc/Brotli-1.1.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:832436e59afb93e1836081a20f324cb185836c617659b07b129141a8426973c7", size = 2930206 },
+    { url = "https://files.pythonhosted.org/packages/c2/f0/a61d9262cd01351df22e57ad7c34f66794709acab13f34be2675f45bf89d/Brotli-1.1.0-cp313-cp313-win32.whl", hash = "sha256:43395e90523f9c23a3d5bdf004733246fba087f2948f87ab28015f12359ca6a0", size = 333804 },
+    { url = "https://files.pythonhosted.org/packages/7e/c1/ec214e9c94000d1c1974ec67ced1c970c148aa6b8d8373066123fc3dbf06/Brotli-1.1.0-cp313-cp313-win_amd64.whl", hash = "sha256:9011560a466d2eb3f5a6e4929cf4a09be405c64154e12df0dd72713f6500e32b", size = 358517 },
 ]
 
 [[package]]
@@ -825,7 +845,7 @@ dependencies = [
     { name = "python-pptx", marker = "platform_machine != 'x86_64' or platform_system != 'Darwin' or sys_platform != 'darwin'" },
     { name = "requests", marker = "platform_machine != 'x86_64' or platform_system != 'Darwin' or sys_platform != 'darwin'" },
     { name = "rtree", marker = "platform_machine != 'x86_64' or platform_system != 'Darwin' or sys_platform != 'darwin'" },
-    { name = "scipy", marker = "platform_machine != 'x86_64' or platform_system != 'Darwin' or sys_platform != 'darwin'" },
+    { name = "scipy", marker = "(platform_machine != 'x86_64' and python_full_version >= '3.13') or (platform_system != 'Darwin' and python_full_version >= '3.13') or (sys_platform != 'darwin' and python_full_version >= '3.13')" },
     { name = "tqdm", marker = "platform_machine != 'x86_64' or platform_system != 'Darwin' or sys_platform != 'darwin'" },
     { name = "typer", version = "0.12.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_system != 'Darwin'" },
     { name = "typer", version = "0.15.3", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and platform_system == 'Darwin') or (platform_system == 'Darwin' and sys_platform != 'darwin')" },
@@ -1315,7 +1335,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "charset-normalizer" },
     { name = "dateparser" },
-    { name = "lxml" },
+    { name = "lxml", marker = "python_full_version >= '3.13'" },
     { name = "python-dateutil" },
     { name = "urllib3" },
 ]
@@ -1342,7 +1362,7 @@ name = "httplib2"
 version = "0.22.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyparsing" },
+    { name = "pyparsing", marker = "python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3d/ad/2371116b22d616c194aa25ec410c9c6c37f23599dcd590502b74db197584/httplib2-0.22.0.tar.gz", hash = "sha256:d7a10bc5ef5ab08322488bde8c726eeee5c8618723fdb399597ec58f3d82df81", size = 351116 }
 wheels = [
@@ -1411,7 +1431,7 @@ name = "humanfriendly"
 version = "10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyreadline3", marker = "sys_platform == 'win32'" },
+    { name = "pyreadline3", marker = "sys_platform == 'win32' and python_full_version >= '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cc/3f/2c29224acb2e2df4d2046e4c73ee2662023c58ff5b113c4c1adac0886c43/humanfriendly-10.0.tar.gz", hash = "sha256:6b0b831ce8f15f7300721aa49829fc4e83921a9a301cc7f606be6686a2288ddc", size = 360702 }
 wheels = [
@@ -1863,8 +1883,8 @@ resolution-markers = [
 ]
 dependencies = [
     { name = "click", marker = "platform_machine != 'x86_64' or (platform_system != 'Darwin' and sys_platform != 'darwin') or platform_system == 'Darwin'" },
-    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or (platform_system != 'Darwin' and sys_platform != 'darwin') or platform_system == 'Darwin'" },
-    { name = "onnxruntime", marker = "platform_machine != 'x86_64' or (platform_system != 'Darwin' and sys_platform != 'darwin') or platform_system == 'Darwin'" },
+    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and python_full_version >= '3.13') or (platform_system != 'Darwin' and sys_platform != 'darwin' and python_full_version >= '3.13') or (platform_system == 'Darwin' and python_full_version >= '3.13')" },
+    { name = "onnxruntime", marker = "(platform_machine != 'x86_64' and python_full_version >= '3.13') or (platform_system != 'Darwin' and sys_platform != 'darwin' and python_full_version >= '3.13') or (platform_system == 'Darwin' and python_full_version >= '3.13')" },
     { name = "python-dotenv", marker = "platform_machine != 'x86_64' or (platform_system != 'Darwin' and sys_platform != 'darwin') or platform_system == 'Darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/18/ea70f6abd36f455037340f12c8125918c726d08cd6e01f0b76b6884e0c38/magika-0.6.1.tar.gz", hash = "sha256:e3dd22c73936630b1cd79d0f412d6d9a53dc99ba5e3709b1ac53f56bc998e635", size = 3030234 }
@@ -2197,7 +2217,7 @@ wheels = [
 
 [package.optional-dependencies]
 dill = [
-    { name = "multiprocess" },
+    { name = "multiprocess", marker = "python_full_version >= '3.13'" },
 ]
 
 [[package]]
@@ -2489,7 +2509,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.5.1.17"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine != 'aarch64' and platform_system != 'Darwin') or (platform_system != 'Darwin' and platform_system != 'Linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/99/93/a201a12d3ec1caa8c6ac34c1c2f9eeb696b886f0c36ff23c638b46603bd0/nvidia_cudnn_cu12-9.5.1.17-py3-none-manylinux_2_28_aarch64.whl", hash = "sha256:9fd4584468533c61873e5fda8ca41bac3a38bcb2d12350830c69b0a96a7e4def", size = 570523509 },
@@ -2501,7 +2521,7 @@ name = "nvidia-cufft-cu12"
 version = "11.3.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and platform_system != 'Darwin') or (platform_system != 'Darwin' and platform_system != 'Linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1f/37/c50d2b2f2c07e146776389e3080f4faf70bcc4fa6e19d65bb54ca174ebc3/nvidia_cufft_cu12-11.3.0.4-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d16079550df460376455cba121db6564089176d9bac9e4f360493ca4741b22a6", size = 200164144 },
@@ -2535,9 +2555,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.7.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cusparse-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine != 'aarch64' and platform_system != 'Darwin') or (platform_system != 'Darwin' and platform_system != 'Linux')" },
+    { name = "nvidia-cusparse-cu12", marker = "(platform_machine != 'aarch64' and platform_system != 'Darwin') or (platform_system != 'Darwin' and platform_system != 'Linux')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and platform_system != 'Darwin') or (platform_system != 'Darwin' and platform_system != 'Linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/93/17/dbe1aa865e4fdc7b6d4d0dd308fdd5aaab60f939abfc0ea1954eac4fb113/nvidia_cusolver_cu12-11.7.1.2-py3-none-manylinux2014_aarch64.whl", hash = "sha256:0ce237ef60acde1efc457335a2ddadfd7610b892d94efee7b776c64bb1cac9e0", size = 157833628 },
@@ -2551,7 +2571,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.5.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine != 'aarch64' and platform_system != 'Darwin') or (platform_system != 'Darwin' and platform_system != 'Linux')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/eb/eb/6681efd0aa7df96b4f8067b3ce7246833dd36830bb4cec8896182773db7d/nvidia_cusparse_cu12-12.5.4.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d25b62fb18751758fe3c93a4a08eff08effedfe4edf1c6bb5afd0890fe88f887", size = 216451147 },
@@ -2653,8 +2673,8 @@ name = "opencv-python"
 version = "4.11.0.86"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and platform_system != 'Darwin' and sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or (platform_system != 'Darwin' and sys_platform != 'darwin') or platform_system == 'Darwin'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and platform_system != 'Darwin' and sys_platform == 'darwin' and python_full_version >= '3.13'" },
+    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and python_full_version >= '3.13') or (platform_machine == 'aarch64' and python_full_version >= '3.13') or (platform_system != 'Darwin' and sys_platform != 'darwin' and python_full_version >= '3.13') or (python_full_version < '3.13' and sys_platform != 'darwin' and python_full_version >= '3.13') or (platform_system == 'Darwin' and python_full_version >= '3.13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/17/06/68c27a523103dad5837dc5b87e71285280c4f098c60e4fe8a8db6486ab09/opencv-python-4.11.0.86.tar.gz", hash = "sha256:03d60ccae62304860d232272e4a4fda93c39d595780cb40b161b310244b736a4", size = 95171956 }
 wheels = [
@@ -2671,8 +2691,8 @@ name = "opencv-python-headless"
 version = "4.11.0.86"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and platform_system != 'Darwin' and sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or (platform_system != 'Darwin' and sys_platform != 'darwin') or platform_system == 'Darwin'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and platform_system != 'Darwin' and sys_platform == 'darwin' and python_full_version >= '3.13'" },
+    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and python_full_version >= '3.13') or (platform_machine == 'aarch64' and python_full_version >= '3.13') or (platform_system != 'Darwin' and sys_platform != 'darwin' and python_full_version >= '3.13') or (python_full_version < '3.13' and sys_platform != 'darwin' and python_full_version >= '3.13') or (platform_system == 'Darwin' and python_full_version >= '3.13')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/36/2f/5b2b3ba52c864848885ba988f24b7f105052f68da9ab0e693cc7c25b0b30/opencv-python-headless-4.11.0.86.tar.gz", hash = "sha256:996eb282ca4b43ec6a3972414de0e2331f5d9cda2b41091a49739c19fb843798", size = 95177929 }
 wheels = [
@@ -2728,7 +2748,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "deprecated" },
     { name = "googleapis-common-protos" },
-    { name = "grpcio" },
+    { name = "grpcio", marker = "python_full_version >= '3.13'" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-common" },
     { name = "opentelemetry-proto" },
@@ -2889,8 +2909,8 @@ name = "pandas"
 version = "2.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and platform_system != 'Darwin' and sys_platform == 'darwin'" },
-    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or (platform_system != 'Darwin' and sys_platform != 'darwin') or platform_system == 'Darwin'" },
+    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and platform_system != 'Darwin' and sys_platform == 'darwin' and python_full_version >= '3.13'" },
+    { name = "numpy", version = "2.2.5", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and python_full_version >= '3.13') or (platform_system != 'Darwin' and sys_platform != 'darwin' and python_full_version >= '3.13') or (platform_system == 'Darwin' and python_full_version >= '3.13')" },
     { name = "python-dateutil" },
     { name = "pytz" },
     { name = "tzdata" },
@@ -4216,7 +4236,7 @@ name = "sqlalchemy"
 version = "2.0.40"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "greenlet", marker = "(python_full_version < '3.14' and platform_machine == 'AMD64') or (python_full_version < '3.14' and platform_machine == 'WIN32') or (python_full_version < '3.14' and platform_machine == 'aarch64') or (python_full_version < '3.14' and platform_machine == 'amd64') or (python_full_version < '3.14' and platform_machine == 'ppc64le') or (python_full_version < '3.14' and platform_machine == 'win32') or (python_full_version < '3.14' and platform_machine == 'x86_64')" },
+    { name = "greenlet", marker = "(python_full_version < '3.14' and platform_machine == 'AMD64' and python_full_version >= '3.13') or (python_full_version < '3.14' and platform_machine == 'WIN32' and python_full_version >= '3.13') or (python_full_version < '3.14' and platform_machine == 'aarch64' and python_full_version >= '3.13') or (python_full_version < '3.14' and platform_machine == 'amd64' and python_full_version >= '3.13') or (python_full_version < '3.14' and platform_machine == 'ppc64le' and python_full_version >= '3.13') or (python_full_version < '3.14' and platform_machine == 'win32' and python_full_version >= '3.13') or (python_full_version < '3.14' and platform_machine == 'x86_64' and python_full_version >= '3.13')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/68/c3/3f2bfa5e4dcd9938405fe2fab5b6ab94a9248a4f9536ea2fd497da20525f/sqlalchemy-2.0.40.tar.gz", hash = "sha256:d827099289c64589418ebbcaead0145cd19f4e3e8a93919a0100247af245fa00", size = 9664299 }
@@ -4441,7 +4461,7 @@ dependencies = [
     { name = "nvidia-nvjitlink-cu12", marker = "platform_machine == 'x86_64' and platform_system == 'Linux'" },
     { name = "nvidia-nvtx-cu12", marker = "platform_machine == 'x86_64' and platform_system == 'Linux'" },
     { name = "pytorch-triton", marker = "platform_machine == 'x86_64' and platform_system == 'Linux'" },
-    { name = "setuptools" },
+    { name = "setuptools", marker = "python_full_version >= '3.13'" },
     { name = "sympy" },
     { name = "typing-extensions" },
 ]
@@ -4506,7 +4526,7 @@ dependencies = [
     { name = "courlan" },
     { name = "htmldate" },
     { name = "justext" },
-    { name = "lxml" },
+    { name = "lxml", marker = "python_full_version >= '3.13'" },
     { name = "urllib3" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/06/25/e3ebeefdebfdfae8c4a4396f5a6ea51fc6fa0831d63ce338e5090a8003dc/trafilatura-2.0.0.tar.gz", hash = "sha256:ceb7094a6ecc97e72fea73c7dba36714c5c5b577b6470e4520dca893706d6247", size = 253404 }
@@ -4716,11 +4736,13 @@ dependencies = [
     { name = "anthropic" },
     { name = "beautifulsoup4" },
     { name = "boto3" },
+    { name = "brotli" },
     { name = "chromadb" },
     { name = "colorama" },
     { name = "diskcache" },
     { name = "docling", version = "2.15.1", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and platform_system == 'Darwin' and sys_platform == 'darwin'" },
     { name = "docling", version = "2.31.0", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine != 'x86_64' or platform_system != 'Darwin' or sys_platform != 'darwin'" },
+    { name = "fastapi" },
     { name = "faster-whisper" },
     { name = "fitz" },
     { name = "google-genai" },
@@ -4774,6 +4796,7 @@ dependencies = [
     { name = "trafilatura" },
     { name = "typer", version = "0.12.5", source = { registry = "https://pypi.org/simple" }, marker = "platform_system != 'Darwin' or (platform_machine == 'x86_64' and sys_platform == 'darwin')" },
     { name = "typer", version = "0.15.3", source = { registry = "https://pypi.org/simple" }, marker = "(platform_machine != 'x86_64' and platform_system == 'Darwin') or (platform_system == 'Darwin' and sys_platform != 'darwin')" },
+    { name = "uvicorn" },
     { name = "xmldiff" },
 ]
 
@@ -4834,10 +4857,12 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0" },
     { name = "beautifulsoup4", specifier = ">=0" },
     { name = "boto3", specifier = ">=0" },
+    { name = "brotli", specifier = ">=0" },
     { name = "chromadb", specifier = ">=0" },
     { name = "colorama", specifier = ">=0" },
     { name = "diskcache", specifier = ">=0" },
     { name = "docling", specifier = ">=0" },
+    { name = "fastapi", specifier = ">=0.115.9" },
     { name = "faster-whisper", specifier = ">=0" },
     { name = "fitz", specifier = ">=0" },
     { name = "google-genai", specifier = ">=0" },
@@ -4905,6 +4930,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0" },
     { name = "types-aiofiles", marker = "extra == 'dev'", specifier = ">=0" },
     { name = "ultimate-mcp-server", extras = ["advanced", "dev", "docs"], marker = "extra == 'all'" },
+    { name = "uvicorn", specifier = ">=0.34.2" },
     { name = "xmldiff", specifier = ">=0" },
 ]
 
