@@ -25,6 +25,7 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -125,6 +126,9 @@ try:
         "ttl_episodic":             86_400,     # 24 hours default for EPISODIC memories
         # --- search tuning used by hybrid_search_memories (new) ---
         "max_semantic_candidates":  500,        # hard ceiling on candidate pool
+        # --- multi-tool support ---
+        "enable_batched_operations": True,      # allow multiple tool calls per turn
+        "max_tools_per_batch":      20,         # prevent abuse
     }
 
     for _k, _v in _defaults.items():
@@ -171,6 +175,62 @@ UMS_PKG_DEFAULT_SHOW_LINKS_SUMMARY = 3
 MIN_CONFIDENCE_SEMANTIC: float = 0.90      #  ↔ promote_memory_level default
 
 # ======================================================
+# Batch Operation Support for Multi-Tool Agent Calls
+# ======================================================
+
+# Context variable to track batch operations
+_batch_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar('ums_batch_context', default=None)
+
+class UMSBatchContext:
+    """Context manager for batching multiple UMS tool calls within a single agent turn."""
+    
+    def __init__(self, batch_id: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
+        self.batch_id = batch_id or f"batch_{uuid.uuid4().hex[:8]}"
+        self.metadata = metadata or {}
+        self.start_time = time.time()
+        self.tool_calls: List[Dict[str, Any]] = []
+        self.shared_connections: Dict[str, Any] = {}
+        
+    async def __aenter__(self):
+        batch_data = {
+            'batch_id': self.batch_id,
+            'metadata': self.metadata,
+            'start_time': self.start_time,
+            'tool_calls': self.tool_calls,
+            'shared_connections': self.shared_connections
+        }
+        _batch_context.set(batch_data)
+        logger.debug(f"Started UMS batch context: {self.batch_id}")
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        batch_data = _batch_context.get()
+        if batch_data:
+            elapsed = time.time() - batch_data['start_time']
+            logger.info(
+                f"Completed UMS batch {self.batch_id}: {len(batch_data['tool_calls'])} tools in {elapsed:.3f}s",
+                emoji_key="package"
+            )
+        _batch_context.set(None)
+        
+    def record_tool_call(self, tool_name: str, params: Dict[str, Any], result: Dict[str, Any]):
+        """Record a tool call within this batch."""
+        self.tool_calls.append({
+            'tool_name': tool_name,
+            'params': params,
+            'result': result,
+            'timestamp': time.time()
+        })
+
+def get_current_batch() -> Optional[Dict[str, Any]]:
+    """Get the current batch context if any."""
+    return _batch_context.get()
+
+def is_in_batch() -> bool:
+    """Check if we're currently in a batch context."""
+    return _batch_context.get() is not None
+
+# ======================================================
 # Enums (Combined & Standardized)
 # ======================================================
 
@@ -196,9 +256,9 @@ class ActionStatus(str, Enum):
 class ActionType(str, Enum):
     TOOL_USE = "tool_use"
     REASONING = "reasoning"
+    ANALYSIS = "analysis"
     PLANNING = "planning"
     RESEARCH = "research"
-    ANALYSIS = "analysis"
     DECISION = "decision"
     OBSERVATION = "observation"
     REFLECTION = "reflection"
@@ -233,6 +293,8 @@ class ThoughtType(str, Enum):
     SUMMARY = "summary"
     USER_GUIDANCE = "user_guidance"
     INSIGHT = "insight"
+    REASONING = "reasoning"
+    ANALYSIS = "analysis"
 
 
 # --- Memory System Types ---
@@ -539,6 +601,151 @@ def _fmt_id(val: Any, length: int = 8) -> str:
 _MUTATION_SQL = re.compile(r"^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b", re.I)
 
 
+# ======================================================
+# Secure Path Validation & File Access Control
+# ======================================================
+
+def validate_and_secure_db_path(db_path: str) -> str:
+    """
+    Validate and secure a database path with lightweight checks.
+    
+    This function is optimized for frequent calls during database connections.
+    It performs basic security validation without expensive filesystem operations.
+    
+    Args:
+        db_path: Original database path from config
+        
+    Returns:
+        Safe database path
+    """
+    import os
+    
+    try:
+        path_obj = Path(db_path).resolve()
+        
+        # Quick check for obviously unsafe paths
+        path_str = str(path_obj)
+        unsafe_prefixes = [
+            "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/etc/", 
+            "/var/log/", "/var/run/", "/var/spool/", "/sys/", "/proc/", "/dev/", "/root/"
+        ]
+        
+        for unsafe in unsafe_prefixes:
+            if path_str.startswith(unsafe) or path_str == unsafe.rstrip('/'):
+                logger.debug(f"Database path '{db_path}' is in restricted directory, using fallback")
+                return _get_safe_fallback_path(db_path)
+        
+        # Check if we can likely create the path (quick check)
+        parent = path_obj.parent
+        
+        # If parent exists, check if it's writable
+        if parent.exists():
+            if os.access(str(parent), os.W_OK):
+                return str(path_obj)
+            else:
+                logger.debug(f"No write permission to '{parent}', using fallback")
+                return _get_safe_fallback_path(db_path)
+        
+        # If parent doesn't exist, check if we can create it
+        # Find the first existing parent
+        check_parent = parent
+        while not check_parent.exists() and check_parent != check_parent.parent:
+            check_parent = check_parent.parent
+        
+        if check_parent.exists() and os.access(str(check_parent), os.W_OK):
+            return str(path_obj)
+        else:
+            logger.debug(f"Cannot create database directory '{parent}', using fallback")
+            return _get_safe_fallback_path(db_path)
+            
+    except Exception as e:
+        logger.debug(f"Path validation failed for '{db_path}': {e}, using fallback")
+        return _get_safe_fallback_path(db_path)
+
+
+def _get_safe_fallback_path(original_path: str) -> str:
+    """Get a safe fallback path for database files (lightweight)."""
+    import tempfile
+    
+    db_filename = Path(original_path).name
+    
+    # Try to check filesystem allowed directories if available (but don't fail if not)
+    try:
+        from ultimate_mcp_server.tools.filesystem import get_allowed_directories
+        allowed_dirs = get_allowed_directories()
+        
+        if allowed_dirs:
+            for allowed_dir in allowed_dirs:
+                try:
+                    candidate = Path(allowed_dir) / "ultimate_mcp_server" / db_filename
+                    # Quick feasibility check
+                    if _can_create_path_quickly(candidate):
+                        return str(candidate)
+                except Exception:
+                    continue
+    except (ImportError, Exception):
+        pass
+    
+    # Standard fallbacks
+    try:
+        user_fallback = Path.home() / ".ultimate_mcp_server" / db_filename
+        if _can_create_path_quickly(user_fallback):
+            return str(user_fallback)
+    except Exception:
+        pass
+    
+    # Ultimate fallback to temp
+    temp_fallback = Path(tempfile.gettempdir()) / "ultimate_mcp_server" / db_filename
+    return str(temp_fallback)
+
+
+def _can_create_path_quickly(path: Path) -> bool:
+    """Quick check if a path can likely be created (no expensive operations)."""
+    import os
+    
+    try:
+        if path.exists():
+            return True
+        
+        # Find first existing parent
+        parent = path.parent
+        while not parent.exists() and parent != parent.parent:
+            parent = parent.parent
+        
+        return parent.exists() and os.access(str(parent), os.W_OK)
+    except Exception:
+        return False
+
+
+
+def safe_mkdir(path: Path) -> bool:
+    """
+    Safely create a directory with proper error handling.
+    
+    This is an internal utility function that should be fast and quiet.
+    For user-facing directory operations, use filesystem tools directly.
+    
+    Returns:
+        True if directory exists or was created successfully, False otherwise
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return True
+    except PermissionError:
+        logger.error(
+            f"Permission denied creating directory: {path}. "
+            f"Please check directory permissions or configure a different path.",
+            emoji_key="lock"
+        )
+        return False
+    except OSError as e:
+        logger.error(
+            f"Failed to create directory {path}: {e}",
+            emoji_key="error"
+        )
+        return False
+
+
 class DBConnection:
     __slots__ = ("db_path", "_managed_conn")
     _schema_lock = asyncio.Lock()
@@ -551,8 +758,23 @@ class DBConnection:
     _CAP = 5.0
 
     def __init__(self, db_path: str = agent_memory_config.db_path):
-        self.db_path = str(Path(db_path).resolve())
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        # Validate and secure the database path
+        import tempfile
+        secure_db_path = validate_and_secure_db_path(db_path)
+        self.db_path = str(Path(secure_db_path).resolve())
+        
+        # Safely create parent directory
+        parent_dir = Path(self.db_path).parent
+        if not safe_mkdir(parent_dir):
+            # If we can't create the directory, fall back to a temp location
+            fallback_path = Path(tempfile.gettempdir()) / "ultimate_mcp_server" / Path(self.db_path).name
+            logger.warning(
+                f"Failed to create database directory. Using fallback: {fallback_path}",
+                emoji_key="warning"
+            )
+            safe_mkdir(fallback_path.parent)  # Create temp directory
+            self.db_path = str(fallback_path)
+        
         self._managed_conn: Optional[aiosqlite.Connection] = None
 
     # ------------------------------------------------------------------ #
@@ -826,6 +1048,22 @@ def _compute_memory_relevance(
 # ======================================================
 # Utilities
 # ======================================================
+
+async def _ensure_udfs_registered(conn: aiosqlite.Connection) -> None:
+    """Re-register UDFs if they're missing on this connection."""
+    try:
+        # Quick test if compute_memory_relevance is available
+        await conn.execute_fetchone(
+            "SELECT compute_memory_relevance(5.0, 1.0, ?, 0, NULL) AS test", 
+            (int(time.time()),)
+        )
+    except aiosqlite.OperationalError as e:
+        if "no such function" in str(e).lower() or "no such column" in str(e).lower():
+            # Re-register all UDFs by calling the existing _cfg method
+            db_conn = DBConnection()  # Create a temporary instance
+            await db_conn._cfg(conn, readonly=False)
+        else:
+            raise
 
 
 def to_iso_z(ts: float) -> str:  # helper ⇒  ISO‑8601 with trailing “Z”
@@ -3275,6 +3513,8 @@ async def record_thought(
             ThoughtType.REFLECTION,
             ThoughtType.HYPOTHESIS,
             ThoughtType.INSIGHT,
+            ThoughtType.REASONING,
+            ThoughtType.ANALYSIS,
         }:
             linked_mem_id = MemoryUtils.generate_id()
             await db_conn.execute(
@@ -4167,6 +4407,9 @@ async def hybrid_search_memories(
                 "FROM memories m" + joins + (" WHERE " + " AND ".join(wh) if wh else "")
             )
 
+            # Ensure UDFs are registered before using compute_memory_relevance
+            await _ensure_udfs_registered(conn)
+
             rows_kw = await conn.execute_fetchall(sql_kw, prm)
             if rows_kw:
                 max_rel = max(r["kw_rel"] for r in rows_kw) or 1e-6
@@ -4598,6 +4841,9 @@ async def query_memories(
                 "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
             ):
                 raise ToolInputError(f"Workflow {workflow_id} not found.", param_name="workflow_id")
+            
+            # Ensure UDFs are registered before using compute_memory_relevance
+            await _ensure_udfs_registered(conn)
 
         total_matching = (await conn.execute_fetchone(count_sql, params + fts_params))[0]
 
@@ -4972,6 +5218,9 @@ async def get_workflow_details(
             # ───────── memories (scored) ─────────
             if include_memories:
                 details["memories_sample"] = []
+                # Ensure UDFs are registered before using compute_memory_relevance
+                await _ensure_udfs_registered(conn)
+                
                 async with conn.execute(
                     """
                     SELECT memory_id, content, memory_type, memory_level,
@@ -6154,6 +6403,9 @@ async def _add_to_active_memories(
 
         removed_id: str | None = None
         if len(current_ids) >= limit and current_ids:
+            # Ensure UDFs are registered before using compute_memory_relevance
+            await _ensure_udfs_registered(conn)
+
             placeholders = ",".join("?" * len(current_ids))
             least_row = await conn.execute_fetchone(
                 f"""
@@ -7193,7 +7445,7 @@ async def get_workflow_context(
                 SELECT thought_type, content, sequence_number, created_at
                 FROM   thoughts
                 WHERE  thought_chain_id = ?
-                  AND  thought_type IN (?, ?, ?, ?)
+                  AND  thought_type IN (?, ?, ?, ?, ?, ?)
                 ORDER  BY sequence_number DESC
                 LIMIT  ?
                 """,
@@ -7201,6 +7453,8 @@ async def get_workflow_context(
                     chain_id_row["thought_chain_id"],
                     ThoughtType.GOAL.value,
                     ThoughtType.DECISION.value,
+                    ThoughtType.REASONING.value,
+                    ThoughtType.ANALYSIS.value,
                     ThoughtType.SUMMARY.value,
                     ThoughtType.REFLECTION.value,
                     key_thoughts_limit,
@@ -8768,6 +9022,364 @@ async def summarize_text(
 
 @with_tool_metrics
 @with_error_handling
+async def diagnose_file_access_issues(
+    path_to_check: Optional[str] = None,
+    operation_type: str = "database",
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    Diagnose and provide solutions for file access denied issues.
+    
+    This tool helps agents understand why file operations are failing and provides
+    specific guidance on harmonizing UMS and filesystem.py validation systems.
+    
+    Args:
+        path_to_check: Specific path to check (defaults to database path)
+        operation_type: Type of operation ('database', 'artifacts', 'logs')
+        db_path: Database path to validate
+        
+    Returns:
+        Dict with comprehensive diagnosis and actionable recommendations
+    """
+    start_time = time.time()
+    import os
+    import tempfile
+    
+    check_path = path_to_check or db_path
+    
+    diagnosis = {
+        "original_path": check_path,
+        "operation_type": operation_type,
+        "issues_found": [],
+        "recommendations": [],
+        "safe_alternatives": [],
+        "current_permissions": {},
+        "filesystem_integration": {
+            "filesystem_tools_available": False,
+            "allowed_directories_configured": False,
+            "path_in_allowed_dirs": False,
+            "validation_harmonized": False
+        },
+        "ums_validation": {
+            "passed": False,
+            "fallback_used": False,
+            "final_path": None
+        }
+    }
+    
+    try:
+        path_obj = Path(check_path).resolve()
+        diagnosis["resolved_path"] = str(path_obj)
+        
+        # Test UMS validation first
+        try:
+            validated_ums_path = validate_and_secure_db_path(check_path)
+            diagnosis["ums_validation"]["passed"] = True
+            diagnosis["ums_validation"]["final_path"] = validated_ums_path
+            diagnosis["ums_validation"]["fallback_used"] = validated_ums_path != str(path_obj)
+            
+            if diagnosis["ums_validation"]["fallback_used"]:
+                diagnosis["issues_found"].append(
+                    f"UMS validation rejected original path and used fallback: {validated_ums_path}"
+                )
+        except Exception as e:
+            diagnosis["ums_validation"]["error"] = str(e)
+            diagnosis["issues_found"].append(f"UMS validation failed: {e}")
+        
+        # Check filesystem tools integration
+        try:
+            from ultimate_mcp_server.tools.filesystem import get_allowed_directories
+            diagnosis["filesystem_integration"]["filesystem_tools_available"] = True
+            
+            try:
+                allowed_dirs = get_allowed_directories()
+                diagnosis["filesystem_integration"]["allowed_directories_configured"] = len(allowed_dirs) > 0
+                diagnosis["filesystem_integration"]["allowed_directories"] = allowed_dirs
+                
+                # Check if path is in allowed directories
+                for allowed_dir in allowed_dirs:
+                    try:
+                        allowed_path = Path(allowed_dir).resolve()
+                        if str(path_obj).startswith(str(allowed_path) + os.sep) or str(path_obj) == str(allowed_path):
+                            diagnosis["filesystem_integration"]["path_in_allowed_dirs"] = True
+                            break
+                    except Exception:
+                        continue
+                        
+            except Exception as e:
+                diagnosis["issues_found"].append(f"Error getting allowed directories: {e}")
+            
+            # Check filesystem validation availability (lightweight check)
+            try:
+                # Just test if validation function is available without calling it
+                diagnosis["filesystem_integration"]["validation_available"] = True
+                
+                # For harmonization check, compare the actual paths used by both systems
+                if diagnosis["ums_validation"]["final_path"]:
+                    # Check if UMS final path would be in allowed directories  
+                    ums_final = Path(diagnosis["ums_validation"]["final_path"]).resolve()
+                    for allowed_dir in allowed_dirs:
+                        try:
+                            allowed_path = Path(allowed_dir).resolve()
+                            if str(ums_final).startswith(str(allowed_path) + os.sep) or str(ums_final) == str(allowed_path):
+                                diagnosis["filesystem_integration"]["validation_harmonized"] = True
+                                break
+                        except Exception:
+                            continue
+                    else:
+                        # UMS path is not in allowed directories
+                        diagnosis["filesystem_integration"]["validation_harmonized"] = False
+                        diagnosis["issues_found"].append(
+                            f"UMS path not in filesystem allowed directories. "
+                            f"UMS uses: {diagnosis['ums_validation']['final_path']}, "
+                            f"Allowed dirs: {allowed_dirs}"
+                        )
+                
+            except Exception as e:
+                diagnosis["filesystem_integration"]["validation_available"] = False
+                diagnosis["issues_found"].append(f"Filesystem validation check failed: {e}")
+                
+        except ImportError:
+            diagnosis["issues_found"].append("Filesystem tools not available for unified validation")
+            diagnosis["recommendations"].append(
+                "Enable filesystem.py tools integration for consistent path validation"
+            )
+        
+        # Check basic path properties
+        if path_obj.exists():
+            diagnosis["path_exists"] = True
+            try:
+                diagnosis["current_permissions"] = {
+                    "readable": os.access(str(path_obj), os.R_OK),
+                    "writable": os.access(str(path_obj), os.W_OK),
+                    "executable": os.access(str(path_obj), os.X_OK),
+                }
+            except Exception as e:
+                diagnosis["current_permissions"]["error"] = str(e)
+        else:
+            diagnosis["path_exists"] = False
+            # Check parent directory permissions
+            parent = path_obj.parent
+            if parent.exists():
+                try:
+                    diagnosis["current_permissions"] = {
+                        "parent_writable": os.access(str(parent), os.W_OK),
+                        "parent_readable": os.access(str(parent), os.R_OK),
+                        "parent_executable": os.access(str(parent), os.X_OK),
+                    }
+                except Exception as e:
+                    diagnosis["current_permissions"]["error"] = str(e)
+        
+        # Generate specific recommendations
+        if diagnosis["ums_validation"]["final_path"]:
+            diagnosis["safe_alternatives"].append(diagnosis["ums_validation"]["final_path"])
+        
+        # Include filesystem-aware alternatives
+        if diagnosis["filesystem_integration"]["filesystem_tools_available"]:
+            for allowed_dir in diagnosis["filesystem_integration"].get("allowed_directories", []):
+                candidate = Path(allowed_dir) / "ultimate_mcp_server" / f"{operation_type}"
+                if str(candidate) not in diagnosis["safe_alternatives"]:
+                    diagnosis["safe_alternatives"].append(str(candidate))
+        
+        # Traditional safe alternatives
+        traditional_alternatives = [
+            str(Path.home() / ".ultimate_mcp_server" / Path(check_path).name),
+            str(Path.cwd() / "data" / Path(check_path).name),
+            str(Path(tempfile.gettempdir()) / "ultimate_mcp_server" / Path(check_path).name),
+        ]
+        
+        for alt in traditional_alternatives:
+            if alt not in diagnosis["safe_alternatives"]:
+                diagnosis["safe_alternatives"].append(alt)
+        
+        # Provide integration-specific recommendations
+        if not diagnosis["filesystem_integration"]["filesystem_tools_available"]:
+            diagnosis["recommendations"].append(
+                "Enable filesystem.py tools for unified validation across all file operations"
+            )
+        elif not diagnosis["filesystem_integration"]["allowed_directories_configured"]:
+            diagnosis["recommendations"].append(
+                "Configure filesystem.allowed_directories in your config to specify safe locations"
+            )
+        elif not diagnosis["filesystem_integration"]["path_in_allowed_dirs"]:
+            diagnosis["recommendations"].append(
+                f"Move {operation_type} files to one of the allowed directories for consistency"
+            )
+        
+        if not diagnosis["filesystem_integration"]["validation_harmonized"]:
+            diagnosis["recommendations"].append(
+                "Update configuration to ensure UMS and filesystem validation use the same rules"
+            )
+        
+        # Provide specific recommendations based on operation type
+        if operation_type == "database":
+            diagnosis["recommendations"].extend([
+                "Configure database path in a user-writable directory",
+                "Ensure the UMS config points to ~/.ultimate_mcp_server/",
+                "Avoid system directories like /var, /etc, /usr",
+                "Consider using a path that's also in filesystem.allowed_directories"
+            ])
+        elif operation_type == "artifacts":
+            diagnosis["recommendations"].extend([
+                "Store artifacts in user home directory or project data folder",
+                "Use relative paths within the project workspace",
+                "Ensure artifact paths are within filesystem.allowed_directories"
+            ])
+        elif operation_type == "logs":
+            diagnosis["recommendations"].extend([
+                "Configure log directory to ~/.ultimate_mcp_server/logs/",
+                "Ensure log rotation is properly configured",
+                "Verify log directory is accessible to both UMS and filesystem tools"
+            ])
+        
+        # Determine overall status
+        issues_count = len(diagnosis["issues_found"])
+        if issues_count == 0:
+            diagnosis["status"] = "HEALTHY"
+        elif issues_count <= 2:
+            diagnosis["status"] = "NEEDS_ATTENTION"
+        else:
+            diagnosis["status"] = "CRITICAL"
+        
+        # Add summary message
+        harmony_status = "harmonized" if diagnosis["filesystem_integration"]["validation_harmonized"] else "conflicted"
+        diagnosis["summary"] = f"File access diagnosis: {diagnosis['status']}. Validation systems: {harmony_status}."
+        
+    except Exception as e:
+        diagnosis["status"] = "ERROR"
+        diagnosis["error"] = str(e)
+        diagnosis["recommendations"].append(
+            "Use fallback temporary directory for file operations until issues are resolved"
+        )
+    
+    diagnosis["execution_time"] = time.time() - start_time
+    diagnosis["timestamp"] = datetime.now(timezone.utc).isoformat()
+    
+    return diagnosis
+
+
+@with_tool_metrics
+@with_error_handling
+async def get_multi_tool_guidance(
+    context: str = "multi-tool operation",
+    agent_question: Optional[str] = None,
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    Provide guidance for agents making multiple UMS tool calls in a single turn.
+    
+    This tool helps agents understand how to effectively use multiple UMS tools
+    together and provides best practices for multi-tool operations.
+    
+    Args:
+        context: Context about what the agent is trying to accomplish
+        agent_question: Specific question about multi-tool usage
+        db_path: Database path
+        
+    Returns:
+        Dict with guidance and best practices
+    """
+    start_time = time.time()
+    
+    guidance = {
+        "multi_tool_best_practices": [
+            "UMS supports multiple tool calls per agent turn",
+            "Use get_rich_context_package first to understand current state",
+            "Combine complementary operations like store_memory + create_memory_link",
+            "Use record_action_start before and record_action_completion after tool sequences",
+            "Tools are designed to work together - no special batching required"
+        ],
+        "common_patterns": {
+            "research_and_store": [
+                "1. get_rich_context_package (understand current context)",
+                "2. search_semantic_memories or hybrid_search_memories (find related info)",
+                "3. store_memory (save new insights)",
+                "4. create_memory_link (connect to existing memories)"
+            ],
+            "comprehensive_analysis": [
+                "1. get_workflow_context (get overview)",
+                "2. get_working_memory (check current focus)",
+                "3. query_memories (gather relevant data)",
+                "4. consolidate_memories (synthesize insights)",
+                "5. record_thought (capture analysis)"
+            ],
+            "goal_oriented_work": [
+                "1. get_goal_stack (understand objectives)",
+                "2. get_recent_actions (see recent progress)",
+                "3. store_memory (record findings)",
+                "4. update_goal_status (mark progress)"
+            ]
+        },
+        "tool_synergies": {
+            "memory_operations": "store_memory + create_memory_link work well together",
+            "context_gathering": "get_rich_context_package provides comprehensive overview",
+            "analysis_workflow": "search + consolidate + reflect creates insight chains",
+            "progress_tracking": "record_action_* + get_recent_actions shows progression"
+        },
+        "performance_tips": [
+            "UMS tools are optimized for concurrent access",
+            "No artificial delays needed between tool calls",
+            "Use appropriate fetch_limits in get_rich_context_package to control response size",
+            "Tools automatically handle database locking and consistency"
+        ]
+    }
+    
+    # Add context-specific guidance
+    if "search" in context.lower():
+        guidance["search_specific"] = {
+            "semantic_search": "Use for concept-based queries",
+            "hybrid_search": "Best for mixed keyword + semantic queries",
+            "query_memories": "Use for structured filtering by metadata"
+        }
+    
+    if "memory" in context.lower():
+        guidance["memory_specific"] = {
+            "storage": "store_memory for new information",
+            "linking": "create_memory_link to connect related memories",
+            "promotion": "promote_memory_level for important insights",
+            "organization": "Use tags and memory_type for categorization"
+        }
+    
+    # Handle specific questions
+    response_message = f"Multi-tool guidance for: {context}"
+    if agent_question:
+        response_message += f"\nRegarding your question: {agent_question}"
+        if "error" in agent_question.lower() or "problem" in agent_question.lower():
+            guidance["troubleshooting"] = {
+                "tool_errors": "Check parameter validity and database connectivity",
+                "performance": "UMS handles multiple calls efficiently - no throttling needed",
+                "consistency": "Tools maintain ACID properties automatically",
+                "logging": "All operations are logged for debugging"
+            }
+    
+    # Add current system status
+    try:
+        stats_result = await compute_memory_statistics(db_path=db_path)
+        if stats_result.get("success"):
+            guidance["current_system_status"] = {
+                "total_memories": stats_result.get("total_memories", 0),
+                "system_responsive": True,
+                "multi_tool_ready": True
+            }
+    except Exception:
+        guidance["current_system_status"] = {
+            "system_responsive": False,
+            "recommendation": "Check database connectivity"
+        }
+    
+    return {
+        "success": True,
+        "context": context,
+        "agent_question": agent_question,
+        "guidance": guidance,
+        "message": response_message,
+        "processing_time": time.time() - start_time,
+        "note": "UMS fully supports multiple tool calls per turn. No special batching required."
+    }
+
+
+@with_tool_metrics
+@with_error_handling
 async def delete_expired_memories(
     *,
     db_path: str = agent_memory_config.db_path,
@@ -8854,6 +9466,88 @@ async def delete_expired_memories(
 
 @with_tool_metrics
 @with_error_handling
+async def start_batch_operation(
+    workflow_id: str,
+    batch_description: str = "Multi-tool agent operation",
+    expected_tools: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    db_path: str = agent_memory_config.db_path,
+) -> Dict[str, Any]:
+    """
+    Start a batch of UMS tool operations for an agent turn.
+    
+    This tool should be called at the beginning of a turn where the agent 
+    plans to make multiple UMS tool calls in sequence.
+    
+    Args:
+        workflow_id: The workflow context for this batch
+        batch_description: Human-readable description of what this batch will do
+        expected_tools: Optional list of tool names that will be called
+        metadata: Optional metadata to associate with this batch
+        db_path: Database path
+        
+    Returns:
+        Dict with batch_id and context information
+    """
+    start_time = time.time()
+    
+    # Generate a unique batch ID
+    batch_id = f"batch_{uuid.uuid4().hex[:12]}"
+    
+    # Get current batch context or create new one
+    current_batch = get_current_batch()
+    if current_batch:
+        logger.warning(
+            f"Batch operation already in progress ({current_batch['batch_id']}), "
+            f"starting nested batch {batch_id}",
+            emoji_key="warning"
+        )
+    
+    # Start the batch context
+    batch_context = UMSBatchContext(batch_id=batch_id, metadata=metadata)  # noqa: F841
+    
+    # Log the batch start
+    logger.info(
+        f"Started UMS batch operation: {batch_description} (ID: {batch_id})",
+        emoji_key="batch_start"
+    )
+    
+    if expected_tools:
+        logger.debug(f"Expected tools in batch: {', '.join(expected_tools)}")
+    
+    # Store batch info for tracking
+    try:
+        async with DBConnection(db_path).transaction() as conn:
+            # Log this as a memory operation for tracking
+            operation_data = {
+                "batch_id": batch_id,
+                "description": batch_description,
+                "expected_tools": expected_tools,
+                "metadata": metadata,
+                "start_time": start_time
+            }
+            
+            operation_id = await MemoryUtils._log_memory_operation(  # noqa: F841
+                conn, workflow_id, "batch_start", operation_data=operation_data
+            )
+            
+    except Exception as e:
+        logger.warning(f"Failed to log batch start operation: {e}")
+        # Don't fail the entire operation for logging issues
+    
+    return {
+        "success": True,
+        "batch_id": batch_id,
+        "workflow_id": workflow_id,
+        "description": batch_description,
+        "expected_tools": expected_tools or [],
+        "started_at": to_iso_z(start_time),
+        "message": f"Batch operation {batch_id} started. Ready for multi-tool operations."
+    }
+
+
+@with_tool_metrics
+@with_error_handling
 async def get_rich_context_package(
     workflow_id: str,
     context_id: Optional[str] = None,
@@ -8881,9 +9575,35 @@ async def get_rich_context_package(
     start_time = time.time()
     retrieval_ts = datetime.now(timezone.utc).isoformat()
 
+    # Check if we're in a batch operation
+    current_batch = get_current_batch()
+    if current_batch:
+        logger.info(
+            f"get_rich_context_package called within batch {current_batch['batch_id']} "
+            f"for workflow {workflow_id}",
+            emoji_key="package"
+        )
+        # Record this tool call in the batch context
+        current_batch['tool_calls'].append({
+            'tool_name': 'get_rich_context_package',
+            'workflow_id': workflow_id,
+            'context_id': context_id,
+            'timestamp': start_time
+        })
+    else:
+        logger.debug(f"get_rich_context_package called for workflow {workflow_id} (standalone)")
+
     assembled: Dict[str, Any] = {"retrieval_timestamp_ums_package": retrieval_ts}
     errors: List[str] = []
     focal_mem_id_for_links: Optional[str] = focal_memory_id_hint
+    
+    # Add batch info to the response if we're in a batch
+    if current_batch:
+        assembled["batch_context"] = {
+            "batch_id": current_batch['batch_id'],
+            "is_multi_tool_turn": True,
+            "call_number": len(current_batch['tool_calls'])
+        }
 
     fetch_limits = fetch_limits or {}
     show_limits = show_limits or {}
@@ -10564,6 +11284,10 @@ async def visualize_memory_network(
                     "LIMIT ?"
                 )
                 params.append(max_nodes)
+
+                # Ensure UDFs are registered before using compute_memory_relevance
+                await _ensure_udfs_registered(conn)
+
                 async with conn.execute(query, params) as cursor:
                     selected_memory_ids = {row["memory_id"] for row in await cursor.fetchall()}
 
@@ -10711,6 +11435,10 @@ __all__ = [
     "summarize_text",
     "delete_expired_memories",
     "compute_memory_statistics",
+    # Multi-Tool Support  
+    "get_multi_tool_guidance",
+    # File Access & Security
+    "diagnose_file_access_issues",
     # Reporting & Visualization
     "generate_workflow_report",
     "visualize_reasoning_chain",

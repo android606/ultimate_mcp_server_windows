@@ -258,6 +258,10 @@ class AgentMemoryConfig(BaseModel):
     default_embedding_model: str = Field("text-embedding-3-small", description="Default embedding model identifier")
     embedding_dimension: int = Field(1536, description="Expected dimension for the default embedding model")
 
+    # Multi-tool support (for agents that make multiple UMS calls per turn)
+    enable_batched_operations: bool = Field(True, description="Allow multiple tool calls per agent turn")
+    max_tools_per_batch: int = Field(20, description="Maximum number of tools that can be called in a single batch")
+
     # SQLite Optimizations (Defined here, not env vars by default)
     sqlite_pragmas: List[str] = Field(
         default_factory=lambda: [
@@ -725,6 +729,16 @@ def load_config(
         # Load embedding defaults (mainly for reference)
         agent_mem_conf.default_embedding_model = decouple_config('AGENT_MEMORY_DEFAULT_EMBEDDING_MODEL', default=agent_mem_conf.default_embedding_model)
         agent_mem_conf.embedding_dimension = decouple_config('AGENT_MEMORY_EMBEDDING_DIMENSION', default=agent_mem_conf.embedding_dimension, cast=int)
+        # Load multi-tool support settings
+        def _cast_bool(value):
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.lower() in ('true', '1', 'yes', 'on')
+            return bool(value)
+        
+        agent_mem_conf.enable_batched_operations = decouple_config('AGENT_MEMORY_ENABLE_BATCHED_OPERATIONS', default=agent_mem_conf.enable_batched_operations, cast=_cast_bool)
+        agent_mem_conf.max_tools_per_batch = decouple_config('AGENT_MEMORY_MAX_TOOLS_PER_BATCH', default=agent_mem_conf.max_tools_per_batch, cast=int)
 
         config_logger.debug("Loaded agent memory settings from env/'.env' or defaults.")
     except (ValueError, UndefinedValueError) as e:

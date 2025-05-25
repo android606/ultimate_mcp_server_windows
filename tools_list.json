@@ -107,6 +107,8 @@
   "get_goal_stack",
   "create_goal",
   "update_goal_status",
+  "get_multi_tool_guidance",
+  "diagnose_file_access_issues",
   "single_shot_synthesis",
   "echo"
 ]

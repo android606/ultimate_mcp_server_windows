@@ -18,7 +18,6 @@ from ultimate_mcp_server.utils import get_logger
 #     extract_audio_transcript_key_points,
 #     transcribe_audio,
 # )
-
 # Import base decorators/classes that might be used by other tool modules
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
 from .document_conversion_and_processing import (
@@ -76,8 +75,8 @@ from .local_text_tools import (
     run_sed,
     run_sed_stream,
 )
-# from .marqo_fused_search import marqo_fused_search
 
+# from .marqo_fused_search import marqo_fused_search
 # from .meta_api_tool import register_api_meta_tools
 from .optimization import (
     compare_models,
@@ -90,6 +89,7 @@ from .python_sandbox import (
     execute_python,
     repl_python,
 )
+
 # from .rag import (
 #     add_documents,
 #     create_knowledge_base,
@@ -99,6 +99,7 @@ from .python_sandbox import (
 #     retrieve_context,
 # )
 from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
+from .single_shot_synthesis import single_shot_synthesis
 from .smart_browser import (
     autopilot,
     browse,
@@ -111,6 +112,7 @@ from .smart_browser import (
     search,
     type_text,
 )
+
 # from .sql_databases import access_audit_log, execute_sql, explore_database, manage_database
 # from .text_classification import text_classification
 # from .text_redline_tools import (
@@ -134,6 +136,7 @@ from .unified_memory_system import (
     create_thought_chain,
     create_workflow,
     delete_expired_memories,
+    diagnose_file_access_issues,
     focus_memory,
     generate_reflection,
     generate_workflow_report,
@@ -145,6 +148,7 @@ from .unified_memory_system import (
     get_goal_stack,
     get_linked_memories,
     get_memory_by_id,
+    get_multi_tool_guidance,
     get_recent_actions,
     get_rich_context_package,
     get_thought_chain,
@@ -172,7 +176,6 @@ from .unified_memory_system import (
     visualize_memory_network,
     visualize_reasoning_chain,
 )
-from .single_shot_synthesis import single_shot_synthesis
 
 __all__ = [
     # Base decorators/classes
@@ -354,6 +357,9 @@ __all__ = [
     "get_goal_stack",
     "create_goal",
     "update_goal_status",
+    "get_multi_tool_guidance",
+    "diagnose_file_access_issues",
+
     "single_shot_synthesis",
 ]
 

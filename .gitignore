@@ -238,3 +238,5 @@ redline.css
 tailwind.config.js
 storage/single_shot_synthesis
 storage/unified_agent_memory.db-journal
+storage/exercise_mental_health_quiz.html
+storage/exercise_mental_health_report.md
