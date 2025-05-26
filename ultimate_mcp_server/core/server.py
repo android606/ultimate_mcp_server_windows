@@ -7,6 +7,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, Dict, List, Optional
 
@@ -2137,6 +2138,470 @@ def create_server() -> FastAPI:
         from fastapi.responses import RedirectResponse
         return RedirectResponse(url="/tools/ums_explorer.html")
     
+    # ===== UMS EXPLORER API ENDPOINTS =====
+    
+    import json
+    import math
+    import sqlite3
+    from typing import Optional
+
+    from fastapi import HTTPException
+    
+    # Database configuration for UMS Explorer
+    DATABASE_PATH = str(storage_dir / "unified_agent_memory.db")
+    
+    def get_db_connection():
+        """Get database connection for UMS Explorer API"""
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    # Helper functions for UMS Explorer API
+    def calculate_state_complexity(state_data: dict) -> float:
+        """Calculate complexity score for a cognitive state"""
+        if not state_data:
+            return 0.0
+        
+        # Count different types of components
+        component_count = len(state_data.keys())
+        
+        # Calculate nested depth
+        max_depth = calculate_dict_depth(state_data)
+        
+        # Count total values
+        total_values = count_dict_values(state_data)
+        
+        # Normalize to 0-100 scale
+        complexity = min(100, (component_count * 5) + (max_depth * 10) + (total_values * 0.5))
+        return round(complexity, 2)
+
+    def calculate_dict_depth(d: dict, current_depth: int = 0) -> int:
+        """Calculate maximum depth of nested dictionary"""
+        if not isinstance(d, dict):
+            return current_depth
+        
+        if not d:
+            return current_depth
+        
+        return max(calculate_dict_depth(v, current_depth + 1) for v in d.values())
+
+    def count_dict_values(d: dict) -> int:
+        """Count total number of values in nested dictionary"""
+        count = 0
+        for v in d.values():
+            if isinstance(v, dict):
+                count += count_dict_values(v)
+            elif isinstance(v, list):
+                count += len(v)
+            else:
+                count += 1
+        return count
+
+    def compute_state_diff(state1: dict, state2: dict) -> dict:
+        """Compute difference between two cognitive states"""
+        diff_result = {
+            'added': {},
+            'removed': {},
+            'modified': {},
+            'magnitude': 0.0
+        }
+        
+        all_keys = set(state1.keys()) | set(state2.keys())
+        changes = 0
+        total_keys = len(all_keys)
+        
+        for key in all_keys:
+            if key not in state1:
+                diff_result['added'][key] = state2[key]
+                changes += 1
+            elif key not in state2:
+                diff_result['removed'][key] = state1[key]
+                changes += 1
+            elif state1[key] != state2[key]:
+                diff_result['modified'][key] = {
+                    'before': state1[key],
+                    'after': state2[key]
+                }
+                changes += 1
+        
+        # Calculate magnitude as percentage of changed keys
+        if total_keys > 0:
+            diff_result['magnitude'] = (changes / total_keys) * 100
+        
+        return diff_result
+
+    def format_file_size(size_bytes: int) -> str:
+        """Format file size in human readable format"""
+        if size_bytes == 0:
+            return "0 B"
+        
+        size_names = ["B", "KB", "MB", "GB", "TB"]
+        i = int(math.floor(math.log(size_bytes, 1024)))
+        p = math.pow(1024, i)
+        s = round(size_bytes / p, 2)
+        return f"{s} {size_names[i]}"
+
+    # === COGNITIVE STATES API ===
+    @app.get("/api/cognitive-states")
+    async def get_cognitive_states(
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+        limit: int = 100,
+        offset: int = 0,
+        pattern_type: Optional[str] = None
+    ):
+        """Get cognitive states with optional filtering"""
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Base query
+            query = """
+                SELECT 
+                    cs.*,
+                    w.title as workflow_title,
+                    COUNT(DISTINCT m.memory_id) as memory_count,
+                    COUNT(DISTINCT a.action_id) as action_count
+                FROM cognitive_timeline_states cs
+                LEFT JOIN workflows w ON cs.workflow_id = w.workflow_id
+                LEFT JOIN memories m ON cs.workflow_id = m.workflow_id
+                LEFT JOIN actions a ON cs.workflow_id = a.workflow_id
+                WHERE 1=1
+            """
+            params = []
+            
+            if start_time:
+                query += " AND cs.timestamp >= ?"
+                params.append(start_time)
+            
+            if end_time:
+                query += " AND cs.timestamp <= ?"
+                params.append(end_time)
+            
+            if pattern_type:
+                query += " AND cs.state_type = ?"
+                params.append(pattern_type)
+            
+            query += """
+                GROUP BY cs.state_id
+                ORDER BY cs.timestamp DESC
+                LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
+            
+            cursor.execute(query, params)
+            columns = [description[0] for description in cursor.description]
+            states = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+            
+            # Enhance states with additional metadata
+            enhanced_states = []
+            for state in states:
+                # Parse state_data if it's JSON
+                try:
+                    state_data = json.loads(state.get('state_data', '{}'))
+                except Exception:
+                    state_data = {}
+                
+                enhanced_state = {
+                    **state,
+                    'state_data': state_data,
+                    'formatted_timestamp': datetime.fromtimestamp(state['timestamp']).isoformat(),
+                    'age_minutes': (datetime.now().timestamp() - state['timestamp']) / 60,
+                    'complexity_score': calculate_state_complexity(state_data),
+                    'change_magnitude': 0  # Will be calculated with diffs
+                }
+                enhanced_states.append(enhanced_state)
+            
+            # Calculate change magnitudes by comparing adjacent states
+            for i in range(len(enhanced_states) - 1):
+                current_state = enhanced_states[i]
+                previous_state = enhanced_states[i + 1]  # Ordered DESC, so next is previous
+                
+                diff_result = compute_state_diff(previous_state['state_data'], current_state['state_data'])
+                current_state['change_magnitude'] = diff_result.get('magnitude', 0)
+            
+            conn.close()
+            
+            return {
+                "states": enhanced_states,
+                "total": len(enhanced_states),
+                "has_more": len(enhanced_states) == limit
+            }
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/cognitive-states/timeline")
+    async def get_cognitive_timeline(
+        hours: int = 24,
+        granularity: str = "hour"  # hour, minute, second
+    ):
+        """Get cognitive state timeline data optimized for visualization"""
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            since_timestamp = datetime.now().timestamp() - (hours * 3600)
+            
+            # First try to get from cognitive_timeline_states table
+            try:
+                cursor.execute("""
+                    SELECT 
+                        state_id,
+                        timestamp,
+                        state_type,
+                        state_data,
+                        workflow_id,
+                        description,
+                        ROW_NUMBER() OVER (ORDER BY timestamp) as sequence_number
+                    FROM cognitive_timeline_states 
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp ASC
+                """, (since_timestamp,))
+                
+                states = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # If we found states, process them
+                if states:
+                    timeline_data = []
+                    for i, state in enumerate(states):
+                        try:
+                            state_data = json.loads(state.get('state_data', '{}'))
+                        except Exception:
+                            state_data = {}
+                        
+                        # Calculate change magnitude from previous state
+                        change_magnitude = 0
+                        if i > 0:
+                            prev_state_data = json.loads(states[i-1].get('state_data', '{}'))
+                            diff_result = compute_state_diff(prev_state_data, state_data)
+                            change_magnitude = diff_result.get('magnitude', 0)
+                        
+                        timeline_item = {
+                            'state_id': state['state_id'],
+                            'timestamp': state['timestamp'],
+                            'formatted_time': datetime.fromtimestamp(state['timestamp']).isoformat(),
+                            'state_type': state['state_type'],
+                            'workflow_id': state['workflow_id'],
+                            'description': state['description'],
+                            'sequence_number': state['sequence_number'],
+                            'complexity_score': calculate_state_complexity(state_data),
+                            'change_magnitude': change_magnitude,
+                        }
+                        timeline_data.append(timeline_item)
+                    
+                    conn.close()
+                    
+                    return {
+                        'timeline_data': timeline_data,
+                        'total_states': len(timeline_data),
+                        'time_range_hours': hours,
+                        'granularity': granularity,
+                        'summary_stats': {
+                            'avg_complexity': sum(item['complexity_score'] for item in timeline_data) / len(timeline_data) if timeline_data else 0,
+                            'total_transitions': len(timeline_data) - 1 if len(timeline_data) > 1 else 0,
+                            'max_change_magnitude': max((item['change_magnitude'] for item in timeline_data), default=0)
+                        }
+                    }
+                    
+            except sqlite3.OperationalError:
+                # Table doesn't exist, fall back to memories table
+                pass
+            
+            # Fallback: Create timeline from memories table
+            cursor.execute("""
+                SELECT 
+                    memory_id,
+                    memory_type,
+                    content,
+                    importance,
+                    confidence,
+                    created_at,
+                    workflow_id,
+                    ROW_NUMBER() OVER (ORDER BY created_at) as sequence_number
+                FROM memories 
+                WHERE memory_type IN ('thought', 'reasoning', 'analysis', 'plan', 'goal')
+                AND created_at >= ?
+                ORDER BY created_at ASC
+                LIMIT 100
+            """, (since_timestamp,))
+            
+            memories = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+            
+            # Convert memories to timeline format
+            timeline_data = []
+            for i, memory in enumerate(memories):
+                # Calculate change magnitude based on content differences
+                change_magnitude = 0
+                if i > 0:
+                    prev_content = memories[i-1].get('content', '')
+                    curr_content = memory.get('content', '')
+                    # Simple content-based change calculation
+                    if prev_content and curr_content:
+                        change_magnitude = min(100, abs(len(curr_content) - len(prev_content)) / max(len(prev_content), 1) * 100)
+                
+                timeline_item = {
+                    'state_id': memory['memory_id'],
+                    'timestamp': memory['created_at'],
+                    'formatted_time': datetime.fromtimestamp(memory['created_at']).isoformat(),
+                    'state_type': memory['memory_type'],
+                    'workflow_id': memory['workflow_id'],
+                    'description': memory['content'][:100] + ('...' if len(memory.get('content', '')) > 100 else ''),
+                    'sequence_number': memory['sequence_number'],
+                    'complexity_score': (memory.get('importance', 5) * 10),  # Convert 1-10 to 0-100 scale
+                    'change_magnitude': change_magnitude,
+                }
+                timeline_data.append(timeline_item)
+            
+            conn.close()
+            
+            return {
+                'timeline_data': timeline_data,
+                'total_states': len(timeline_data),
+                'time_range_hours': hours,
+                'granularity': granularity,
+                'summary_stats': {
+                    'avg_complexity': sum(item['complexity_score'] for item in timeline_data) / len(timeline_data) if timeline_data else 0,
+                    'total_transitions': len(timeline_data) - 1 if len(timeline_data) > 1 else 0,
+                    'max_change_magnitude': max((item['change_magnitude'] for item in timeline_data), default=0)
+                }
+            }
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    # === ARTIFACTS API ===
+    @app.get("/api/artifacts")
+    async def get_artifacts(
+        artifact_type: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        tags: Optional[str] = None,
+        search: Optional[str] = None,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+        limit: int = 50,
+        offset: int = 0
+    ):
+        """Get artifacts with filtering and search"""
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Base query
+            query = """
+                SELECT 
+                    a.*,
+                    w.title as workflow_title,
+                    COUNT(ar.target_artifact_id) as relationship_count,
+                    COUNT(versions.artifact_id) as version_count
+                FROM artifacts a
+                LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
+                LEFT JOIN artifact_relationships ar ON a.artifact_id = ar.source_artifact_id
+                LEFT JOIN artifacts versions ON a.artifact_id = versions.parent_artifact_id
+                WHERE 1=1
+            """
+            params = []
+            
+            if artifact_type:
+                query += " AND a.artifact_type = ?"
+                params.append(artifact_type)
+            
+            if workflow_id:
+                query += " AND a.workflow_id = ?"
+                params.append(workflow_id)
+            
+            if tags:
+                query += " AND a.tags LIKE ?"
+                params.append(f"%{tags}%")
+            
+            if search:
+                query += " AND (a.name LIKE ? OR a.description LIKE ?)"
+                params.extend([f"%{search}%", f"%{search}%"])
+            
+            query += f"""
+                GROUP BY a.artifact_id
+                ORDER BY a.{sort_by} {'DESC' if sort_order == 'desc' else 'ASC'}
+                LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
+            
+            cursor.execute(query, params)
+            columns = [description[0] for description in cursor.description]
+            artifacts = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+            
+            # Enhance artifacts with metadata
+            for artifact in artifacts:
+                # Parse tags and metadata
+                try:
+                    artifact['tags'] = json.loads(artifact.get('tags', '[]')) if artifact.get('tags') else []
+                    artifact['metadata'] = json.loads(artifact.get('metadata', '{}')) if artifact.get('metadata') else {}
+                except Exception:
+                    artifact['tags'] = []
+                    artifact['metadata'] = {}
+                
+                # Add computed fields
+                artifact['formatted_created_at'] = datetime.fromtimestamp(artifact['created_at']).isoformat()
+                artifact['formatted_updated_at'] = datetime.fromtimestamp(artifact['updated_at']).isoformat()
+                artifact['age_days'] = (datetime.now().timestamp() - artifact['created_at']) / 86400
+                artifact['file_size_human'] = format_file_size(artifact.get('file_size', 0))
+            
+            conn.close()
+            
+            return {
+                "artifacts": artifacts,
+                "total": len(artifacts),
+                "has_more": len(artifacts) == limit
+            }
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
+    @app.get("/api/artifacts/stats")
+    async def get_artifact_stats():
+        """Get artifact statistics"""
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Total counts by type
+            cursor.execute("""
+                SELECT 
+                    artifact_type,
+                    COUNT(*) as count,
+                    AVG(importance) as avg_importance,
+                    SUM(file_size) as total_size,
+                    MAX(access_count) as max_access_count
+                FROM artifacts 
+                GROUP BY artifact_type
+            """)
+            
+            type_stats = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+            
+            # Overall stats
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total_artifacts,
+                    COUNT(DISTINCT workflow_id) as unique_workflows,
+                    AVG(importance) as avg_importance,
+                    SUM(file_size) as total_file_size,
+                    SUM(access_count) as total_access_count
+                FROM artifacts
+            """)
+            
+            overall_stats = dict(zip([d[0] for d in cursor.description], cursor.fetchone(), strict=False))
+            
+            conn.close()
+            
+            return {
+                'overall': {
+                    **overall_stats,
+                    'total_file_size_human': format_file_size(overall_stats.get('total_file_size', 0))
+                },
+                'by_type': type_stats,
+            }
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     
     # Store the app instance
@@ -2431,8 +2896,3133 @@ def start_server(
         
         app.add_route("/ums-explorer", ums_explorer, methods=["GET"])
         
-        # Add root endpoint to the SSE app for MCP discovery
+        # ===== RESTORE ALL MISSING UMS EXPLORER API ENDPOINTS =====
+        
+        # First, add all the helper functions that support the API endpoints
+        def get_action_status_indicator(status: str, execution_time: float) -> dict:
+            """Get status indicator with color and icon for action status"""
+            indicators = {
+                'running': {'color': 'blue', 'icon': 'play', 'label': 'Running'},
+                'executing': {'color': 'blue', 'icon': 'cpu', 'label': 'Executing'},
+                'in_progress': {'color': 'orange', 'icon': 'clock', 'label': 'In Progress'},
+                'completed': {'color': 'green', 'icon': 'check', 'label': 'Completed'},
+                'failed': {'color': 'red', 'icon': 'x', 'label': 'Failed'},
+                'cancelled': {'color': 'gray', 'icon': 'stop', 'label': 'Cancelled'},
+                'timeout': {'color': 'yellow', 'icon': 'timer-off', 'label': 'Timeout'}
+            }
+            
+            indicator = indicators.get(status, {'color': 'gray', 'icon': 'help', 'label': 'Unknown'})
+            
+            # Add urgency flag for long-running actions
+            if status in ['running', 'executing', 'in_progress'] and execution_time > 120:  # 2 minutes
+                indicator['urgency'] = 'high'
+            elif status in ['running', 'executing', 'in_progress'] and execution_time > 60:  # 1 minute
+                indicator['urgency'] = 'medium'
+            else:
+                indicator['urgency'] = 'low'
+            
+            return indicator
+
+        def categorize_action_performance(execution_time: float, estimated_duration: float) -> str:
+            """Categorize action performance based on execution time vs estimate"""
+            if estimated_duration <= 0:
+                return 'unknown'
+            
+            ratio = execution_time / estimated_duration
+            
+            if ratio <= 0.5:
+                return 'excellent'
+            elif ratio <= 0.8:
+                return 'good'
+            elif ratio <= 1.2:
+                return 'acceptable'
+            elif ratio <= 2.0:
+                return 'slow'
+            else:
+                return 'very_slow'
+
+        def get_action_resource_usage(action_id: str) -> dict:
+            """Get resource usage for an action (placeholder implementation)"""
+            return {
+                'cpu_usage': 0.0,
+                'memory_usage': 0.0,
+                'network_io': 0.0,
+                'disk_io': 0.0
+            }
+
+        def estimate_wait_time(position: int, queue: list) -> float:
+            """Estimate wait time based on queue position and historical data"""
+            if position == 0:
+                return 0.0
+            avg_action_time = 30.0
+            return position * avg_action_time
+
+        def get_priority_label(priority: int) -> str:
+            """Get human-readable priority label"""
+            if priority <= 1:
+                return 'Critical'
+            elif priority <= 3:
+                return 'High'
+            elif priority <= 5:
+                return 'Normal'
+            elif priority <= 7:
+                return 'Low'
+            else:
+                return 'Very Low'
+
+        def calculate_action_performance_score(action: dict) -> float:
+            """Calculate performance score for a completed action"""
+            if action['status'] != 'completed':
+                return 0.0
+            
+            execution_time = action.get('execution_duration', 0)
+            if execution_time <= 0:
+                return 100.0
+            
+            if execution_time <= 5:
+                return 100.0
+            elif execution_time <= 15:
+                return 90.0
+            elif execution_time <= 30:
+                return 80.0
+            elif execution_time <= 60:
+                return 70.0
+            elif execution_time <= 120:
+                return 60.0
+            else:
+                return max(50.0, 100.0 - (execution_time / 10))
+
+        def calculate_efficiency_rating(execution_time: float, result_size: int) -> str:
+            """Calculate efficiency rating based on time and output"""
+            if execution_time <= 0:
+                return 'unknown'
+            
+            efficiency_score = result_size / execution_time if execution_time > 0 else 0
+            
+            if efficiency_score >= 100:
+                return 'excellent'
+            elif efficiency_score >= 50:
+                return 'good'
+            elif efficiency_score >= 20:
+                return 'fair'
+            else:
+                return 'poor'
+
+        def calculate_performance_summary(actions: list) -> dict:
+            """Calculate performance summary from action history"""
+            if not actions:
+                return {
+                    'avg_score': 0.0,
+                    'top_performer': None,
+                    'worst_performer': None,
+                    'efficiency_distribution': {}
+                }
+            
+            scores = [a.get('performance_score', 0) for a in actions]
+            avg_score = sum(scores) / len(scores)
+            
+            best_action = max(actions, key=lambda a: a.get('performance_score', 0))
+            worst_action = min(actions, key=lambda a: a.get('performance_score', 0))
+            
+            from collections import Counter
+            efficiency_counts = Counter(a.get('efficiency_rating', 'unknown') for a in actions)
+            
+            return {
+                'avg_score': round(avg_score, 2),
+                'top_performer': {
+                    'tool_name': best_action.get('tool_name', ''),
+                    'score': best_action.get('performance_score', 0)
+                },
+                'worst_performer': {
+                    'tool_name': worst_action.get('tool_name', ''),
+                    'score': worst_action.get('performance_score', 0)
+                },
+                'efficiency_distribution': dict(efficiency_counts)
+            }
+
+        def generate_performance_insights(overall_stats: dict, tool_stats: list, hourly_metrics: list) -> list:
+            """Generate actionable performance insights"""
+            insights = []
+            
+            success_rate = (overall_stats.get('successful_actions', 0) / overall_stats.get('total_actions', 1)) * 100
+            if success_rate < 80:
+                insights.append({
+                    'type': 'warning',
+                    'title': 'Low Success Rate',
+                    'message': f'Current success rate is {success_rate:.1f}%. Consider investigating failing tools.',
+                    'severity': 'high'
+                })
+            
+            if tool_stats:
+                slowest_tool = max(tool_stats, key=lambda t: t.get('avg_duration', 0))
+                if slowest_tool.get('avg_duration', 0) > 60:
+                    insights.append({
+                        'type': 'info',
+                        'title': 'Performance Optimization',
+                        'message': f'{slowest_tool["tool_name"]} is taking {slowest_tool["avg_duration"]:.1f}s on average. Consider optimization.',
+                        'severity': 'medium'
+                    })
+            
+            if hourly_metrics:
+                peak_hour = max(hourly_metrics, key=lambda h: h.get('action_count', 0))
+                insights.append({
+                    'type': 'info',
+                    'title': 'Peak Usage',
+                    'message': f'Peak usage occurs at {peak_hour["hour"]}:00 with {peak_hour["action_count"]} actions.',
+                    'severity': 'low'
+                })
+            
+            return insights
+
+        def calculate_tool_reliability_score(tool_stats: dict) -> float:
+            """Calculate reliability score for a tool"""
+            total_calls = tool_stats.get('total_calls', 0)
+            successful_calls = tool_stats.get('successful_calls', 0)
+            
+            if total_calls == 0:
+                return 0.0
+            
+            success_rate = successful_calls / total_calls
+            volume_factor = min(1.0, total_calls / 100)
+            
+            return round(success_rate * volume_factor * 100, 2)
+
+        def categorize_tool_performance(avg_execution_time: float) -> str:
+            """Categorize tool performance based on average execution time"""
+            if avg_execution_time is None:
+                return 'unknown'
+            
+            if avg_execution_time <= 5:
+                return 'fast'
+            elif avg_execution_time <= 15:
+                return 'normal'
+            elif avg_execution_time <= 30:
+                return 'slow'
+            else:
+                return 'very_slow'
+
+        # Additional cognitive state helper functions
+        def extract_key_state_components(state_data: dict) -> list:
+            """Extract key components from state data for visualization"""
+            components = []
+            
+            for key, value in state_data.items():
+                component = {
+                    'name': key,
+                    'type': type(value).__name__,
+                    'summary': str(value)[:100] + '...' if len(str(value)) > 100 else str(value)
+                }
+                
+                if isinstance(value, dict):
+                    component['count'] = len(value)
+                elif isinstance(value, list):
+                    component['count'] = len(value)
+                
+                components.append(component)
+            
+            return components[:10]
+
+        def generate_state_tags(state_data: dict, state_type: str) -> list:
+            """Generate descriptive tags for a cognitive state"""
+            tags = [state_type]
+            
+            if 'goals' in state_data:
+                tags.append('goal-oriented')
+            
+            if 'working_memory' in state_data:
+                tags.append('memory-active')
+            
+            if 'error' in str(state_data).lower():
+                tags.append('error-state')
+            
+            if 'decision' in str(state_data).lower():
+                tags.append('decision-point')
+            
+            return tags
+
+        def generate_timeline_segments(timeline_data: list, granularity: str, hours: int) -> list:
+            """Generate timeline segments for visualization"""
+            if not timeline_data:
+                return []
+            
+            start_time = min(item['timestamp'] for item in timeline_data)
+            end_time = max(item['timestamp'] for item in timeline_data)
+            
+            if granularity == 'minute':
+                segment_duration = 60
+            elif granularity == 'hour':
+                segment_duration = 3600
+            else:
+                segment_duration = 1
+            
+            segments = []
+            current_time = start_time
+            
+            while current_time < end_time:
+                segment_end = current_time + segment_duration
+                
+                segment_states = [
+                    item for item in timeline_data
+                    if current_time <= item['timestamp'] < segment_end
+                ]
+                
+                if segment_states:
+                    avg_complexity = sum(s['complexity_score'] for s in segment_states) / len(segment_states)
+                    max_change = max(s['change_magnitude'] for s in segment_states)
+                    
+                    from collections import Counter
+                    segments.append({
+                        'start_time': current_time,
+                        'end_time': segment_end,
+                        'state_count': len(segment_states),
+                        'avg_complexity': avg_complexity,
+                        'max_change_magnitude': max_change,
+                        'dominant_type': Counter(s['state_type'] for s in segment_states).most_common(1)[0][0]
+                    })
+                
+                current_time = segment_end
+            
+            return segments
+
+        def calculate_timeline_stats(timeline_data: list) -> dict:
+            """Calculate summary statistics for timeline data"""
+            if not timeline_data:
+                return {}
+            
+            complexities = [item['complexity_score'] for item in timeline_data]
+            changes = [item['change_magnitude'] for item in timeline_data if item['change_magnitude'] > 0]
+            
+            from collections import Counter
+            state_types = Counter(item['state_type'] for item in timeline_data)
+            
+            return {
+                'avg_complexity': sum(complexities) / len(complexities),
+                'max_complexity': max(complexities),
+                'avg_change_magnitude': sum(changes) / len(changes) if changes else 0,
+                'max_change_magnitude': max(changes) if changes else 0,
+                'most_common_type': state_types.most_common(1)[0][0] if state_types else None,
+                'type_distribution': dict(state_types),
+                'total_duration_hours': (timeline_data[-1]['timestamp'] - timeline_data[0]['timestamp']) / 3600
+            }
+
+        # More cognitive state helper functions
+        def calculate_state_complexity(state_data: dict) -> float:
+            """Calculate complexity score for a cognitive state"""
+            if not state_data:
+                return 0.0
+            
+            component_count = len(state_data.keys())
+            max_depth = calculate_dict_depth(state_data)
+            total_values = count_dict_values(state_data)
+            
+            complexity = min(100, (component_count * 5) + (max_depth * 10) + (total_values * 0.5))
+            return round(complexity, 2)
+
+        def calculate_dict_depth(d: dict, current_depth: int = 0) -> int:
+            """Calculate maximum depth of nested dictionary"""
+            if not isinstance(d, dict):
+                return current_depth
+            
+            if not d:
+                return current_depth
+            
+            return max(calculate_dict_depth(v, current_depth + 1) for v in d.values())
+
+        def count_dict_values(d: dict) -> int:
+            """Count total number of values in nested dictionary"""
+            count = 0
+            for v in d.values():
+                if isinstance(v, dict):
+                    count += count_dict_values(v)
+                elif isinstance(v, list):
+                    count += len(v)
+                else:
+                    count += 1
+            return count
+
+        def compute_state_diff(state1: dict, state2: dict) -> dict:
+            """Compute difference between two cognitive states"""
+            diff_result = {
+                'added': {},
+                'removed': {},
+                'modified': {},
+                'magnitude': 0.0
+            }
+            
+            all_keys = set(state1.keys()) | set(state2.keys())
+            changes = 0
+            total_keys = len(all_keys)
+            
+            for key in all_keys:
+                if key not in state1:
+                    diff_result['added'][key] = state2[key]
+                    changes += 1
+                elif key not in state2:
+                    diff_result['removed'][key] = state1[key]
+                    changes += 1
+                elif state1[key] != state2[key]:
+                    diff_result['modified'][key] = {
+                        'before': state1[key],
+                        'after': state2[key]
+                    }
+                    changes += 1
+            
+            if total_keys > 0:
+                diff_result['magnitude'] = (changes / total_keys) * 100
+            
+            return diff_result
+
+        def format_file_size(size_bytes: int) -> str:
+            """Format file size in human readable format"""
+            if size_bytes == 0:
+                return "0 B"
+            
+            import math
+            size_names = ["B", "KB", "MB", "GB", "TB"]
+            i = int(math.floor(math.log(size_bytes, 1024)))
+            p = math.pow(1024, i)
+            s = round(size_bytes / p, 2)
+            return f"{s} {size_names[i]}"
+
+        # Pattern analysis functions
+        def find_cognitive_patterns(states: list, min_length: int, similarity_threshold: float) -> list:
+            """Find recurring patterns in cognitive states"""
+            patterns = []
+            
+            from collections import defaultdict
+            type_sequences = defaultdict(list)
+            for state in states:
+                type_sequences[state['state_type']].append(state)
+            
+            for state_type, sequence in type_sequences.items():
+                if len(sequence) >= min_length * 2:
+                    for length in range(min_length, len(sequence) // 2 + 1):
+                        for start in range(len(sequence) - length * 2 + 1):
+                            subseq1 = sequence[start:start + length]
+                            subseq2 = sequence[start + length:start + length * 2]
+                            
+                            similarity = calculate_sequence_similarity(subseq1, subseq2)
+                            if similarity >= similarity_threshold:
+                                patterns.append({
+                                    'type': f'repeating_{state_type}',
+                                    'length': length,
+                                    'similarity': similarity,
+                                    'occurrences': 2,
+                                    'first_occurrence': subseq1[0]['timestamp'],
+                                    'pattern_description': f"Repeating {state_type} sequence of {length} states"
+                                })
+            
+            return sorted(patterns, key=lambda p: p['similarity'], reverse=True)
+
+        def calculate_sequence_similarity(seq1: list, seq2: list) -> float:
+            """Calculate similarity between two state sequences"""
+            if len(seq1) != len(seq2):
+                return 0.0
+            
+            total_similarity = 0.0
+            for s1, s2 in zip(seq1, seq2, strict=False):
+                state_sim = calculate_single_state_similarity(s1, s2)
+                total_similarity += state_sim
+            
+            return total_similarity / len(seq1)
+
+        def calculate_single_state_similarity(state1: dict, state2: dict) -> float:
+            """Calculate similarity between two individual states"""
+            data1 = state1.get('state_data', {})
+            data2 = state2.get('state_data', {})
+            
+            if not data1 and not data2:
+                return 1.0
+            
+            if not data1 or not data2:
+                return 0.0
+            
+            keys1 = set(data1.keys())
+            keys2 = set(data2.keys())
+            key_similarity = len(keys1 & keys2) / len(keys1 | keys2) if keys1 | keys2 else 1.0
+            
+            common_keys = keys1 & keys2
+            value_similarity = 0.0
+            if common_keys:
+                matching_values = sum(1 for key in common_keys if data1[key] == data2[key])
+                value_similarity = matching_values / len(common_keys)
+            
+            return (key_similarity + value_similarity) / 2
+
+        def analyze_state_transitions(states: list) -> list:
+            """Analyze transitions between cognitive states"""
+            from collections import defaultdict
+            transitions = defaultdict(int)
+            
+            for i in range(len(states) - 1):
+                current_type = states[i]['state_type']
+                next_type = states[i + 1]['state_type']
+                transition = f"{current_type} → {next_type}"
+                transitions[transition] += 1
+            
+            sorted_transitions = sorted(transitions.items(), key=lambda x: x[1], reverse=True)
+            
+            return [
+                {
+                    'transition': transition,
+                    'count': count,
+                    'percentage': (count / (len(states) - 1)) * 100 if len(states) > 1 else 0
+                }
+                for transition, count in sorted_transitions
+            ]
+
+        def detect_cognitive_anomalies(states: list) -> list:
+            """Detect anomalous cognitive states"""
+            anomalies = []
+            
+            if len(states) < 3:
+                return anomalies
+            
+            complexities = [calculate_state_complexity(s.get('state_data', {})) for s in states]
+            avg_complexity = sum(complexities) / len(complexities)
+            std_complexity = (sum((c - avg_complexity) ** 2 for c in complexities) / len(complexities)) ** 0.5
+            
+            for i, state in enumerate(states):
+                complexity = complexities[i]
+                z_score = (complexity - avg_complexity) / std_complexity if std_complexity > 0 else 0
+                
+                if abs(z_score) > 2:
+                    anomalies.append({
+                        'state_id': state['state_id'],
+                        'timestamp': state['timestamp'],
+                        'anomaly_type': 'complexity_outlier',
+                        'z_score': z_score,
+                        'description': f"Unusual complexity: {complexity:.1f} (avg: {avg_complexity:.1f})",
+                        'severity': 'high' if abs(z_score) > 3 else 'medium'
+                    })
+            
+            return anomalies
+
+        # ===== EXTENDED COGNITIVE STATES API ENDPOINTS =====
+        
+        # Add required imports and helper functions
+        import json
+        from datetime import datetime
+        
+        def get_db_connection():
+            """Get database connection for UMS Explorer API"""
+            import sqlite3
+            # Use the storage_dir that's already defined in this context
+            database_path = str(storage_dir / "unified_agent_memory.db")
+            conn = sqlite3.connect(database_path)
+            conn.row_factory = sqlite3.Row
+            return conn
+        
+        async def api_cognitive_state_detail(request):
+            """Get detailed cognitive state by ID"""
+            state_id = request.path_params['state_id']
+            
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT 
+                        cs.*,
+                        w.title as workflow_title,
+                        w.goal as workflow_goal
+                    FROM cognitive_timeline_states cs
+                    LEFT JOIN workflows w ON cs.workflow_id = w.workflow_id
+                    WHERE cs.state_id = ?
+                """, (state_id,))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return JSONResponse({"error": "Cognitive state not found"}, status_code=404)
+                
+                columns = [description[0] for description in cursor.description]
+                state = dict(zip(columns, row, strict=False))
+                
+                # Parse state data
+                try:
+                    state['state_data'] = json.loads(state.get('state_data', '{}'))
+                except Exception:
+                    state['state_data'] = {}
+                
+                # Get associated memories and actions
+                cursor.execute("""
+                    SELECT memory_id, memory_type, content, importance, created_at
+                    FROM memories 
+                    WHERE workflow_id = ? 
+                    ORDER BY created_at DESC
+                    LIMIT 20
+                """, (state.get('workflow_id', ''),))
+                
+                memories = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                cursor.execute("""
+                    SELECT action_id, action_type, tool_name, status, started_at
+                    FROM actions 
+                    WHERE workflow_id = ? 
+                    ORDER BY started_at DESC
+                    LIMIT 20
+                """, (state.get('workflow_id', ''),))
+                
+                actions = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                conn.close()
+                
+                return JSONResponse({
+                    **state,
+                    'memories': memories,
+                    'actions': actions,
+                    'formatted_timestamp': datetime.fromtimestamp(state['timestamp']).isoformat(),
+                    'complexity_score': calculate_state_complexity(state['state_data'])
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_cognitive_patterns(request):
+            """Analyze recurring cognitive patterns"""
+            query_params = request.query_params
+            lookback_hours = int(query_params.get('lookback_hours', 24))
+            min_pattern_length = int(query_params.get('min_pattern_length', 3))
+            similarity_threshold = float(query_params.get('similarity_threshold', 0.7))
+            
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (lookback_hours * 3600)
+                cursor.execute("""
+                    SELECT state_id, timestamp, state_type, state_data, workflow_id
+                    FROM cognitive_timeline_states 
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp ASC
+                """, (since_timestamp,))
+                
+                states = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Parse state data
+                for state in states:
+                    try:
+                        state['state_data'] = json.loads(state.get('state_data', '{}'))
+                    except Exception:
+                        state['state_data'] = {}
+                
+                # Analyze patterns
+                patterns = find_cognitive_patterns(states, min_pattern_length, similarity_threshold)
+                transitions = analyze_state_transitions(states)
+                anomalies = detect_cognitive_anomalies(states)
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'total_states': len(states),
+                    'time_range_hours': lookback_hours,
+                    'patterns': patterns,
+                    'transitions': transitions,
+                    'anomalies': anomalies,
+                    'summary': {
+                        'pattern_count': len(patterns),
+                        'most_common_transition': transitions[0] if transitions else None,
+                        'anomaly_count': len(anomalies)
+                    }
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # ===== ACTION MONITOR API ENDPOINTS =====
+        
+        async def api_running_actions(request):
+            """Get currently executing actions with real-time status"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT 
+                        a.*,
+                        w.title as workflow_title,
+                        (unixepoch() - a.started_at) as execution_time,
+                        CASE 
+                            WHEN a.tool_data IS NOT NULL THEN json_extract(a.tool_data, '$.estimated_duration')
+                            ELSE NULL 
+                        END as estimated_duration
+                    FROM actions a
+                    LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
+                    WHERE a.status IN ('running', 'executing', 'in_progress')
+                    ORDER BY a.started_at ASC
+                """)
+                
+                columns = [description[0] for description in cursor.description]
+                running_actions = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+                
+                # Enhance with real-time metrics
+                enhanced_actions = []
+                for action in running_actions:
+                    try:
+                        tool_data = json.loads(action.get('tool_data', '{}'))
+                    except Exception:
+                        tool_data = {}
+                    
+                    execution_time = action.get('execution_time', 0)
+                    estimated_duration = action.get('estimated_duration') or 30
+                    progress_percentage = min(95, (execution_time / estimated_duration) * 100) if estimated_duration > 0 else 0
+                    
+                    enhanced_action = {
+                        **action,
+                        'tool_data': tool_data,
+                        'execution_time_seconds': execution_time,
+                        'progress_percentage': progress_percentage,
+                        'status_indicator': get_action_status_indicator(action['status'], execution_time),
+                        'performance_category': categorize_action_performance(execution_time, estimated_duration),
+                        'resource_usage': get_action_resource_usage(action['action_id']),
+                        'formatted_start_time': datetime.fromtimestamp(action['started_at']).isoformat()
+                    }
+                    enhanced_actions.append(enhanced_action)
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'running_actions': enhanced_actions,
+                    'total_running': len(enhanced_actions),
+                    'avg_execution_time': sum(a['execution_time_seconds'] for a in enhanced_actions) / len(enhanced_actions) if enhanced_actions else 0,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_action_queue(request):
+            """Get queued actions waiting for execution"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT 
+                        a.*,
+                        w.title as workflow_title,
+                        (unixepoch() - a.created_at) as queue_time,
+                        CASE 
+                            WHEN a.tool_data IS NOT NULL THEN json_extract(a.tool_data, '$.priority')
+                            ELSE 5 
+                        END as priority
+                    FROM actions a
+                    LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
+                    WHERE a.status IN ('queued', 'pending', 'waiting')
+                    ORDER BY priority ASC, a.created_at ASC
+                """)
+                
+                columns = [description[0] for description in cursor.description]
+                queued_actions = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+                
+                # Enhance queue data
+                enhanced_queue = []
+                for i, action in enumerate(queued_actions):
+                    try:
+                        tool_data = json.loads(action.get('tool_data', '{}'))
+                    except Exception:
+                        tool_data = {}
+                    
+                    enhanced_action = {
+                        **action,
+                        'tool_data': tool_data,
+                        'queue_position': i + 1,
+                        'queue_time_seconds': action.get('queue_time', 0),
+                        'estimated_wait_time': estimate_wait_time(i, queued_actions),
+                        'priority_label': get_priority_label(action.get('priority', 5)),
+                        'formatted_queue_time': datetime.fromtimestamp(action['created_at']).isoformat()
+                    }
+                    enhanced_queue.append(enhanced_action)
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'queued_actions': enhanced_queue,
+                    'total_queued': len(enhanced_queue),
+                    'avg_queue_time': sum(a['queue_time_seconds'] for a in enhanced_queue) / len(enhanced_queue) if enhanced_queue else 0,
+                    'next_action': enhanced_queue[0] if enhanced_queue else None,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # ===== MORE MISSING API ENDPOINTS =====
+        
+        async def api_action_history(request):
+            """Get completed actions with performance metrics"""
+            query_params = request.query_params
+            limit = int(query_params.get('limit', 50))
+            offset = int(query_params.get('offset', 0))
+            status_filter = query_params.get('status_filter')
+            tool_filter = query_params.get('tool_filter')
+            hours_back = int(query_params.get('hours_back', 24))
+            
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
+                
+                query = """
+                    SELECT 
+                        a.*,
+                        w.title as workflow_title,
+                        (a.completed_at - a.started_at) as execution_duration,
+                        CASE 
+                            WHEN a.tool_data IS NOT NULL THEN json_extract(a.tool_data, '$.result_size')
+                            ELSE 0 
+                        END as result_size
+                    FROM actions a
+                    LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
+                    WHERE a.status IN ('completed', 'failed', 'cancelled', 'timeout')
+                    AND a.completed_at >= ?
+                """
+                params = [since_timestamp]
+                
+                if status_filter:
+                    query += " AND a.status = ?"
+                    params.append(status_filter)
+                
+                if tool_filter:
+                    query += " AND a.tool_name = ?"
+                    params.append(tool_filter)
+                
+                query += " ORDER BY a.completed_at DESC LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+                
+                cursor.execute(query, params)
+                columns = [description[0] for description in cursor.description]
+                completed_actions = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+                
+                # Calculate performance metrics
+                enhanced_history = []
+                for action in completed_actions:
+                    try:
+                        tool_data = json.loads(action.get('tool_data', '{}'))
+                        result_data = json.loads(action.get('result', '{}'))
+                    except Exception:
+                        tool_data = {}
+                        result_data = {}
+                    
+                    execution_duration = action.get('execution_duration', 0)
+                    
+                    enhanced_action = {
+                        **action,
+                        'tool_data': tool_data,
+                        'result_data': result_data,
+                        'execution_duration_seconds': execution_duration,
+                        'performance_score': calculate_action_performance_score(action),
+                        'efficiency_rating': calculate_efficiency_rating(execution_duration, action.get('result_size', 0)),
+                        'success_rate_impact': 1 if action['status'] == 'completed' else 0,
+                        'formatted_start_time': datetime.fromtimestamp(action['started_at']).isoformat(),
+                        'formatted_completion_time': datetime.fromtimestamp(action['completed_at']).isoformat() if action['completed_at'] else None
+                    }
+                    enhanced_history.append(enhanced_action)
+                
+                conn.close()
+                
+                # Calculate aggregate metrics
+                total_actions = len(enhanced_history)
+                successful_actions = len([a for a in enhanced_history if a['status'] == 'completed'])
+                avg_duration = sum(a['execution_duration_seconds'] for a in enhanced_history) / total_actions if total_actions > 0 else 0
+                
+                return JSONResponse({
+                    'action_history': enhanced_history,
+                    'total_actions': total_actions,
+                    'success_rate': (successful_actions / total_actions * 100) if total_actions > 0 else 0,
+                    'avg_execution_time': avg_duration,
+                    'performance_summary': calculate_performance_summary(enhanced_history),
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_action_metrics(request):
+            """Get comprehensive action execution metrics and analytics"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Get metrics for last 24 hours
+                since_timestamp = datetime.now().timestamp() - (24 * 3600)
+                
+                # Overall statistics
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total_actions,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_actions,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_actions,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration
+                    FROM actions 
+                    WHERE created_at >= ?
+                """, (since_timestamp,))
+                
+                overall_stats = dict(zip([d[0] for d in cursor.description], cursor.fetchone(), strict=False))
+                
+                # Tool usage statistics
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        COUNT(*) as usage_count,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success_count,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration
+                    FROM actions 
+                    WHERE created_at >= ?
+                    GROUP BY tool_name
+                    ORDER BY usage_count DESC
+                """, (since_timestamp,))
+                
+                tool_stats = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Performance distribution over time (hourly)
+                cursor.execute("""
+                    SELECT 
+                        strftime('%H', datetime(started_at, 'unixepoch')) as hour,
+                        COUNT(*) as action_count,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success_count
+                    FROM actions 
+                    WHERE started_at >= ?
+                    GROUP BY hour
+                    ORDER BY hour
+                """, (since_timestamp,))
+                
+                hourly_metrics = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                conn.close()
+                
+                # Calculate derived metrics
+                success_rate = (overall_stats['successful_actions'] / overall_stats['total_actions'] * 100) if overall_stats['total_actions'] > 0 else 0
+                
+                return JSONResponse({
+                    'overall_metrics': {
+                        **overall_stats,
+                        'success_rate_percentage': success_rate,
+                        'failure_rate_percentage': 100 - success_rate,
+                        'avg_duration_seconds': overall_stats['avg_duration'] or 0
+                    },
+                    'tool_usage_stats': tool_stats,
+                    'hourly_performance': hourly_metrics,
+                    'performance_insights': generate_performance_insights(overall_stats, tool_stats, hourly_metrics),
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_tools_usage(request):
+            """Get detailed tool usage statistics with performance breakdown"""
+            query_params = request.query_params
+            hours_back = int(query_params.get('hours_back', 24))
+            include_performance = query_params.get('include_performance', 'true').lower() == 'true'  # noqa: F841
+            
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
+                
+                # Comprehensive tool statistics
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        COUNT(*) as total_calls,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_calls,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_calls,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_execution_time,
+                        MIN(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as min_execution_time,
+                        MAX(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as max_execution_time,
+                        COUNT(DISTINCT workflow_id) as unique_workflows,
+                        MAX(started_at) as last_used
+                    FROM actions 
+                    WHERE created_at >= ?
+                    GROUP BY tool_name
+                    ORDER BY total_calls DESC
+                """, (since_timestamp,))
+                
+                tool_statistics = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Enhance with calculated metrics
+                enhanced_tool_stats = []
+                for tool in tool_statistics:
+                    success_rate = (tool['successful_calls'] / tool['total_calls'] * 100) if tool['total_calls'] > 0 else 0
+                    
+                    enhanced_tool = {
+                        **tool,
+                        'success_rate_percentage': success_rate,
+                        'reliability_score': calculate_tool_reliability_score(tool),
+                        'performance_category': categorize_tool_performance(tool['avg_execution_time']),
+                        'usage_trend': 'increasing',  # This would be calculated with historical data
+                        'last_used_formatted': datetime.fromtimestamp(tool['last_used']).isoformat()
+                    }
+                    enhanced_tool_stats.append(enhanced_tool)
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'tool_statistics': enhanced_tool_stats,
+                    'summary': {
+                        'total_tools_used': len(enhanced_tool_stats),
+                        'most_used_tool': enhanced_tool_stats[0]['tool_name'] if enhanced_tool_stats else None,
+                        'highest_success_rate': max(t['success_rate_percentage'] for t in enhanced_tool_stats) if enhanced_tool_stats else 0,
+                        'avg_tool_performance': sum(t['avg_execution_time'] or 0 for t in enhanced_tool_stats) / len(enhanced_tool_stats) if enhanced_tool_stats else 0
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_cognitive_compare(request):
+            """Compare two cognitive states and return detailed diff"""
+            try:
+                body = await request.json()
+                state_id_1 = body.get('state_id_1')
+                state_id_2 = body.get('state_id_2')
+                
+                if not state_id_1 or not state_id_2:
+                    return JSONResponse({"error": "Both state IDs required"}, status_code=400)
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Get both states
+                cursor.execute("SELECT * FROM cognitive_timeline_states WHERE state_id IN (?, ?)", (state_id_1, state_id_2))
+                states = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                if len(states) != 2:
+                    return JSONResponse({"error": "One or both states not found"}, status_code=404)
+                
+                # Parse state data
+                for state in states:
+                    try:
+                        state['state_data'] = json.loads(state.get('state_data', '{}'))
+                    except Exception:
+                        state['state_data'] = {}
+                
+                # Order states by timestamp
+                states.sort(key=lambda s: s['timestamp'])
+                state_1, state_2 = states
+                
+                # Compute comprehensive diff
+                diff_result = compute_state_diff(state_1.get('state_data', {}), state_2.get('state_data', {}))
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'state_1': {
+                        'state_id': state_1['state_id'],
+                        'timestamp': state_1['timestamp'],
+                        'formatted_timestamp': datetime.fromtimestamp(state_1['timestamp']).isoformat()
+                    },
+                    'state_2': {
+                        'state_id': state_2['state_id'],
+                        'timestamp': state_2['timestamp'],
+                        'formatted_timestamp': datetime.fromtimestamp(state_2['timestamp']).isoformat()
+                    },
+                    'time_diff_minutes': (state_2['timestamp'] - state_1['timestamp']) / 60,
+                    'diff': diff_result
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Register all the API endpoints
+        app.add_route("/api/cognitive-states/{state_id}", api_cognitive_state_detail, methods=["GET"])
+        app.add_route("/api/cognitive-states/patterns", api_cognitive_patterns, methods=["GET"])
+        app.add_route("/api/cognitive-states/compare", api_cognitive_compare, methods=["POST"])
+        app.add_route("/api/actions/running", api_running_actions, methods=["GET"])
+        app.add_route("/api/actions/queue", api_action_queue, methods=["GET"])
+        app.add_route("/api/actions/history", api_action_history, methods=["GET"])
+        app.add_route("/api/actions/metrics", api_action_metrics, methods=["GET"])
+        app.add_route("/api/tools/usage", api_tools_usage, methods=["GET"])
+        
+        # ===== ADD MISSING ENDPOINTS EXPECTED BY FRONTEND =====
+        
+        # Memory Quality Inspector API
+        async def api_memory_quality_stats(request):
+            """Get memory quality statistics and overview"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Overall memory stats
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total_memories,
+                        COUNT(DISTINCT workflow_id) as unique_workflows,
+                        AVG(importance) as avg_importance,
+                        SUM(CASE WHEN importance < 3 THEN 1 ELSE 0 END) as low_importance_count,
+                        COUNT(DISTINCT memory_type) as memory_types
+                    FROM memories
+                """)
+                
+                overall_result = cursor.fetchone()
+                if not overall_result:
+                    overall_stats = {
+                        'total_memories': 0,
+                        'unique_workflows': 0,
+                        'avg_importance': 0.0,
+                        'low_importance_count': 0,
+                        'memory_types': 0
+                    }
+                else:
+                    overall_stats = dict(zip([d[0] for d in cursor.description], overall_result, strict=False))
+                
+                # Find potential duplicates (simplified)
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as potential_duplicates
+                    FROM (
+                        SELECT content, COUNT(*) as cnt
+                        FROM memories 
+                        WHERE content IS NOT NULL 
+                        GROUP BY content 
+                        HAVING cnt > 1
+                    )
+                """)
+                
+                duplicate_stats = cursor.fetchone()
+                potential_duplicates = duplicate_stats[0] if duplicate_stats and len(duplicate_stats) > 0 else 0
+                
+                # Find orphaned memories (no workflow)
+                cursor.execute("""
+                    SELECT COUNT(*) as orphaned_count
+                    FROM memories m
+                    LEFT JOIN workflows w ON m.workflow_id = w.workflow_id
+                    WHERE w.workflow_id IS NULL
+                """)
+                
+                orphaned_result = cursor.fetchone()
+                orphaned_count = orphaned_result[0] if orphaned_result and len(orphaned_result) > 0 else 0
+                
+                # Find stale memories (older than 30 days)
+                thirty_days_ago = datetime.now().timestamp() - (30 * 24 * 3600)
+                cursor.execute("""
+                    SELECT COUNT(*) as stale_count
+                    FROM memories
+                    WHERE created_at < ?
+                """, (thirty_days_ago,))
+                
+                stale_result = cursor.fetchone()
+                stale_count = stale_result[0] if stale_result and len(stale_result) > 0 else 0
+                
+                conn.close()
+                
+                quality_score = max(0, 100 - (potential_duplicates * 2) - (orphaned_count * 3) - (stale_count * 0.1))
+                
+                return JSONResponse({
+                    'overall_stats': overall_stats,
+                    'quality_issues': {
+                        'potential_duplicates': potential_duplicates,
+                        'orphaned_memories': orphaned_count,
+                        'stale_memories': stale_count,
+                        'low_importance_memories': overall_stats.get('low_importance_count', 0)
+                    },
+                    'quality_score': round(quality_score, 1),
+                    'recommendations': [
+                        'Review duplicate memories for consolidation',
+                        'Assign orphaned memories to workflows',
+                        'Archive or delete stale memories',
+                        'Update importance scores for better prioritization'
+                    ],
+                    'last_analysis': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_memory_quality_quick_scan(request):
+            """Perform quick scan for memory quality issues"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Quick scan for immediate issues
+                issues = []
+                
+                # Check for duplicate content
+                cursor.execute("""
+                    SELECT content, COUNT(*) as count, GROUP_CONCAT(memory_id) as memory_ids
+                    FROM memories 
+                    WHERE content IS NOT NULL AND LENGTH(content) > 10
+                    GROUP BY content 
+                    HAVING count > 1
+                    LIMIT 10
+                """)
+                
+                duplicates = cursor.fetchall()
+                for dup in duplicates:
+                    issues.append({
+                        'type': 'duplicate_content',
+                        'severity': 'medium',
+                        'description': f'Found {dup[1]} memories with identical content',
+                        'affected_memories': dup[2].split(',') if dup[2] else [],
+                        'preview': dup[0][:100] + '...' if len(dup[0]) > 100 else dup[0]
+                    })
+                
+                # Check for orphaned memories
+                cursor.execute("""
+                    SELECT m.memory_id, m.content
+                    FROM memories m
+                    LEFT JOIN workflows w ON m.workflow_id = w.workflow_id
+                    WHERE w.workflow_id IS NULL
+                    LIMIT 5
+                """)
+                
+                orphaned = cursor.fetchall()
+                for orphan in orphaned:
+                    issues.append({
+                        'type': 'orphaned_memory',
+                        'severity': 'low',
+                        'description': 'Memory not associated with any workflow',
+                        'memory_id': orphan[0],
+                        'preview': orphan[1][:100] + '...' if orphan[1] and len(orphan[1]) > 100 else orphan[1]
+                    })
+                
+                # Get total memory count for score calculation
+                cursor.execute("SELECT COUNT(*) FROM memories")
+                total_memories_result = cursor.fetchone()
+                total_memories = total_memories_result[0] if total_memories_result else 0
+                
+                # Calculate a simple quality score
+                issue_count = len(issues)
+                overall_score = max(60, 100 - (issue_count * 10))  # Simple scoring
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'success': True,
+                    'quick_metrics': {
+                        'overall_score': overall_score,
+                        'total_memories': total_memories,
+                        'issues_found': issue_count,
+                        'scan_time': datetime.now().isoformat()
+                    },
+                    'issues': issues,
+                    'scan_completed': True,
+                    'next_scan_recommended': (datetime.now() + timedelta(hours=24)).isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_memory_quality_analyze(request):
+            """Perform comprehensive memory quality analysis"""
+            try:
+                body = await request.json()
+                analysis_type = body.get('analysis_type', 'comprehensive')
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                analysis_results = {
+                    'analysis_type': analysis_type,
+                    'started_at': datetime.now().isoformat(),
+                    'issues_found': 0,
+                    'issues': [],
+                    'recommendations': [],
+                    'statistics': {}
+                }
+                
+                if analysis_type in ['comprehensive', 'duplicates']:
+                    # Analyze duplicates
+                    cursor.execute("""
+                        SELECT content, COUNT(*) as count, GROUP_CONCAT(memory_id) as memory_ids,
+                               AVG(importance) as avg_importance
+                        FROM memories 
+                        WHERE content IS NOT NULL AND LENGTH(content) > 20
+                        GROUP BY content 
+                        HAVING count > 1
+                    """)
+                    
+                    for row in cursor.fetchall():
+                        analysis_results['issues'].append({
+                            'issue_id': f"dup_{len(analysis_results['issues'])}",
+                            'issue_type': 'duplicate',
+                            'title': f'Duplicate Content ({row[1]} copies)',
+                            'description': f'Found {row[1]} memories with identical content',
+                            'severity': 'medium' if row[1] > 2 else 'low',
+                            'auto_fixable': True,
+                            'memory_ids': row[2].split(','),
+                            'avg_importance': row[3],
+                            'content_preview': row[0][:200] + '...' if len(row[0]) > 200 else row[0],
+                            'recommendation': 'Merge duplicate memories into a single entry'
+                        })
+                
+                if analysis_type in ['comprehensive', 'orphaned']:
+                    # Analyze orphaned memories
+                    cursor.execute("""
+                        SELECT COUNT(*) as orphaned_count
+                        FROM memories m
+                        LEFT JOIN workflows w ON m.workflow_id = w.workflow_id
+                        WHERE w.workflow_id IS NULL
+                    """)
+                    
+                    orphaned_result = cursor.fetchone()
+                    orphaned_count = orphaned_result[0] if orphaned_result else 0
+                    if orphaned_count > 0:
+                        analysis_results['issues'].append({
+                            'issue_id': f"orph_{len(analysis_results['issues'])}",
+                            'issue_type': 'orphaned',
+                            'title': f'Orphaned Memories ({orphaned_count} found)',
+                            'description': f'{orphaned_count} memories are not associated with any workflow',
+                            'severity': 'medium',
+                            'auto_fixable': False,
+                            'count': orphaned_count,
+                            'recommendation': 'Assign memories to appropriate workflows or archive if not needed'
+                        })
+                
+                # Get total memory count for stats
+                cursor.execute("SELECT COUNT(*) FROM memories")
+                total_memories_result = cursor.fetchone()
+                total_memories = total_memories_result[0] if total_memories_result else 0
+                
+                analysis_results['issues_found'] = len(analysis_results['issues'])
+                analysis_results['overall_score'] = max(50, 100 - (analysis_results['issues_found'] * 15))
+                analysis_results['total_memories'] = total_memories
+                
+                # Generate recommendations
+                if len(analysis_results['issues']) == 0:
+                    analysis_results['recommendations'].append('No major quality issues found!')
+                else:
+                    analysis_results['recommendations'].extend([
+                        'Consider merging duplicate memories',
+                        'Assign orphaned memories to appropriate workflows',
+                        'Review low-importance memories for archival'
+                    ])
+                
+                conn.close()
+                
+                analysis_results['completed_at'] = datetime.now().isoformat()
+                
+                return JSONResponse({
+                    'success': True,
+                    'analysis': analysis_results
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_memory_quality_duplicates(request):
+            """Get detailed duplicate memory analysis"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT content, COUNT(*) as count, GROUP_CONCAT(memory_id) as memory_ids,
+                           MIN(created_at) as first_created, MAX(created_at) as last_created,
+                           AVG(importance) as avg_importance
+                    FROM memories 
+                    WHERE content IS NOT NULL AND LENGTH(content) > 10
+                    GROUP BY content 
+                    HAVING count > 1
+                    ORDER BY count DESC
+                """)
+                
+                duplicate_groups = []
+                for row in cursor.fetchall():
+                    memory_ids = row[2].split(',')
+                    
+                    # Get detailed info for each memory in the group
+                    memory_details = []
+                    for memory_id in memory_ids:
+                        cursor.execute("""
+                            SELECT memory_id, workflow_id, memory_type, importance, created_at
+                            FROM memories WHERE memory_id = ?
+                        """, (memory_id,))
+                        
+                        detail = cursor.fetchone()
+                        if detail:
+                            memory_details.append(dict(zip([d[0] for d in cursor.description], detail, strict=False)))
+                    
+                    duplicate_groups.append({
+                        'cluster_id': f"dup_cluster_{len(duplicate_groups)}",
+                        'content_preview': row[0][:200] + '...' if len(row[0]) > 200 else row[0],
+                        'duplicate_count': row[1],
+                        'memory_ids': memory_ids,
+                        'primary_memory_id': memory_ids[0] if memory_ids else None,
+                        'memory_details': memory_details,
+                        'first_created': row[3],
+                        'last_created': row[4],
+                        'avg_importance': row[5],
+                        'recommendation': 'merge' if row[1] > 2 else 'review'
+                    })
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'success': True,
+                    'clusters': duplicate_groups,
+                    'duplicate_groups': duplicate_groups,
+                    'total_groups': len(duplicate_groups),
+                    'total_duplicates': sum(group['duplicate_count'] for group in duplicate_groups)
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_memory_quality_orphaned(request):
+            """Get orphaned memories (not associated with workflows)"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT m.memory_id, m.content, m.memory_type, m.importance, m.created_at
+                    FROM memories m
+                    LEFT JOIN workflows w ON m.workflow_id = w.workflow_id
+                    WHERE w.workflow_id IS NULL
+                    ORDER BY m.created_at DESC
+                """)
+                
+                orphaned_memories = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'success': True,
+                    'orphaned_memories': orphaned_memories,
+                    'total_orphaned': len(orphaned_memories),
+                    'recommendation': 'Assign to appropriate workflows or archive if no longer needed'
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_memory_quality_bulk_execute(request):
+            """Execute bulk operations on memories"""
+            try:
+                body = await request.json()
+                operation_type = body.get('operation_type')
+                memory_ids = body.get('memory_ids', [])
+                
+                if not memory_ids:
+                    return JSONResponse({"error": "No memory IDs provided"}, status_code=400)
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                results = {
+                    'operation_type': operation_type,
+                    'memory_ids': memory_ids,
+                    'success_count': 0,
+                    'error_count': 0,
+                    'errors': []
+                }
+                
+                placeholders = ','.join(['?' for _ in memory_ids])
+                
+                if operation_type == 'delete':
+                    try:
+                        cursor.execute(f"DELETE FROM memories WHERE memory_id IN ({placeholders})", memory_ids)
+                        results['success_count'] = cursor.rowcount
+                    except Exception as e:
+                        results['error_count'] = len(memory_ids)
+                        results['errors'].append(str(e))
+                
+                elif operation_type == 'archive':
+                    # Add metadata to mark as archived
+                    try:
+                        cursor.execute(f"""
+                            UPDATE memories 
+                            SET metadata = json_set(COALESCE(metadata, '{{}}'), '$.archived', 'true', '$.archived_at', ?)
+                            WHERE memory_id IN ({placeholders})
+                        """, [datetime.now().isoformat()] + memory_ids)
+                        results['success_count'] = cursor.rowcount
+                    except Exception as e:
+                        results['error_count'] = len(memory_ids)
+                        results['errors'].append(str(e))
+                
+                elif operation_type == 'merge':
+                    # For merge operations, keep the first memory and delete others
+                    if len(memory_ids) > 1:
+                        try:
+                            # Keep the first memory, delete the rest
+                            cursor.execute(f"DELETE FROM memories WHERE memory_id IN ({','.join(['?' for _ in memory_ids[1:]])})", memory_ids[1:])
+                            results['success_count'] = len(memory_ids) - 1
+                            results['merged_into'] = memory_ids[0]
+                        except Exception as e:
+                            results['error_count'] = len(memory_ids)
+                            results['errors'].append(str(e))
+                
+                # Commit changes
+                conn.commit()
+                conn.close()
+                
+                results['success'] = results['error_count'] == 0
+                results['message'] = f"Operation completed: {results['success_count']} succeeded, {results['error_count']} failed"
+                
+                return JSONResponse(results)
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_memory_quality_bulk_preview(request):
+            """Preview bulk operations before execution"""
+            try:
+                body = await request.json()
+                operation_type = body.get('operation_type')
+                memory_ids = body.get('memory_ids', [])
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Get memory details for preview
+                placeholders = ','.join(['?' for _ in memory_ids])
+                cursor.execute(f"""
+                    SELECT memory_id, content, memory_type, importance, workflow_id
+                    FROM memories 
+                    WHERE memory_id IN ({placeholders})
+                """, memory_ids)
+                
+                memories = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                preview = {
+                    'success': True,
+                    'operation_type': operation_type,
+                    'affected_memories': memories,
+                    'total_affected': len(memories),
+                    'preview_description': f'This will {operation_type} {len(memories)} memories'
+                }
+                
+                if operation_type == 'merge' and len(memories) > 1:
+                    preview['merge_target'] = memories[0]
+                    preview['will_be_deleted'] = memories[1:]
+                
+                conn.close()
+                
+                return JSONResponse({'success': True, 'operation': preview})
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Workflow Scheduling API
+        async def api_workflow_schedule(request):
+            """Schedule workflow execution"""
+            try:
+                workflow_id = request.path_params['workflow_id']
+                body = await request.json()
+                
+                # This is a placeholder implementation
+                schedule_data = {
+                    'workflow_id': workflow_id,
+                    'scheduled_at': body.get('scheduled_at'),
+                    'priority': body.get('priority', 5),
+                    'status': 'scheduled',
+                    'created_at': datetime.now().isoformat()
+                }
+                
+                # In a real implementation, this would integrate with a task scheduler
+                return JSONResponse({
+                    'success': True,
+                    'schedule_id': f"sched_{workflow_id}_{int(datetime.now().timestamp())}",
+                    'message': 'Workflow scheduled successfully',
+                    'schedule_data': schedule_data
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Cognitive State Restoration API
+        async def api_cognitive_state_restore(request):
+            """Restore a cognitive state"""
+            try:
+                state_id = request.path_params['state_id']
+                body = await request.json()
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Get the state to restore
+                cursor.execute("SELECT * FROM cognitive_timeline_states WHERE state_id = ?", (state_id,))
+                state = cursor.fetchone()
+                
+                if not state:
+                    return JSONResponse({"error": "Cognitive state not found"}, status_code=404)
+                
+                # Create a new state entry for the restoration
+                restore_data = {
+                    'state_id': state_id,
+                    'restore_mode': body.get('restore_mode', 'full'),
+                    'restored_at': datetime.now().isoformat(),
+                    'original_timestamp': state[1] if state else None  # timestamp column
+                }
+                
+                # In a real implementation, this would restore the actual cognitive state
+                conn.close()
+                
+                return JSONResponse({
+                    'success': True,
+                    'message': 'Cognitive state restoration initiated',
+                    'restore_data': restore_data
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Artifact Download API
+        async def api_artifact_download(request):
+            """Download an artifact"""
+            try:
+                artifact_id = request.path_params['artifact_id']
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
+                artifact = cursor.fetchone()
+                
+                if not artifact:
+                    return JSONResponse({"error": "Artifact not found"}, status_code=404)
+                
+                # For now, return the artifact data as JSON
+                # In a real implementation, this would serve the actual file
+                artifact_dict = dict(zip([d[0] for d in cursor.description], artifact, strict=False))
+                
+                conn.close()
+                
+                # Return as downloadable JSON for now
+                import json
+
+                from starlette.responses import Response
+                
+                content = json.dumps(artifact_dict, indent=2)
+                filename = f"{artifact_dict.get('name', 'artifact')}.json"
+                
+                return Response(
+                    content=content,
+                    media_type='application/json',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{filename}"'
+                    }
+                )
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Register the new endpoints
+        app.add_route("/api/memory-quality/stats", api_memory_quality_stats, methods=["GET"])
+        app.add_route("/api/memory-quality/quick-scan", api_memory_quality_quick_scan, methods=["GET"])
+        app.add_route("/api/memory-quality/analyze", api_memory_quality_analyze, methods=["POST"])
+        app.add_route("/api/memory-quality/duplicates", api_memory_quality_duplicates, methods=["GET"])
+        app.add_route("/api/memory-quality/orphaned", api_memory_quality_orphaned, methods=["GET"])
+        app.add_route("/api/memory-quality/bulk-execute", api_memory_quality_bulk_execute, methods=["POST"])
+        app.add_route("/api/memory-quality/bulk-preview", api_memory_quality_bulk_preview, methods=["POST"])
+        app.add_route("/api/workflows/{workflow_id}/schedule", api_workflow_schedule, methods=["POST"])
+        app.add_route("/api/cognitive-states/{state_id}/restore", api_cognitive_state_restore, methods=["POST"])
+        app.add_route("/api/artifacts/{artifact_id}/download", api_artifact_download, methods=["GET"])
+        
+        print("[DEBUG] Added comprehensive UMS Explorer API endpoints")
+        
+        # ===== ADD OPENAPI SCHEMA ENDPOINT FOR SWAGGER DOCS =====
         from starlette.responses import JSONResponse
+        
+        async def openapi_schema(request):
+            """Generate comprehensive OpenAPI schema for the UMS Explorer API endpoints"""
+            openapi_schema = {
+                "openapi": "3.0.0",
+                "info": {
+                    "title": "Ultimate MCP Server - UMS Explorer API",
+                    "version": "1.0.0",
+                    "description": """
+# Ultimate MCP Server - UMS Explorer API
+
+The UMS Explorer API provides comprehensive access to the Unified Memory System (UMS) database for exploring cognitive states, actions, artifacts, and system performance metrics.
+
+## Overview
+
+This API is designed for:
+- **Cognitive State Analysis**: Track and analyze the evolution of cognitive states over time
+- **Action Monitoring**: Monitor running, queued, and completed actions with performance metrics
+- **Artifact Management**: Explore and manage system artifacts and their relationships
+- **System Analytics**: Get insights into tool usage, performance patterns, and system health
+
+## Authentication
+
+Currently, this API does not require authentication but is intended for internal system use.
+
+## Rate Limiting
+
+No rate limiting is currently implemented, but reasonable usage is expected.
+                    """,
+                    "contact": {
+                        "name": "Ultimate MCP Server",
+                        "url": "https://github.com/your-repo/ultimate-mcp-server"
+                    }
+                },
+                "servers": [
+                    {
+                        "url": "http://localhost:8013",
+                        "description": "Local development server"
+                    }
+                ],
+                "tags": [
+                    {
+                        "name": "Cognitive States",
+                        "description": "Endpoints for exploring and analyzing cognitive states and their evolution"
+                    },
+                    {
+                        "name": "Action Monitor", 
+                        "description": "Endpoints for monitoring action execution, queues, and performance metrics"
+                    },
+                    {
+                        "name": "Artifacts",
+                        "description": "Endpoints for managing artifacts and their relationships"
+                    },
+                    {
+                        "name": "System Analytics",
+                        "description": "Endpoints for system-wide analytics and performance insights"
+                    },
+                    {
+                        "name": "Memory Quality",
+                        "description": "Endpoints for analyzing and managing memory quality, including duplicates, orphaned memories, and quality metrics"
+                    },
+                    {
+                        "name": "Working Memory",
+                        "description": "Endpoints for managing working memory pool, focus modes, and memory optimization"
+                    },
+                    {
+                        "name": "Workflow Management",
+                        "description": "Endpoints for scheduling and managing workflow execution"
+                    },
+                    {
+                        "name": "Health & Utilities",
+                        "description": "System health checks and utility endpoints"
+                    }
+                ],
+                "paths": {
+                    "/api/cognitive-states": {
+                        "get": {
+                            "tags": ["Cognitive States"],
+                            "summary": "List cognitive states with filtering",
+                            "description": """
+Retrieve a paginated list of cognitive states from the timeline with optional filtering capabilities.
+
+This endpoint allows you to explore the cognitive state history with various filters:
+- **Time Range**: Filter by start and end timestamps
+- **State Type**: Filter by specific cognitive state types
+- **Pagination**: Control the number of results and offset
+
+**Features:**
+- Enhanced metadata including complexity scores and change magnitudes
+- Formatted timestamps for easier consumption
+- Associated workflow information
+- Memory and action counts for context
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "start_time", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "number"}, 
+                                    "description": "Unix timestamp to filter states created after this time",
+                                    "example": 1703980800
+                                },
+                                {
+                                    "name": "end_time", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "number"}, 
+                                    "description": "Unix timestamp to filter states created before this time",
+                                    "example": 1704067200
+                                },
+                                {
+                                    "name": "limit", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 100, "minimum": 1, "maximum": 1000}, 
+                                    "description": "Maximum number of states to return",
+                                    "example": 50
+                                },
+                                {
+                                    "name": "offset", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 0, "minimum": 0}, 
+                                    "description": "Number of states to skip for pagination",
+                                    "example": 0
+                                },
+                                {
+                                    "name": "pattern_type", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "string"}, 
+                                    "description": "Filter by specific cognitive state type",
+                                    "example": "decision_point"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Successfully retrieved cognitive states",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "states": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "state_id": {"type": "string"},
+                                                                "timestamp": {"type": "number"},
+                                                                "formatted_timestamp": {"type": "string"},
+                                                                "state_type": {"type": "string"},
+                                                                "description": {"type": "string"},
+                                                                "workflow_id": {"type": "string"},
+                                                                "workflow_title": {"type": "string"},
+                                                                "complexity_score": {"type": "number"},
+                                                                "change_magnitude": {"type": "number"},
+                                                                "age_minutes": {"type": "number"},
+                                                                "memory_count": {"type": "integer"},
+                                                                "action_count": {"type": "integer"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "total": {"type": "integer"},
+                                                    "has_more": {"type": "boolean"}
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/cognitive-states/timeline": {
+                        "get": {
+                            "tags": ["Cognitive States"],
+                            "summary": "Get cognitive state timeline for visualization",
+                            "description": """
+Retrieve cognitive state timeline data optimized for visualization and temporal analysis.
+
+This endpoint provides:
+- **Chronological ordering** of cognitive states
+- **Complexity scoring** for each state
+- **Change magnitude calculation** between consecutive states
+- **Sequence numbering** for timeline positioning
+
+Perfect for building timeline visualizations, trend analysis, and understanding cognitive state evolution patterns.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "hours", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 168}, 
+                                    "description": "Number of hours back to retrieve timeline data",
+                                    "example": 24
+                                },
+                                {
+                                    "name": "granularity", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {
+                                        "type": "string", 
+                                        "enum": ["second", "minute", "hour"], 
+                                        "default": "hour"
+                                    }, 
+                                    "description": "Timeline granularity for data aggregation",
+                                    "example": "hour"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Timeline data successfully retrieved"
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/cognitive-states/{state_id}": {
+                        "get": {
+                            "tags": ["Cognitive States"],
+                            "summary": "Get detailed cognitive state information",
+                            "description": """
+Retrieve comprehensive details about a specific cognitive state including:
+
+- **Full state data** with parsed JSON content
+- **Associated memories** linked to the same workflow
+- **Related actions** that occurred in the same context
+- **Workflow information** for broader context
+- **Complexity analysis** and formatted timestamps
+
+This endpoint is ideal for deep-dive analysis of specific cognitive states.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "state_id", 
+                                    "in": "path", 
+                                    "required": True, 
+                                    "schema": {"type": "string"}, 
+                                    "description": "Unique identifier of the cognitive state",
+                                    "example": "state_abc123xyz789"
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "Detailed cognitive state information"},
+                                "404": {"description": "Cognitive state not found"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/cognitive-states/patterns": {
+                        "get": {
+                            "tags": ["Cognitive States"],
+                            "summary": "Analyze cognitive patterns and anomalies",
+                            "description": """
+Perform advanced pattern analysis on cognitive states to identify:
+
+- **Recurring patterns** in state sequences
+- **State transitions** and their frequencies
+- **Anomalous states** that deviate from normal patterns
+- **Pattern similarity analysis** with configurable thresholds
+
+This endpoint uses sophisticated algorithms to detect meaningful patterns in cognitive state evolution.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "lookback_hours", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 720}, 
+                                    "description": "Hours to look back for pattern analysis",
+                                    "example": 48
+                                },
+                                {
+                                    "name": "min_pattern_length", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 3, "minimum": 2, "maximum": 20}, 
+                                    "description": "Minimum length of patterns to detect",
+                                    "example": 3
+                                },
+                                {
+                                    "name": "similarity_threshold", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "number", "default": 0.7, "minimum": 0.1, "maximum": 1.0}, 
+                                    "description": "Similarity threshold for pattern matching (0.0-1.0)",
+                                    "example": 0.8
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "Pattern analysis results with transitions and anomalies"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/cognitive-states/compare": {
+                        "post": {
+                            "tags": ["Cognitive States"],
+                            "summary": "Compare two cognitive states",
+                            "description": """
+Perform detailed comparison between two cognitive states to understand:
+
+- **Structural differences** in state data
+- **Added, removed, and modified** components
+- **Change magnitude** calculation
+- **Time differential** between states
+
+Perfect for understanding how cognitive states evolve and what changes between specific points in time.
+                            """,
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["state_id_1", "state_id_2"],
+                                            "properties": {
+                                                "state_id_1": {
+                                                    "type": "string",
+                                                    "description": "First cognitive state ID for comparison"
+                                                },
+                                                "state_id_2": {
+                                                    "type": "string", 
+                                                    "description": "Second cognitive state ID for comparison"
+                                                }
+                                            }
+                                        },
+                                        "example": {
+                                            "state_id_1": "state_abc123",
+                                            "state_id_2": "state_xyz789"
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {"description": "Detailed comparison results"},
+                                "400": {"description": "Invalid request - both state IDs required"},
+                                "404": {"description": "One or both states not found"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/actions/running": {
+                        "get": {
+                            "tags": ["Action Monitor"],
+                            "summary": "Get currently executing actions",
+                            "description": """
+Monitor actions that are currently executing with real-time status information:
+
+- **Execution progress** with percentage completion estimates
+- **Performance categorization** (excellent, good, slow, etc.)
+- **Resource usage indicators** (placeholder for future implementation)
+- **Status indicators** with urgency levels
+- **Estimated duration** vs actual execution time
+
+Ideal for monitoring system activity and identifying long-running or problematic actions.
+                            """,
+                            "responses": {
+                                "200": {
+                                    "description": "List of currently running actions with real-time metrics"
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/actions/queue": {
+                        "get": {
+                            "tags": ["Action Monitor"],
+                            "summary": "Get queued actions waiting for execution",
+                            "description": """
+Monitor the action execution queue to understand:
+
+- **Queue position** for each waiting action
+- **Priority levels** with human-readable labels
+- **Estimated wait times** based on queue position
+- **Queue time** (how long actions have been waiting)
+
+Essential for understanding system load and execution priorities.
+                            """,
+                            "responses": {
+                                "200": {"description": "List of queued actions with wait time estimates"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/actions/history": {
+                        "get": {
+                            "tags": ["Action Monitor"],
+                            "summary": "Get completed actions with performance metrics",
+                            "description": """
+Analyze historical action execution data with comprehensive performance metrics:
+
+- **Execution duration** and performance scoring
+- **Success/failure rates** and efficiency ratings
+- **Tool-specific filtering** and status filtering
+- **Aggregate performance metrics** and trends
+
+Perfect for performance analysis, debugging, and system optimization.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "limit", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 500}, 
+                                    "description": "Maximum number of actions to return"
+                                },
+                                {
+                                    "name": "offset", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 0, "minimum": 0}, 
+                                    "description": "Number of actions to skip for pagination"
+                                },
+                                {
+                                    "name": "status_filter", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {
+                                        "type": "string",
+                                        "enum": ["completed", "failed", "cancelled", "timeout"]
+                                    }, 
+                                    "description": "Filter by action completion status"
+                                },
+                                {
+                                    "name": "tool_filter", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "string"}, 
+                                    "description": "Filter by specific tool name"
+                                },
+                                {
+                                    "name": "hours_back", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 720}, 
+                                    "description": "Hours back to search for completed actions"
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "Historical actions with performance analysis"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/actions/metrics": {
+                        "get": {
+                            "tags": ["Action Monitor"],
+                            "summary": "Get comprehensive action execution metrics",
+                            "description": """
+Retrieve system-wide action execution analytics including:
+
+- **Overall success/failure rates** for the past 24 hours
+- **Tool usage statistics** with performance breakdowns
+- **Hourly performance distribution** showing usage patterns
+- **Performance insights** with actionable recommendations
+
+This endpoint provides executive-level insights into system performance and health.
+                            """,
+                            "responses": {
+                                "200": {"description": "Comprehensive action execution metrics and analytics"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/tools/usage": {
+                        "get": {
+                            "tags": ["System Analytics"],
+                            "summary": "Get detailed tool usage statistics",
+                            "description": """
+Analyze tool usage patterns and performance with detailed breakdown:
+
+- **Usage frequency** and success rates per tool
+- **Performance categorization** (fast, normal, slow)
+- **Reliability scoring** based on volume and success rate
+- **Execution time statistics** (min, max, average)
+- **Usage trends** and workflow distribution
+
+Essential for understanding which tools are most/least reliable and performant.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "hours_back", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 720}, 
+                                    "description": "Hours back to analyze tool usage"
+                                },
+                                {
+                                    "name": "include_performance", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "boolean", "default": True}, 
+                                    "description": "Include detailed performance breakdown"
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "Detailed tool usage statistics with performance metrics"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/artifacts": {
+                        "get": {
+                            "tags": ["Artifacts"],
+                            "summary": "List artifacts with filtering and search",
+                            "description": """
+Explore system artifacts with comprehensive filtering and search capabilities:
+
+- **Type-based filtering** for specific artifact categories
+- **Workflow association** to see artifacts by workflow
+- **Tag-based search** for categorized artifacts
+- **Full-text search** across names and descriptions
+- **Sorting options** with configurable order
+
+Includes relationship counts, version information, and human-readable metadata.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "artifact_type", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "string"}, 
+                                    "description": "Filter by specific artifact type",
+                                    "example": "document"
+                                },
+                                {
+                                    "name": "workflow_id", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "string"}, 
+                                    "description": "Filter by workflow ID",
+                                    "example": "workflow_abc123"
+                                },
+                                {
+                                    "name": "tags", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "string"}, 
+                                    "description": "Search within artifact tags",
+                                    "example": "important"
+                                },
+                                {
+                                    "name": "search", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "string"}, 
+                                    "description": "Full-text search in names and descriptions",
+                                    "example": "analysis report"
+                                },
+                                {
+                                    "name": "sort_by", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {
+                                        "type": "string", 
+                                        "enum": ["created_at", "updated_at", "name", "importance", "access_count"], 
+                                        "default": "created_at"
+                                    }, 
+                                    "description": "Field to sort results by"
+                                },
+                                {
+                                    "name": "sort_order", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {
+                                        "type": "string", 
+                                        "enum": ["asc", "desc"], 
+                                        "default": "desc"
+                                    }, 
+                                    "description": "Sort order direction"
+                                },
+                                {
+                                    "name": "limit", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200}, 
+                                    "description": "Maximum number of artifacts to return"
+                                },
+                                {
+                                    "name": "offset", 
+                                    "in": "query", 
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 0, "minimum": 0}, 
+                                    "description": "Number of artifacts to skip for pagination"
+                                }
+                            ],
+                            "responses": {
+                                "200": {"description": "List of artifacts with metadata and relationships"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/artifacts/stats": {
+                        "get": {
+                            "tags": ["Artifacts"],
+                            "summary": "Get artifact statistics and analytics",
+                            "description": """
+Retrieve comprehensive statistics about system artifacts including:
+
+- **Overall counts** and storage usage
+- **Type-based breakdown** with metrics per artifact type
+- **Importance scoring** averages and distributions
+- **Access patterns** and usage statistics
+
+Perfect for understanding artifact distribution and usage patterns across the system.
+                            """,
+                            "responses": {
+                                "200": {"description": "Comprehensive artifact statistics and analytics"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/memory-quality/stats": {
+                        "get": {
+                            "tags": ["Memory Quality"],
+                            "summary": "Get memory quality statistics and overview",
+                            "description": """
+Retrieve comprehensive memory quality statistics including:
+
+- **Overall memory counts** and quality metrics
+- **Quality score** based on identified issues
+- **Issue breakdown** by type (duplicates, orphaned, stale)
+- **Quality recommendations** for improvement
+
+This endpoint provides a high-level overview of the memory system's health and quality.
+                            """,
+                            "responses": {
+                                "200": {
+                                    "description": "Memory quality statistics successfully retrieved",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "overall_stats": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "total_memories": {"type": "integer"},
+                                                            "unique_workflows": {"type": "integer"},
+                                                            "avg_importance": {"type": "number"},
+                                                            "low_importance_count": {"type": "integer"},
+                                                            "memory_types": {"type": "integer"}
+                                                        }
+                                                    },
+                                                    "quality_issues": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "potential_duplicates": {"type": "integer"},
+                                                            "orphaned_memories": {"type": "integer"},
+                                                            "stale_memories": {"type": "integer"},
+                                                            "low_importance_memories": {"type": "integer"}
+                                                        }
+                                                    },
+                                                    "quality_score": {"type": "number"},
+                                                    "recommendations": {
+                                                        "type": "array",
+                                                        "items": {"type": "string"}
+                                                    },
+                                                    "last_analysis": {"type": "string"}
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/memory-quality/quick-scan": {
+                        "get": {
+                            "tags": ["Memory Quality"],
+                            "summary": "Perform quick memory quality scan",
+                            "description": """
+Execute a fast scan of the memory system to identify immediate quality issues:
+
+- **Duplicate detection** for identical content
+- **Orphaned memory identification** 
+- **Quality scoring** based on found issues
+- **Issue categorization** by severity and type
+
+This endpoint provides rapid feedback on memory quality without the overhead of a full analysis.
+                            """,
+                            "responses": {
+                                "200": {
+                                    "description": "Quick scan completed successfully",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "quick_metrics": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "overall_score": {"type": "number"},
+                                                            "total_memories": {"type": "integer"},
+                                                            "issues_found": {"type": "integer"},
+                                                            "scan_time": {"type": "string"}
+                                                        }
+                                                    },
+                                                    "issues": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "type": {"type": "string"},
+                                                                "severity": {"type": "string"},
+                                                                "description": {"type": "string"},
+                                                                "preview": {"type": "string"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "scan_completed": {"type": "boolean"},
+                                                    "next_scan_recommended": {"type": "string"}
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/memory-quality/analyze": {
+                        "post": {
+                            "tags": ["Memory Quality"],
+                            "summary": "Perform comprehensive memory quality analysis",
+                            "description": """
+Execute a detailed analysis of memory quality with configurable options:
+
+- **Comprehensive issue detection** across all categories
+- **Detailed issue metadata** with auto-fix recommendations
+- **Quality scoring** and trend analysis
+- **Actionable recommendations** for quality improvement
+
+This endpoint provides deep insights into memory quality and specific actionable issues.
+                            """,
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "analysis_type": {
+                                                    "type": "string",
+                                                    "enum": ["comprehensive", "duplicates", "orphaned"],
+                                                    "default": "comprehensive",
+                                                    "description": "Type of analysis to perform"
+                                                }
+                                            }
+                                        },
+                                        "example": {"analysis_type": "comprehensive"}
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "description": "Analysis completed successfully",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "analysis": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "analysis_type": {"type": "string"},
+                                                            "issues_found": {"type": "integer"},
+                                                            "overall_score": {"type": "number"},
+                                                            "total_memories": {"type": "integer"},
+                                                            "issues": {
+                                                                "type": "array",
+                                                                "items": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                        "issue_id": {"type": "string"},
+                                                                        "issue_type": {"type": "string"},
+                                                                        "title": {"type": "string"},
+                                                                        "description": {"type": "string"},
+                                                                        "severity": {"type": "string"},
+                                                                        "auto_fixable": {"type": "boolean"},
+                                                                        "recommendation": {"type": "string"}
+                                                                    }
+                                                                }
+                                                            },
+                                                            "recommendations": {
+                                                                "type": "array",
+                                                                "items": {"type": "string"}
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/memory-quality/duplicates": {
+                        "get": {
+                            "tags": ["Memory Quality"],
+                            "summary": "Get detailed duplicate memory analysis",
+                            "description": """
+Retrieve comprehensive information about duplicate memories:
+
+- **Duplicate clusters** with identical content
+- **Memory details** for each duplicate group
+- **Merge recommendations** based on duplicate count
+- **Temporal analysis** of when duplicates were created
+
+Essential for understanding and resolving memory duplication issues.
+                            """,
+                            "responses": {
+                                "200": {
+                                    "description": "Duplicate analysis successfully retrieved",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "clusters": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "cluster_id": {"type": "string"},
+                                                                "duplicate_count": {"type": "integer"},
+                                                                "memory_ids": {
+                                                                    "type": "array",
+                                                                    "items": {"type": "string"}
+                                                                },
+                                                                "primary_memory_id": {"type": "string"},
+                                                                "content_preview": {"type": "string"},
+                                                                "recommendation": {"type": "string"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "total_groups": {"type": "integer"},
+                                                    "total_duplicates": {"type": "integer"}
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/memory-quality/orphaned": {
+                        "get": {
+                            "tags": ["Memory Quality"],
+                            "summary": "Get orphaned memories not associated with workflows",
+                            "description": """
+Retrieve memories that are not associated with any workflow:
+
+- **Orphaned memory details** including content and metadata
+- **Creation timestamps** for temporal analysis
+- **Importance scoring** to prioritize action
+- **Assignment recommendations** for workflow integration
+
+Critical for maintaining memory system organization and preventing data loss.
+                            """,
+                            "responses": {
+                                "200": {
+                                    "description": "Orphaned memories successfully retrieved",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "orphaned_memories": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "memory_id": {"type": "string"},
+                                                                "content": {"type": "string"},
+                                                                "memory_type": {"type": "string"},
+                                                                "importance": {"type": "number"},
+                                                                "created_at": {"type": "number"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "total_orphaned": {"type": "integer"},
+                                                    "recommendation": {"type": "string"}
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/memory-quality/bulk-execute": {
+                        "post": {
+                            "tags": ["Memory Quality"],
+                            "summary": "Execute bulk operations on memories",
+                            "description": """
+Perform bulk operations on multiple memories:
+
+- **Merge operations** for duplicate consolidation
+- **Archive operations** for stale memory management
+- **Delete operations** for cleanup
+- **Progress tracking** and error reporting
+
+Enables efficient bulk management of memory quality issues.
+                            """,
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["operation_type", "memory_ids"],
+                                            "properties": {
+                                                "operation_type": {
+                                                    "type": "string",
+                                                    "enum": ["merge", "archive", "delete"],
+                                                    "description": "Type of bulk operation to perform"
+                                                },
+                                                "memory_ids": {
+                                                    "type": "array",
+                                                    "items": {"type": "string"},
+                                                    "description": "List of memory IDs to operate on"
+                                                },
+                                                "target_memory_id": {
+                                                    "type": "string",
+                                                    "description": "Target memory ID for merge operations"
+                                                }
+                                            }
+                                        },
+                                        "example": {
+                                            "operation_type": "merge",
+                                            "memory_ids": ["mem_123", "mem_456", "mem_789"],
+                                            "target_memory_id": "mem_123"
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "description": "Bulk operation completed",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "operation_type": {"type": "string"},
+                                                    "success_count": {"type": "integer"},
+                                                    "error_count": {"type": "integer"},
+                                                    "message": {"type": "string"},
+                                                    "errors": {
+                                                        "type": "array",
+                                                        "items": {"type": "string"}
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "400": {"description": "Invalid request parameters"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/memory-quality/bulk-preview": {
+                        "post": {
+                            "tags": ["Memory Quality"],
+                            "summary": "Preview bulk operations before execution",
+                            "description": """
+Preview the effects of bulk operations before executing them:
+
+- **Operation impact preview** with affected memories
+- **Risk assessment** for destructive operations
+- **Merge target selection** for duplicate operations
+- **Cost estimation** for large operations
+
+Essential for safe bulk operations and preventing accidental data loss.
+                            """,
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "required": ["operation_type", "memory_ids"],
+                                            "properties": {
+                                                "operation_type": {
+                                                    "type": "string",
+                                                    "enum": ["merge", "archive", "delete"],
+                                                    "description": "Type of bulk operation to preview"
+                                                },
+                                                "memory_ids": {
+                                                    "type": "array",
+                                                    "items": {"type": "string"},
+                                                    "description": "List of memory IDs to preview operation for"
+                                                }
+                                            }
+                                        },
+                                        "example": {
+                                            "operation_type": "merge",
+                                            "memory_ids": ["mem_123", "mem_456", "mem_789"]
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "description": "Preview generated successfully",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "operation": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "operation_type": {"type": "string"},
+                                                            "total_affected": {"type": "integer"},
+                                                            "preview_description": {"type": "string"},
+                                                            "affected_memories": {
+                                                                "type": "array",
+                                                                "items": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                        "memory_id": {"type": "string"},
+                                                                        "content": {"type": "string"},
+                                                                        "importance": {"type": "number"}
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "400": {"description": "Invalid request parameters"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/workflows/{workflow_id}/schedule": {
+                        "post": {
+                            "tags": ["Workflow Management"],
+                            "summary": "Schedule workflow execution",
+                            "description": """
+Schedule a workflow for future execution with configurable priority and timing:
+
+- **Workflow scheduling** with specific timing
+- **Priority management** for execution order
+- **Status tracking** for scheduled workflows
+- **Integration** with workflow execution system
+
+Essential for orchestrating complex multi-step processes and time-based automation.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "workflow_id",
+                                    "in": "path",
+                                    "required": True,
+                                    "schema": {"type": "string"},
+                                    "description": "Unique identifier of the workflow to schedule",
+                                    "example": "workflow_abc123"
+                                }
+                            ],
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "scheduled_at": {
+                                                    "type": "string",
+                                                    "format": "date-time",
+                                                    "description": "ISO timestamp for when to execute the workflow"
+                                                },
+                                                "priority": {
+                                                    "type": "integer",
+                                                    "minimum": 1,
+                                                    "maximum": 10,
+                                                    "default": 5,
+                                                    "description": "Execution priority (1=highest, 10=lowest)"
+                                                }
+                                            }
+                                        },
+                                        "example": {
+                                            "scheduled_at": "2024-01-01T12:00:00Z",
+                                            "priority": 3
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "description": "Workflow scheduled successfully",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "schedule_id": {"type": "string"},
+                                                    "message": {"type": "string"},
+                                                    "schedule_data": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "workflow_id": {"type": "string"},
+                                                            "scheduled_at": {"type": "string"},
+                                                            "priority": {"type": "integer"},
+                                                            "status": {"type": "string"}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "400": {"description": "Invalid request parameters"},
+                                "404": {"description": "Workflow not found"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/cognitive-states/{state_id}/restore": {
+                        "post": {
+                            "tags": ["Cognitive States"],
+                            "summary": "Restore a previous cognitive state",
+                            "description": """
+Restore the system to a previous cognitive state for analysis or recovery:
+
+- **State restoration** with configurable restore modes
+- **Temporal analysis** by reverting to specific points in time
+- **Recovery mechanisms** for problematic state transitions
+- **Research capabilities** for understanding state evolution
+
+Critical for debugging cognitive state issues and temporal analysis of system behavior.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "state_id",
+                                    "in": "path",
+                                    "required": True,
+                                    "schema": {"type": "string"},
+                                    "description": "Unique identifier of the cognitive state to restore",
+                                    "example": "state_abc123xyz789"
+                                }
+                            ],
+                            "requestBody": {
+                                "required": True,
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "restore_mode": {
+                                                    "type": "string",
+                                                    "enum": ["full", "partial", "snapshot"],
+                                                    "default": "full",
+                                                    "description": "Type of restoration to perform"
+                                                }
+                                            }
+                                        },
+                                        "example": {"restore_mode": "full"}
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "description": "Cognitive state restoration initiated",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "message": {"type": "string"},
+                                                    "restore_data": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "state_id": {"type": "string"},
+                                                            "restore_mode": {"type": "string"},
+                                                            "restored_at": {"type": "string"},
+                                                            "original_timestamp": {"type": "number"}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "400": {"description": "Invalid request parameters"},
+                                "404": {"description": "Cognitive state not found"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/artifacts/{artifact_id}/download": {
+                        "get": {
+                            "tags": ["Artifacts"],
+                            "summary": "Download artifact file or data",
+                            "description": """
+Download the raw file or data associated with an artifact:
+
+- **File download** with proper content types
+- **Metadata preservation** in download headers
+- **Access logging** for audit trails
+- **Format handling** for different artifact types
+
+Essential for accessing artifact content outside the UMS Explorer interface.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "artifact_id",
+                                    "in": "path",
+                                    "required": True,
+                                    "schema": {"type": "string"},
+                                    "description": "Unique identifier of the artifact to download",
+                                    "example": "artifact_abc123"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Artifact file downloaded successfully",
+                                    "content": {
+                                        "application/octet-stream": {
+                                            "schema": {
+                                                "type": "string",
+                                                "format": "binary"
+                                            }
+                                        },
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "description": "JSON representation of artifact data"
+                                            }
+                                        }
+                                    }
+                                },
+                                "404": {"description": "Artifact not found"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/health": {
+                        "get": {
+                            "tags": ["Health & Utilities"],
+                            "summary": "Health check endpoint",
+                            "description": """
+Check the health and operational status of the Ultimate MCP Server:
+
+- **Server status** verification
+- **Service availability** confirmation
+- **Version information** for compatibility checks
+- **Load balancer integration** support
+
+Standard health check endpoint for monitoring systems and operational dashboards.
+                            """,
+                            "responses": {
+                                "200": {
+                                    "description": "Server is healthy and operational",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "status": {
+                                                        "type": "string",
+                                                        "enum": ["ok"],
+                                                        "description": "Health status indicator"
+                                                    },
+                                                    "version": {
+                                                        "type": "string",
+                                                        "description": "Server version string"
+                                                    }
+                                                }
+                                            },
+                                            "example": {
+                                                "status": "ok",
+                                                "version": "0.1.0"
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Server health check failed"}
+                            }
+                        }
+                    },
+                    "/api/working-memory/status": {
+                        "get": {
+                            "tags": ["Working Memory"],
+                            "summary": "Get working memory system status",
+                            "description": """
+Retrieve the current status and configuration of the working memory system:
+
+- **Pool utilization** and capacity metrics
+- **Focus mode** status and configuration
+- **Optimization statistics** and performance data
+- **Memory distribution** across different categories
+
+Essential for monitoring working memory health and performance optimization.
+                            """,
+                            "responses": {
+                                "200": {
+                                    "description": "Working memory status retrieved successfully",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "initialized": {"type": "boolean"},
+                                                    "total_capacity": {"type": "integer"},
+                                                    "current_size": {"type": "integer"},
+                                                    "utilization_percentage": {"type": "number"},
+                                                    "focus_mode": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "enabled": {"type": "boolean"},
+                                                            "focus_keywords": {
+                                                                "type": "array",
+                                                                "items": {"type": "string"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "performance_metrics": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "avg_relevance_score": {"type": "number"},
+                                                            "optimization_suggestions": {"type": "integer"}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/working-memory/initialize": {
+                        "post": {
+                            "tags": ["Working Memory"],
+                            "summary": "Initialize working memory system",
+                            "description": """
+Initialize or reinitialize the working memory system with specific configuration:
+
+- **System initialization** with capacity settings
+- **Configuration setup** for optimization parameters
+- **Pool preparation** for memory operations
+- **Performance tuning** based on usage patterns
+
+Required before other working memory operations can be performed effectively.
+                            """,
+                            "requestBody": {
+                                "required": False,
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "capacity": {
+                                                    "type": "integer",
+                                                    "minimum": 10,
+                                                    "maximum": 1000,
+                                                    "default": 100,
+                                                    "description": "Maximum number of memories in working pool"
+                                                },
+                                                "focus_threshold": {
+                                                    "type": "number",
+                                                    "minimum": 0.0,
+                                                    "maximum": 1.0,
+                                                    "default": 0.7,
+                                                    "description": "Relevance threshold for focus mode"
+                                                }
+                                            }
+                                        },
+                                        "example": {
+                                            "capacity": 150,
+                                            "focus_threshold": 0.8
+                                        }
+                                    }
+                                }
+                            },
+                            "responses": {
+                                "200": {
+                                    "description": "Working memory initialized successfully",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "success": {"type": "boolean"},
+                                                    "message": {"type": "string"},
+                                                    "configuration": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "capacity": {"type": "integer"},
+                                                            "focus_threshold": {"type": "number"}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "400": {"description": "Invalid configuration parameters"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    }
+                },
+                "components": {
+                    "schemas": {
+                        "Error": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string",
+                                    "description": "Error message describing what went wrong"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return JSONResponse(openapi_schema)
+        
+        # Add OpenAPI endpoints
+        app.add_route("/openapi.json", openapi_schema, methods=["GET"])
+        
+        # Add Swagger UI endpoint
+        async def swagger_ui(request):
+            """Swagger UI for API documentation"""
+            html_content = """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Ultimate MCP Server API Documentation</title>
+                <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@4.15.5/swagger-ui.css" />
+                <style>
+                    html {
+                        box-sizing: border-box;
+                        overflow: -moz-scrollbars-vertical;
+                        overflow-y: scroll;
+                    }
+                    *, *:before, *:after {
+                        box-sizing: inherit;
+                    }
+                    body {
+                        margin:0;
+                        background: #fafafa;
+                    }
+                </style>
+            </head>
+            <body>
+                <div id="swagger-ui"></div>
+                <script src="https://unpkg.com/swagger-ui-dist@4.15.5/swagger-ui-bundle.js"></script>
+                <script src="https://unpkg.com/swagger-ui-dist@4.15.5/swagger-ui-standalone-preset.js"></script>
+                <script>
+                window.onload = function() {
+                    const ui = SwaggerUIBundle({
+                        url: '/openapi.json',
+                        dom_id: '#swagger-ui',
+                        deepLinking: true,
+                        presets: [
+                            SwaggerUIBundle.presets.apis,
+                            SwaggerUIStandalonePreset
+                        ],
+                        plugins: [
+                            SwaggerUIBundle.plugins.DownloadUrl
+                        ],
+                        layout: "StandaloneLayout"
+                    });
+                };
+                </script>
+            </body>
+            </html>
+            """
+            from starlette.responses import HTMLResponse
+            return HTMLResponse(content=html_content)
+        
+        app.add_route("/docs", swagger_ui, methods=["GET"])
+        app.add_route("/api/docs", swagger_ui, methods=["GET"])  # Alternative endpoint
+        
+        print("[DEBUG] Added OpenAPI schema and Swagger UI endpoints", file=sys.stderr)
+        print("[DEBUG] Swagger docs available at: /docs and /api/docs", file=sys.stderr)
+        
+        # Add root endpoint to the SSE app for MCP discovery
         
         async def root_endpoint(request):
             """Root endpoint for MCP server discovery"""

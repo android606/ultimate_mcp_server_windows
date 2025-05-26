@@ -4,6 +4,8 @@ Provides real-time working memory management and optimization endpoints for the 
 """
 
 import asyncio
+import difflib
+import hashlib
 import json
 import sqlite3
 import time
@@ -34,6 +36,62 @@ class WorkingMemoryItem:
     access_frequency: float = 0.0  # Normalized access frequency
     retention_score: float = 0.0  # How likely to remain in working memory
     added_at: float = 0.0  # When added to working memory
+
+
+@dataclass
+class QualityIssue:
+    """Represents a memory quality issue."""
+    issue_id: str
+    issue_type: str  # duplicate, orphaned, low_quality, stale, corrupted
+    severity: str  # critical, high, medium, low
+    memory_ids: List[str]
+    title: str
+    description: str
+    recommendation: str
+    impact_score: float
+    auto_fixable: bool
+    estimated_savings: Dict[str, float]  # storage, performance, clarity
+    metadata: Dict
+
+
+@dataclass
+class QualityAnalysisResult:
+    """Result of memory quality analysis."""
+    total_memories: int
+    issues_found: int
+    duplicates: int
+    orphaned: int
+    low_quality: int
+    stale_memories: int
+    corrupted: int
+    overall_score: float  # 0-100
+    issues: List[QualityIssue]
+    recommendations: List[str]
+    analysis_time: float
+
+
+@dataclass
+class DuplicateCluster:
+    """Group of duplicate or similar memories."""
+    cluster_id: str
+    memory_ids: List[str]
+    similarity_score: float
+    primary_memory_id: str  # Best quality memory in cluster
+    duplicate_count: int
+    content_preview: str
+    metadata: Dict
+
+
+@dataclass
+class BulkOperation:
+    """Represents a bulk operation on memories."""
+    operation_id: str
+    operation_type: str  # delete, merge, update, archive
+    memory_ids: List[str]
+    preview_changes: List[Dict]
+    estimated_impact: Dict[str, float]
+    reversible: bool
+    confirmation_required: bool
 
 
 @dataclass
@@ -76,6 +134,526 @@ class FocusModeRequest(BaseModel):
     mode: str  # normal, deep, creative, analytical, maintenance
     retention_time: Optional[int] = None
     max_working_memory: Optional[int] = None
+
+
+class QualityAnalysisRequest(BaseModel):
+    analysis_type: str = "comprehensive"  # comprehensive, duplicates, orphaned, low_quality
+    include_stale: bool = True
+    include_low_importance: bool = True
+    similarity_threshold: float = 0.85
+    stale_threshold_days: int = 30
+
+
+class BulkOperationRequest(BaseModel):
+    operation_type: str  # delete, merge, archive, update
+    memory_ids: List[str]
+    merge_strategy: Optional[str] = "preserve_highest_importance"  # For merge operations
+    target_memory_id: Optional[str] = None  # For merge operations
+    update_data: Optional[Dict] = None  # For update operations
+
+
+class MemoryQualityInspector:
+    """Core memory quality analysis and management logic."""
+    
+    def __init__(self, db_path: str = "storage/unified_agent_memory.db"):
+        self.db_path = db_path
+        
+    def get_db_connection(self):
+        """Get database connection."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def calculate_content_hash(self, content: str) -> str:
+        """Calculate content hash for duplicate detection."""
+        normalized = content.strip().lower()
+        return hashlib.md5(normalized.encode()).hexdigest()
+    
+    def calculate_similarity(self, content1: str, content2: str) -> float:
+        """Calculate content similarity using difflib."""
+        normalized1 = content1.strip().lower()
+        normalized2 = content2.strip().lower()
+        
+        # Use sequence matcher for similarity
+        similarity = difflib.SequenceMatcher(None, normalized1, normalized2).ratio()
+        return similarity
+    
+    def detect_duplicates(self, memories: List[Dict], threshold: float = 0.85) -> List[DuplicateCluster]:
+        """Detect duplicate memories using content similarity."""
+        clusters = []
+        processed_ids = set()
+        
+        for i, memory1 in enumerate(memories):
+            if memory1['memory_id'] in processed_ids:
+                continue
+                
+            cluster_memories = [memory1]
+            cluster_ids = {memory1['memory_id']}
+            
+            for _j, memory2 in enumerate(memories[i+1:], i+1):
+                if memory2['memory_id'] in processed_ids:
+                    continue
+                    
+                similarity = self.calculate_similarity(memory1['content'], memory2['content'])
+                
+                if similarity >= threshold:
+                    cluster_memories.append(memory2)
+                    cluster_ids.add(memory2['memory_id'])
+            
+            if len(cluster_memories) > 1:
+                # Find the best quality memory (highest importance * confidence)
+                primary = max(cluster_memories, 
+                            key=lambda m: (m.get('importance', 1) * m.get('confidence', 0.5)))
+                
+                cluster = DuplicateCluster(
+                    cluster_id=f"dup_{memory1['memory_id'][:8]}",
+                    memory_ids=list(cluster_ids),
+                    similarity_score=max(self.calculate_similarity(memory1['content'], m['content']) 
+                                       for m in cluster_memories[1:]),
+                    primary_memory_id=primary['memory_id'],
+                    duplicate_count=len(cluster_memories) - 1,
+                    content_preview=memory1['content'][:100] + "..." if len(memory1['content']) > 100 else memory1['content'],
+                    metadata={
+                        'avg_importance': sum(m.get('importance', 1) for m in cluster_memories) / len(cluster_memories),
+                        'avg_confidence': sum(m.get('confidence', 0.5) for m in cluster_memories) / len(cluster_memories),
+                        'total_size': sum(len(m['content']) for m in cluster_memories)
+                    }
+                )
+                clusters.append(cluster)
+                processed_ids.update(cluster_ids)
+        
+        return clusters
+    
+    def detect_orphaned_memories(self, memories: List[Dict]) -> List[Dict]:
+        """Detect orphaned memories not connected to any workflow or relationship."""
+        conn = self.get_db_connection()
+        try:
+            cursor = conn.cursor()
+            
+            orphaned = []
+            for memory in memories:
+                memory_id = memory['memory_id']
+                
+                # Check if memory has workflow association
+                has_workflow = memory.get('workflow_id') is not None
+                
+                # Check if memory is linked to other memories
+                cursor.execute("""
+                    SELECT COUNT(*) as count FROM memory_links 
+                    WHERE source_memory_id = ? OR target_memory_id = ?
+                """, (memory_id, memory_id))
+                
+                link_count = cursor.fetchone()['count']
+                
+                # Check if memory is referenced in goals or actions
+                cursor.execute("""
+                    SELECT COUNT(*) as action_count FROM actions 
+                    WHERE memory_id = ? OR input_data LIKE ? OR output_data LIKE ?
+                """, (memory_id, f'%{memory_id}%', f'%{memory_id}%'))
+                
+                action_refs = cursor.fetchone()['action_count']
+                
+                cursor.execute("""
+                    SELECT COUNT(*) as goal_count FROM goals 
+                    WHERE memory_id = ? OR description LIKE ?
+                """, (memory_id, f'%{memory_id}%'))
+                
+                goal_refs = cursor.fetchone()['goal_count']
+                
+                # Memory is orphaned if it has no workflow, no links, and no references
+                if not has_workflow and link_count == 0 and action_refs == 0 and goal_refs == 0:
+                    orphaned.append({
+                        **memory,
+                        'orphan_score': self.calculate_orphan_score(memory),
+                        'isolation_level': 'complete'
+                    })
+                elif link_count == 0 and (action_refs == 0 or goal_refs == 0):
+                    orphaned.append({
+                        **memory,
+                        'orphan_score': self.calculate_orphan_score(memory),
+                        'isolation_level': 'partial'
+                    })
+            
+            return orphaned
+            
+        finally:
+            conn.close()
+    
+    def calculate_orphan_score(self, memory: Dict) -> float:
+        """Calculate how orphaned a memory is (0-100, higher = more orphaned)."""
+        score = 50  # Base score
+        
+        # Adjust based on importance (lower importance = more likely orphan)
+        importance = memory.get('importance', 1)
+        score += (5 - importance) * 10
+        
+        # Adjust based on confidence (lower confidence = more likely orphan)
+        confidence = memory.get('confidence', 0.5)
+        score += (0.5 - confidence) * 50
+        
+        # Adjust based on age (older = more likely to be orphaned)
+        created_at = memory.get('created_at', time.time())
+        age_days = (time.time() - created_at) / 86400
+        if age_days > 30:
+            score += min(20, age_days / 10)
+        
+        # Adjust based on access patterns
+        access_count = memory.get('access_count', 0)
+        if access_count == 0:
+            score += 15
+        elif access_count < 3:
+            score += 10
+        
+        return min(100, max(0, score))
+    
+    def analyze_memory_quality(self, memory: Dict) -> Dict:
+        """Analyze individual memory quality."""
+        quality_score = 50  # Base score
+        issues = []
+        
+        content = memory.get('content', '')
+        importance = memory.get('importance', 1)
+        confidence = memory.get('confidence', 0.5)
+        
+        # Content quality checks
+        if len(content) < 10:
+            issues.append("Content too short")
+            quality_score -= 20
+        elif len(content) > 10000:
+            issues.append("Content extremely long")
+            quality_score -= 10
+        
+        # Check for common quality issues
+        if content.count('\n') / max(1, len(content)) > 0.1:  # Too many line breaks
+            issues.append("Excessive line breaks")
+            quality_score -= 5
+        
+        if len(set(content.split())) / max(1, len(content.split())) < 0.3:  # Low vocabulary diversity
+            issues.append("Low vocabulary diversity")
+            quality_score -= 10
+        
+        # Importance and confidence checks
+        if importance < 3:
+            issues.append("Low importance rating")
+            quality_score -= 10
+        
+        if confidence < 0.3:
+            issues.append("Low confidence rating")
+            quality_score -= 15
+        
+        # Memory type consistency
+        memory_type = memory.get('memory_type', '')
+        memory_level = memory.get('memory_level', '')
+        
+        if not memory_type:
+            issues.append("Missing memory type")
+            quality_score -= 15
+        
+        if not memory_level:
+            issues.append("Missing memory level")
+            quality_score -= 15
+        
+        # Check for encoding issues or corruption
+        try:
+            content.encode('utf-8').decode('utf-8')
+        except UnicodeError:
+            issues.append("Encoding corruption detected")
+            quality_score -= 25
+        
+        # Age and staleness
+        created_at = memory.get('created_at', time.time())
+        age_days = (time.time() - created_at) / 86400
+        
+        if age_days > 90 and memory.get('access_count', 0) == 0:
+            issues.append("Stale memory (old and unaccessed)")
+            quality_score -= 20
+        
+        return {
+            'quality_score': max(0, min(100, quality_score)),
+            'issues': issues,
+            'recommendations': self.generate_quality_recommendations(memory, issues)
+        }
+    
+    def generate_quality_recommendations(self, memory: Dict, issues: List[str]) -> List[str]:
+        """Generate recommendations for improving memory quality."""
+        recommendations = []
+        
+        if "Content too short" in issues:
+            recommendations.append("Consider expanding content with more context or details")
+        
+        if "Content extremely long" in issues:
+            recommendations.append("Consider breaking into smaller, focused memories")
+        
+        if "Low importance rating" in issues:
+            recommendations.append("Review and adjust importance rating if memory is valuable")
+        
+        if "Low confidence rating" in issues:
+            recommendations.append("Verify information accuracy and update confidence")
+        
+        if "Missing memory type" in issues:
+            recommendations.append("Assign appropriate memory type classification")
+        
+        if "Stale memory (old and unaccessed)" in issues:
+            recommendations.append("Archive or delete if no longer relevant")
+        
+        if "Encoding corruption detected" in issues:
+            recommendations.append("Critical: Clean up encoding issues immediately")
+        
+        return recommendations
+    
+    async def perform_quality_analysis(self, request: QualityAnalysisRequest) -> QualityAnalysisResult:
+        """Perform comprehensive memory quality analysis."""
+        start_time = time.time()
+        
+        conn = self.get_db_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Get all memories
+            cursor.execute("SELECT * FROM memories ORDER BY created_at DESC")
+            memories = [dict(row) for row in cursor.fetchall()]
+            
+            total_memories = len(memories)
+            issues = []
+            
+            # Detect duplicates
+            duplicates = []
+            if request.analysis_type in ['comprehensive', 'duplicates']:
+                duplicate_clusters = self.detect_duplicates(memories, request.similarity_threshold)
+                for cluster in duplicate_clusters:
+                    issue = QualityIssue(
+                        issue_id=f"dup_{cluster.cluster_id}",
+                        issue_type="duplicate",
+                        severity="medium" if cluster.duplicate_count <= 2 else "high",
+                        memory_ids=cluster.memory_ids,
+                        title=f"Duplicate memories ({cluster.duplicate_count} duplicates)",
+                        description=f"Found {cluster.duplicate_count} duplicate memories with {cluster.similarity_score:.2%} similarity",
+                        recommendation=f"Merge duplicates into primary memory {cluster.primary_memory_id}",
+                        impact_score=cluster.duplicate_count * 10,
+                        auto_fixable=True,
+                        estimated_savings={
+                            'storage': len(cluster.content_preview) * cluster.duplicate_count * 0.8,
+                            'performance': cluster.duplicate_count * 5,
+                            'clarity': cluster.duplicate_count * 15
+                        },
+                        metadata=cluster.metadata
+                    )
+                    issues.append(issue)
+                    duplicates.extend(cluster.memory_ids[1:])  # Exclude primary
+            
+            # Detect orphaned memories
+            orphaned = []
+            if request.analysis_type in ['comprehensive', 'orphaned']:
+                orphaned_memories = self.detect_orphaned_memories(memories)
+                for orphan in orphaned_memories:
+                    issue = QualityIssue(
+                        issue_id=f"orphan_{orphan['memory_id'][:8]}",
+                        issue_type="orphaned",
+                        severity="low" if orphan['orphan_score'] < 70 else "medium",
+                        memory_ids=[orphan['memory_id']],
+                        title=f"Orphaned memory (isolation: {orphan['isolation_level']})",
+                        description="Memory has no connections to workflows, goals, or other memories",
+                        recommendation="Connect to relevant workflow or consider archiving",
+                        impact_score=orphan['orphan_score'],
+                        auto_fixable=orphan['isolation_level'] == 'complete' and orphan['orphan_score'] > 80,
+                        estimated_savings={
+                            'clarity': orphan['orphan_score'] * 0.5,
+                            'organization': 20
+                        },
+                        metadata={'orphan_score': orphan['orphan_score'], 'isolation_level': orphan['isolation_level']}
+                    )
+                    issues.append(issue)
+                    orphaned.append(orphan['memory_id'])
+            
+            # Analyze individual memory quality
+            low_quality = []
+            corrupted = []
+            if request.analysis_type in ['comprehensive', 'low_quality']:
+                for memory in memories:
+                    quality_analysis = self.analyze_memory_quality(memory)
+                    
+                    if quality_analysis['quality_score'] < 30:
+                        issue = QualityIssue(
+                            issue_id=f"quality_{memory['memory_id'][:8]}",
+                            issue_type="low_quality",
+                            severity="high" if quality_analysis['quality_score'] < 20 else "medium",
+                            memory_ids=[memory['memory_id']],
+                            title=f"Low quality memory (score: {quality_analysis['quality_score']})",
+                            description=f"Quality issues: {', '.join(quality_analysis['issues'])}",
+                            recommendation='; '.join(quality_analysis['recommendations']),
+                            impact_score=50 - quality_analysis['quality_score'],
+                            auto_fixable=False,
+                            estimated_savings={'quality': 50 - quality_analysis['quality_score']},
+                            metadata={'quality_analysis': quality_analysis}
+                        )
+                        issues.append(issue)
+                        low_quality.append(memory['memory_id'])
+                    
+                    # Check for corruption
+                    if "Encoding corruption detected" in quality_analysis['issues']:
+                        corrupted.append(memory['memory_id'])
+            
+            # Detect stale memories
+            stale_memories = []
+            if request.include_stale:
+                stale_cutoff = time.time() - (request.stale_threshold_days * 86400)
+                for memory in memories:
+                    if (memory.get('created_at', time.time()) < stale_cutoff and 
+                        memory.get('access_count', 0) == 0 and
+                        memory.get('importance', 1) < 5):
+                        
+                        issue = QualityIssue(
+                            issue_id=f"stale_{memory['memory_id'][:8]}",
+                            issue_type="stale",
+                            severity="low",
+                            memory_ids=[memory['memory_id']],
+                            title=f"Stale memory ({(time.time() - memory.get('created_at', time.time())) / 86400:.0f} days old)",
+                            description="Old memory with no recent access and low importance",
+                            recommendation="Archive or delete if no longer relevant",
+                            impact_score=min(30, (time.time() - memory.get('created_at', time.time())) / 86400 * 0.5),
+                            auto_fixable=True,
+                            estimated_savings={'storage': len(memory.get('content', ''))},
+                            metadata={'age_days': (time.time() - memory.get('created_at', time.time())) / 86400}
+                        )
+                        issues.append(issue)
+                        stale_memories.append(memory['memory_id'])
+            
+            # Calculate overall quality score
+            issues_count = len(issues)
+            overall_score = max(0, 100 - (issues_count * 5) - (len(duplicates) * 2) - (len(orphaned) * 1))
+            
+            # Generate high-level recommendations
+            recommendations = []
+            if len(duplicates) > 10:
+                recommendations.append("High number of duplicates detected. Run bulk duplicate cleanup.")
+            if len(orphaned) > total_memories * 0.2:
+                recommendations.append("Many orphaned memories. Review workflow organization.")
+            if len(low_quality) > total_memories * 0.1:
+                recommendations.append("Quality issues detected. Review content standards.")
+            if len(stale_memories) > 50:
+                recommendations.append("Archive old, unused memories to improve performance.")
+            
+            analysis_time = time.time() - start_time
+            
+            return QualityAnalysisResult(
+                total_memories=total_memories,
+                issues_found=issues_count,
+                duplicates=len(duplicates),
+                orphaned=len(orphaned),
+                low_quality=len(low_quality),
+                stale_memories=len(stale_memories),
+                corrupted=len(corrupted),
+                overall_score=overall_score,
+                issues=issues,
+                recommendations=recommendations,
+                analysis_time=analysis_time
+            )
+            
+        finally:
+            conn.close()
+    
+    async def preview_bulk_operation(self, request: BulkOperationRequest) -> BulkOperation:
+        """Preview bulk operation changes before execution."""
+        operation_id = f"bulk_{int(time.time())}"
+        
+        conn = self.get_db_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Get affected memories
+            placeholders = ','.join('?' * len(request.memory_ids))
+            cursor.execute(f"SELECT * FROM memories WHERE memory_id IN ({placeholders})", 
+                         request.memory_ids)
+            memories = [dict(row) for row in cursor.fetchall()]
+            
+            preview_changes = []
+            estimated_impact = {'memories_affected': len(memories)}
+            
+            if request.operation_type == "delete":
+                for memory in memories:
+                    preview_changes.append({
+                        'action': 'delete',
+                        'memory_id': memory['memory_id'],
+                        'content_preview': memory['content'][:100] + "..." if len(memory['content']) > 100 else memory['content'],
+                        'impact': 'Memory will be permanently deleted'
+                    })
+                estimated_impact['storage_freed'] = sum(len(m['content']) for m in memories)
+                
+            elif request.operation_type == "merge":
+                if request.target_memory_id:
+                    target = next((m for m in memories if m['memory_id'] == request.target_memory_id), None)
+                    if target:
+                        others = [m for m in memories if m['memory_id'] != request.target_memory_id]
+                        preview_changes.append({
+                            'action': 'merge_target',
+                            'memory_id': target['memory_id'],
+                            'impact': f'Will be kept as primary memory, enhanced with content from {len(others)} others'
+                        })
+                        for other in others:
+                            preview_changes.append({
+                                'action': 'merge_source',
+                                'memory_id': other['memory_id'],
+                                'impact': 'Content will be merged into target, then deleted'
+                            })
+                
+            elif request.operation_type == "archive":
+                for memory in memories:
+                    preview_changes.append({
+                        'action': 'archive',
+                        'memory_id': memory['memory_id'],
+                        'impact': 'Memory will be marked as archived (soft delete)'
+                    })
+            
+            return BulkOperation(
+                operation_id=operation_id,
+                operation_type=request.operation_type,
+                memory_ids=request.memory_ids,
+                preview_changes=preview_changes,
+                estimated_impact=estimated_impact,
+                reversible=request.operation_type in ['archive'],
+                confirmation_required=request.operation_type in ['delete', 'merge']
+            )
+            
+        finally:
+            conn.close()
+    
+    async def execute_bulk_operation(self, operation: BulkOperation) -> Dict:
+        """Execute bulk operation with safety checks."""
+        conn = self.get_db_connection()
+        try:
+            cursor = conn.cursor()
+            results = {'success': 0, 'failed': 0, 'errors': []}
+            
+            if operation.operation_type == "delete":
+                for memory_id in operation.memory_ids:
+                    try:
+                        # Delete related links first
+                        cursor.execute("DELETE FROM memory_links WHERE source_memory_id = ? OR target_memory_id = ?", 
+                                     (memory_id, memory_id))
+                        # Delete memory
+                        cursor.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,))
+                        results['success'] += 1
+                    except Exception as e:
+                        results['failed'] += 1
+                        results['errors'].append(f"Failed to delete {memory_id}: {str(e)}")
+            
+            elif operation.operation_type == "archive":
+                for memory_id in operation.memory_ids:
+                    try:
+                        cursor.execute("UPDATE memories SET archived = 1 WHERE memory_id = ?", (memory_id,))
+                        results['success'] += 1
+                    except Exception as e:
+                        results['failed'] += 1
+                        results['errors'].append(f"Failed to archive {memory_id}: {str(e)}")
+            
+            conn.commit()
+            return results
+            
+        except Exception as e:
+            conn.rollback()
+            raise HTTPException(status_code=500, detail=f"Bulk operation failed: {str(e)}") from e
+        finally:
+            conn.close()
 
 
 class WorkingMemoryManager:
@@ -605,6 +1183,9 @@ class WorkingMemoryManager:
 # Global working memory manager instance
 working_memory_manager = WorkingMemoryManager()
 
+# Global memory quality inspector instance
+memory_quality_inspector = MemoryQualityInspector()
+
 
 def setup_working_memory_routes(app: FastAPI):
     """Setup working memory API routes."""
@@ -834,6 +1415,182 @@ def setup_working_memory_routes(app: FastAPI):
                     
         finally:
             await working_memory_manager.unregister_client(websocket)
+
+    # Memory Quality Inspector API Endpoints
+    @app.post("/api/memory-quality/analyze")
+    async def analyze_memory_quality(request: QualityAnalysisRequest):
+        """Perform comprehensive memory quality analysis."""
+        try:
+            result = await memory_quality_inspector.perform_quality_analysis(request)
+            
+            return {
+                'success': True,
+                'analysis': asdict(result)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Quality analysis failed: {str(e)}") from e
+    
+    @app.get("/api/memory-quality/quick-scan")
+    async def quick_quality_scan():
+        """Perform quick quality scan with basic metrics."""
+        try:
+            request = QualityAnalysisRequest(
+                analysis_type="comprehensive",
+                include_stale=False,
+                include_low_importance=False,
+                similarity_threshold=0.90,
+                stale_threshold_days=7
+            )
+            result = await memory_quality_inspector.perform_quality_analysis(request)
+            
+            # Return simplified metrics for quick overview
+            return {
+                'success': True,
+                'quick_metrics': {
+                    'total_memories': result.total_memories,
+                    'overall_score': result.overall_score,
+                    'critical_issues': len([i for i in result.issues if i.severity == 'critical']),
+                    'duplicates': result.duplicates,
+                    'orphaned': result.orphaned,
+                    'low_quality': result.low_quality,
+                    'top_recommendations': result.recommendations[:3]
+                }
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Quick scan failed: {str(e)}") from e
+    
+    @app.post("/api/memory-quality/bulk-preview")
+    async def preview_bulk_operation(request: BulkOperationRequest):
+        """Preview bulk operation changes before execution."""
+        try:
+            operation = await memory_quality_inspector.preview_bulk_operation(request)
+            
+            return {
+                'success': True,
+                'operation': asdict(operation)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Bulk preview failed: {str(e)}") from e
+    
+    @app.post("/api/memory-quality/bulk-execute")
+    async def execute_bulk_operation(operation_request: BulkOperationRequest):
+        """Execute bulk operation with safety checks."""
+        try:
+            # First preview the operation
+            operation = await memory_quality_inspector.preview_bulk_operation(operation_request)
+            
+            # Execute the operation
+            results = await memory_quality_inspector.execute_bulk_operation(operation)
+            
+            return {
+                'success': True,
+                'operation_id': operation.operation_id,
+                'results': results,
+                'message': f"Bulk operation completed: {results['success']} successful, {results['failed']} failed"
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Bulk operation failed: {str(e)}") from e
+    
+    @app.get("/api/memory-quality/duplicates")
+    async def get_duplicates():
+        """Get all duplicate memory clusters."""
+        try:
+            conn = memory_quality_inspector.get_db_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM memories ORDER BY created_at DESC")
+                memories = [dict(row) for row in cursor.fetchall()]
+            finally:
+                conn.close()
+            
+            clusters = memory_quality_inspector.detect_duplicates(memories, threshold=0.85)
+            
+            return {
+                'success': True,
+                'clusters': [asdict(cluster) for cluster in clusters],
+                'total_clusters': len(clusters),
+                'total_duplicates': sum(cluster.duplicate_count for cluster in clusters)
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Duplicate detection failed: {str(e)}") from e
+    
+    @app.get("/api/memory-quality/orphaned")
+    async def get_orphaned_memories():
+        """Get all orphaned memories."""
+        try:
+            conn = memory_quality_inspector.get_db_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM memories ORDER BY created_at DESC")
+                memories = [dict(row) for row in cursor.fetchall()]
+            finally:
+                conn.close()
+            
+            orphaned = memory_quality_inspector.detect_orphaned_memories(memories)
+            
+            return {
+                'success': True,
+                'orphaned_memories': orphaned,
+                'total_orphaned': len(orphaned),
+                'completely_isolated': len([m for m in orphaned if m['isolation_level'] == 'complete']),
+                'partially_isolated': len([m for m in orphaned if m['isolation_level'] == 'partial'])
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Orphaned memory detection failed: {str(e)}") from e
+    
+    @app.get("/api/memory-quality/stats")
+    async def get_quality_stats():
+        """Get overall memory quality statistics."""
+        try:
+            conn = memory_quality_inspector.get_db_connection()
+            try:
+                cursor = conn.cursor()
+                
+                # Basic stats
+                cursor.execute("SELECT COUNT(*) as total FROM memories")
+                total_memories = cursor.fetchone()['total']
+                
+                cursor.execute("SELECT AVG(importance) as avg_importance, AVG(confidence) as avg_confidence FROM memories")
+                quality_metrics = cursor.fetchone()
+                
+                cursor.execute("SELECT COUNT(*) as with_workflow FROM memories WHERE workflow_id IS NOT NULL")
+                with_workflow = cursor.fetchone()['with_workflow']
+                
+                cursor.execute("SELECT COUNT(*) as recent FROM memories WHERE created_at > ?", (time.time() - 86400 * 7,))
+                recent_memories = cursor.fetchone()['recent']
+                
+                # Quality distribution
+                cursor.execute("""
+                    SELECT 
+                        SUM(CASE WHEN importance >= 8 THEN 1 ELSE 0 END) as high_importance,
+                        SUM(CASE WHEN importance >= 5 THEN 1 ELSE 0 END) as medium_importance,
+                        SUM(CASE WHEN confidence >= 0.8 THEN 1 ELSE 0 END) as high_confidence,
+                        SUM(CASE WHEN confidence >= 0.5 THEN 1 ELSE 0 END) as medium_confidence
+                    FROM memories
+                """)
+                quality_dist = cursor.fetchone()
+                
+            finally:
+                conn.close()
+            
+            return {
+                'success': True,
+                'stats': {
+                    'total_memories': total_memories,
+                    'avg_importance': round(quality_metrics['avg_importance'], 2),
+                    'avg_confidence': round(quality_metrics['avg_confidence'], 2),
+                    'workflow_coverage': round(with_workflow / max(1, total_memories) * 100, 1),
+                    'recent_activity': recent_memories,
+                    'quality_distribution': {
+                        'high_importance': quality_dist['high_importance'],
+                        'medium_importance': quality_dist['medium_importance'],
+                        'high_confidence': quality_dist['high_confidence'],
+                        'medium_confidence': quality_dist['medium_confidence']
+                    }
+                }
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Stats collection failed: {str(e)}") from e
 
 
 # Background task to periodically update working memory

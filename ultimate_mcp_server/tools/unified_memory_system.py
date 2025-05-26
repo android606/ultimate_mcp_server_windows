@@ -1142,6 +1142,79 @@ def safe_format_timestamp(ts_value):
         return str(ts_value)
 
 
+# ======================================================
+# Cognitive Timeline State Recording
+# ======================================================
+
+class CognitiveStateType(str, Enum):
+    """Types of cognitive state changes to record in the timeline."""
+    WORKFLOW_CREATED = "workflow_created"
+    WORKFLOW_STATUS_CHANGED = "workflow_status_changed"
+    ACTION_STARTED = "action_started"
+    ACTION_COMPLETED = "action_completed"
+    MEMORY_STORED = "memory_stored"
+    MEMORY_UPDATED = "memory_updated"
+    GOAL_CREATED = "goal_created"
+    GOAL_STATUS_CHANGED = "goal_status_changed"
+    THOUGHT_RECORDED = "thought_recorded"
+    ARTIFACT_CREATED = "artifact_created"
+    COGNITIVE_STATE_SAVED = "cognitive_state_saved"
+    WORKING_MEMORY_UPDATED = "working_memory_updated"
+    FOCUS_CHANGED = "focus_changed"
+    MEMORY_LINK_CREATED = "memory_link_created"
+    REFLECTION_GENERATED = "reflection_generated"
+
+
+async def _record_cognitive_timeline_state(
+    conn: aiosqlite.Connection,
+    workflow_id: Optional[str],
+    state_type: str,
+    state_data: Dict[str, Any],
+    description: Optional[str] = None,
+) -> str:
+    """
+    Record a cognitive state change in the timeline.
+    
+    Args:
+        conn: Database connection
+        workflow_id: Associated workflow ID (can be None for global states)
+        state_type: Type of cognitive state (e.g., 'workflow_created', 'action_started', 'memory_stored')
+        state_data: Dictionary containing the state data
+        description: Optional human-readable description
+        
+    Returns:
+        The state_id of the recorded state
+    """
+    import time
+    
+    state_id = str(uuid.uuid4())  # Use uuid directly since MemoryUtils isn't defined yet
+    timestamp = time.time()
+    
+    # Serialize state data to JSON
+    try:
+        state_data_json = json.dumps(state_data, ensure_ascii=False, default=str)
+    except Exception as e:
+        logger.warning(f"Failed to serialize cognitive state data: {e}")
+        state_data_json = json.dumps({"error": "Serialization failed", "type": str(type(state_data))})
+    
+    await conn.execute("""
+        INSERT INTO cognitive_timeline_states (
+            state_id, timestamp, state_type, state_data, workflow_id, description, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        state_id,
+        timestamp,
+        state_type,
+        state_data_json,
+        workflow_id,
+        description,
+        timestamp
+    ))
+    
+    logger.debug(f"Recorded cognitive state: {state_type} for workflow {workflow_id}")
+    return state_id
+
+
 class MemoryUtils:
     """Utility methods for memory operations."""
 
@@ -1943,6 +2016,26 @@ async def create_workflow(
                 ),
             )
 
+            # Record cognitive state change in timeline
+            try:
+                await _record_cognitive_timeline_state(
+                    conn,
+                    wf_id,
+                    CognitiveStateType.WORKFLOW_CREATED,
+                    {
+                        "workflow_id": wf_id,
+                        "title": title_clean,
+                        "description": description,
+                        "goal": goal,
+                        "status": WorkflowStatus.ACTIVE.value,
+                        "parent_workflow_id": parent_workflow_id,
+                        "tags": tags or []
+                    },
+                    f"Created workflow: {title_clean}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record cognitive state for workflow creation: {e}")
+
         payload = {
             "workflow_id": wf_id,
             "title": title_clean,
@@ -2290,6 +2383,25 @@ async def record_action_start(
                 (now_unix, now_unix, workflow_id),
             )
 
+            # Record cognitive state change in timeline
+            try:
+                await _record_cognitive_timeline_state(
+                    conn,
+                    workflow_id,
+                    CognitiveStateType.ACTION_STARTED,
+                    {
+                        "action_id": action_id,
+                        "action_type": action_type_enum.value,
+                        "title": auto_title,
+                        "tool_name": tool_name,
+                        "reasoning": reasoning,
+                        "sequence_number": seq_no
+                    },
+                    f"Started action: {auto_title}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record cognitive state for action start: {e}")
+
         return {
             "action_id": action_id,
             "workflow_id": workflow_id,
@@ -2480,6 +2592,25 @@ async def record_action_completion(
                         "overflow_artifact_id": overflow_artifact_id,
                     },
                 )
+
+        # Record cognitive state change in timeline
+        try:
+            await _record_cognitive_timeline_state(
+                conn,
+                workflow_id_for_response,
+                CognitiveStateType.ACTION_COMPLETED,
+                {
+                    "action_id": action_id,
+                    "status": status_enum.value,
+                    "had_summary": bool(summary),
+                    "had_conclusion_thought": bool(conclusion_thought),
+                    "overflow_artifact_id": overflow_artifact_id
+                },
+                f"Completed action with status: {status_enum.value}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record cognitive state for action completion: {e}")
+
         return {
             "action_id": action_id,
             "workflow_id": workflow_id_for_response,
@@ -3577,6 +3708,25 @@ async def record_thought(
                 None,
                 {"thought_id": thought_id},
             )
+
+        # Record cognitive state change in timeline
+        try:
+            await _record_cognitive_timeline_state(
+                db_conn,
+                workflow_id,
+                CognitiveStateType.THOUGHT_RECORDED,
+                {
+                    "thought_id": thought_id,
+                    "thought_type": thought_type_enum.value,
+                    "thought_chain_id": chain_id,
+                    "sequence_number": seq_no,
+                    "content_preview": content[:200] + "..." if len(content) > 200 else content,
+                    "memory_promoted": bool(linked_mem_id)
+                },
+                f"Recorded {thought_type_enum.value} thought"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record cognitive state for thought creation: {e}")
         return chain_id, thought_id, seq_no, linked_mem_id
 
     # ─── transaction orchestration ───
@@ -3937,6 +4087,27 @@ async def store_memory(
                 "tags": final_tags,
             },
         )
+
+        # 7️⃣  Record cognitive state change in timeline
+        try:
+            await _record_cognitive_timeline_state(
+                conn,
+                workflow_id,
+                CognitiveStateType.MEMORY_STORED,
+                {
+                    "memory_id": memory_id_new,
+                    "memory_type": mem_type_enum.value,
+                    "memory_level": mem_level_enum.value,
+                    "importance": importance,
+                    "confidence": confidence,
+                    "content_preview": content[:200] + "..." if len(content) > 200 else content,
+                    "has_embedding": bool(embed_id),
+                    "links_suggested": len(suggested_links_new)
+                },
+                f"Stored {mem_type_enum.value} memory (importance: {importance})"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to record cognitive state for memory storage: {e}")
 
     # 7️⃣  Response
     elapsed_time = time.perf_counter() - t0_perf
@@ -5772,17 +5943,36 @@ async def create_goal(
                 param_name="parent_goal_id",
             )
 
+        # Calculate sequence number atomically to avoid race conditions
         if parent_goal_id:
-            seq_row = await conn.execute_fetchone(
-                "SELECT MAX(sequence_number) FROM goals WHERE parent_goal_id=? AND workflow_id=?",
-                (parent_goal_id, workflow_id),
+            # For child goals, sequence within the parent goal
+            sequence_number = await MemoryUtils.get_next_sequence_number(
+                conn, parent_goal_id, "goals", "parent_goal_id"
             )
         else:
-            seq_row = await conn.execute_fetchone(
-                "SELECT MAX(sequence_number) FROM goals WHERE workflow_id=? AND parent_goal_id IS NULL",
-                (workflow_id,),
-            )
-        sequence_number = (seq_row[0] if seq_row and seq_row[0] is not None else 0) + 1
+            # For root goals, sequence within the workflow (where parent_goal_id IS NULL)
+            # Use workflow_id as the parent, but we need custom logic for NULL constraint
+            for attempt in range(6):  # Retry logic similar to get_next_sequence_number
+                seq_row = await conn.execute_fetchone(
+                    "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM goals WHERE workflow_id=? AND parent_goal_id IS NULL",
+                    (workflow_id,),
+                )
+                sequence_number = int(seq_row[0] if seq_row and seq_row[0] is not None else 1)
+                
+                # Quick pre-check: is this sequence number already taken?
+                existing = await conn.execute_fetchone(
+                    "SELECT 1 FROM goals WHERE workflow_id=? AND parent_goal_id IS NULL AND sequence_number=? LIMIT 1",
+                    (workflow_id, sequence_number),
+                )
+                if not existing:
+                    break  # sequence_number is available
+                    
+                # Backoff and retry
+                import asyncio
+                import random
+                await asyncio.sleep(0.02 * (2**attempt) * (0.5 + random.random() / 2))
+            else:
+                raise ToolError(f"Unable to allocate unique sequence_number for root goal in workflow {workflow_id} after 6 retries.")
 
         await conn.execute(
             """INSERT INTO goals (goal_id, workflow_id, parent_goal_id, title, description, status, priority, reasoning, acceptance_criteria, metadata, created_at, updated_at, sequence_number, completed_at, idempotency_key)
