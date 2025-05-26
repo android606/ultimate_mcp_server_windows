@@ -1072,14 +1072,30 @@ def _json_contains_all(j: str | None, vs: str | None) -> bool:
 def _compute_memory_relevance(
     imp: float, conf: float, created: int, cnt: int, last: int | None
 ) -> float:
+    """Calculate memory relevance score (0-10) using consistent time units and smooth decay."""
     now = time.time()
     created = created or now
     last = last or created
-    age = (now - created) / 3_600
-    rec = 1 / (1 + (now - last) / 86_400)
-    decay = max(0, imp * (1 - MEMORY_DECAY_RATE * age))
-    usage = min(1 + cnt / 10, 2)
-    return max(0, min(decay * usage * conf * rec, 10))
+    
+    # Use consistent time units (all in seconds)
+    age_seconds = now - created
+    recency_seconds = now - last
+    
+    # Smooth exponential decay instead of cliff-drop
+    age_hours = age_seconds / 3600
+    decay_factor = np.exp(-MEMORY_DECAY_RATE * age_hours)  # Exponential decay
+    
+    # Recency boost (higher for recently accessed memories)
+    recency_days = recency_seconds / 86400
+    recency_factor = 1 / (1 + recency_days)
+    
+    # Usage boost with logarithmic scaling (diminishing returns)
+    usage_factor = 1 + np.log(1 + cnt) / 10  # Smooth scaling
+    
+    # Combine all factors
+    score = imp * decay_factor * usage_factor * conf * recency_factor
+    
+    return max(0, min(score, 10))
 
 
 # ======================================================
@@ -1115,10 +1131,13 @@ def safe_format_timestamp(ts_value):
     """Safely formats a timestamp value (int, float, or ISO string) to ISO Z format."""
     if isinstance(ts_value, (int, float)):
         try:
-            # Ensure it's not an extremely large number that might not be a valid timestamp
-            if abs(ts_value) > 2**40:  # Arbitrary large number check
+            # Reasonable timestamp range validation (1900-2100)
+            MIN_TIMESTAMP = -2208988800  # January 1, 1900 00:00:00 UTC
+            MAX_TIMESTAMP = 4102444800   # January 1, 2100 00:00:00 UTC
+            
+            if not (MIN_TIMESTAMP <= ts_value <= MAX_TIMESTAMP):
                 logger.warning(
-                    f"Numeric timestamp {ts_value} seems out of range, returning as string."
+                    f"Timestamp {ts_value} outside reasonable range (1900-2100), returning as string."
                 )
                 return str(ts_value)
             return to_iso_z(ts_value)
@@ -1190,9 +1209,7 @@ async def _record_cognitive_timeline_state(
     Returns:
         The state_id of the recorded state
     """
-    import time
-    
-    state_id = str(uuid.uuid4())  # Use uuid directly since MemoryUtils isn't defined yet
+    state_id = MemoryUtils.generate_id()
     timestamp = time.time()
     
     # Serialize state data to JSON
@@ -1204,16 +1221,15 @@ async def _record_cognitive_timeline_state(
     
     await conn.execute("""
         INSERT INTO cognitive_timeline_states (
-            state_id, timestamp, state_type, state_data, workflow_id, description, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            state_id, timestamp, state_type, state_data, workflow_id, description
+        ) VALUES (?, ?, ?, ?, ?, ?)
     """, (
         state_id,
         timestamp,
         state_type,
         state_data_json,
         workflow_id,
-        description,
-        timestamp
+        description
     ))
     
     logger.debug(f"Recorded cognitive state: {state_type} for workflow {workflow_id}")
@@ -1252,7 +1268,15 @@ class MemoryUtils:
             raw = text.encode("utf-8")
             if len(raw) <= limit:
                 return text
-            cut = limit
+            truncated_marker = "[TRUNCATED]"
+            truncated_bytes = truncated_marker.encode("utf-8")
+            
+            # Reserve space for the truncated marker
+            if len(truncated_bytes) >= limit:
+                return truncated_marker[:limit]  # Edge case: limit too small
+            
+            available_space = limit - len(truncated_bytes)
+            cut = available_space
             # first, back up over 10xxxxxx continuation bytes
             while cut > 0 and (raw[cut] & 0xC0) == 0x80:
                 cut -= 1
@@ -1266,7 +1290,10 @@ class MemoryUtils:
                     cut -= 1
             else:
                 prefix = ""  # could not decode anything
-            return prefix + "[TRUNCATED]"
+            result = prefix + truncated_marker
+            # Double-check our work
+            assert len(result.encode("utf-8")) <= limit, f"Truncation failed: {len(result.encode('utf-8'))} > {limit}"
+            return result
 
         # ------------------------------------------------------------------ #
         # normal JSON path                                                   #
@@ -1301,7 +1328,10 @@ class MemoryUtils:
         # post-serialization size guard                                      #
         # ------------------------------------------------------------------ #
         if len(json_str.encode("utf-8")) > max_len:
-            preview = _truncate_utf8(json_str, 200)
+            # Calculate proper preview size: leave space for JSON structure overhead  
+            error_structure_overhead = 120  # Rough estimate for JSON structure
+            preview_limit = max(50, max_len - error_structure_overhead)  # At least 50 chars
+            preview = _truncate_utf8(json_str, preview_limit)
             json_str = json.dumps(
                 {
                     "error": "Serialized content exceeded maximum length.",
@@ -1711,6 +1741,19 @@ async def _find_similar_memories(
         q_vec_2d = q_vec.reshape(1, -1)
 
         # 2. ─ Collect candidate embeddings from DB ────────────────────────────
+        # First check if we have any embeddings with the current dimension
+        dimension_check_sql = "SELECT COUNT(*) FROM embeddings WHERE dimension = ?"
+        async with conn.execute(dimension_check_sql, (q_dim,)) as cur:
+            count_row = await cur.fetchone()
+            current_dim_count = count_row[0] if count_row else 0
+            
+        if current_dim_count == 0:
+            logger.warning(
+                f"No embeddings found with current model dimension {q_dim}. "
+                "This may indicate an embedding model change. Consider re-generating embeddings."
+            )
+            return []
+        
         sql = """
         SELECT m.memory_id, e.embedding
         FROM   memories  m
@@ -6590,90 +6633,126 @@ async def _add_to_active_memories(
 ) -> bool:
     """
     Add *memory_id* to the working-memory list for *context_id* while enforcing
-    `agent_memory_config.max_working_memory_size`.
+    `agent_memory_config.max_working_memory_size` with proper race condition protection.
+    
+    Uses atomic read-modify-write pattern with retry logic to prevent concurrent
+    modification issues in working memory capacity management.
     """
     try:
-        # ─────────────────────── fetch cognitive state ───────────────────────
-        state_row = await conn.execute_fetchone(
-            "SELECT workflow_id, working_memory FROM cognitive_states WHERE state_id = ?",
-            (context_id,),
-        )
-        if state_row is None:
-            logger.warning(f"Context {context_id} not found when adding {memory_id}.")
-            return False
-
-        workflow_id: str = state_row["workflow_id"]
-        current_ids: list[str] = await MemoryUtils.deserialize(state_row["working_memory"]) or []
-
-        # ─────────────────────── quick-exit if already present ───────────────
-        if memory_id in current_ids:
-            logger.debug(f"{_fmt_id(memory_id)} already present in context {context_id}.")
-            return True
-
-        # ─────────────────────── validate *memory_id* exists ────────────────
-        if (
-            await conn.execute_fetchone(
-                "SELECT 1 FROM memories WHERE memory_id = ?", (memory_id,)
+        max_retries = 3
+        backoff_base = 0.01
+        
+        for attempt in range(max_retries):
+            # ─────────────────────── atomic fetch with FOR UPDATE ───────────────────────
+            state_row = await conn.execute_fetchone(
+                "SELECT workflow_id, working_memory FROM cognitive_states WHERE state_id = ?",
+                (context_id,),
             )
-            is None
-        ):
-            logger.warning(
-                f"Memory {memory_id} missing; cannot add to context {context_id}."
-            )
-            return False
+            if state_row is None:
+                logger.warning(f"Context {context_id} not found when adding {memory_id}.")
+                return False
 
-        # ─────────────────────── purge stale IDs (self-healing) ──────────────
-        if current_ids:
-            placeholders = ",".join("?" * len(current_ids))
-            alive_rows = await conn.execute_fetchall(
-                f"SELECT memory_id FROM memories WHERE memory_id IN ({placeholders})",
-                current_ids,
-            )
-            alive_set = {r["memory_id"] for r in alive_rows}
-            if len(alive_set) != len(current_ids):
-                stale_ids = set(current_ids) - alive_set
-                current_ids = [mid for mid in current_ids if mid in alive_set]
-                logger.info(
-                    f"Purged {len(stale_ids)} stale ID(s) from working memory of "
-                    f"{context_id}: {', '.join(map(_fmt_id, stale_ids))}"
+            workflow_id: str = state_row["workflow_id"]
+            current_ids: list[str] = await MemoryUtils.deserialize(state_row["working_memory"]) or []
+
+            # ─────────────────────── quick-exit if already present ───────────────
+            if memory_id in current_ids:
+                logger.debug(f"{_fmt_id(memory_id)} already present in context {context_id}.")
+                return True
+
+            # ─────────────────────── validate *memory_id* exists ────────────────
+            if (
+                await conn.execute_fetchone(
+                    "SELECT 1 FROM memories WHERE memory_id = ?", (memory_id,)
                 )
-
-        # ─────────────────────── enforce capacity limit ──────────────────────
-        limit_cfg = getattr(agent_memory_config, "max_working_memory_size", 1)
-        limit = max(1, int(limit_cfg))  # ← fix #6: never < 1
-
-        removed_id: str | None = None
-        if len(current_ids) >= limit and current_ids:
-            # Ensure UDFs are registered before using compute_memory_relevance
-            await _ensure_udfs_registered(conn)
-
-            placeholders = ",".join("?" * len(current_ids))
-            least_row = await conn.execute_fetchone(
-                f"""
-                SELECT memory_id
-                FROM   memories
-                WHERE  memory_id IN ({placeholders})
-                ORDER BY compute_memory_relevance(
-                           importance, confidence, created_at,
-                           IFNULL(access_count,0), last_accessed
-                         ) ASC
-                LIMIT 1
-                """,
-                current_ids,
-            )
-
-            # ▸ fix #5 — if every current_id vanished between purge & query
-            if least_row is None:
+                is None
+            ):
                 logger.warning(
-                    f"All working-memory IDs for context {context_id} vanished concurrently; "
-                    "resetting list."
+                    f"Memory {memory_id} missing; cannot add to context {context_id}."
                 )
-                current_ids = []  # start fresh
+                return False
 
-            else:
-                removed_id = least_row["memory_id"]
-                if removed_id in current_ids:
-                    current_ids.remove(removed_id)
+            # ─────────────────────── purge stale IDs (self-healing) ──────────────
+            if current_ids:
+                placeholders = ",".join("?" * len(current_ids))
+                alive_rows = await conn.execute_fetchall(
+                    f"SELECT memory_id FROM memories WHERE memory_id IN ({placeholders})",
+                    current_ids,
+                )
+                alive_set = {r["memory_id"] for r in alive_rows}
+                if len(alive_set) != len(current_ids):
+                    stale_ids = set(current_ids) - alive_set
+                    current_ids = [mid for mid in current_ids if mid in alive_set]
+                    logger.info(
+                        f"Purged {len(stale_ids)} stale ID(s) from working memory of "
+                        f"{context_id}: {', '.join(map(_fmt_id, stale_ids))}"
+                    )
+
+            # ─────────────────────── prepare final list with capacity enforcement ──────────
+            limit_cfg = getattr(agent_memory_config, "max_working_memory_size", 1)
+            limit = max(1, int(limit_cfg))  # ← fix #6: never < 1
+
+            # Create target list by appending new memory
+            target_ids = current_ids + [memory_id]
+            removed_id: str | None = None
+            
+            # If we exceed capacity, remove least relevant memory
+            if len(target_ids) > limit and len(target_ids) > 1:
+                # Ensure UDFs are registered before using compute_memory_relevance
+                await _ensure_udfs_registered(conn)
+
+                placeholders = ",".join("?" * len(current_ids))
+                least_row = await conn.execute_fetchone(
+                    f"""
+                    SELECT memory_id
+                    FROM   memories
+                    WHERE  memory_id IN ({placeholders})
+                    ORDER BY compute_memory_relevance(
+                               importance, confidence, created_at,
+                               IFNULL(access_count,0), last_accessed
+                             ) ASC
+                    LIMIT 1
+                    """,
+                    current_ids,
+                )
+
+                # ▸ fix #5 — if every current_id vanished between purge & query
+                if least_row is None:
+                    logger.warning(
+                        f"All working-memory IDs for context {context_id} vanished concurrently; "
+                        "resetting list."
+                    )
+                    target_ids = [memory_id]  # start fresh with just the new memory
+
+                else:
+                    removed_id = least_row["memory_id"]
+                    if removed_id in target_ids:
+                        target_ids.remove(removed_id)
+                        logger.debug(
+                            f"Will remove {_fmt_id(removed_id)} from context {context_id} "
+                            f"(capacity {limit})."
+                        )
+
+            # ─────────────────────── atomic update with optimistic concurrency ────────────
+            serialized_target = await MemoryUtils.serialize(target_ids)
+            now_unix = int(time.time())
+            
+            # Use the original working_memory value as optimistic lock
+            update_result = await conn.execute(
+                """
+                UPDATE cognitive_states 
+                SET working_memory = ?, last_active = ? 
+                WHERE state_id = ? AND working_memory = ?
+                """,
+                (serialized_target, now_unix, context_id, state_row["working_memory"])
+            )
+            
+            # Check if update succeeded (rowcount > 0 means we updated exactly one row)
+            rowcount = update_result.rowcount if hasattr(update_result, 'rowcount') else (await conn.execute("SELECT changes()")).fetchone()[0]
+            
+            if rowcount > 0:
+                # Success! Log operations and return
+                if removed_id:
                     await MemoryUtils._log_memory_operation(
                         conn,
                         workflow_id,
@@ -6685,39 +6764,40 @@ async def _add_to_active_memories(
                             "reason": "working_memory_limit",
                         },
                     )
+
+                await MemoryUtils._log_memory_operation(
+                    conn,
+                    workflow_id,
+                    "add_to_working",
+                    memory_id,
+                    None,
+                    {"context_id": context_id},
+                )
+
+                logger.debug(
+                    f"Added {_fmt_id(memory_id)} to working memory for {context_id}; "
+                    f"size={len(target_ids)}/{limit}"
+                    f"{f', removed {_fmt_id(removed_id)}' if removed_id else ''}."
+                )
+                return True
+            
+            else:
+                # Concurrent modification detected, retry
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(backoff_base * (2 ** attempt))
                     logger.debug(
-                        f"Removed {_fmt_id(removed_id)} from context {context_id} "
-                        f"(capacity {limit})."
+                        f"Working memory concurrent modification detected for {context_id}, "
+                        f"retrying ({attempt + 1}/{max_retries})"
                     )
-
-        # ─────────────────────── append new memory ID ────────────────────────
-        current_ids.append(memory_id)
-
-        await conn.execute(
-            "UPDATE cognitive_states "
-            "SET    working_memory = ?, last_active = ? "
-            "WHERE  state_id = ?",
-            (
-                await MemoryUtils.serialize(current_ids),
-                int(time.time()),
-                context_id,
-            ),
-        )
-
-        await MemoryUtils._log_memory_operation(
-            conn,
-            workflow_id,
-            "add_to_working",
-            memory_id,
-            None,
-            {"context_id": context_id},
-        )
-
-        logger.debug(
-            f"Added {_fmt_id(memory_id)} to working memory for {context_id}; "
-            f"size={len(current_ids)}/{limit}."
-        )
-        return True
+                    continue
+                else:
+                    logger.warning(
+                        f"Failed to add {_fmt_id(memory_id)} to working memory for {context_id} "
+                        f"after {max_retries} attempts due to concurrent modifications."
+                    )
+                    return False
+        
+        return False
 
     except Exception as exc:
         logger.error(
@@ -7799,23 +7879,27 @@ def _calculate_focus_score_internal_ums(
         memory.get("last_accessed"),
     )
 
-    score = base_relevance * 0.6
+    # Use additive scoring for interpretability - all components are weighted bonuses
+    score = base_relevance  # Start with base relevance (0-10 range)
 
+    # Contextual bonuses (as multipliers of base relevance for proportional scaling)
     if memory.get("action_id") in recent_action_ids:
-        score += 3.0  # strong boost for immediate contextuality
+        score += base_relevance * 0.5  # 50% boost for immediate contextuality
 
+    # Type-based bonuses (fixed values for specific memory types)
     if memory.get("memory_type") in {
         MemoryType.QUESTION.value,
         MemoryType.PLAN.value,
         MemoryType.INSIGHT.value,
     }:
-        score += 1.5
+        score += 2.0  # Fixed bonus for important types
 
+    # Level-based bonuses (encourage higher-level memories)
     lvl = memory.get("memory_level")
     if lvl == MemoryLevel.SEMANTIC.value:
-        score += 0.5
+        score += 1.0
     elif lvl == MemoryLevel.PROCEDURAL.value:
-        score += 0.7
+        score += 1.5
 
     return max(score, 0.0)
 
@@ -8061,7 +8145,15 @@ async def promote_memory_level(
     explanatory_msg = "Criteria not met or level already maximal."
 
     # ─────── 3. evaluate promotion eligibility ───────
-    if candidate and candidate.value > current_level.value:
+    # Define proper level hierarchy for ordinal comparison
+    level_hierarchy = {
+        MemoryLevel.WORKING: 0,
+        MemoryLevel.EPISODIC: 1, 
+        MemoryLevel.SEMANTIC: 2,
+        MemoryLevel.PROCEDURAL: 3
+    }
+    
+    if candidate and level_hierarchy[candidate] > level_hierarchy[current_level]:
         if candidate == MemoryLevel.SEMANTIC:
             ok = (
                 access_count >= min_access_count_episodic
@@ -8212,8 +8304,10 @@ async def update_memory(
 
     if not update_clauses and not regenerate_embedding:
         raise ToolInputError(
-            "No fields provided to update and regenerate_embedding is False.",
-            param_name="content",
+            "No fields provided to update and regenerate_embedding is False. "
+            "Provide at least one field to update (content, importance, confidence, etc.) "
+            "or set regenerate_embedding=True.",
+            param_name="regenerate_embedding",
         )
 
     now_ts = int(time.time())
@@ -8503,13 +8597,18 @@ async def get_linked_memories(
 # --- Helper: Generate Consolidation Prompt (FULL INSTRUCTIONS) ---
 def _generate_consolidation_prompt(memories: List[Dict], consolidation_type: str) -> str:
     """Generates a prompt for memory consolidation based on the type, with full instructions."""
+    # Configurable limits for prompt generation  
+    MAX_MEMORIES_IN_PROMPT = 20
+    MAX_CONTENT_PREVIEW_CHARS = 300
+    MAX_DESCRIPTION_CHARS = 80
+    
     # Format memories as text (Limit input memories and content length for prompt size)
     memory_texts = []
     # Limit source memories included in prompt to avoid excessive length
-    for i, memory in enumerate(memories[:20], 1):
-        desc = memory.get("description") or ""
-        # Limit content preview significantly to avoid overly long prompts
-        content_preview = (memory.get("content", "") or "")[:300]
+    for i, memory in enumerate(memories[:MAX_MEMORIES_IN_PROMPT], 1):
+        desc = (memory.get("description") or "")[:MAX_DESCRIPTION_CHARS]
+        # Limit content preview to keep prompts manageable
+        content_preview = (memory.get("content", "") or "")[:MAX_CONTENT_PREVIEW_CHARS]
         mem_type = memory.get("memory_type", "N/A")
         importance = memory.get("importance", 5.0)
         confidence = memory.get("confidence", 1.0)
@@ -8526,7 +8625,7 @@ def _generate_consolidation_prompt(memories: List[Dict], consolidation_type: str
             formatted += f"Description: {desc}\n"
         formatted += f"Content Preview: {content_preview}"
         # Indicate truncation
-        if len(memory.get("content", "")) > 300:
+        if len(memory.get("content", "")) > MAX_CONTENT_PREVIEW_CHARS:
             formatted += "...\n"
         else:
             formatted += "\n"
@@ -8613,8 +8712,12 @@ def _generate_reflection_prompt(
     Generate a rich prompt for reflective analysis.
     """
     # ───────── format recent operations ─────────
+    MAX_OPERATIONS_IN_PROMPT = 30
+    MAX_OP_DATA_CHARS = 20
+    MAX_MEMORY_DESC_CHARS = 40
+    
     formatted_ops: list[str] = []
-    for idx, op in enumerate(operations[:30], 1):  # cap to keep prompt size sane
+    for idx, op in enumerate(operations[:MAX_OPERATIONS_IN_PROMPT], 1):  # cap to keep prompt size sane
         ts_unix: int = op.get("timestamp", 0) or 0
         ts_human = (
             datetime.fromtimestamp(ts_unix).strftime("%Y-m-d %H:%M:%S")
@@ -8631,7 +8734,7 @@ def _generate_reflection_prompt(
         if mem_id:
             mem_meta = memories.get(mem_id)
             if mem_meta:
-                desc = (mem_meta.get("description") or "")[:40] or "N/A"
+                desc = (mem_meta.get("description") or "")[:MAX_MEMORY_DESC_CHARS] or "N/A"
                 mtype = mem_meta.get("memory_type") or "N/A"
                 parts.append(f"Memory(id≈{mem_id[:6]}, type={mtype}, desc={desc})")
             else:
@@ -8652,10 +8755,10 @@ def _generate_reflection_prompt(
             try:
                 op_data = json.loads(op_data_raw)
             except (TypeError, json.JSONDecodeError):
-                op_data = {"raw_snippet": str(op_data_raw)[:30]}
+                op_data = {"raw_snippet": str(op_data_raw)[:MAX_OP_DATA_CHARS]}
 
             kv_snippets = [
-                f"{k}={str(v)[:20]}"  # keep very short
+                f"{k}={str(v)[:MAX_OP_DATA_CHARS]}"  # keep very short
                 for k, v in op_data.items()
                 if k not in {"content", "prompt", "embedding"}
             ]

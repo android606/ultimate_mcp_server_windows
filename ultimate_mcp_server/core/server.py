@@ -3978,13 +3978,10 @@ def start_server(
                 # Performance timeline
                 if granularity == 'hour':
                     time_format = "strftime('%Y-%m-%d %H:00:00', datetime(started_at, 'unixepoch'))"
-                    interval_seconds = 3600
                 elif granularity == 'minute':
                     time_format = "strftime('%Y-%m-%d %H:%M:00', datetime(started_at, 'unixepoch'))"
-                    interval_seconds = 60
                 else:  # day
                     time_format = "strftime('%Y-%m-%d', datetime(started_at, 'unixepoch'))"
-                    interval_seconds = 86400
                 
                 cursor.execute(f"""
                     SELECT 
@@ -4361,7 +4358,7 @@ def start_server(
             try:
                 query_params = request.query_params
                 days_back = int(query_params.get('days_back', 7))
-                metric = query_params.get('metric', 'duration')  # duration, success_rate, throughput
+                query_params.get('metric', 'duration')  # duration, success_rate, throughput
                 
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -5352,6 +5349,10 @@ No rate limiting is currently implemented, but reasonable usage is expected.
                     {
                         "name": "Workflow Management",
                         "description": "Endpoints for scheduling and managing workflow execution"
+                    },
+                    {
+                        "name": "Performance Profiler",
+                        "description": "Comprehensive workflow performance analysis with bottleneck identification, flame graphs, and optimization recommendations"
                     },
                     {
                         "name": "Health & Utilities",
@@ -6583,6 +6584,508 @@ Standard health check endpoint for monitoring systems and operational dashboards
                                     }
                                 },
                                 "500": {"description": "Server health check failed"}
+                            }
+                        }
+                    },
+                    "/api/performance/overview": {
+                        "get": {
+                            "tags": ["Performance Profiler"],
+                            "summary": "Get comprehensive performance overview with metrics and trends",
+                            "description": """
+Retrieve comprehensive workflow performance overview including:
+
+- **Real-time performance metrics** with execution time analysis
+- **Timeline visualization data** with configurable granularity
+- **Tool utilization statistics** and performance breakdowns
+- **Current bottlenecks** identification with severity indicators
+- **Throughput analysis** and success rate metrics
+
+Perfect for monitoring overall system performance and identifying optimization opportunities.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "hours_back",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 720},
+                                    "description": "Number of hours back to analyze performance data",
+                                    "example": 24
+                                },
+                                {
+                                    "name": "granularity",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {
+                                        "type": "string",
+                                        "enum": ["minute", "hour", "day"],
+                                        "default": "hour"
+                                    },
+                                    "description": "Time granularity for timeline data aggregation",
+                                    "example": "hour"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Performance overview data with metrics and timeline",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "overview": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "avg_execution_time": {"type": "number"},
+                                                            "throughput_per_hour": {"type": "number"},
+                                                            "success_rate_percentage": {"type": "number"},
+                                                            "active_workflows": {"type": "integer"},
+                                                            "total_actions": {"type": "integer"}
+                                                        }
+                                                    },
+                                                    "timeline": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "time_bucket": {"type": "string"},
+                                                                "action_count": {"type": "integer"},
+                                                                "avg_duration": {"type": "number"},
+                                                                "successful_count": {"type": "integer"},
+                                                                "failed_count": {"type": "integer"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "tool_utilization": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "tool_name": {"type": "string"},
+                                                                "usage_count": {"type": "integer"},
+                                                                "avg_duration": {"type": "number"},
+                                                                "success_count": {"type": "integer"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "bottlenecks": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "tool_name": {"type": "string"},
+                                                                "duration": {"type": "number"},
+                                                                "action_id": {"type": "string"},
+                                                                "status": {"type": "string"}
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/performance/bottlenecks": {
+                        "get": {
+                            "tags": ["Performance Profiler"],
+                            "summary": "Identify and analyze performance bottlenecks with detailed insights",
+                            "description": """
+Perform comprehensive bottleneck analysis including:
+
+- **Tool performance analysis** with percentile breakdowns (P95, P99)
+- **Workflow efficiency scoring** and parallelization opportunities
+- **Resource contention detection** and conflict analysis
+- **Optimization recommendations** with impact estimates
+- **Critical path identification** for workflow optimization
+
+Advanced algorithms identify bottlenecks using statistical analysis and provide actionable insights.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "hours_back",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 720},
+                                    "description": "Hours back to analyze for bottlenecks"
+                                },
+                                {
+                                    "name": "min_duration",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {"type": "number", "default": 1.0, "minimum": 0.1},
+                                    "description": "Minimum execution duration (seconds) to consider as potential bottleneck"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Comprehensive bottleneck analysis with optimization opportunities",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "tool_bottlenecks": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "tool_name": {"type": "string"},
+                                                                "avg_duration": {"type": "number"},
+                                                                "p95_duration": {"type": "number"},
+                                                                "p99_duration": {"type": "number"},
+                                                                "total_calls": {"type": "integer"},
+                                                                "failure_count": {"type": "integer"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "workflow_bottlenecks": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "workflow_id": {"type": "string"},
+                                                                "total_workflow_time": {"type": "number"},
+                                                                "total_elapsed_time": {"type": "number"},
+                                                                "action_count": {"type": "integer"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "parallelization_opportunities": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "workflow_id": {"type": "string"},
+                                                                "potential_time_savings": {"type": "number"},
+                                                                "parallelization_efficiency": {"type": "number"},
+                                                                "optimization_score": {"type": "number"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "recommendations": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "type": {"type": "string"},
+                                                                "priority": {"type": "string"},
+                                                                "title": {"type": "string"},
+                                                                "description": {"type": "string"},
+                                                                "impact": {"type": "string"}
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/performance/flame-graph": {
+                        "get": {
+                            "tags": ["Performance Profiler"],
+                            "summary": "Generate flame graph data for workflow performance visualization",
+                            "description": """
+Generate hierarchical flame graph data for detailed workflow performance analysis:
+
+- **Interactive flame graph structure** showing execution hierarchy
+- **Critical path analysis** highlighting the longest dependency chain
+- **Tool-level performance breakdown** with execution times
+- **Parallelization efficiency metrics** and optimization scores
+- **Execution timeline analysis** with CPU vs wall-clock time
+
+Industry-standard flame graph visualization for profiling workflow execution patterns.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "workflow_id",
+                                    "in": "query",
+                                    "required": True,
+                                    "schema": {"type": "string"},
+                                    "description": "Workflow ID to generate flame graph for",
+                                    "example": "workflow_abc123"
+                                },
+                                {
+                                    "name": "hours_back",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 720},
+                                    "description": "Hours back to search for workflow execution data"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Flame graph data with performance metrics and critical path",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "flame_graph": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "name": {"type": "string"},
+                                                            "value": {"type": "number"},
+                                                            "children": {
+                                                                "type": "array",
+                                                                "items": {"type": "object"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "metrics": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "total_actions": {"type": "integer"},
+                                                            "total_cpu_time": {"type": "number"},
+                                                            "wall_clock_time": {"type": "number"},
+                                                            "parallelization_efficiency": {"type": "number"}
+                                                        }
+                                                    },
+                                                    "critical_path": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "action_id": {"type": "string"},
+                                                                "tool_name": {"type": "string"},
+                                                                "duration": {"type": "number"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "analysis": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "bottleneck_tool": {"type": "string"},
+                                                            "parallelization_potential": {"type": "number"},
+                                                            "optimization_score": {"type": "number"}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "400": {"description": "Missing required workflow_id parameter"},
+                                "404": {"description": "No actions found for specified workflow"},
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/performance/trends": {
+                        "get": {
+                            "tags": ["Performance Profiler"],
+                            "summary": "Analyze performance trends and patterns over time",
+                            "description": """
+Comprehensive trend analysis for long-term performance monitoring:
+
+- **Daily performance trends** with configurable time periods
+- **Pattern detection algorithms** identifying weekly patterns and anomalies
+- **Trend classification** (improving, degrading, stable) with confidence scores
+- **Performance insights** with contextual explanations
+- **Comparative analysis** showing best/worst performing periods
+
+Advanced analytics help identify performance degradation and optimization opportunities over time.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "days_back",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 7, "minimum": 1, "maximum": 90},
+                                    "description": "Number of days back to analyze trends"
+                                },
+                                {
+                                    "name": "metric",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {
+                                        "type": "string",
+                                        "enum": ["duration", "success_rate", "throughput"],
+                                        "default": "duration"
+                                    },
+                                    "description": "Primary metric to analyze for trends"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Performance trends with pattern analysis and insights",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "daily_trends": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "date": {"type": "string"},
+                                                                "avg_duration": {"type": "number"},
+                                                                "success_rate": {"type": "number"},
+                                                                "throughput": {"type": "number"},
+                                                                "action_count": {"type": "integer"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "trend_analysis": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "performance_trend": {
+                                                                "type": "string",
+                                                                "enum": ["improving", "degrading", "stable", "insufficient_data"]
+                                                            },
+                                                            "success_trend": {
+                                                                "type": "string",
+                                                                "enum": ["improving", "degrading", "stable", "insufficient_data"]
+                                                            },
+                                                            "data_points": {"type": "integer"}
+                                                        }
+                                                    },
+                                                    "patterns": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "type": {"type": "string"},
+                                                                "description": {"type": "string"},
+                                                                "impact": {"type": "string"},
+                                                                "recommendation": {"type": "string"}
+                                                            }
+                                                        }
+                                                    },
+                                                    "insights": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "best_performing_day": {"type": "object"},
+                                                            "worst_performing_day": {"type": "object"},
+                                                            "avg_daily_actions": {"type": "number"}
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
+                            }
+                        }
+                    },
+                    "/api/performance/recommendations": {
+                        "get": {
+                            "tags": ["Performance Profiler"],
+                            "summary": "Generate actionable performance optimization recommendations",
+                            "description": """
+AI-powered optimization recommendations engine providing:
+
+- **Prioritized recommendations** with impact and effort scoring
+- **Implementation roadmaps** categorized by complexity and impact
+- **Detailed implementation steps** with prerequisites and metrics
+- **Cost-benefit analysis** with quantified impact estimates
+- **Progress tracking guidance** with success metrics
+
+Smart recommendation system analyzes performance data to provide actionable optimization strategies.
+                            """,
+                            "parameters": [
+                                {
+                                    "name": "hours_back",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {"type": "integer", "default": 24, "minimum": 1, "maximum": 720},
+                                    "description": "Hours back to analyze for recommendations"
+                                },
+                                {
+                                    "name": "priority",
+                                    "in": "query",
+                                    "required": False,
+                                    "schema": {
+                                        "type": "string",
+                                        "enum": ["all", "high", "medium", "low"],
+                                        "default": "all"
+                                    },
+                                    "description": "Filter recommendations by priority level"
+                                }
+                            ],
+                            "responses": {
+                                "200": {
+                                    "description": "Comprehensive optimization recommendations with implementation guidance",
+                                    "content": {
+                                        "application/json": {
+                                            "schema": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "recommendations": {
+                                                        "type": "array",
+                                                        "items": {
+                                                            "type": "object",
+                                                            "properties": {
+                                                                "id": {"type": "string"},
+                                                                "type": {"type": "string"},
+                                                                "priority": {"type": "string"},
+                                                                "title": {"type": "string"},
+                                                                "description": {"type": "string"},
+                                                                "impact_estimate": {
+                                                                    "type": "object",
+                                                                    "properties": {
+                                                                        "time_savings_potential": {"type": "number"},
+                                                                        "affected_actions": {"type": "integer"},
+                                                                        "cost_benefit_ratio": {"type": "number"}
+                                                                    }
+                                                                },
+                                                                "implementation_steps": {
+                                                                    "type": "array",
+                                                                    "items": {"type": "string"}
+                                                                },
+                                                                "estimated_effort": {"type": "string"},
+                                                                "prerequisites": {
+                                                                    "type": "array",
+                                                                    "items": {"type": "string"}
+                                                                },
+                                                                "metrics_to_track": {
+                                                                    "type": "array",
+                                                                    "items": {"type": "string"}
+                                                                }
+                                                            }
+                                                        }
+                                                    },
+                                                    "summary": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "total_recommendations": {"type": "integer"},
+                                                            "high_priority": {"type": "integer"},
+                                                            "medium_priority": {"type": "integer"},
+                                                            "low_priority": {"type": "integer"},
+                                                            "estimated_total_savings": {"type": "number"}
+                                                        }
+                                                    },
+                                                    "implementation_roadmap": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "quick_wins": {
+                                                                "type": "array",
+                                                                "items": {"type": "object"}
+                                                            },
+                                                            "major_improvements": {
+                                                                "type": "array",
+                                                                "items": {"type": "object"}
+                                                            },
+                                                            "maintenance_tasks": {
+                                                                "type": "array",
+                                                                "items": {"type": "object"}
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "500": {"description": "Internal server error"}
                             }
                         }
                     },
