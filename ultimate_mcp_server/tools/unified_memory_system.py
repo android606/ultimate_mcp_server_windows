@@ -618,8 +618,13 @@ SCHEMA_STATEMENTS = [
     "ON actions (workflow_id,  sequence_number);",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_thoughts_sequence_unique "
     "ON thoughts(thought_chain_id, sequence_number);",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_sequence_unique    "
-    "ON goals  (workflow_id,  sequence_number);",
+    # Fixed: Replace the incorrect goals constraint with proper partial constraints
+    # Root goals: unique sequence numbers within workflow where parent_goal_id IS NULL
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_root_sequence_unique "
+    "ON goals (workflow_id, sequence_number) WHERE parent_goal_id IS NULL;",
+    # Child goals: unique sequence numbers within parent goal where parent_goal_id IS NOT NULL  
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_goals_child_sequence_unique "
+    "ON goals (parent_goal_id, sequence_number) WHERE parent_goal_id IS NOT NULL;",
 ]
 
 
@@ -1468,24 +1473,40 @@ class MemoryUtils:
 
         # Ensure all unique tags exist in the 'tags' table and get their IDs
         for tag_name in unique_tags:
-            # Attempt to insert the tag, ignoring if it already exists
-            await conn.execute(
-                """
-                INSERT INTO tags (name, created_at) VALUES (?, ?)
-                ON CONFLICT(name) DO NOTHING;
-                """,
-                (tag_name, now_unix),
-            )
-            # Retrieve the tag_id (whether newly inserted or existing)
-            cursor = await conn.execute("SELECT tag_id FROM tags WHERE name = ?", (tag_name,))
-            row = await cursor.fetchone()
-            await cursor.close()  # Close cursor
-
-            if row:
-                tag_ids_to_link.append(row["tag_id"])
-            else:
-                # This should ideally not happen due to the upsert logic, but log if it does
-                logger.warning(f"Could not find or create tag_id for tag: {tag_name}")
+            # Use UPSERT with retry to handle race conditions robustly
+            for attempt in range(3):  # Retry up to 3 times for race conditions
+                try:
+                    # Try INSERT with RETURNING to get ID atomically
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO tags (name, created_at) VALUES (?, ?)
+                        ON CONFLICT(name) DO UPDATE SET name = name
+                        RETURNING tag_id
+                        """,
+                        (tag_name, now_unix),
+                    )
+                    row = await cursor.fetchone()
+                    await cursor.close()
+                    
+                    if row:
+                        tag_ids_to_link.append(row["tag_id"])
+                        break  # Success, move to next tag
+                    else:
+                        # Fallback: SELECT separately (rare case)
+                        cursor = await conn.execute("SELECT tag_id FROM tags WHERE name = ?", (tag_name,))
+                        row = await cursor.fetchone()
+                        await cursor.close()
+                        
+                        if row:
+                            tag_ids_to_link.append(row["tag_id"])
+                            break
+                        elif attempt == 2:  # Last attempt
+                            logger.warning(f"Could not find or create tag_id for tag: {tag_name}")
+                except Exception as e:
+                    if attempt == 2:  # Last attempt
+                        logger.warning(f"Tag processing failed for '{tag_name}': {e}")
+                    else:
+                        await asyncio.sleep(0.01 * (attempt + 1))  # Brief retry delay
 
         # Link the retrieved tag IDs to the entity in the junction table
         if tag_ids_to_link:
@@ -2593,23 +2614,23 @@ async def record_action_completion(
                     },
                 )
 
-        # Record cognitive state change in timeline
-        try:
-            await _record_cognitive_timeline_state(
-                conn,
-                workflow_id_for_response,
-                CognitiveStateType.ACTION_COMPLETED,
-                {
-                    "action_id": action_id,
-                    "status": status_enum.value,
-                    "had_summary": bool(summary),
-                    "had_conclusion_thought": bool(conclusion_thought),
-                    "overflow_artifact_id": overflow_artifact_id
-                },
-                f"Completed action with status: {status_enum.value}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to record cognitive state for action completion: {e}")
+            # Record cognitive state change in timeline
+            try:
+                await _record_cognitive_timeline_state(
+                    conn,
+                    workflow_id_for_response,
+                    CognitiveStateType.ACTION_COMPLETED,
+                    {
+                        "action_id": action_id,
+                        "status": status_enum.value,
+                        "had_summary": bool(summary),
+                        "had_conclusion_thought": bool(conclusion_thought),
+                        "overflow_artifact_id": overflow_artifact_id
+                    },
+                    f"Completed action with status: {status_enum.value}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to record cognitive state for action completion: {e}")
 
         return {
             "action_id": action_id,
@@ -5951,7 +5972,7 @@ async def create_goal(
             )
         else:
             # For root goals, sequence within the workflow (where parent_goal_id IS NULL)
-            # Use workflow_id as the parent, but we need custom logic for NULL constraint
+            # Use a more robust retry logic that matches the pattern used elsewhere
             for attempt in range(6):  # Retry logic similar to get_next_sequence_number
                 seq_row = await conn.execute_fetchone(
                     "SELECT COALESCE(MAX(sequence_number), 0) + 1 FROM goals WHERE workflow_id=? AND parent_goal_id IS NULL",
@@ -5967,9 +5988,7 @@ async def create_goal(
                 if not existing:
                     break  # sequence_number is available
                     
-                # Backoff and retry
-                import asyncio
-                import random
+                # Backoff and retry (matches the pattern in get_next_sequence_number)
                 await asyncio.sleep(0.02 * (2**attempt) * (0.5 + random.random() / 2))
             else:
                 raise ToolError(f"Unable to allocate unique sequence_number for root goal in workflow {workflow_id} after 6 retries.")
@@ -7386,19 +7405,13 @@ async def save_cognitive_state(
                     f"Thought IDs not found / wrong workflow: {example}", "current_goal_thought_ids"
                 )
 
-        # ───── 3. mark existing states non-latest ─────
-        await conn.execute(
-            "UPDATE cognitive_states SET is_latest = 0 WHERE workflow_id = ?",
-            (workflow_id,),
-        )
-
-        # ───── 4. SERIALISE PAYLOAD *after* validation ─────
+        # ───── 3. SERIALISE PAYLOAD *after* validation ─────
         wm_json = await MemoryUtils.serialize(working_memory_ids)
         fa_json = await MemoryUtils.serialize(focus_area_ids)
         ca_json = await MemoryUtils.serialize(context_action_ids)
         cg_json = await MemoryUtils.serialize(current_goal_thought_ids)
 
-        # ───── 5. focal-memory pick (robust + invariant: **must be in WM set**) ─────
+        # ───── 4. focal-memory pick (robust + invariant: **must be in WM set**) ─────
         #
         #   1. Prefer first focus-area ID         (if any and also in working-memory list)
         #   2. Else first working-memory ID       (guaranteed in list)
@@ -7417,7 +7430,8 @@ async def save_cognitive_state(
             focal_memory_id_selected = working_memory_ids[0]          # already non-blank by FK check
         # else - remains None
 
-        # ───── 6. insert new state ─────
+        # ───── 5. atomically insert new state and mark as latest ─────
+        # FIXED: Prevent race condition by using INSERT first, then UPDATE others
         await conn.execute(
             """
             INSERT INTO cognitive_states (
@@ -7435,10 +7449,16 @@ async def save_cognitive_state(
                 ca_json,
                 cg_json,
                 now_unix,
-                1,
+                1,  # is_latest = 1 for new state
                 focal_memory_id_selected,
                 now_unix,
             ),
+        )
+
+        # Now atomically mark all OTHER states as non-latest (prevents race condition)
+        await conn.execute(
+            "UPDATE cognitive_states SET is_latest = 0 WHERE workflow_id = ? AND state_id != ?",
+            (workflow_id, state_id),
         )
 
         # touch workflow timestamps

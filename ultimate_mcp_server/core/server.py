@@ -3939,6 +3939,770 @@ def start_server(
         app.add_route("/api/actions/metrics", api_action_metrics, methods=["GET"])
         app.add_route("/api/tools/usage", api_tools_usage, methods=["GET"])
         
+        # ===== WORKFLOW PERFORMANCE PROFILER ENDPOINTS =====
+        
+        async def api_performance_overview(request):
+            """Get comprehensive performance overview with metrics and trends"""
+            try:
+                query_params = request.query_params
+                hours_back = int(query_params.get('hours_back', 24))
+                granularity = query_params.get('granularity', 'hour')  # hour, minute, day
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
+                
+                # Overall performance metrics
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total_actions,
+                        COUNT(DISTINCT workflow_id) as active_workflows,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_execution_time,
+                        MIN(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as min_execution_time,
+                        MAX(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as max_execution_time,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_actions,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_actions,
+                        COUNT(DISTINCT tool_name) as tools_used
+                    FROM actions 
+                    WHERE started_at >= ?
+                """, (since_timestamp,))
+                
+                overview_result = cursor.fetchone()
+                overview_stats = dict(zip([d[0] for d in cursor.description], overview_result, strict=False)) if overview_result else {}
+                
+                # Calculate performance metrics
+                success_rate = (overview_stats.get('successful_actions', 0) / max(1, overview_stats.get('total_actions', 1))) * 100
+                throughput = overview_stats.get('total_actions', 0) / max(1, hours_back)
+                
+                # Performance timeline
+                if granularity == 'hour':
+                    time_format = "strftime('%Y-%m-%d %H:00:00', datetime(started_at, 'unixepoch'))"
+                    interval_seconds = 3600
+                elif granularity == 'minute':
+                    time_format = "strftime('%Y-%m-%d %H:%M:00', datetime(started_at, 'unixepoch'))"
+                    interval_seconds = 60
+                else:  # day
+                    time_format = "strftime('%Y-%m-%d', datetime(started_at, 'unixepoch'))"
+                    interval_seconds = 86400
+                
+                cursor.execute(f"""
+                    SELECT 
+                        {time_format} as time_bucket,
+                        COUNT(*) as action_count,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_count,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_count,
+                        COUNT(DISTINCT workflow_id) as workflow_count
+                    FROM actions 
+                    WHERE started_at >= ?
+                    GROUP BY {time_format}
+                    ORDER BY time_bucket
+                """, (since_timestamp,))
+                
+                timeline_data = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Resource utilization by tool
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        COUNT(*) as usage_count,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success_count,
+                        MAX(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as max_duration
+                    FROM actions 
+                    WHERE started_at >= ?
+                    GROUP BY tool_name
+                    ORDER BY usage_count DESC
+                """, (since_timestamp,))
+                
+                tool_utilization = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Top bottlenecks (slowest operations)
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        workflow_id,
+                        action_id,
+                        started_at,
+                        completed_at,
+                        (completed_at - started_at) as duration,
+                        status,
+                        reasoning
+                    FROM actions 
+                    WHERE started_at >= ? AND completed_at IS NOT NULL
+                    ORDER BY duration DESC
+                    LIMIT 10
+                """, (since_timestamp,))
+                
+                bottlenecks = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'overview': {
+                        **overview_stats,
+                        'success_rate_percentage': success_rate,
+                        'throughput_per_hour': throughput,
+                        'error_rate_percentage': 100 - success_rate,
+                        'avg_workflow_size': overview_stats.get('total_actions', 0) / max(1, overview_stats.get('active_workflows', 1))
+                    },
+                    'timeline': timeline_data,
+                    'tool_utilization': tool_utilization,
+                    'bottlenecks': bottlenecks,
+                    'analysis_period': {
+                        'hours_back': hours_back,
+                        'granularity': granularity,
+                        'start_time': since_timestamp,
+                        'end_time': datetime.now().timestamp()
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_performance_bottlenecks(request):
+            """Identify and analyze performance bottlenecks with detailed insights"""
+            try:
+                query_params = request.query_params
+                hours_back = int(query_params.get('hours_back', 24))
+                min_duration = float(query_params.get('min_duration', 1.0))  # minimum seconds to consider
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
+                
+                # Identify bottlenecks by tool
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        COUNT(*) as total_calls,
+                        AVG(completed_at - started_at) as avg_duration,
+                        MAX(completed_at - started_at) as max_duration,
+                        MIN(completed_at - started_at) as min_duration,
+                        PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY completed_at - started_at) as p95_duration,
+                        PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY completed_at - started_at) as p99_duration,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failure_count,
+                        SUM(completed_at - started_at) as total_time_spent
+                    FROM actions 
+                    WHERE started_at >= ? AND completed_at IS NOT NULL AND (completed_at - started_at) >= ?
+                    GROUP BY tool_name
+                    ORDER BY avg_duration DESC
+                """, (since_timestamp, min_duration))
+                
+                tool_bottlenecks = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Identify workflow bottlenecks
+                cursor.execute("""
+                    SELECT 
+                        w.workflow_id,
+                        w.title,
+                        COUNT(a.action_id) as action_count,
+                        AVG(a.completed_at - a.started_at) as avg_action_duration,
+                        MAX(a.completed_at - a.started_at) as max_action_duration,
+                        SUM(a.completed_at - a.started_at) as total_workflow_time,
+                        MIN(a.started_at) as workflow_start,
+                        MAX(a.completed_at) as workflow_end,
+                        (MAX(a.completed_at) - MIN(a.started_at)) as total_elapsed_time
+                    FROM workflows w
+                    JOIN actions a ON w.workflow_id = a.workflow_id
+                    WHERE a.started_at >= ? AND a.completed_at IS NOT NULL
+                    GROUP BY w.workflow_id, w.title
+                    HAVING COUNT(a.action_id) > 1
+                    ORDER BY total_workflow_time DESC
+                    LIMIT 20
+                """, (since_timestamp,))
+                
+                workflow_bottlenecks = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Calculate parallelization opportunities
+                cursor.execute("""
+                    SELECT 
+                        workflow_id,
+                        COUNT(*) as sequential_actions,
+                        SUM(completed_at - started_at) as total_sequential_time,
+                        (MAX(completed_at) - MIN(started_at)) as actual_elapsed_time
+                    FROM actions 
+                    WHERE started_at >= ? AND completed_at IS NOT NULL
+                    GROUP BY workflow_id
+                    HAVING COUNT(*) > 2
+                """, (since_timestamp,))
+                
+                parallelization_data = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Calculate potential time savings through parallelization
+                parallelization_opportunities = []
+                for data in parallelization_data:
+                    potential_savings = data['total_sequential_time'] - data['actual_elapsed_time']
+                    if potential_savings > 0:
+                        parallelization_opportunities.append({
+                            **data,
+                            'potential_time_savings': potential_savings,
+                            'parallelization_efficiency': (data['actual_elapsed_time'] / data['total_sequential_time']) * 100,
+                            'optimization_score': min(10, potential_savings / data['actual_elapsed_time'] * 10)
+                        })
+                
+                # Resource contention analysis
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        COUNT(*) as concurrent_usage,
+                        AVG(completed_at - started_at) as avg_duration_under_contention
+                    FROM actions a1
+                    WHERE started_at >= ? AND EXISTS (
+                        SELECT 1 FROM actions a2 
+                        WHERE a2.tool_name = a1.tool_name 
+                        AND a2.action_id != a1.action_id
+                        AND a2.started_at <= a1.completed_at 
+                        AND a2.completed_at >= a1.started_at
+                    )
+                    GROUP BY tool_name
+                    ORDER BY concurrent_usage DESC
+                """, (since_timestamp,))
+                
+                resource_contention = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                conn.close()
+                
+                # Generate optimization recommendations
+                recommendations = []
+                
+                # Tool-based recommendations
+                for tool in tool_bottlenecks[:5]:
+                    if tool['avg_duration'] > 10:  # More than 10 seconds average
+                        recommendations.append({
+                            'type': 'tool_optimization',
+                            'priority': 'high' if tool['avg_duration'] > 30 else 'medium',
+                            'title': f"Optimize {tool['tool_name']} performance",
+                            'description': f"Tool {tool['tool_name']} has high average duration of {tool['avg_duration']:.2f}s",
+                            'impact': f"Could save ~{tool['total_time_spent'] * 0.3:.2f}s per execution period",
+                            'actions': [
+                                'Review tool implementation for optimization opportunities',
+                                'Consider caching strategies for repeated operations',
+                                'Evaluate if tool can be replaced with faster alternative'
+                            ]
+                        })
+                
+                # Parallelization recommendations
+                for opp in sorted(parallelization_opportunities, key=lambda x: x['potential_time_savings'], reverse=True)[:3]:
+                    recommendations.append({
+                        'type': 'parallelization',
+                        'priority': 'high' if opp['potential_time_savings'] > 20 else 'medium',
+                        'title': f"Parallelize workflow {opp['workflow_id']}",
+                        'description': f"Workflow could save {opp['potential_time_savings']:.2f}s through parallel execution",
+                        'impact': f"Up to {opp['parallelization_efficiency']:.1f}% efficiency improvement",
+                        'actions': [
+                            'Analyze action dependencies to identify parallelizable segments',
+                            'Implement async execution where possible',
+                            'Consider workflow restructuring for better parallelization'
+                        ]
+                    })
+                
+                return JSONResponse({
+                    'tool_bottlenecks': tool_bottlenecks,
+                    'workflow_bottlenecks': workflow_bottlenecks,
+                    'parallelization_opportunities': parallelization_opportunities,
+                    'resource_contention': resource_contention,
+                    'recommendations': recommendations,
+                    'analysis_summary': {
+                        'total_bottlenecks_identified': len(tool_bottlenecks) + len(workflow_bottlenecks),
+                        'highest_impact_tool': tool_bottlenecks[0]['tool_name'] if tool_bottlenecks else None,
+                        'avg_tool_duration': sum(t['avg_duration'] for t in tool_bottlenecks) / len(tool_bottlenecks) if tool_bottlenecks else 0,
+                        'parallelization_potential': len(parallelization_opportunities)
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_performance_flame_graph(request):
+            """Generate flame graph data for workflow performance visualization"""
+            try:
+                query_params = request.query_params
+                workflow_id = query_params.get('workflow_id')
+                hours_back = int(query_params.get('hours_back', 24))
+                
+                if not workflow_id:
+                    return JSONResponse({"error": "workflow_id parameter required"}, status_code=400)
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
+                
+                # Get workflow actions with timing data
+                cursor.execute("""
+                    SELECT 
+                        action_id,
+                        tool_name,
+                        started_at,
+                        completed_at,
+                        (completed_at - started_at) as duration,
+                        status,
+                        reasoning,
+                        summary,
+                        dependency_path
+                    FROM actions 
+                    WHERE workflow_id = ? AND started_at >= ?
+                    ORDER BY started_at
+                """, (workflow_id, since_timestamp))
+                
+                actions = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                if not actions:
+                    return JSONResponse({"error": "No actions found for workflow"}, status_code=404)
+                
+                # Build flame graph structure
+                flame_graph_data = {
+                    'name': f'Workflow {workflow_id}',
+                    'value': sum(action.get('duration', 0) for action in actions if action.get('duration')),
+                    'children': []
+                }
+                
+                # Group actions by tool for flame graph hierarchy
+                tool_groups = {}
+                for action in actions:
+                    tool_name = action.get('tool_name', 'unknown')
+                    if tool_name not in tool_groups:
+                        tool_groups[tool_name] = []
+                    tool_groups[tool_name].append(action)
+                
+                # Build hierarchical structure
+                for tool_name, tool_actions in tool_groups.items():
+                    tool_duration = sum(action.get('duration', 0) for action in tool_actions if action.get('duration'))
+                    
+                    tool_node = {
+                        'name': tool_name,
+                        'value': tool_duration,
+                        'children': []
+                    }
+                    
+                    # Add individual actions as children
+                    for action in tool_actions:
+                        if action.get('duration'):
+                            action_node = {
+                                'name': f"Action {action['action_id']}",
+                                'value': action['duration'],
+                                'action_id': action['action_id'],
+                                'status': action.get('status'),
+                                'reasoning': action.get('reasoning', ''),
+                                'started_at': action.get('started_at'),
+                                'completed_at': action.get('completed_at')
+                            }
+                            tool_node['children'].append(action_node)
+                    
+                    flame_graph_data['children'].append(tool_node)
+                
+                # Calculate performance metrics
+                total_duration = sum(action.get('duration', 0) for action in actions if action.get('duration'))
+                workflow_start = min(action['started_at'] for action in actions if action.get('started_at'))
+                workflow_end = max(action['completed_at'] for action in actions if action.get('completed_at'))
+                wall_clock_time = workflow_end - workflow_start if workflow_end and workflow_start else 0
+                
+                # Parallelization efficiency
+                parallelization_efficiency = (wall_clock_time / total_duration * 100) if total_duration > 0 else 0
+                
+                # Critical path analysis
+                critical_path = []
+                current_time = workflow_start
+                
+                while current_time < workflow_end:
+                    # Find action that was running at current_time and ends latest
+                    running_actions = [
+                        a for a in actions 
+                        if a.get('started_at', 0) <= current_time and a.get('completed_at', 0) > current_time
+                    ]
+                    
+                    if running_actions:
+                        # Find the action that ends latest (most critical)
+                        critical_action = max(running_actions, key=lambda x: x.get('completed_at', 0))
+                        if critical_action not in critical_path:
+                            critical_path.append({
+                                'action_id': critical_action['action_id'],
+                                'tool_name': critical_action.get('tool_name'),
+                                'duration': critical_action.get('duration'),
+                                'start_time': critical_action.get('started_at'),
+                                'end_time': critical_action.get('completed_at')
+                            })
+                        current_time = critical_action.get('completed_at', current_time + 1)
+                    else:
+                        current_time += 1
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'flame_graph': flame_graph_data,
+                    'metrics': {
+                        'total_actions': len(actions),
+                        'total_cpu_time': total_duration,
+                        'wall_clock_time': wall_clock_time,
+                        'parallelization_efficiency': parallelization_efficiency,
+                        'avg_action_duration': total_duration / len(actions) if actions else 0,
+                        'workflow_start': workflow_start,
+                        'workflow_end': workflow_end
+                    },
+                    'critical_path': critical_path,
+                    'analysis': {
+                        'bottleneck_tool': max(tool_groups.keys(), key=lambda t: sum(a.get('duration', 0) for a in tool_groups[t])) if tool_groups else None,
+                        'parallelization_potential': max(0, total_duration - wall_clock_time),
+                        'optimization_score': min(10, parallelization_efficiency / 10)
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_performance_trends(request):
+            """Analyze performance trends and patterns over time"""
+            try:
+                query_params = request.query_params
+                days_back = int(query_params.get('days_back', 7))
+                metric = query_params.get('metric', 'duration')  # duration, success_rate, throughput
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (days_back * 24 * 3600)
+                
+                # Daily trends
+                cursor.execute("""
+                    SELECT 
+                        DATE(datetime(started_at, 'unixepoch')) as date,
+                        COUNT(*) as action_count,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_actions,
+                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_actions,
+                        COUNT(DISTINCT workflow_id) as workflow_count,
+                        COUNT(DISTINCT tool_name) as tool_count
+                    FROM actions 
+                    WHERE started_at >= ?
+                    GROUP BY DATE(datetime(started_at, 'unixepoch'))
+                    ORDER BY date
+                """, (since_timestamp,))
+                
+                daily_trends = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Calculate derived metrics
+                for day in daily_trends:
+                    day['success_rate'] = (day['successful_actions'] / max(1, day['action_count'])) * 100
+                    day['throughput'] = day['action_count'] / 24  # actions per hour
+                    day['error_rate'] = (day['failed_actions'] / max(1, day['action_count'])) * 100
+                
+                # Tool performance trends
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        DATE(datetime(started_at, 'unixepoch')) as date,
+                        COUNT(*) as usage_count,
+                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success_count
+                    FROM actions 
+                    WHERE started_at >= ?
+                    GROUP BY tool_name, DATE(datetime(started_at, 'unixepoch'))
+                    ORDER BY tool_name, date
+                """, (since_timestamp,))
+                
+                tool_trends = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Workflow complexity trends
+                cursor.execute("""
+                    SELECT 
+                        DATE(datetime(started_at, 'unixepoch')) as date,
+                        workflow_id,
+                        COUNT(*) as action_count,
+                        SUM(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as total_duration,
+                        (MAX(completed_at) - MIN(started_at)) as elapsed_time
+                    FROM actions 
+                    WHERE started_at >= ? AND workflow_id IS NOT NULL
+                    GROUP BY DATE(datetime(started_at, 'unixepoch')), workflow_id
+                    ORDER BY date, workflow_id
+                """, (since_timestamp,))
+                
+                workflow_complexity = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Calculate trend analysis
+                if len(daily_trends) >= 2:
+                    # Performance trend (improving, degrading, stable)
+                    recent_avg = sum(d['avg_duration'] or 0 for d in daily_trends[-3:]) / min(3, len(daily_trends))
+                    earlier_avg = sum(d['avg_duration'] or 0 for d in daily_trends[:3]) / min(3, len(daily_trends))
+                    
+                    if recent_avg > earlier_avg * 1.1:
+                        performance_trend = 'degrading'
+                    elif recent_avg < earlier_avg * 0.9:
+                        performance_trend = 'improving'
+                    else:
+                        performance_trend = 'stable'
+                    
+                    # Success rate trend
+                    recent_success = sum(d['success_rate'] for d in daily_trends[-3:]) / min(3, len(daily_trends))
+                    earlier_success = sum(d['success_rate'] for d in daily_trends[:3]) / min(3, len(daily_trends))
+                    
+                    success_trend = 'improving' if recent_success > earlier_success else 'degrading' if recent_success < earlier_success else 'stable'
+                else:
+                    performance_trend = 'insufficient_data'
+                    success_trend = 'insufficient_data'
+                
+                # Identify performance patterns
+                patterns = []
+                
+                # Weekly pattern detection
+                if len(daily_trends) >= 7:
+                    weekend_performance = [d for d in daily_trends if datetime.strptime(d['date'], '%Y-%m-%d').weekday() >= 5]
+                    weekday_performance = [d for d in daily_trends if datetime.strptime(d['date'], '%Y-%m-%d').weekday() < 5]
+                    
+                    if weekend_performance and weekday_performance:
+                        weekend_avg = sum(d['avg_duration'] or 0 for d in weekend_performance) / len(weekend_performance)
+                        weekday_avg = sum(d['avg_duration'] or 0 for d in weekday_performance) / len(weekday_performance)
+                        
+                        if abs(weekend_avg - weekday_avg) > weekday_avg * 0.2:
+                            patterns.append({
+                                'type': 'weekly_pattern',
+                                'description': f"Performance varies significantly between weekdays ({weekday_avg:.2f}s) and weekends ({weekend_avg:.2f}s)",
+                                'impact': 'medium',
+                                'recommendation': 'Consider different optimization strategies for weekend vs weekday operations'
+                            })
+                
+                # Anomaly detection (simple outlier detection)
+                if daily_trends:
+                    durations = [d['avg_duration'] or 0 for d in daily_trends]
+                    mean_duration = sum(durations) / len(durations)
+                    
+                    outliers = [d for d in daily_trends if abs((d['avg_duration'] or 0) - mean_duration) > mean_duration * 0.5]
+                    
+                    for outlier in outliers:
+                        patterns.append({
+                            'type': 'performance_anomaly',
+                            'date': outlier['date'],
+                            'description': f"Unusual performance on {outlier['date']}: {outlier['avg_duration']:.2f}s vs normal {mean_duration:.2f}s",
+                            'impact': 'high' if abs((outlier['avg_duration'] or 0) - mean_duration) > mean_duration else 'medium',
+                            'recommendation': 'Investigate system conditions and workload on this date'
+                        })
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'daily_trends': daily_trends,
+                    'tool_trends': tool_trends,
+                    'workflow_complexity': workflow_complexity,
+                    'trend_analysis': {
+                        'performance_trend': performance_trend,
+                        'success_trend': success_trend,
+                        'data_points': len(daily_trends),
+                        'analysis_period_days': days_back
+                    },
+                    'patterns': patterns,
+                    'insights': {
+                        'best_performing_day': max(daily_trends, key=lambda x: x['success_rate']) if daily_trends else None,
+                        'worst_performing_day': min(daily_trends, key=lambda x: x['success_rate']) if daily_trends else None,
+                        'peak_throughput_day': max(daily_trends, key=lambda x: x['throughput']) if daily_trends else None,
+                        'avg_daily_actions': sum(d['action_count'] for d in daily_trends) / len(daily_trends) if daily_trends else 0
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_performance_recommendations(request):
+            """Generate actionable performance optimization recommendations"""
+            try:
+                query_params = request.query_params
+                hours_back = int(query_params.get('hours_back', 24))
+                priority_filter = query_params.get('priority', 'all')  # all, high, medium, low
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
+                
+                recommendations = []
+                
+                # Analyze slow tools
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        COUNT(*) as usage_count,
+                        AVG(completed_at - started_at) as avg_duration,
+                        MAX(completed_at - started_at) as max_duration,
+                        SUM(completed_at - started_at) as total_time
+                    FROM actions 
+                    WHERE started_at >= ? AND completed_at IS NOT NULL
+                    GROUP BY tool_name
+                    HAVING avg_duration > 5
+                    ORDER BY total_time DESC
+                """, (since_timestamp,))
+                
+                slow_tools = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                for tool in slow_tools[:5]:
+                    impact_score = tool['total_time'] / 3600  # hours of time spent
+                    priority = 'high' if impact_score > 1 else 'medium' if impact_score > 0.5 else 'low'
+                    
+                    recommendations.append({
+                        'id': f"optimize_tool_{tool['tool_name']}",
+                        'type': 'tool_optimization',
+                        'priority': priority,
+                        'title': f"Optimize {tool['tool_name']} performance",
+                        'description': f"Tool consumes {tool['total_time']:.1f}s total execution time with {tool['avg_duration']:.2f}s average",
+                        'impact_estimate': {
+                            'time_savings_potential': tool['total_time'] * 0.3,  # Assume 30% improvement possible
+                            'affected_actions': tool['usage_count'],
+                            'cost_benefit_ratio': impact_score
+                        },
+                        'implementation_steps': [
+                            f"Profile {tool['tool_name']} execution to identify bottlenecks",
+                            "Consider caching frequently used data",
+                            "Optimize database queries if applicable",
+                            "Evaluate alternative implementations or libraries"
+                        ],
+                        'estimated_effort': 'medium',
+                        'prerequisites': ['Development environment setup', 'Performance profiling tools'],
+                        'metrics_to_track': [
+                            'Average execution time',
+                            'P95 execution time',
+                            'Tool success rate',
+                            'Resource utilization'
+                        ]
+                    })
+                
+                # Analyze workflow parallelization opportunities
+                cursor.execute("""
+                    SELECT 
+                        workflow_id,
+                        COUNT(*) as action_count,
+                        SUM(completed_at - started_at) as total_sequential_time,
+                        (MAX(completed_at) - MIN(started_at)) as actual_elapsed_time
+                    FROM actions 
+                    WHERE started_at >= ? AND completed_at IS NOT NULL AND workflow_id IS NOT NULL
+                    GROUP BY workflow_id
+                    HAVING action_count > 3 AND total_sequential_time > actual_elapsed_time * 1.5
+                    ORDER BY (total_sequential_time - actual_elapsed_time) DESC
+                """, (since_timestamp,))
+                
+                parallelization_opps = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                for opp in parallelization_opps[:3]:
+                    time_savings = opp['total_sequential_time'] - opp['actual_elapsed_time']
+                    priority = 'high' if time_savings > 30 else 'medium'
+                    
+                    recommendations.append({
+                        'id': f"parallelize_workflow_{opp['workflow_id']}",
+                        'type': 'parallelization',
+                        'priority': priority,
+                        'title': f"Parallelize workflow {opp['workflow_id']}",
+                        'description': f"Workflow could save {time_savings:.2f}s through better parallelization",
+                        'impact_estimate': {
+                            'time_savings_potential': time_savings,
+                            'efficiency_improvement': (time_savings / opp['total_sequential_time']) * 100,
+                            'affected_workflows': 1
+                        },
+                        'implementation_steps': [
+                            "Analyze action dependencies in the workflow",
+                            "Identify independent action sequences",
+                            "Implement async execution patterns",
+                            "Add proper synchronization points"
+                        ],
+                        'estimated_effort': 'high',
+                        'prerequisites': ['Workflow dependency analysis', 'Async execution framework'],
+                        'metrics_to_track': [
+                            'Workflow end-to-end time',
+                            'Action parallelization ratio',
+                            'Resource utilization efficiency'
+                        ]
+                    })
+                
+                # Analyze error patterns
+                cursor.execute("""
+                    SELECT 
+                        tool_name,
+                        COUNT(*) as error_count,
+                        COUNT(*) * 100.0 / (
+                            SELECT COUNT(*) FROM actions a2 
+                            WHERE a2.tool_name = actions.tool_name AND a2.started_at >= ?
+                        ) as error_rate
+                    FROM actions 
+                    WHERE started_at >= ? AND status = 'failed'
+                    GROUP BY tool_name
+                    HAVING error_rate > 5
+                    ORDER BY error_rate DESC
+                """, (since_timestamp, since_timestamp))
+                
+                error_prone_tools = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                for tool in error_prone_tools[:3]:
+                    priority = 'high' if tool['error_rate'] > 20 else 'medium'
+                    
+                    recommendations.append({
+                        'id': f"improve_reliability_{tool['tool_name']}",
+                        'type': 'reliability_improvement',
+                        'priority': priority,
+                        'title': f"Improve {tool['tool_name']} reliability",
+                        'description': f"Tool has {tool['error_rate']:.1f}% failure rate ({tool['error_count']} failures)",
+                        'impact_estimate': {
+                            'reliability_improvement': tool['error_rate'],
+                            'affected_actions': tool['error_count'],
+                            'user_experience_impact': 'high'
+                        },
+                        'implementation_steps': [
+                            "Analyze failure patterns and root causes",
+                            "Implement better error handling and retries",
+                            "Add input validation and sanitization",
+                            "Improve tool documentation and usage examples"
+                        ],
+                        'estimated_effort': 'medium',
+                        'prerequisites': ['Error logging analysis', 'Tool source code access'],
+                        'metrics_to_track': [
+                            'Tool failure rate',
+                            'Time to recovery',
+                            'User satisfaction scores'
+                        ]
+                    })
+                
+                # Filter recommendations by priority if requested
+                if priority_filter != 'all':
+                    recommendations = [r for r in recommendations if r['priority'] == priority_filter]
+                
+                # Sort by impact and priority
+                priority_order = {'high': 3, 'medium': 2, 'low': 1}
+                recommendations.sort(key=lambda x: (
+                    priority_order.get(x['priority'], 0),
+                    x['impact_estimate'].get('time_savings_potential', 0)
+                ), reverse=True)
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'recommendations': recommendations,
+                    'summary': {
+                        'total_recommendations': len(recommendations),
+                        'high_priority': len([r for r in recommendations if r['priority'] == 'high']),
+                        'medium_priority': len([r for r in recommendations if r['priority'] == 'medium']),
+                        'low_priority': len([r for r in recommendations if r['priority'] == 'low']),
+                        'estimated_total_savings': sum(r['impact_estimate'].get('time_savings_potential', 0) for r in recommendations),
+                        'analysis_period_hours': hours_back
+                    },
+                    'implementation_roadmap': {
+                        'quick_wins': [r for r in recommendations if r['estimated_effort'] == 'low' and r['priority'] == 'high'],
+                        'major_improvements': [r for r in recommendations if r['estimated_effort'] == 'high' and r['priority'] == 'high'],
+                        'maintenance_tasks': [r for r in recommendations if r['priority'] == 'low']
+                    },
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        # Register performance profiler endpoints
+        app.add_route("/api/performance/overview", api_performance_overview, methods=["GET"])
+        app.add_route("/api/performance/bottlenecks", api_performance_bottlenecks, methods=["GET"])
+        app.add_route("/api/performance/flame-graph", api_performance_flame_graph, methods=["GET"])
+        app.add_route("/api/performance/trends", api_performance_trends, methods=["GET"])
+        app.add_route("/api/performance/recommendations", api_performance_recommendations, methods=["GET"])
+        
         # ===== ADD MISSING ENDPOINTS EXPECTED BY FRONTEND =====
         
         # Memory Quality Inspector API

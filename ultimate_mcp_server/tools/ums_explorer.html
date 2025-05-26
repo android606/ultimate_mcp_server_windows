@@ -1651,9 +1651,9 @@
                      </div>
                  </div>
                  
-                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('memory-quality')"
-                      data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-red-400 mb-2'>🔍 Memory Quality Inspector</h4><p>Advanced memory analysis tool for identifying quality issues, duplicates, and optimization opportunities.</p><p><strong>What it does:</strong> Scans memories for duplicates, orphaned entries, quality issues, and provides automated cleanup suggestions with bulk operations.</p><p><strong>Why it's useful:</strong> Maintain high-quality memory systems, reduce redundancy, and optimize storage and retrieval performance.</p><p><strong>Best used for:</strong> Memory maintenance, quality assurance, duplicate cleanup, and system optimization.</p></div>"
-                      data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
+                                  <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('memory-quality')"
+                     data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-red-400 mb-2'>🔍 Memory Quality Inspector</h4><p>Advanced memory analysis tool for identifying quality issues, duplicates, and optimization opportunities.</p><p><strong>What it does:</strong> Scans memories for duplicates, orphaned entries, quality issues, and provides automated cleanup suggestions with bulk operations.</p><p><strong>Why it's useful:</strong> Maintain high-quality memory systems, reduce redundancy, and optimize storage and retrieval performance.</p><p><strong>Best used for:</strong> Memory maintenance, quality assurance, duplicate cleanup, and system optimization.</p></div>"
+                     data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
                      <div class="flex items-center mb-4">
                          <div class="w-12 h-12 bg-red-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
                              <i data-lucide="scan-line" class="w-6 h-6 text-red-400"></i>
@@ -1666,6 +1666,24 @@
                      <div class="flex items-center justify-between">
                          <span class="text-sm text-gray-500">Duplicate detection & bulk operations</span>
                          <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-red-400 transition-colors"></i>
+                     </div>
+                 </div>
+                 
+                 <div class="enhanced-card rounded-2xl p-6 cursor-pointer group dashboard-tooltip" @click="navigateTo('performance-profiler')"
+                     data-tippy-content="<div class='tooltip-content'><h4 class='font-bold text-orange-400 mb-2'>🚀 Performance Profiler</h4><p>Comprehensive workflow performance analysis with bottleneck identification, flame graphs, and optimization recommendations.</p><p><strong>What it does:</strong> Analyzes execution timing, identifies bottlenecks, visualizes resource usage, tracks performance trends, and generates actionable optimization recommendations.</p><p><strong>Why it's useful:</strong> Optimize system performance, reduce execution times, identify parallelization opportunities, and improve overall efficiency.</p><p><strong>Best used for:</strong> Performance tuning, bottleneck analysis, resource optimization, and workflow improvement.</p></div>"
+                     data-tippy-allowHTML="true" data-tippy-theme="custom" data-tippy-placement="top" data-tippy-delay="[500, 0]">
+                     <div class="flex items-center mb-4">
+                         <div class="w-12 h-12 bg-orange-500/20 rounded-xl flex items-center justify-center mr-4 group-hover:scale-105 transition-transform">
+                             <i data-lucide="gauge" class="w-6 h-6 text-orange-400"></i>
+                         </div>
+                         <div>
+                             <h3 class="text-lg font-semibold">Performance Profiler</h3>
+                             <p class="text-sm text-gray-400">Bottleneck analysis & optimization</p>
+                         </div>
+                     </div>
+                     <div class="flex items-center justify-between">
+                         <span class="text-sm text-gray-500">Flame graphs & smart recommendations</span>
+                         <i data-lucide="arrow-right" class="w-4 h-4 text-gray-400 group-hover:text-orange-400 transition-colors"></i>
                      </div>
                  </div>
              </div>
