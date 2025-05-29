@@ -91,6 +91,7 @@
   "get_artifact_by_id",
   "create_thought_chain",
   "get_thought_chain",
+  "get_subgraph",
   "get_working_memory",
   "focus_memory",
   "optimize_working_memory",

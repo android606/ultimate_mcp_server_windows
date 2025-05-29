@@ -10019,7 +10019,6 @@ async def get_recent_memories_with_links(
         raise
 
 
-
 @with_tool_metrics
 @with_error_handling
 async def get_subgraph(
@@ -14539,6 +14538,7 @@ __all__ = [
     "get_embedding",
     "get_goals",
     "query_goals",
+    "get_subgraph",
     # Context & State
     "get_working_memory",
     "focus_memory",

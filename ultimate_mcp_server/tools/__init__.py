@@ -162,6 +162,7 @@ from .unified_memory_system import (
     get_recent_memories_with_links,
     get_rich_context_package,
     get_similar_memories,
+    get_subgraph,
     get_thought_chain,
     get_workflow_details,
     get_workflow_metadata,
@@ -358,6 +359,7 @@ __all__ = [
     "get_artifact_by_id",
     "create_thought_chain",
     "get_thought_chain",
+    "get_subgraph",
     "get_working_memory",
     "focus_memory",
     "optimize_working_memory",
@@ -393,7 +395,6 @@ __all__ = [
     "query_graph_by_link_type",
     "get_contradictions",
     "vector_similarity",
-
     "single_shot_synthesis",
 ]
 
