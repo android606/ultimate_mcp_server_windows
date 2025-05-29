@@ -34,6 +34,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 import aiosqlite
 import markdown
+import networkx as nx
 import numpy as np
 from pygments.formatters import HtmlFormatter
 from sklearn.metrics.pairwise import cosine_similarity as sk_cosine_similarity
@@ -328,6 +329,12 @@ class MemoryType(str, Enum):
     URL = "url"  # A web URL
     USER_INPUT = "user_input"
     TEXT = "text"  # Generic text block (fallback)
+    WARNING = "warning"
+    CONTRADICTION_ANALYSIS = "contradiction_analysis"  
+    VALIDATION_FAILURE = "validation_failure"
+    CORRECTION = "correction"
+    TOOL_EFFECTIVENESS = "tool_effectiveness"
+    LOOP_DETECTION = "loop_detection"  # For when agent detects action loops    
     # Retain IMAGE? Needs blob storage/linking capability. Deferred.
 
 
@@ -335,7 +342,7 @@ class LinkType(str, Enum):
     """Types of associations between memories (from cognitive_memory)."""
 
     RELATED = "related"
-    CAUSAL = "causal"
+    CAUSAL = "causal" 
     SEQUENTIAL = "sequential"
     HIERARCHICAL = "hierarchical"
     CONTRADICTS = "contradicts"
@@ -345,7 +352,10 @@ class LinkType(str, Enum):
     FOLLOWS = "follows"
     PRECEDES = "precedes"
     TASK = "task"
-    REFERENCES = "references"  # Added for linking thoughts/actions to memories
+    REFERENCES = "references"
+    ELABORATES = "elaborates"
+    QUESTION_OF = "question_of" 
+    CONSEQUENCE_OF = "consequence_of"
 
 
 class GoalStatus(str, Enum):
@@ -10023,251 +10033,615 @@ async def get_recent_memories_with_links(
 @with_error_handling
 async def get_subgraph(
     workflow_id: str,
-    start_node_id: str,
+    start_node_id: Optional[str] = None,
     *,
-    direction: str = "both",
+    # NetworkX Traversal (always used)
+    algorithm: str = "ego_graph",  # ego_graph, bfs_tree, dfs_tree, component, full_graph
     max_hops: int = 1,
-    max_nodes_returned: int = 50,
+    max_nodes: int = 50,
     link_type_filter: Optional[List[str]] = None,
+    
+    # NetworkX Analysis (optional)
+    compute_centrality: bool = False,
+    centrality_algorithms: Optional[List[str]] = None,  # ["pagerank", "betweenness", "closeness", "degree"]
+    detect_communities: bool = False,
+    community_algorithm: str = "louvain",
+    compute_graph_metrics: bool = False,
+    include_shortest_paths: bool = False,
+    shortest_path_targets: Optional[List[str]] = None,
+    
+    # Output Control
     include_node_content: bool = False,
+    centrality_top_k: int = 10,
+    min_community_size: int = 3,
+    
     db_path: str = agent_memory_config.db_path,
 ) -> Dict[str, Any]:
     """
-    Extract a localized subgraph from the memory network starting from a specific node.
+    Extract and analyze subgraphs using NetworkX algorithms.
+    
+    This tool builds a NetworkX graph from the memory database and uses sophisticated
+    graph algorithms for both traversal and analysis. All operations are NetworkX-based
+    for consistency and advanced capabilities.
     
     Args:
         workflow_id: The workflow scope for the subgraph
-        start_node_id: The memory ID to start traversal from
-        direction: Traversal direction - "outgoing", "incoming", or "both" (default: "both")
-        max_hops: Maximum number of link hops to traverse (default: 1)
-        max_nodes_returned: Maximum nodes to include in subgraph (default: 50)
-        link_type_filter: Optional list of link types to traverse (case-insensitive)
-        include_node_content: If True, include full content; if False, just preview (default: False)
-        db_path: Database path
+        start_node_id: Memory ID to start traversal from (None for full graph analysis)
+        
+        # Traversal Control
+        algorithm: NetworkX algorithm to use:
+            - "ego_graph": Get neighborhood around start_node_id 
+            - "bfs_tree": Breadth-first tree from start_node_id
+            - "dfs_tree": Depth-first tree from start_node_id  
+            - "component": Connected component containing start_node_id
+            - "full_graph": Return entire workflow graph (ignores start_node_id)
+        max_hops: Maximum traversal depth (for ego_graph, bfs_tree, dfs_tree)
+        max_nodes: Maximum nodes to return
+        link_type_filter: Only traverse these link types
+        
+        # Analysis Options
+        compute_centrality: Calculate node importance scores
+        centrality_algorithms: Which centrality measures to compute
+        detect_communities: Find clusters of related memories
+        community_algorithm: Community detection algorithm
+        compute_graph_metrics: Calculate global graph statistics
+        include_shortest_paths: Analyze paths between nodes
+        shortest_path_targets: Specific nodes for path analysis
+        
+        # Output Options
+        include_node_content: Include full memory content vs preview
+        centrality_top_k: Return only top K central nodes
+        min_community_size: Minimum size for detected communities
         
     Returns:
-        Dict containing the subgraph nodes and edges
+        Dict with subgraph nodes, edges, and optional analysis results
     """
     ts_start = time.perf_counter()
     
     # Validate inputs
     workflow_id = _validate_uuid_format(workflow_id, "workflow_id")
-    start_node_id = _validate_uuid_format(start_node_id, "start_node_id")
+    if start_node_id:
+        start_node_id = _validate_uuid_format(start_node_id, "start_node_id")
     
-    if direction not in ["outgoing", "incoming", "both"]:
-        raise ToolInputError("direction must be one of: outgoing, incoming, both", param_name="direction")
+    valid_algorithms = {"ego_graph", "bfs_tree", "dfs_tree", "component", "full_graph"}
+    if algorithm not in valid_algorithms:
+        raise ToolInputError(f"algorithm must be one of: {valid_algorithms}", param_name="algorithm")
     
-    if max_hops < 0:
-        raise ToolInputError("max_hops cannot be negative", param_name="max_hops")
-    if max_hops > 10:  # reasonable upper bound to prevent infinite loops
-        raise ToolInputError("max_hops cannot exceed 10", param_name="max_hops")
+    if algorithm != "full_graph" and not start_node_id:
+        raise ToolInputError(f"start_node_id required for algorithm '{algorithm}'", param_name="start_node_id")
+    
+    if max_hops < 1 or max_hops > 10:
+        raise ToolInputError("max_hops must be between 1 and 10", param_name="max_hops")
         
-    if max_nodes_returned <= 0:
-        raise ToolInputError("max_nodes_returned must be positive", param_name="max_nodes_returned")
-    if max_nodes_returned > 1000:  # reasonable upper bound
-        raise ToolInputError("max_nodes_returned cannot exceed 1000", param_name="max_nodes_returned")
+    if max_nodes <= 0 or max_nodes > 2000:
+        raise ToolInputError("max_nodes must be between 1 and 2000", param_name="max_nodes")
     
-    # Validate and normalize link_type_filter
+    # Validate analysis parameters
+    if centrality_algorithms is None:
+        centrality_algorithms = ["pagerank"] if compute_centrality else []
+    
+    valid_centrality = {"pagerank", "betweenness", "closeness", "degree", "eigenvector", "katz"}
+    invalid_centrality = set(centrality_algorithms) - valid_centrality
+    if invalid_centrality:
+        raise ToolInputError(f"Invalid centrality algorithms: {invalid_centrality}", param_name="centrality_algorithms")
+    
+    valid_community = {"louvain", "leiden", "greedy_modularity", "label_propagation"}
+    if community_algorithm not in valid_community:
+        raise ToolInputError(f"community_algorithm must be one of: {valid_community}", param_name="community_algorithm")
+    
+    # Normalize link types
     normalized_link_types = None
     if link_type_filter:
-        if not isinstance(link_type_filter, list):
-            raise ToolInputError("link_type_filter must be a list", param_name="link_type_filter")
         normalized_link_types = [lt.upper() for lt in link_type_filter if lt]
-        if not normalized_link_types:
-            normalized_link_types = None
     
-    logger.info(f"Extracting subgraph from {_fmt_id(start_node_id)} in workflow {_fmt_id(workflow_id)}")
+    logger.info(f"Building NetworkX subgraph for workflow {_fmt_id(workflow_id)} using {algorithm}")
     
     db = DBConnection(db_path)
     
     try:
         async with db.transaction(readonly=True) as conn:
-            # Validate that start_node exists and belongs to workflow
-            start_node_row = await conn.execute_fetchone(
-                "SELECT memory_id FROM memories WHERE memory_id = ? AND workflow_id = ?",
-                (start_node_id, workflow_id)
+            # Step 1: Build full NetworkX graph from database
+            full_graph = await _build_networkx_graph_from_db(
+                conn, workflow_id, normalized_link_types, max_nodes * 2  # Load more for better traversal
             )
-            if not start_node_row:
-                raise ToolInputError(
-                    f"Start node {start_node_id} not found in workflow {workflow_id}",
-                    param_name="start_node_id"
+            
+            if not full_graph.nodes():
+                return {
+                    "success": True,
+                    "data": {
+                        "workflow_id": workflow_id,
+                        "start_node_id": start_node_id,
+                        "algorithm": algorithm,
+                        "nodes": [],
+                        "edges": [],
+                        "node_count": 0,
+                        "edge_count": 0,
+                        "message": "No memories found in workflow"
+                    },
+                    "processing_time": time.perf_counter() - ts_start
+                }
+            
+            # Step 2: Apply NetworkX traversal algorithm  
+            subgraph = await _apply_networkx_algorithm(
+                full_graph, algorithm, start_node_id, max_hops, max_nodes
+            )
+            
+            # Step 3: Convert subgraph to output format
+            nodes_data, edges_data = await _extract_subgraph_data(
+                conn, subgraph, include_node_content
+            )
+            
+            # Step 4: Run optional NetworkX analysis
+            analysis_results = {}
+            if any([compute_centrality, detect_communities, compute_graph_metrics, include_shortest_paths]):
+                analysis_results = await _perform_networkx_analysis(
+                    subgraph,
+                    centrality_algorithms=centrality_algorithms,
+                    detect_communities=detect_communities,
+                    community_algorithm=community_algorithm,
+                    compute_graph_metrics=compute_graph_metrics,
+                    include_shortest_paths=include_shortest_paths,
+                    shortest_path_targets=shortest_path_targets,
+                    centrality_top_k=centrality_top_k,
+                    min_community_size=min_community_size
                 )
-            
-            # Initialize traversal state
-            nodes_in_subgraph = {start_node_id}
-            edges_in_subgraph = []
-            current_frontier = {start_node_id}
-            
-            # Iterative graph traversal
-            for _hop in range(max_hops):
-                if len(nodes_in_subgraph) >= max_nodes_returned:
-                    break
-                    
-                if not current_frontier:
-                    break
-                    
-                next_frontier = set()
-                
-                # For each node in current frontier, find its neighbors
-                for node_id in current_frontier:
-                    # Build SQL query based on direction
-                    link_queries = []
-                    
-                    if direction in ["outgoing", "both"]:
-                        # Outgoing links: this node -> target nodes
-                        outgoing_sql = """
-                            SELECT ml.target_memory_id as neighbor_id, ml.link_type, ml.strength, 
-                                   ml.description as link_description, ? as source_id, ml.target_memory_id as target_id
-                            FROM memory_links ml
-                            JOIN memories m ON ml.target_memory_id = m.memory_id
-                            WHERE ml.source_memory_id = ? AND m.workflow_id = ?
-                        """
-                        outgoing_params = [node_id, node_id, workflow_id]
-                        
-                        if normalized_link_types:
-                            placeholders = ",".join("?" * len(normalized_link_types))
-                            outgoing_sql += f" AND UPPER(ml.link_type) IN ({placeholders})"
-                            outgoing_params.extend(normalized_link_types)
-                        
-                        link_queries.append((outgoing_sql, outgoing_params))
-                    
-                    if direction in ["incoming", "both"]:
-                        # Incoming links: source nodes -> this node  
-                        incoming_sql = """
-                            SELECT ml.source_memory_id as neighbor_id, ml.link_type, ml.strength,
-                                   ml.description as link_description, ml.source_memory_id as source_id, ? as target_id
-                            FROM memory_links ml
-                            JOIN memories m ON ml.source_memory_id = m.memory_id
-                            WHERE ml.target_memory_id = ? AND m.workflow_id = ?
-                        """
-                        incoming_params = [node_id, node_id, workflow_id]
-                        
-                        if normalized_link_types:
-                            placeholders = ",".join("?" * len(normalized_link_types))
-                            incoming_sql += f" AND UPPER(ml.link_type) IN ({placeholders})"
-                            incoming_params.extend(normalized_link_types)
-                        
-                        link_queries.append((incoming_sql, incoming_params))
-                    
-                    # Execute queries and process results
-                    for sql, params in link_queries:
-                        link_rows = await conn.execute_fetchall(sql, params)
-                        
-                        for row in link_rows:
-                            neighbor_id = row["neighbor_id"]
-                            
-                            # Add neighbor to subgraph if not already present and under limit
-                            if neighbor_id not in nodes_in_subgraph and len(nodes_in_subgraph) < max_nodes_returned:
-                                nodes_in_subgraph.add(neighbor_id)
-                                next_frontier.add(neighbor_id)
-                            
-                            # Record the edge (avoid duplicates)
-                            edge_dict = {
-                                "source": row["source_id"],
-                                "target": row["target_id"],
-                                "link_type": row["link_type"],
-                                "strength": row["strength"],
-                                "link_description": row["link_description"]
-                            }
-                            
-                            # Check for duplicate edges (same source-target pair)
-                            edge_exists = any(
-                                e["source"] == edge_dict["source"] and e["target"] == edge_dict["target"]
-                                for e in edges_in_subgraph
-                            )
-                            if not edge_exists:
-                                edges_in_subgraph.append(edge_dict)
-                
-                current_frontier = next_frontier
-            
-            # Fetch full details for all nodes in subgraph
-            if nodes_in_subgraph:
-                node_ids_list = list(nodes_in_subgraph)
-                placeholders = ",".join("?" * len(node_ids_list))
-                
-                if include_node_content:
-                    node_sql = f"""
-                        SELECT memory_id, description, content, memory_type, memory_level, 
-                               importance, confidence, created_at, last_accessed
-                        FROM memories 
-                        WHERE memory_id IN ({placeholders})
-                    """
-                else:
-                    node_sql = f"""
-                        SELECT memory_id, description, memory_type, memory_level,
-                               importance, confidence, created_at, last_accessed,
-                               CASE 
-                                   WHEN LENGTH(content) > 100 THEN SUBSTR(content, 1, 100) || '...'
-                                   ELSE content
-                               END as content_preview
-                        FROM memories 
-                        WHERE memory_id IN ({placeholders})
-                    """
-                
-                node_rows = await conn.execute_fetchall(node_sql, node_ids_list)
-                
-                # Format node data
-                nodes_data = []
-                for row in node_rows:
-                    node_dict = {
-                        "memory_id": row["memory_id"],
-                        "description": row["description"],
-                        "memory_type": row["memory_type"],
-                        "memory_level": row["memory_level"],
-                        "importance": row["importance"],
-                        "confidence": row["confidence"],
-                        "created_at_iso": to_iso_z(row["created_at"]) if row["created_at"] else None,
-                        "last_accessed_iso": to_iso_z(row["last_accessed"]) if row["last_accessed"] else None
-                    }
-                    
-                    if include_node_content:
-                        node_dict["content"] = row["content"]
-                    else:
-                        node_dict["content_preview"] = row["content_preview"]
-                    
-                    nodes_data.append(node_dict)
-                
-                # Sort nodes to put start_node first
-                nodes_data.sort(key=lambda n: 0 if n["memory_id"] == start_node_id else 1)
-            else:
-                nodes_data = []
-
+        
         processing_time = time.perf_counter() - ts_start
         
+        result = {
+            "success": True,
+            "data": {
+                "workflow_id": workflow_id,
+                "start_node_id": start_node_id,
+                "algorithm": algorithm,
+                "traversal_params": {
+                    "max_hops": max_hops,
+                    "max_nodes": max_nodes,
+                    "link_type_filter": link_type_filter
+                },
+                "nodes": nodes_data,
+                "edges": edges_data,
+                "node_count": len(nodes_data),
+                "edge_count": len(edges_data),
+                **analysis_results  # Include all analysis results
+            },
+            "processing_time": processing_time
+        }
+        
         logger.info(
-            f"Extracted subgraph: {len(nodes_data)} nodes, {len(edges_in_subgraph)} edges "
-            f"({max_hops} hops from {_fmt_id(start_node_id)})",
+            f"NetworkX subgraph complete: {len(nodes_data)} nodes, {len(edges_data)} edges, "
+            f"algorithm: {algorithm}, analysis: {bool(analysis_results)}, time: {processing_time:.3f}s",
             emoji_key="graph",
             time=processing_time
         )
         
-        return {
-            "success": True,
-            "data": {
-                "start_node_id": start_node_id,
-                "workflow_id": workflow_id,
-                "traversal_params": {
-                    "direction": direction,
-                    "max_hops": max_hops,
-                    "max_nodes_returned": max_nodes_returned,
-                    "link_type_filter": link_type_filter,
-                    "include_node_content": include_node_content
-                },
-                "nodes": nodes_data,
-                "edges": edges_in_subgraph,
-                "node_count": len(nodes_data),
-                "edge_count": len(edges_in_subgraph)
-            },
-            "processing_time": processing_time
-        }
+        return result
 
     except ToolInputError:
         raise
     except Exception as e:
-        logger.error(f"Error extracting subgraph: {e}", exc_info=True)
-        raise ToolError(f"Failed to extract subgraph: {e}") from e
+        logger.error(f"Error building NetworkX subgraph: {e}", exc_info=True)
+        raise ToolError(f"Failed to build NetworkX subgraph: {e}") from e
 
 
+async def _build_networkx_graph_from_db(
+    conn, 
+    workflow_id: str, 
+    link_type_filter: Optional[List[str]] = None,
+    node_limit: Optional[int] = None
+) -> nx.DiGraph:
+    """Build NetworkX directed graph directly from database."""
+    
+    G = nx.DiGraph()
+    
+    # Get nodes (memories)
+    node_sql = """
+        SELECT memory_id, description, memory_type, memory_level,
+               importance, confidence, created_at, last_accessed,
+               CASE 
+                   WHEN LENGTH(content) > 100 THEN SUBSTR(content, 1, 100) || '...'
+                   ELSE content
+               END as content_preview
+        FROM memories 
+        WHERE workflow_id = ?
+        ORDER BY importance DESC, created_at DESC
+    """
+    node_params = [workflow_id]
+    
+    if node_limit:
+        node_sql += " LIMIT ?"
+        node_params.append(node_limit)
+    
+    node_rows = await conn.execute_fetchall(node_sql, node_params)
+    
+    # Add nodes to graph
+    for row in node_rows:
+        G.add_node(
+            row["memory_id"],
+            description=row["description"],
+            content_preview=row["content_preview"],
+            memory_type=row["memory_type"],
+            memory_level=row["memory_level"],
+            importance=row["importance"],
+            confidence=row["confidence"],
+            created_at_iso=to_iso_z(row["created_at"]) if row["created_at"] else None,
+            last_accessed_iso=to_iso_z(row["last_accessed"]) if row["last_accessed"] else None
+        )
+    
+    # Get edges (memory links)
+    edge_sql = """
+        SELECT ml.source_memory_id, ml.target_memory_id, ml.link_type, 
+               ml.strength, ml.description as link_description
+        FROM memory_links ml
+        JOIN memories m1 ON ml.source_memory_id = m1.memory_id
+        JOIN memories m2 ON ml.target_memory_id = m2.memory_id
+        WHERE m1.workflow_id = ? AND m2.workflow_id = ?
+    """
+    edge_params = [workflow_id, workflow_id]
+    
+    if link_type_filter:
+        placeholders = ",".join("?" * len(link_type_filter))
+        edge_sql += f" AND UPPER(ml.link_type) IN ({placeholders})"
+        edge_params.extend(link_type_filter)
+    
+    edge_rows = await conn.execute_fetchall(edge_sql, edge_params)
+    
+    # Add edges to graph (only if both nodes exist)
+    for row in edge_rows:
+        source = row["source_memory_id"]
+        target = row["target_memory_id"]
+        
+        if G.has_node(source) and G.has_node(target):
+            G.add_edge(
+                source,
+                target,
+                link_type=row["link_type"],
+                strength=row["strength"],
+                link_description=row["link_description"] or ""
+            )
+    
+    return G
+
+
+async def _apply_networkx_algorithm(
+    full_graph: nx.DiGraph,
+    algorithm: str,
+    start_node_id: Optional[str],
+    max_hops: int,
+    max_nodes: int
+) -> nx.DiGraph:
+    """Apply the specified NetworkX algorithm to get subgraph."""
+    
+    if algorithm == "full_graph":
+        # Return the full graph (possibly limited by size)
+        if len(full_graph) <= max_nodes:
+            return full_graph
+        else:
+            # Return highest importance nodes
+            nodes_by_importance = sorted(
+                full_graph.nodes(data=True),
+                key=lambda x: x[1].get("importance", 0),
+                reverse=True
+            )
+            top_nodes = [node_id for node_id, _ in nodes_by_importance[:max_nodes]]
+            return full_graph.subgraph(top_nodes).copy()
+    
+    # Validate start node exists
+    if start_node_id not in full_graph:
+        raise ToolInputError(f"Start node {start_node_id} not found in graph", param_name="start_node_id")
+    
+    if algorithm == "ego_graph":
+        subgraph = nx.ego_graph(full_graph, start_node_id, radius=max_hops)
+        
+    elif algorithm == "bfs_tree":
+        subgraph = nx.bfs_tree(full_graph, start_node_id, depth_limit=max_hops)
+        
+    elif algorithm == "dfs_tree":
+        subgraph = nx.dfs_tree(full_graph, start_node_id, depth_limit=max_hops)
+        
+    elif algorithm == "component":
+        # Get weakly connected component containing start_node
+        if full_graph.is_directed():
+            components = nx.weakly_connected_components(full_graph)
+        else:
+            components = nx.connected_components(full_graph)
+        
+        # Find component containing start_node
+        component_nodes = None
+        for component in components:
+            if start_node_id in component:
+                component_nodes = component
+                break
+        
+        if component_nodes:
+            subgraph = full_graph.subgraph(component_nodes).copy()
+        else:
+            # Fallback to single node
+            subgraph = full_graph.subgraph([start_node_id]).copy()
+    
+    else:
+        raise ToolInputError(f"Unknown algorithm: {algorithm}", param_name="algorithm")
+    
+    # Limit size if needed
+    if len(subgraph) > max_nodes:
+        # Keep nodes closest to start_node by shortest path
+        try:
+            distances = nx.single_source_shortest_path_length(
+                subgraph.to_undirected(), start_node_id, cutoff=max_hops
+            )
+            # Sort by distance, then by importance
+            nodes_by_priority = sorted(
+                distances.keys(),
+                key=lambda n: (distances[n], -subgraph.nodes[n].get("importance", 0))
+            )
+            selected_nodes = nodes_by_priority[:max_nodes]
+            subgraph = subgraph.subgraph(selected_nodes).copy()
+        except Exception:
+            # Fallback: take highest importance nodes
+            nodes_by_importance = sorted(
+                subgraph.nodes(data=True),
+                key=lambda x: x[1].get("importance", 0),
+                reverse=True
+            )
+            top_nodes = [node_id for node_id, _ in nodes_by_importance[:max_nodes]]
+            subgraph = subgraph.subgraph(top_nodes).copy()
+    
+    return subgraph
+
+
+async def _extract_subgraph_data(
+    conn, 
+    subgraph: nx.DiGraph, 
+    include_full_content: bool
+) -> Tuple[List[Dict], List[Dict]]:
+    """Extract nodes and edges data from NetworkX subgraph."""
+    
+    nodes_data = []
+    edges_data = []
+    
+    # Extract nodes
+    for node_id in subgraph.nodes():
+        node_attrs = subgraph.nodes[node_id]
+        node_dict = {
+            "memory_id": node_id,
+            "description": node_attrs.get("description", ""),
+            "memory_type": node_attrs.get("memory_type", "unknown"),
+            "memory_level": node_attrs.get("memory_level", "working"),
+            "importance": node_attrs.get("importance", 5.0),
+            "confidence": node_attrs.get("confidence", 1.0),
+            "created_at_iso": node_attrs.get("created_at_iso"),
+            "last_accessed_iso": node_attrs.get("last_accessed_iso")
+        }
+        
+        if include_full_content:
+            # Get full content from database
+            content_res = await conn.execute_fetchone(
+                "SELECT content FROM memories WHERE memory_id = ?", (node_id,)
+            )
+            if content_res:
+                node_dict["content"] = content_res["content"]
+        else:
+            node_dict["content_preview"] = node_attrs.get("content_preview", "")
+        
+        nodes_data.append(node_dict)
+    
+    # Extract edges
+    for source, target in subgraph.edges():
+        edge_attrs = subgraph.edges[source, target]
+        edges_data.append({
+            "source": source,
+            "target": target,
+            "link_type": edge_attrs.get("link_type", "RELATED"),
+            "strength": edge_attrs.get("strength", 1.0),
+            "link_description": edge_attrs.get("link_description", "")
+        })
+    
+    return nodes_data, edges_data
+
+
+async def _perform_networkx_analysis(
+    G: nx.DiGraph,
+    centrality_algorithms: List[str],
+    detect_communities: bool,
+    community_algorithm: str,
+    compute_graph_metrics: bool,
+    include_shortest_paths: bool,
+    shortest_path_targets: Optional[List[str]],
+    centrality_top_k: int,
+    min_community_size: int
+) -> Dict[str, Any]:
+    """Perform comprehensive NetworkX analysis."""
+    
+    analysis = {}
+    
+    # Centrality Analysis
+    if centrality_algorithms:
+        centrality_scores = {}
+        
+        for algorithm in centrality_algorithms:
+            try:
+                if algorithm == "pagerank":
+                    scores = nx.pagerank(G, alpha=0.85, max_iter=100)
+                elif algorithm == "betweenness":
+                    scores = nx.betweenness_centrality(G, k=min(100, len(G)))
+                elif algorithm == "closeness":
+                    scores = nx.closeness_centrality(G)
+                elif algorithm == "degree":
+                    scores = dict(G.degree())
+                    max_degree = max(scores.values()) if scores else 1
+                    scores = {k: v/max_degree for k, v in scores.items()}
+                elif algorithm == "eigenvector":
+                    try:
+                        scores = nx.eigenvector_centrality(G, max_iter=100)
+                    except (nx.PowerIterationFailedConvergence, nx.NetworkXError):
+                        scores = nx.eigenvector_centrality_numpy(G)
+                elif algorithm == "katz":
+                    try:
+                        scores = nx.katz_centrality(G, alpha=0.1, max_iter=100)
+                    except (nx.PowerIterationFailedConvergence, nx.NetworkXError):
+                        scores = nx.katz_centrality_numpy(G, alpha=0.1)
+                
+                # Get top K nodes
+                top_nodes = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:centrality_top_k]
+                centrality_scores[algorithm] = {
+                    "top_nodes": dict(top_nodes),
+                    "stats": {
+                        "total_nodes": len(scores),
+                        "max_score": max(scores.values()) if scores else 0,
+                        "min_score": min(scores.values()) if scores else 0,
+                        "mean_score": sum(scores.values()) / len(scores) if scores else 0
+                    }
+                }
+                
+            except Exception as e:
+                logger.warning(f"Centrality calculation failed for {algorithm}: {e}")
+                centrality_scores[algorithm] = {"error": str(e)}
+        
+        analysis["centrality"] = centrality_scores
+    
+    # Community Detection
+    if detect_communities and len(G) > 2:
+        try:
+            G_undirected = G.to_undirected()
+            
+            if community_algorithm == "louvain":
+                try:
+                    import community as community_louvain
+                    partition = community_louvain.best_partition(G_undirected)
+                except ImportError:
+                    communities_gen = nx.community.greedy_modularity_communities(G_undirected)
+                    partition = {}
+                    for i, community in enumerate(communities_gen):
+                        for node in community:
+                            partition[node] = i
+                            
+            elif community_algorithm == "greedy_modularity":
+                communities_gen = nx.community.greedy_modularity_communities(G_undirected)
+                partition = {}
+                for i, community in enumerate(communities_gen):
+                    for node in community:
+                        partition[node] = i
+                        
+            elif community_algorithm == "label_propagation":
+                communities_gen = nx.community.label_propagation_communities(G_undirected)
+                partition = {}
+                for i, community in enumerate(communities_gen):
+                    for node in community:
+                        partition[node] = i
+            
+            else:  # leiden - fallback to greedy modularity
+                communities_gen = nx.community.greedy_modularity_communities(G_undirected)
+                partition = {}
+                for i, community in enumerate(communities_gen):
+                    for node in community:
+                        partition[node] = i
+            
+            # Process communities
+            communities_by_id = defaultdict(list)
+            for node, comm_id in partition.items():
+                communities_by_id[comm_id].append(node)
+            
+            # Filter by size and format
+            communities = [
+                {
+                    "community_id": comm_id,
+                    "members": members,
+                    "size": len(members),
+                    "avg_importance": sum(G.nodes[node].get("importance", 5.0) for node in members) / len(members)
+                }
+                for comm_id, members in communities_by_id.items()
+                if len(members) >= min_community_size
+            ]
+            
+            # Calculate modularity
+            try:
+                modularity = nx.community.modularity(G_undirected, communities_by_id.values())
+            except Exception:
+                modularity = None
+            
+            analysis["communities"] = {
+                "algorithm": community_algorithm,
+                "communities": communities,
+                "total_communities": len(communities),
+                "modularity": modularity,
+                "largest_community_size": max((c["size"] for c in communities), default=0)
+            }
+            
+        except Exception as e:
+            logger.warning(f"Community detection failed: {e}")
+            analysis["communities"] = {"error": str(e)}
+    
+    # Graph Metrics
+    if compute_graph_metrics:
+        try:
+            metrics = {
+                "node_count": G.number_of_nodes(),
+                "edge_count": G.number_of_edges(),
+                "density": nx.density(G),
+                "is_weakly_connected": nx.is_weakly_connected(G),
+                "number_weakly_connected_components": nx.number_weakly_connected_components(G),
+            }
+            
+            # Additional metrics for reasonable-sized graphs
+            if 0 < len(G) <= 500:
+                try:
+                    G_undirected = G.to_undirected()
+                    if nx.is_connected(G_undirected):
+                        metrics["average_shortest_path_length"] = nx.average_shortest_path_length(G_undirected)
+                    
+                    metrics["average_clustering"] = nx.average_clustering(G_undirected)
+                    
+                    # Degree statistics
+                    degrees = dict(G.degree())
+                    if degrees:
+                        degree_values = list(degrees.values())
+                        metrics["degree_stats"] = {
+                            "mean": sum(degree_values) / len(degree_values),
+                            "max": max(degree_values),
+                            "min": min(degree_values)
+                        }
+                    
+                except Exception as e:
+                    logger.debug(f"Advanced graph metrics failed: {e}")
+            
+            analysis["graph_metrics"] = metrics
+            
+        except Exception as e:
+            logger.warning(f"Graph metrics calculation failed: {e}")
+            analysis["graph_metrics"] = {"error": str(e)}
+    
+    # Shortest Paths Analysis
+    if include_shortest_paths and shortest_path_targets:
+        try:
+            paths_analysis = {}
+            
+            for target in shortest_path_targets:
+                if target in G:
+                    try:
+                        # Paths TO this target
+                        paths_to = nx.single_target_shortest_path_length(G, target, cutoff=5)
+                        
+                        # Paths FROM this target  
+                        paths_from = nx.single_source_shortest_path_length(G, target, cutoff=5)
+                        
+                        paths_analysis[target] = {
+                            "reachable_from": len(paths_to),
+                            "can_reach": len(paths_from),
+                            "avg_distance_to": sum(paths_to.values()) / len(paths_to) if paths_to else 0,
+                            "avg_distance_from": sum(paths_from.values()) / len(paths_from) if paths_from else 0,
+                            "max_distance_to": max(paths_to.values()) if paths_to else 0,
+                            "max_distance_from": max(paths_from.values()) if paths_from else 0
+                        }
+                    except Exception as e:
+                        paths_analysis[target] = {"error": str(e)}
+            
+            analysis["shortest_paths"] = paths_analysis
+            
+        except Exception as e:
+            logger.warning(f"Shortest paths analysis failed: {e}")
+            analysis["shortest_paths"] = {"error": str(e)}
+    
+    return analysis
 
 @with_tool_metrics
 @with_error_handling
@@ -12597,6 +12971,7 @@ async def start_batch_operation(
 @with_error_handling
 async def get_rich_context_package(
     workflow_id: str,
+    focus_goal_id: Optional[str] = None,
     context_id: Optional[str] = None,
     current_plan_step_description: Optional[str] = None,
     focal_memory_id_hint: Optional[str] = None,
@@ -12607,6 +12982,10 @@ async def get_rich_context_package(
     include_proactive_memories: bool = True,
     include_relevant_procedures: bool = True,
     include_contextual_links: bool = True,
+    include_graph: bool = True,
+    include_recent_actions: bool = True,
+    include_contradictions: bool = True,
+    max_memories: int = 20,
     compression_token_threshold: Optional[int] = None,
     compression_target_tokens: Optional[int] = None,
     db_path: str = agent_memory_config.db_path,
@@ -12616,8 +12995,29 @@ async def get_rich_context_package(
 
     All existing functionality is preserved — limits, optional sections,
     UMS-side compression, error tracking, focal-memory propagation, etc.
-    The only behavioural change is stricter read-only validation via the
-    revamped `DBConnection.transaction(readonly=True)`
+    Now includes enhanced support for graph structures, goal focusing,
+    contradiction detection, and agent-loop compatible response format.
+    
+    Args:
+        workflow_id: Required workflow scope
+        focus_goal_id: Optional goal ID to focus context around
+        context_id: Optional context ID for working memory
+        current_plan_step_description: Description of current plan step
+        focal_memory_id_hint: Memory ID to use as focal point for links
+        fetch_limits: Limits for fetching various types of data
+        show_limits: Limits for showing summarized data
+        include_core_context: Include core workflow context
+        include_working_memory: Include working memory if context_id provided
+        include_proactive_memories: Include proactive memory search
+        include_relevant_procedures: Include procedural memory search
+        include_contextual_links: Include memory links
+        include_graph: Include graph snapshot/subgraph data
+        include_recent_actions: Include recent actions data
+        include_contradictions: Include contradiction detection
+        max_memories: Maximum number of memories to include in proactive search
+        compression_token_threshold: Token threshold for compression
+        compression_target_tokens: Target tokens after compression
+        db_path: Database path
     """
     start_time = time.time()
     retrieval_ts = datetime.now(timezone.utc).isoformat()
@@ -12634,7 +13034,7 @@ async def get_rich_context_package(
         current_batch['tool_calls'].append({
             'tool_name': 'get_rich_context_package',
             'workflow_id': workflow_id,
-            'context_id': context_id,
+            'focus_goal_id': focus_goal_id,
             'timestamp': start_time
         })
     else:
@@ -12652,13 +13052,14 @@ async def get_rich_context_package(
             "call_number": len(current_batch['tool_calls'])
         }
 
+    # Set up limits - use max_memories for proactive search
     fetch_limits = fetch_limits or {}
     show_limits = show_limits or {}
 
     lim_actions = fetch_limits.get("recent_actions", UMS_PKG_DEFAULT_FETCH_RECENT_ACTIONS)
     lim_imp_mems = fetch_limits.get("important_memories", UMS_PKG_DEFAULT_FETCH_IMPORTANT_MEMORIES)
     lim_key_thts = fetch_limits.get("key_thoughts", UMS_PKG_DEFAULT_FETCH_KEY_THOUGHTS)
-    lim_proactive = fetch_limits.get("proactive_memories", UMS_PKG_DEFAULT_FETCH_PROACTIVE)
+    lim_proactive = min(max_memories, fetch_limits.get("proactive_memories", UMS_PKG_DEFAULT_FETCH_PROACTIVE))
     lim_procedural = fetch_limits.get("procedural_memories", UMS_PKG_DEFAULT_FETCH_PROCEDURAL)
     lim_links = fetch_limits.get("link_traversal", UMS_PKG_DEFAULT_FETCH_LINKS)
 
@@ -12672,17 +13073,16 @@ async def get_rich_context_package(
                 "SELECT 1 FROM workflows WHERE workflow_id = ?", (workflow_id,)
             )
             if row is None:
-                raise ToolInputError(
-                    f"Target workflow_id '{workflow_id}' not found in UMS.",
-                    param_name="workflow_id",
-                )
-    except ToolInputError:
-        raise
+                return {
+                    "success": False,
+                    "error_message": f"Target workflow_id '{workflow_id}' not found in UMS.",
+                    "processing_time": time.time() - start_time,
+                }
     except Exception as exc:
         logger.error("UMS Package: workflow validation failed", exc_info=True)
         return {
             "success": False,
-            "error": f"Workflow ID validation failed: {exc}",
+            "error_message": f"Workflow ID validation failed: {exc}",
             "processing_time": time.time() - start_time,
         }
 
@@ -12691,7 +13091,7 @@ async def get_rich_context_package(
         try:
             core_res = await get_workflow_context(
                 workflow_id=workflow_id,
-                recent_actions_limit=lim_actions,
+                recent_actions_limit=lim_actions if include_recent_actions else 0,
                 important_memories_limit=lim_imp_mems,
                 key_thoughts_limit=lim_key_thts,
                 db_path=db_path,
@@ -12703,6 +13103,10 @@ async def get_rich_context_package(
                     },
                     "retrieved_at": retrieval_ts,
                 }
+                
+                # Extract recent actions for agent compatibility
+                if include_recent_actions and "recent_actions" in assembled["core_context"]:
+                    assembled["recent_actions"] = assembled["core_context"]["recent_actions"]
             else:
                 msg = f"Core context retrieval failed: {core_res.get('error')}"
                 errors.append(f"UMS Package: {msg}")
@@ -12738,6 +13142,8 @@ async def get_rich_context_package(
 
     # ─────────────────────────── 3. Proactive / procedural ───────────────
     search_source = current_plan_step_description or "current agent objectives"
+    if focus_goal_id:
+        search_source += f" (focused on goal: {focus_goal_id})"
 
     if include_proactive_memories:
         try:
@@ -12786,7 +13192,131 @@ async def get_rich_context_package(
             errors.append(f"UMS Package: Procedural search exception: {exc}")
             logger.error("Procedural search error", exc_info=True)
 
-    # ─────────────────────────── 4. Contextual links ─────────────────────
+    # ─────────────────────────── 4. Graph snapshot ───────────────────────
+    if include_graph:
+        try:
+            # Try to find a good starting node for the subgraph
+            start_node_for_graph = focal_mem_id_for_links
+            if not start_node_for_graph:
+                # Use the first important memory as starting point
+                imp_mems = assembled.get("core_context", {}).get("important_memories", [])
+                if imp_mems:
+                    start_node_for_graph = imp_mems[0].get("memory_id")
+            
+            if start_node_for_graph:
+                # Use the new NetworkX-powered get_subgraph with enhanced analysis
+                graph_res = await get_subgraph(
+                    workflow_id=workflow_id,
+                    start_node_id=start_node_for_graph,
+                    algorithm="ego_graph",  # Replaces direction="both" 
+                    max_hops=2,
+                    max_nodes=min(30, max_memories + 10),  # Renamed from max_nodes_returned
+                    link_type_filter=None,  # Could filter to specific relationship types
+                    
+                    # Enable some analysis for richer context
+                    compute_centrality=True,
+                    centrality_algorithms=["pagerank"],  # Just PageRank for context
+                    compute_graph_metrics=True,  # Basic graph stats
+                    detect_communities=False,  # Skip for performance in context gathering
+                    
+                    include_node_content=False,
+                    centrality_top_k=10,
+                    db_path=db_path,
+                )
+                
+                if graph_res.get("success") and graph_res.get("data"):
+                    graph_data = graph_res["data"]
+                    assembled["graph_snapshot"] = {
+                        "retrieved_at": retrieval_ts,
+                        "start_node_id": start_node_for_graph,
+                        "algorithm_used": graph_data.get("algorithm"),
+                        "nodes": graph_data.get("nodes", []),
+                        "edges": graph_data.get("edges", []),
+                        "node_count": graph_data.get("node_count", 0),
+                        "edge_count": graph_data.get("edge_count", 0),
+                        
+                        # Include NetworkX analysis results if available
+                        "centrality": graph_data.get("centrality", {}),
+                        "graph_metrics": graph_data.get("graph_metrics", {}),
+                    }
+                else:
+                    errors.append(f"UMS Package: Graph snapshot failed: {graph_res.get('error_message', 'Unknown error')}")
+            else:
+                # Try full graph analysis if no starting node found
+                try:
+                    graph_res = await get_subgraph(
+                        workflow_id=workflow_id,
+                        start_node_id=None,  # No specific start node
+                        algorithm="full_graph",  # Get representative sample
+                        max_nodes=min(20, max_memories),  # Smaller for full graph
+                        compute_centrality=True,
+                        centrality_algorithms=["pagerank"],
+                        compute_graph_metrics=True,
+                        include_node_content=False,
+                        db_path=db_path,
+                    )
+                    
+                    if graph_res.get("success") and graph_res.get("data"):
+                        graph_data = graph_res["data"]
+                        assembled["graph_snapshot"] = {
+                            "retrieved_at": retrieval_ts,
+                            "start_node_id": None,
+                            "algorithm_used": "full_graph",
+                            "nodes": graph_data.get("nodes", []),
+                            "edges": graph_data.get("edges", []),
+                            "node_count": graph_data.get("node_count", 0),
+                            "edge_count": graph_data.get("edge_count", 0),
+                            "centrality": graph_data.get("centrality", {}),
+                            "graph_metrics": graph_data.get("graph_metrics", {}),
+                            "note": "Full graph sample - no specific starting node"
+                        }
+                    else:
+                        # Create empty graph snapshot as fallback
+                        assembled["graph_snapshot"] = {
+                            "retrieved_at": retrieval_ts,
+                            "nodes": [],
+                            "edges": [],
+                            "node_count": 0,
+                            "edge_count": 0,
+                            "note": "No suitable starting node found and full graph failed"
+                        }
+                except Exception as fallback_exc:
+                    assembled["graph_snapshot"] = {
+                        "retrieved_at": retrieval_ts,
+                        "nodes": [],
+                        "edges": [],
+                        "node_count": 0,
+                        "edge_count": 0,
+                        "note": f"Graph analysis failed: {str(fallback_exc)}"
+                    }
+                    
+        except Exception as exc:
+            errors.append(f"UMS Package: Graph snapshot exception: {exc}")
+            logger.error("Graph snapshot error", exc_info=True)
+
+    # ─────────────────────────── 5. Contradiction detection ──────────────
+    if include_contradictions:
+        try:
+            contradiction_res = await get_contradictions(
+                workflow_id=workflow_id,
+                limit=min(10, max_memories // 2),  # Reasonable limit
+                include_resolved=False,
+                db_path=db_path,
+            )
+            if contradiction_res.get("success"):
+                contradictions_data = contradiction_res.get("data", {})
+                assembled["contradictions"] = {
+                    "retrieved_at": retrieval_ts,
+                    "contradictions_found": contradictions_data.get("contradictions_found", []),
+                    "total_found": contradictions_data.get("total_found", 0),
+                }
+            else:
+                errors.append(f"UMS Package: Contradiction detection failed: {contradiction_res.get('error')}")
+        except Exception as exc:
+            errors.append(f"UMS Package: Contradiction detection exception: {exc}")
+            logger.error("Contradiction detection error", exc_info=True)
+
+    # ─────────────────────────── 6. Contextual links ─────────────────────
     if include_contextual_links:
         link_seed = focal_mem_id_for_links
         if link_seed is None:
@@ -12833,7 +13363,7 @@ async def get_rich_context_package(
                 errors.append(f"UMS Package: Link retrieval exception: {exc}")
                 logger.error("Link retrieval error", exc_info=True)
 
-    # ─────────────────────────── 5. Compression ─────────────────────────
+    # ─────────────────────────── 7. Compression ─────────────────────────
     if compression_token_threshold is not None and compression_target_tokens is not None:
         try:
             pkg_json = json.dumps(assembled, default=str)
@@ -12904,20 +13434,22 @@ async def get_rich_context_package(
             errors.append(f"UMS Package: Compression exception: {exc}")
             logger.error("Compression error", exc_info=True)
 
-    # ─────────────────────────── 6. Final wrap ──────────────────────────
+    # ─────────────────────────── 8. Final wrap (Agent-compatible format) ──────────────────────────
     resp = {
         "success": not errors,
-        "context_package": assembled,
-        "errors": errors or None,
+        "data": {
+            "context_package": assembled
+        },
         "processing_time": time.time() - start_time,
     }
-
+    
     if errors:
+        resp["error_message"] = "; ".join(errors)
         logger.warning(f"get_rich_context_package for {workflow_id} completed with errors.")
     else:
         logger.info(f"get_rich_context_package for {workflow_id} succeeded.")
+    
     return resp
-
 
 # --- 18. Statistics ---
 @with_tool_metrics

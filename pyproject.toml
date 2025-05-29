@@ -98,6 +98,9 @@ dependencies = [
     "pygments>=0",
     "fastapi>=0.115.9",
     "uvicorn>=0.34.2",
+    "networkx>0",
+    "scipy>0",
+
 ]
 
 [project.optional-dependencies]
