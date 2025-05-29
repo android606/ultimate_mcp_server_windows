@@ -635,6 +635,129 @@ def _fmt_id(val: Any, length: int = 8) -> str:
     return s[: min(length, len(s))]
 
 
+def _validate_uuid_format(uuid_str: str, param_name: str = "id") -> str:
+    """
+    Validate that a string is a proper UUID format.
+    
+    For backwards compatibility, also accepts truncated UUIDs (8 hex chars)
+    which will be resolved to full UUIDs via database lookup.
+    
+    Args:
+        uuid_str: The string to validate
+        param_name: Parameter name for error messages
+        
+    Returns:
+        The validated UUID string (may be truncated for later resolution)
+        
+    Raises:
+        ToolInputError: If the string is not a valid UUID or truncated UUID format
+    """
+    if not uuid_str:
+        raise ToolInputError(f"{param_name} is required.", param_name=param_name)
+    
+    # Check if it looks like a truncated ID (8 chars, hex)
+    if len(uuid_str) == 8 and all(c in '0123456789abcdefABCDEF' for c in uuid_str):
+        # Return as-is, will be resolved in the calling function
+        return uuid_str.lower()
+    
+    try:
+        # Validate full UUID format
+        uuid.UUID(uuid_str)
+        return uuid_str
+    except ValueError as e:
+        raise ToolInputError(
+            f"Invalid {param_name} format '{uuid_str}'. Must be a valid UUID or 8-character hex prefix.",
+            param_name=param_name
+        ) from e
+
+
+async def _resolve_truncated_id(
+    conn: aiosqlite.Connection,
+    truncated_id: str,
+    table: str,
+    id_column: str,
+    param_name: str = "id"
+) -> str:
+    """
+    Resolve a truncated UUID to a full UUID by searching the database.
+    
+    Args:
+        conn: Database connection
+        truncated_id: 8-character hex prefix
+        table: Table name to search
+        id_column: Column name containing UUIDs
+        param_name: Parameter name for error messages
+        
+    Returns:
+        Full UUID string
+        
+    Raises:
+        ToolInputError: If no matches or multiple matches found
+    """
+    if len(truncated_id) != 8:
+        raise ToolInputError(f"Truncated {param_name} must be exactly 8 characters.", param_name=param_name)
+    
+    # Search for UUIDs starting with the truncated portion
+    rows = await conn.execute_fetchall(
+        f"SELECT {id_column} FROM {table} WHERE {id_column} LIKE ? LIMIT 10",
+        (f"{truncated_id}%",)
+    )
+    
+    if not rows:
+        raise ToolInputError(
+            f"No {table[:-1]} found with {param_name} starting with '{truncated_id}'.",
+            param_name=param_name
+        )
+    
+    if len(rows) > 1:
+        matches = [row[0] for row in rows]
+        raise ToolInputError(
+            f"Ambiguous {param_name} '{truncated_id}' matches multiple {table}: {', '.join(_fmt_id(m) for m in matches[:5])}{'...' if len(matches) > 5 else ''}. "
+            f"Please use full UUID.",
+            param_name=param_name
+        )
+    
+    full_uuid = rows[0][0]
+    logger.debug(f"Resolved truncated {param_name} '{truncated_id}' to full UUID '{full_uuid}'")
+    return full_uuid
+
+
+async def _validate_and_resolve_id(
+    db_conn: "DBConnection",
+    id_value: str,
+    table: str,
+    id_column: str,
+    param_name: str = "id"
+) -> str:
+    """
+    Convenience function that validates and resolves IDs (full UUID or truncated).
+    
+    Args:
+        db_conn: Database connection instance
+        id_value: ID to validate and resolve
+        table: Table name to search for truncated IDs
+        id_column: Column name containing UUIDs
+        param_name: Parameter name for error messages
+        
+    Returns:
+        Full UUID string
+        
+    Raises:
+        ToolInputError: If validation fails or truncated ID cannot be resolved
+    """
+    # Validate format first
+    validated_id = _validate_uuid_format(id_value, param_name)
+    
+    # If it's a truncated ID, resolve it to a full UUID
+    if len(validated_id) == 8:
+        async with db_conn.transaction(readonly=True) as conn:
+            validated_id = await _resolve_truncated_id(
+                conn, validated_id, table, id_column, param_name
+            )
+    
+    return validated_id
+
+
 _MUTATION_SQL = re.compile(r"^\s*(INSERT|UPDATE|DELETE|REPLACE|CREATE|DROP|ALTER)\b", re.I)
 
 
@@ -6241,13 +6364,14 @@ async def get_goal_details(
 
     • Keeps raw integer timestamps and appends *_iso keys
     • Robust JSON deserialisation for `acceptance_criteria` and `metadata`
+    • Supports truncated goal IDs (8 hex chars) for convenience
     """
     t0 = time.time()
 
-    if not goal_id:
-        raise ToolInputError("Goal ID is required.", param_name="goal_id")
-
     db = DBConnection(db_path)
+    
+    # Validate and resolve goal ID (supports both full UUIDs and 8-char truncated IDs)
+    goal_id = await _validate_and_resolve_id(db, goal_id, "goals", "goal_id", "goal_id")
 
     def _safe_json(text: str | None, default):
         try:

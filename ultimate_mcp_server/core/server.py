@@ -3929,7 +3929,256 @@ def start_server(
             except Exception as e:
                 return JSONResponse({"error": str(e)}, status_code=500)
 
+        # Wrapper functions for FastAPI endpoints to work with SSE routing
+        async def api_cognitive_states(request):
+            """Get cognitive states with filtering"""
+            try:
+                query_params = request.query_params
+                start_time = float(query_params.get('start_time')) if query_params.get('start_time') else None
+                end_time = float(query_params.get('end_time')) if query_params.get('end_time') else None
+                limit = int(query_params.get('limit', 100))
+                offset = int(query_params.get('offset', 0))
+                pattern_type = query_params.get('pattern_type')
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Build the query with optional filters
+                conditions = []
+                params = []
+                
+                if start_time:
+                    conditions.append("timestamp >= ?")
+                    params.append(start_time)
+                
+                if end_time:
+                    conditions.append("timestamp <= ?")
+                    params.append(end_time)
+                
+                if pattern_type:
+                    conditions.append("state_type = ?")
+                    params.append(pattern_type)
+                
+                where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+                
+                # Get total count
+                cursor.execute(f"SELECT COUNT(*) FROM cognitive_timeline{where_clause}", params)
+                total_result = cursor.fetchone()
+                total = total_result[0] if total_result else 0
+                
+                # Get states with pagination
+                cursor.execute(f"""
+                    SELECT 
+                        state_id,
+                        timestamp,
+                        state_type,
+                        description,
+                        workflow_id,
+                        state_data,
+                        complexity_score,
+                        change_magnitude
+                    FROM cognitive_timeline
+                    {where_clause}
+                    ORDER BY timestamp DESC
+                    LIMIT ? OFFSET ?
+                """, params + [limit, offset])
+                
+                states = []
+                for row in cursor.fetchall():
+                    state_data = dict(zip([d[0] for d in cursor.description], row, strict=False))
+                    state_data['formatted_timestamp'] = datetime.fromtimestamp(state_data['timestamp']).isoformat()
+                    state_data['age_minutes'] = (datetime.now().timestamp() - state_data['timestamp']) / 60
+                    states.append(state_data)
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'states': states,
+                    'total': total,
+                    'has_more': (offset + limit) < total
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_cognitive_timeline(request):
+            """Get cognitive timeline data"""
+            try:
+                query_params = request.query_params
+                hours = int(query_params.get('hours', 24))
+                granularity = query_params.get('granularity', 'hour')
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                since_timestamp = datetime.now().timestamp() - (hours * 3600)
+                
+                cursor.execute("""
+                    SELECT 
+                        state_id,
+                        timestamp,
+                        state_type,
+                        description,
+                        workflow_id,
+                        complexity_score,
+                        change_magnitude
+                    FROM cognitive_timeline
+                    WHERE timestamp >= ?
+                    ORDER BY timestamp ASC
+                """, (since_timestamp,))
+                
+                timeline_data = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Add sequence numbers and format timestamps
+                for i, state in enumerate(timeline_data):
+                    state['sequence'] = i + 1
+                    state['formatted_timestamp'] = datetime.fromtimestamp(state['timestamp']).isoformat()
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'timeline': timeline_data,
+                    'total_states': len(timeline_data),
+                    'time_range': {
+                        'start': since_timestamp,
+                        'end': datetime.now().timestamp(),
+                        'hours': hours,
+                        'granularity': granularity
+                    }
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_artifacts(request):
+            """Get artifacts with filtering"""
+            try:
+                query_params = request.query_params
+                artifact_type = query_params.get('artifact_type')
+                workflow_id = query_params.get('workflow_id')
+                tags = query_params.get('tags')
+                search = query_params.get('search')
+                sort_by = query_params.get('sort_by', 'created_at')
+                sort_order = query_params.get('sort_order', 'desc')
+                limit = int(query_params.get('limit', 50))
+                offset = int(query_params.get('offset', 0))
+                
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Build query with filters
+                conditions = []
+                params = []
+                
+                if artifact_type:
+                    conditions.append("artifact_type = ?")
+                    params.append(artifact_type)
+                
+                if workflow_id:
+                    conditions.append("workflow_id = ?")
+                    params.append(workflow_id)
+                
+                if tags:
+                    conditions.append("tags LIKE ?")
+                    params.append(f"%{tags}%")
+                
+                if search:
+                    conditions.append("(name LIKE ? OR description LIKE ?)")
+                    params.extend([f"%{search}%", f"%{search}%"])
+                
+                where_clause = " WHERE " + " AND ".join(conditions) if conditions else ""
+                order_clause = f"ORDER BY {sort_by} {sort_order.upper()}"
+                
+                cursor.execute(f"""
+                    SELECT 
+                        artifact_id,
+                        name,
+                        artifact_type,
+                        description,
+                        file_path,
+                        workflow_id,
+                        action_id,
+                        created_at,
+                        file_size,
+                        tags,
+                        metadata
+                    FROM artifacts
+                    {where_clause}
+                    {order_clause}
+                    LIMIT ? OFFSET ?
+                """, params + [limit, offset])
+                
+                artifacts = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                # Get total count
+                cursor.execute(f"SELECT COUNT(*) FROM artifacts{where_clause}", params)
+                total_result = cursor.fetchone()
+                total = total_result[0] if total_result else 0
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'artifacts': artifacts,
+                    'total': total,
+                    'has_more': (offset + limit) < total,
+                    'filters': {
+                        'artifact_type': artifact_type,
+                        'workflow_id': workflow_id,
+                        'tags': tags,
+                        'search': search,
+                        'sort_by': sort_by,
+                        'sort_order': sort_order
+                    }
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
+        async def api_artifacts_stats(request):
+            """Get artifact statistics"""
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total_artifacts,
+                        COUNT(DISTINCT artifact_type) as unique_types,
+                        COUNT(DISTINCT workflow_id) as unique_workflows,
+                        SUM(file_size) as total_size,
+                        AVG(file_size) as avg_size,
+                        MAX(created_at) as latest_created,
+                        MIN(created_at) as earliest_created
+                    FROM artifacts
+                """)
+                
+                result = cursor.fetchone()
+                stats = dict(zip([d[0] for d in cursor.description], result, strict=False)) if result else {}
+                
+                # Get type breakdown
+                cursor.execute("""
+                    SELECT artifact_type, COUNT(*) as count
+                    FROM artifacts
+                    GROUP BY artifact_type
+                    ORDER BY count DESC
+                """)
+                
+                type_breakdown = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
+                
+                conn.close()
+                
+                return JSONResponse({
+                    'stats': stats,
+                    'type_breakdown': type_breakdown,
+                    'timestamp': datetime.now().isoformat()
+                })
+                
+            except Exception as e:
+                return JSONResponse({"error": str(e)}, status_code=500)
+
         # Register all the API endpoints
+        app.add_route("/api/cognitive-states", api_cognitive_states, methods=["GET"])
+        app.add_route("/api/cognitive-states/timeline", api_cognitive_timeline, methods=["GET"])
         app.add_route("/api/cognitive-states/{state_id}", api_cognitive_state_detail, methods=["GET"])
         app.add_route("/api/cognitive-states/patterns", api_cognitive_patterns, methods=["GET"])
         app.add_route("/api/cognitive-states/compare", api_cognitive_compare, methods=["POST"])
@@ -3938,7 +4187,9 @@ def start_server(
         app.add_route("/api/actions/history", api_action_history, methods=["GET"])
         app.add_route("/api/actions/metrics", api_action_metrics, methods=["GET"])
         app.add_route("/api/tools/usage", api_tools_usage, methods=["GET"])
-        
+        app.add_route("/api/artifacts", api_artifacts, methods=["GET"])
+        app.add_route("/api/artifacts/stats", api_artifacts_stats, methods=["GET"])
+
         # ===== WORKFLOW PERFORMANCE PROFILER ENDPOINTS =====
         
         async def api_performance_overview(request):
