@@ -49,7 +49,6 @@ from ultimate_mcp_server.core.providers.base import (
 
 # Import error handling and decorators from agent_memory concepts
 from ultimate_mcp_server.exceptions import ToolError, ToolInputError
-from ultimate_mcp_server.services.vector.embeddings import get_embedding_service
 from ultimate_mcp_server.tools.base import with_error_handling, with_tool_metrics
 from ultimate_mcp_server.utils import get_logger
 from ultimate_mcp_server.utils.text import count_tokens
@@ -1779,7 +1778,8 @@ async def _store_embedding(conn: aiosqlite.Connection, memory_id: str, text: str
         ID of the stored embedding record in the embeddings table, or None if failed.
     """
     try:
-        embedding_service = get_embedding_service()  # Get singleton instance
+        from ultimate_mcp_server.services.vector.embeddings import get_embedding_service
+        embedding_service = get_embedding_service()
         if not embedding_service.client:  # Check if service was initialized correctly (has client)
             logger.warning(
                 "EmbeddingService client not available. Cannot generate embedding.",
@@ -1857,6 +1857,7 @@ async def _find_similar_memories(
     Returns [(memory_id, similarity_score)] sorted by similarity desc.
     """
     try:
+        from ultimate_mcp_server.services.vector.embeddings import get_embedding_service
         embedding_service = get_embedding_service()
         if not embedding_service.client:
             logger.warning("EmbeddingService unavailable; semantic search disabled.")
@@ -1993,6 +1994,7 @@ async def initialize_memory_system(
         # ───────── 3. Embedding service ─────────────────────
         embedding_service_warning: str | None = None
         try:
+            from ultimate_mcp_server.services.vector.embeddings import get_embedding_service
             es = get_embedding_service()
             if es.client is None:
                 embedding_service_warning = (
@@ -2000,7 +2002,21 @@ async def initialize_memory_system(
                 )
                 logger.error(embedding_service_warning, emoji_key="warning")
                 raise ToolError(embedding_service_warning)
-            logger.info("EmbeddingService active.", emoji_key="brain")
+            
+            # Test embedding creation with a small sample
+            logger.info("Testing embedding service functionality...", emoji_key="test_tube")
+            test_embeddings = await es.create_embeddings(["test"])
+            if test_embeddings and test_embeddings[0]:
+                embedding_dim = len(test_embeddings[0])
+                logger.success(
+                    f"EmbeddingService fully functional - Model: {es.model_name}, Dimension: {embedding_dim}",
+                    emoji_key="brain"
+                )
+            else:
+                embedding_service_warning = "EmbeddingService test failed - no embeddings generated"
+                logger.error(embedding_service_warning, emoji_key="warning")
+                raise ToolError(embedding_service_warning)
+                
             embedding_ok = True
         except Exception as exc:
             if not isinstance(exc, ToolError):
@@ -4570,7 +4586,7 @@ async def get_memory_metadata(
                 )
             
             # Deserialize the context field
-            context_json = memory_row.get("context")
+            context_json = memory_row["context"]
             metadata = await MemoryUtils.deserialize(context_json)
             
             # If deserialization fails or returns None, use empty dict
@@ -4654,7 +4670,7 @@ async def get_memory_tags(
                 )
             
             # Deserialize the tags field
-            tags_json = memory_row.get("tags")
+            tags_json = memory_row["tags"]
             tags = await MemoryUtils.deserialize(tags_json)
             
             # Ensure tags is a list
@@ -5360,19 +5376,19 @@ async def get_similar_memories(
                     None
                 )
                 if memory_row:
-                    content = memory_row.get("content", "")
+                    content = memory_row["content"] if memory_row["content"] else ""
                     content_preview = content[:100] + "..." if len(content) > 100 else content
                     
                     similar_memories.append({
                         "memory_id": mem_id,
                         "similarity": round(similarity_score, 4),
-                        "description": memory_row.get("description"),
-                        "memory_type": memory_row.get("memory_type"),
-                        "memory_level": memory_row.get("memory_level"),
+                        "description": memory_row["description"],
+                        "memory_type": memory_row["memory_type"],
+                        "memory_level": memory_row["memory_level"],
                         "content_preview": content_preview,
-                        "importance": memory_row.get("importance"),
-                        "confidence": memory_row.get("confidence"),
-                        "created_at_iso": to_iso_z(memory_row.get("created_at", 0))
+                        "importance": memory_row["importance"],
+                        "confidence": memory_row["confidence"],
+                        "created_at_iso": to_iso_z(memory_row["created_at"] if memory_row["created_at"] else 0)
                     })
 
         processing_time = time.perf_counter() - ts_start
@@ -10722,7 +10738,7 @@ async def get_memory_link_metadata(
                 )
             
             # Deserialize the description field (which may contain JSON metadata)
-            description_json = link_row.get("description")
+            description_json = link_row["description"]
             metadata = await MemoryUtils.deserialize(description_json)
             
             # If deserialization fails or returns None, use empty dict
@@ -10751,8 +10767,8 @@ async def get_memory_link_metadata(
                 "target_memory_id": target_memory_id,
                 "link_type": normalized_link_type,
                 "metadata": metadata,
-                "strength": link_row.get("strength"),
-                "created_at_iso": to_iso_z(link_row.get("created_at")) if link_row.get("created_at") else None
+                "strength": link_row["strength"],
+                "created_at_iso": to_iso_z(link_row["created_at"]) if link_row["created_at"] else None
             },
             "processing_time": processing_time
         }
@@ -10834,7 +10850,7 @@ async def add_tag_to_memory(
                 )
             
             # Deserialize existing tags
-            existing_tags_json = memory_row.get("tags")
+            existing_tags_json = memory_row["tags"]
             current_tags = await MemoryUtils.deserialize(existing_tags_json)
             
             # If deserialization fails or returns None, start with empty list
@@ -11020,8 +11036,8 @@ async def create_embedding(
                 )
             
             # Construct text to embed
-            content = memory_row.get("content", "")
-            description = memory_row.get("description", "")
+            content = memory_row["content"] if memory_row["content"] else ""
+            description = memory_row["description"] if memory_row["description"] else ""
             
             if description and content:
                 text_to_embed = f"{description}: {content}"
@@ -13143,7 +13159,8 @@ async def get_rich_context_package(
     # ─────────────────────────── 3. Proactive / procedural ───────────────
     search_source = current_plan_step_description or "current agent objectives"
     if focus_goal_id:
-        search_source += f" (focused on goal: {focus_goal_id})"
+        # Don't include the actual goal ID in search terms as it can break FTS parsing
+        search_source += f" (focused on goal: {_fmt_id(focus_goal_id)})"
 
     if include_proactive_memories:
         try:
