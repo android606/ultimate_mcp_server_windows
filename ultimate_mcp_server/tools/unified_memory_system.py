@@ -266,6 +266,7 @@ class ActionType(str, Enum):
     SUMMARY = "summary"
     CONSOLIDATION = "consolidation"
     MEMORY_OPERATION = "memory_operation"
+    PARALLEL_TOOLS = "parallel_tools"
 
 
 class ArtifactType(str, Enum):
@@ -333,7 +334,10 @@ class MemoryType(str, Enum):
     VALIDATION_FAILURE = "validation_failure"
     CORRECTION = "correction"
     TOOL_EFFECTIVENESS = "tool_effectiveness"
-    LOOP_DETECTION = "loop_detection"  # For when agent detects action loops    
+    CONTEXT_INITIALIZATION = "context_initialization"
+    STATE_SNAPSHOT = "state_snapshot"
+    CHECKPOINT = "checkpoint"
+    CONTRADICTION_RESOLUTION = "contradiction_resolution"
     # Retain IMAGE? Needs blob storage/linking capability. Deferred.
 
 
@@ -13429,7 +13433,11 @@ async def get_rich_context_package(
                         ref = assembled
                         for k in keys[:-1]:
                             ref = ref.setdefault(k, {})
-                        original_rt = ref.get(keys[-1], {}).get("retrieved_at", retrieval_ts)
+                        existing_value = ref.get(keys[-1])
+                        if isinstance(existing_value, dict):
+                            original_rt = existing_value.get("retrieved_at", retrieval_ts)
+                        else:
+                            original_rt = retrieval_ts
                         ref[keys[-1]] = {
                             "retrieved_at": original_rt,
                             "_ums_compressed_": True,
@@ -15039,29 +15047,14 @@ async def vector_similarity(
 # ======================================================
 
 __all__ = [
-    # Initialization
-    "initialize_memory_system",
     # Workflow
     "create_workflow",
-    "update_workflow_status",
-    "list_workflows",
     "get_workflow_details",
-    "update_workflow_metadata",
     # Actions
     "record_action_start",
     "record_action_completion",
     "get_recent_actions",
-    "get_action_details",
-    # Action Dependency Tools
-    "add_action_dependency",
-    "get_action_dependencies",
-    # Artifacts
-    "record_artifact",
-    "get_artifacts",
-    "get_artifact_by_id",
     # Thoughts
-    "record_thought",
-    "create_thought_chain",
     "get_thought_chain",
     # Core Memory
     "store_memory",
@@ -15071,23 +15064,14 @@ __all__ = [
     "update_memory_metadata",
     "update_memory_link_metadata",
     "create_memory_link",
-    "search_semantic_memories",
-    "get_similar_memories",
     "get_workflow_metadata",
-    "query_graph_by_link_type",
     "get_contradictions",
     "query_memories",
-    "hybrid_search_memories",
     "update_memory",
     "get_linked_memories",
-    "get_recent_memories_with_links",
-    "get_memory_link_metadata",
     "add_tag_to_memory",
     "create_embedding",
     "get_embedding",
-    "get_goals",
-    "query_goals",
-    "get_subgraph",
     # Context & State
     "get_working_memory",
     "focus_memory",
@@ -15095,27 +15079,10 @@ __all__ = [
     "save_cognitive_state",
     "load_cognitive_state",
     # Automated Cognitive Management
-    "auto_update_focus",
-    "promote_memory_level",
-    # Meta-Cognition & Maintenance
-    "consolidate_memories",
     "decay_link_strengths",
     "generate_reflection",
     "get_rich_context_package",
     "get_goal_details",
-    "get_goal_stack",
     "create_goal",
-    "update_goal_status",
-    "summarize_text",
-    "delete_expired_memories",
-    "compute_memory_statistics",
-    # Multi-Tool Support  
-    "get_multi_tool_guidance",
-    # File Access & Security
-    "diagnose_file_access_issues",
-    # Reporting & Visualization
-    "generate_workflow_report",
-    "visualize_reasoning_chain",
-    "visualize_memory_network",
     "vector_similarity"
 ]
