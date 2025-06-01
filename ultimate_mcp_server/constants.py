@@ -79,6 +79,7 @@ class Provider(str, Enum):
     MISTRAL = "mistral"
     AWS = "aws"
     AZURE = "azure"
+    TOGETHER = "together"
 
 
 class TaskType(str, Enum):
@@ -192,6 +193,14 @@ COST_PER_MILLION_TOKENS: Dict[str, Dict[str, float]] = {
     "mix_77/gemma3-qat-tools:27b": {"input": 0.0001, "output": 0.0001},
     "JollyLlama/GLM-Z1-32B-0414-Q4_K_M:latest": {"input": 0.0001, "output": 0.0001},
     "llama3.2-vision:latest": {"input": 0.0001, "output": 0.0001},
+    
+    # Together AI models (using their published pricing)
+    "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": {"input": 0.18, "output": 0.18},
+    "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo": {"input": 0.88, "output": 0.88},
+    "meta-llama/Llama-3.2-11B-Vision-Instruct-Turbo": {"input": 0.35, "output": 0.35},
+    "mistralai/Mistral-7B-Instruct-v0.1": {"input": 0.2, "output": 0.2},
+    "mistralai/Mixtral-8x7B-Instruct-v0.1": {"input": 0.6, "output": 0.6},
+    "Qwen/Qwen2.5-72B-Instruct-Turbo": {"input": 1.2, "output": 1.2},
 }
 
 
@@ -206,7 +215,8 @@ DEFAULT_MODELS = {
     Provider.GEMINI: "gemini-2.5-pro-preview-03-25",
     Provider.OPENROUTER: "mistralai/mistral-nemo",
     Provider.GROK: "grok-3-latest",
-    Provider.OLLAMA: "mix_77/gemma3-qat-tools:27b"
+    Provider.OLLAMA: "mix_77/gemma3-qat-tools:27b",
+    Provider.TOGETHER: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
 }
 
 
@@ -266,7 +276,8 @@ EMOJI_MAP = {
     Provider.GEMINI: "🔵",
     Provider.OPENROUTER: "🌐",
     Provider.OLLAMA: "🦙",
-    Provider.GROK: "⚡"
+    Provider.GROK: "⚡",
+    Provider.TOGETHER: "🤝"
 }
 
 

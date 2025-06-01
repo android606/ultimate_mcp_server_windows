@@ -724,6 +724,7 @@ async def get_provider(provider_name: str, **kwargs) -> BaseProvider:
     from ultimate_mcp_server.core.providers.ollama import OllamaProvider
     from ultimate_mcp_server.core.providers.openai import OpenAIProvider
     from ultimate_mcp_server.core.providers.openrouter import OpenRouterProvider
+    from ultimate_mcp_server.core.providers.together import TogetherProvider
     
     providers = {
         Provider.OPENAI: OpenAIProvider,
@@ -733,6 +734,7 @@ async def get_provider(provider_name: str, **kwargs) -> BaseProvider:
         Provider.OPENROUTER: OpenRouterProvider,
         Provider.GROK: GrokProvider,
         Provider.OLLAMA: OllamaProvider,
+        Provider.TOGETHER: TogetherProvider,
     }
     
     if provider_name not in providers:

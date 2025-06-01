@@ -14,6 +14,7 @@ from ultimate_mcp_server.core.providers.grok import GrokProvider
 from ultimate_mcp_server.core.providers.ollama import OllamaProvider
 from ultimate_mcp_server.core.providers.openai import OpenAIProvider
 from ultimate_mcp_server.core.providers.openrouter import OpenRouterProvider
+from ultimate_mcp_server.core.providers.together import TogetherProvider
 
 # Provider registry
 PROVIDER_REGISTRY: Dict[str, Type[BaseProvider]] = {
@@ -24,6 +25,7 @@ PROVIDER_REGISTRY: Dict[str, Type[BaseProvider]] = {
     Provider.OPENROUTER.value: OpenRouterProvider,
     Provider.GROK.value: GrokProvider,
     Provider.OLLAMA.value: OllamaProvider,
+    Provider.TOGETHER.value: TogetherProvider,
 }
 
 __all__ = ["PROVIDER_REGISTRY"]
