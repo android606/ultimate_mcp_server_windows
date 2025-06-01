@@ -1,0 +1,27 @@
+{
+  "mcpServers": {
+    "gitea": {
+      "command": "C:\\dev\\tools\\gitea-mcp.exe",
+      "args": [
+        "-t", "stdio",
+        "--host", "https://git.android606.com",
+        "--token", "4598ec215c4c762e5bf4eb3a1efef395cc36e805"
+      ],
+      "env": {
+        "GITEA_HOST": "https://git.android606.com",
+        "GITEA_ACCESS_TOKEN": "4598ec215c4c762e5bf4eb3a1efef395cc36e805"
+      }
+    },
+    "ultimate-mcp-server": {
+      "command": "C:\\Users\\android\\AppData\\Local\\Programs\\Python\\Python313\\python.exe",
+      "args": [
+        "-m", "ultimate_mcp_server", "run", 
+        "--transport-mode", "stdio"
+      ],
+      "cwd": "C:\\Users\\android\\ultimate_mcp_server",
+      "env": {
+        "PATH": "C:\\Users\\android\\ultimate_mcp_server\\.venv\\Scripts;C:\\Users\\android\\AppData\\Local\\Programs\\Python\\Python313;C:\\Users\\android\\AppData\\Local\\Programs\\Python\\Python313\\Scripts"
+      }
+    }
+  }
+} 
