@@ -71,7 +71,6 @@ dependencies = [
     "pdf2image>=0", # For OCR
     "PyPDF2>=0", # PDF conversion
     "pdfplumber>=0", # For OCR
-    "fitz>=0", # For OCR
     "pymupdf>=0", # For OCR
     "beautifulsoup4>=0", # Dealing with HTML
     "xmldiff>=0", # for redlines
