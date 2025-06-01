@@ -198,7 +198,7 @@ class ProvidersConfig(BaseModel):
     
     1. Access configuration for specific providers by name as attributes
     2. Iterate over all provider configurations for initialization and status checks
-    3. Update provider settings through a consistent interface
+    3. Validate provider settings during startup
     4. Add new providers to the system in a structured way
     
     Each provider has its own ProviderConfig instance as an attribute, named after the
@@ -220,6 +220,7 @@ class ProvidersConfig(BaseModel):
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig, description="OpenRouter provider configuration")
     grok: ProviderConfig = Field(default_factory=ProviderConfig, description="Grok (xAI) provider configuration")
     ollama: ProviderConfig = Field(default_factory=ProviderConfig, description="Ollama provider configuration")
+    together: ProviderConfig = Field(default_factory=ProviderConfig, description="Together AI provider configuration")
 
 class FilesystemProtectionConfig(BaseModel):
     """Configuration for filesystem protection heuristics."""
