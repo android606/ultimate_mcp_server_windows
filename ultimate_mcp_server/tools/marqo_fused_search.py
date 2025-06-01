@@ -32,7 +32,7 @@ def load_marqo_config() -> Dict[str, Any]:
         ToolExecutionError: If the config file cannot be found, parsed, or is invalid.
     """
     try:
-        with open(CONFIG_FILE_PATH, 'r') as f:
+        with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
             config = json.load(f)
             logger.info(f"Loaded Marqo config from {CONFIG_FILE_PATH}")
             return config
@@ -736,7 +736,7 @@ async def trigger_dynamic_docstring_generation():
     # 2. Try to load cache
     try:
         if os.path.exists(CACHE_FILE_PATH):
-            with open(CACHE_FILE_PATH, 'r') as f:
+            with open(CACHE_FILE_PATH, 'r', encoding='utf-8') as f:
                 cached_data = json.load(f)
                 logger.info(f"Loaded docstring augmentation cache from {CACHE_FILE_PATH}")
     except Exception as e:
@@ -767,7 +767,7 @@ async def trigger_dynamic_docstring_generation():
                      "timestamp": current_config_mtime,
                      "augmentation": _docstring_augmentation_result
                  }
-                 with open(CACHE_FILE_PATH, 'w') as f:
+                 with open(CACHE_FILE_PATH, 'w', encoding='utf-8') as f:
                      json.dump(cache_content, f, indent=2)
                  logger.info(f"Saved new docstring augmentation to cache: {CACHE_FILE_PATH}")
              except Exception as e:

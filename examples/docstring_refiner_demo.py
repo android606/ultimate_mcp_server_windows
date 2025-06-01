@@ -830,7 +830,7 @@ def display_refinement_result(
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         result_file = output_dir / f"refinement_results_{timestamp}.json"
         try:
-            with open(result_file, 'w') as f:
+            with open(result_file, 'w', encoding='utf-8') as f:
                 json.dump(result, f, indent=2, default=str)
             console.print(f"[green]Results saved to:[/green] {result_file}")
         except Exception as e:

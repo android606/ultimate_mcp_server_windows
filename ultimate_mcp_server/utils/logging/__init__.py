@@ -58,6 +58,10 @@ from .logger import (
     warning,
 )
 
+# Import Windows-safe logger
+import platform
+from .windows_logger import WindowsLogger, create_windows_logger
+
 # Import panels
 from .panels import (
     CodePanel,
@@ -83,7 +87,11 @@ from .progress import (
 )
 
 # Create a global logger instance for importing
-logger = Logger("ultimate")
+# Automatically use Windows-safe logger on Windows platform
+if platform.system() == "Windows":
+    logger = WindowsLogger("ultimate")
+else:
+    logger = Logger("ultimate")
 
 # Removed configure_root_logger, initialize_logging, set_log_level functions
 # Logging is now configured via dictConfig in main.py (or server.py equivalent)
@@ -314,6 +322,8 @@ __all__ = [
     # Logger and utilities
     "logger",
     "Logger",
+    "WindowsLogger",
+    "create_windows_logger",
     "debug",
     "info",
     "success",

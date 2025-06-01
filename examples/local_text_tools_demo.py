@@ -198,7 +198,7 @@ if not Path(JSON_SAMPLE_PATH_ABS).exists():
     try:
         # Make sure the directory exists
         Path(JSON_SAMPLE_PATH_ABS).parent.mkdir(parents=True, exist_ok=True)
-        with open(JSON_SAMPLE_PATH_ABS, "w") as f:
+        with open(JSON_SAMPLE_PATH_ABS, 'w', encoding='utf-8') as f:
             f.write(sample_json_content)
         logger.info(f"Created sample JSON file: {JSON_SAMPLE_PATH_ABS}")
     except OSError as e:

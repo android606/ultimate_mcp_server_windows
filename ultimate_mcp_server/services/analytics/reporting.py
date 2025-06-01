@@ -128,7 +128,7 @@ class AnalyticsReporting:
         if output_format == "json":
             # JSON format
             report_path = self.reports_dir / f"usage_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 json.dump(report_data, f, indent=2)
                 
             logger.info(
@@ -150,7 +150,7 @@ class AnalyticsReporting:
             # Generate HTML
             html = self._generate_html_report(report_data, plot_paths)
             
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(html)
                 
             logger.info(
@@ -172,7 +172,7 @@ class AnalyticsReporting:
             # Generate Markdown
             markdown = self._generate_markdown_report(report_data, plot_paths)
             
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(markdown)
                 
             logger.info(
@@ -258,7 +258,7 @@ class AnalyticsReporting:
         if output_format == "json":
             # JSON format
             report_path = self.reports_dir / f"{provider}_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 json.dump(report_data, f, indent=2)
                 
             logger.info(
@@ -280,7 +280,7 @@ class AnalyticsReporting:
             # Generate HTML
             html = self._generate_html_provider_report(report_data, plot_paths)
             
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(html)
                 
             logger.info(
@@ -302,7 +302,7 @@ class AnalyticsReporting:
             # Generate Markdown
             markdown = self._generate_markdown_provider_report(report_data, plot_paths)
             
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(markdown)
                 
             logger.info(
@@ -404,7 +404,7 @@ class AnalyticsReporting:
         if output_format == "json":
             # JSON format
             report_path = self.reports_dir / f"cost_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 json.dump(report_data, f, indent=2)
                 
             logger.info(
@@ -426,7 +426,7 @@ class AnalyticsReporting:
             # Generate HTML
             html = self._generate_html_cost_report(report_data, plot_paths)
             
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(html)
                 
             logger.info(
@@ -448,7 +448,7 @@ class AnalyticsReporting:
             # Generate Markdown
             markdown = self._generate_markdown_cost_report(report_data, plot_paths)
             
-            with open(report_path, "w") as f:
+            with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(markdown)
                 
             logger.info(

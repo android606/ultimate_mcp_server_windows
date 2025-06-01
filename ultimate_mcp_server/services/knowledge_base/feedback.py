@@ -70,7 +70,7 @@ class RAGFeedbackService:
                 try:
                     kb_name = file_path.stem.replace("_feedback", "")
                     
-                    with open(file_path, "r") as f:
+                    with open(file_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         
                     self.document_feedback[kb_name] = data.get("document_feedback", {})
@@ -110,7 +110,7 @@ class RAGFeedbackService:
             }
             
             # Save to file
-            with open(file_path, "w") as f:
+            with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
                 
             logger.debug(

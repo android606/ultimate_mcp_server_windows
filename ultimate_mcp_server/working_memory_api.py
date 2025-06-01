@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+import logging
 
 
 @dataclass
@@ -1611,7 +1612,9 @@ async def working_memory_background_task():
             await asyncio.sleep(30)
             
         except Exception as e:
-            print(f"Background task error: {e}")
+            # Use proper logging instead of direct print
+            logger = logging.getLogger("ultimate")
+            logger.error(f"Background task error: {e}")
             await asyncio.sleep(60)  # Wait longer if there's an error
 
 
@@ -1626,6 +1629,8 @@ def start_background_tasks(app: FastAPI):
         # Initialize working memory with default data
         try:
             await working_memory_manager.load_initial_working_memory()
-            print("✅ Working memory initialized successfully")
+            logger = logging.getLogger("ultimate")
+            logger.info("Working memory initialized successfully")
         except Exception as e:
-            print(f"⚠️ Could not initialize working memory: {e}") 
+            logger = logging.getLogger("ultimate")
+            logger.warning(f"Could not initialize working memory: {e}") 

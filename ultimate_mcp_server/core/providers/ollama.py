@@ -122,11 +122,17 @@ class ProviderStatus:
 class OllamaConfig(BaseModel):
     """Configuration for the Ollama provider."""
 
-    # API endpoint (default is localhost:11434)
+    # API endpoint (default is localhost:11434, but can be cloud-based)
     api_url: str = "http://127.0.0.1:11434"
+
+    # API key for cloud-based services (e.g., Together AI)
+    api_key: Optional[str] = None
 
     # Default model to use if none specified
     default_model: str = "llama3.2"
+
+    # Maximum tokens for completions
+    max_tokens: Optional[int] = None
 
     # Timeout settings
     request_timeout: int = 300
@@ -284,30 +290,34 @@ class OllamaProvider(BaseProvider):
                                 self._initialized = True
                                 return True
                             else:
-                                self.logger.warning(
-                                    f"Ollama service at alternate URL responded with status {response.status}. "
-                                    "The service might be misconfigured.",
-                                    emoji_key="warning",
+                                self.logger.info(
+                                    f"Ollama not available at alternate URL: {response.status}. "
+                                    "This is normal if Ollama is not installed locally. "
+                                    "To use Ollama: https://ollama.com/download",
+                                    emoji_key="info",
                                 )
                     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                        self.logger.warning(
-                            f"Could not connect to alternate URL: {str(e)}. "
-                            "Make sure Ollama is installed and running: https://ollama.com/download",
-                            emoji_key="warning",
+                        self.logger.info(
+                            f"Ollama not available at alternate URL: {str(e)}. "
+                            "This is normal if Ollama is not installed locally. "
+                            "To use Ollama: https://ollama.com/download",
+                            emoji_key="info",
                         )
                 except aiohttp.ClientError as e:
                     # Other client errors
-                    self.logger.warning(
-                        f"Could not connect to Ollama service: {str(e)}. "
-                        "Make sure Ollama is installed and running: https://ollama.com/download",
-                        emoji_key="warning",
+                    self.logger.info(
+                        f"Ollama not available: {str(e)}. "
+                        "This is normal if Ollama is not installed locally. "
+                        "To use Ollama: https://ollama.com/download",
+                        emoji_key="info",
                     )
                 except asyncio.TimeoutError:
                     # Timeout indicates Ollama is likely not responding
-                    self.logger.warning(
-                        "Connection to Ollama service timed out. "
-                        "Make sure Ollama is installed and running: https://ollama.com/download",
-                        emoji_key="warning",
+                    self.logger.info(
+                        "Ollama connection timed out. "
+                        "This is normal if Ollama is not installed locally. "
+                        "To use Ollama: https://ollama.com/download",
+                        emoji_key="info",
                     )
 
             # If we got here, Ollama is not available
@@ -356,7 +366,35 @@ class OllamaProvider(BaseProvider):
 
             if hasattr(provider_config, "dict"):
                 self.logger.info("Provider config has 'dict' method, using it")
-                return OllamaConfig(**provider_config.dict())
+                config_dict = provider_config.dict()
+                
+                # Filter out None values and provide defaults for required fields
+                filtered_config = {}
+                for key, value in config_dict.items():
+                    if value is not None:
+                        filtered_config[key] = value
+                
+                # Map ProviderConfig fields to OllamaConfig fields
+                ollama_config_dict = {}
+                field_mapping = {
+                    "base_url": "api_url",
+                    "default_model": "default_model", 
+                    "timeout": "request_timeout",
+                    "enabled": "enabled",
+                    "api_key": "api_key",
+                    "max_tokens": "max_tokens",
+                }
+                
+                for provider_key, ollama_key in field_mapping.items():
+                    if provider_key in filtered_config:
+                        ollama_config_dict[ollama_key] = filtered_config[provider_key]
+                
+                # Ensure default_model has a value if not provided
+                if "default_model" not in ollama_config_dict or ollama_config_dict["default_model"] is None:
+                    ollama_config_dict["default_model"] = "llama3.2"  # Use OllamaConfig default
+                
+                self.logger.info(f"Created filtered config dict: {ollama_config_dict}")
+                return OllamaConfig(**ollama_config_dict)
             else:
                 self.logger.warning(
                     "Provider config doesn't have 'dict' method, attempting direct conversion"
@@ -375,10 +413,16 @@ class OllamaProvider(BaseProvider):
                 # Map fields from provider_config to OllamaConfig's expected field names
                 for provider_key, ollama_key in field_mapping.items():
                     if hasattr(provider_config, provider_key):
-                        config_dict[ollama_key] = getattr(provider_config, provider_key)
-                        self.logger.info(
-                            f"Mapped {provider_key} to {ollama_key}: {getattr(provider_config, provider_key)}"
-                        )
+                        value = getattr(provider_config, provider_key)
+                        if value is not None:  # Only add non-None values
+                            config_dict[ollama_key] = value
+                            self.logger.info(
+                                f"Mapped {provider_key} to {ollama_key}: {value}"
+                            )
+
+                # Ensure default_model has a value
+                if "default_model" not in config_dict:
+                    config_dict["default_model"] = "llama3.2"  # Use OllamaConfig default
 
                 self.logger.info(f"Created config dict: {config_dict}")
                 return OllamaConfig(**config_dict)

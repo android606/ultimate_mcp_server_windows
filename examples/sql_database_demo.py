@@ -876,7 +876,7 @@ async def documentation_demo(sql_tool: SQLTool, connection_id: str) -> None:
                 fd, doc_path = tempfile.mkstemp(suffix=".md", prefix="db_doc_")
                 os.close(fd)
                 
-                with open(doc_path, "w") as f:
+                with open(doc_path, 'w', encoding='utf-8') as f:
                     f.write(documentation)
                 
                 console.print(f"[green]Documentation saved to: [cyan]{doc_path}[/cyan][/green]")
@@ -1267,7 +1267,7 @@ async def advanced_export_demo(sql_tool: SQLTool, connection_id: str) -> None:
             file_size = os.path.getsize(export_path) / 1024  # Size in KB
             
             # Read first few lines to show content
-            with open(export_path, 'r') as f:
+            with open(export_path, 'r', encoding='utf-8') as f:
                 first_lines = [next(f) for _ in range(3)]
             
             console.print(Panel(

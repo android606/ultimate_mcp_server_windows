@@ -88,11 +88,11 @@ async def run_json_extraction_example(provider, tracker: CostTracker):
         # Ensure the data directory exists
         os.makedirs(os.path.dirname(sample_path), exist_ok=True)
         # Write sample text to file
-        with open(sample_path, "w") as f:
+        with open(sample_path, 'w', encoding='utf-8') as f:
             f.write(sample_text)
     else:
         # Read existing sample text
-        with open(sample_path, "r") as f:
+        with open(sample_path, 'r', encoding='utf-8') as f:
             sample_text = f.read()
     
     # Display sample text

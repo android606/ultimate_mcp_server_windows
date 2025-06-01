@@ -15,14 +15,17 @@ import sys
 import traceback
 from typing import Any, Dict, List, Optional
 
+# Set UTF-8 encoding for Windows compatibility
+if sys.platform.startswith('win'):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 import tiktoken
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from rich.console import Console
 from rich.table import Table
-
-# Add the current directory to the Python path to ensure we can import modules
-sys.path.append("/home/ubuntu/ultimate_mcp_server")
 
 # Import the existing decouple configuration from the project
 from ultimate_mcp_server.config import decouple_config
@@ -39,7 +42,7 @@ def read_tool_names_from_file(filename='tools_list.json', quiet=False):
     console = Console()
     try:
         if os.path.exists(filename):
-            with open(filename, 'r') as f:
+            with open(filename, 'r', encoding='utf-8') as f:
                 tool_data = json.load(f)
                 if not quiet:
                     console.print(f"[green]Successfully loaded {len(tool_data)} tools from {filename}[/green]")
@@ -660,7 +663,7 @@ def parse_args():
 
 async def main():
     """Main function"""
-    console = Console()
+    console = Console() # Rich console might still use its own stream handling
     args = parse_args()
     
     # Get server URL from arguments or auto-detect
@@ -673,34 +676,10 @@ async def main():
         
         if not current_tools or "tools" not in current_tools or not current_tools["tools"]:
             console.print("[bold yellow]No tools found on the server.[/bold yellow]")
-            return
+            return # Make sure to return after printing
         
-        if args.no_all_tools:
-            # If we're not doing the comparison, create a meaningful subset for comparison
-            if not quiet_mode:
-                console.print("[yellow]Skipping comparison with full --load-all-tools[/yellow]")
-                console.print("[green]Creating an artificial subset of current tools for comparison[/green]")
-            
-            # Create a more meaningful subset by taking half the tools
-            # If we have 1-4 tools, use all of them to avoid empty subset
-            total_tools = len(current_tools["tools"])
-            subset_size = max(total_tools // 2, min(total_tools, 4))
-            subset_tools = current_tools["tools"][:subset_size]
-            
-            if not quiet_mode:
-                console.print(f"[green]Created subset with {subset_size} tools out of {total_tools} total[/green]")
-            
-            # Create subset version
-            subset_data = {
-                "tools": subset_tools, 
-                "server_name": current_tools["server_name"] + " (Subset)",
-                "server_version": current_tools["server_version"],
-                "server_instructions": current_tools["server_instructions"]
-            }
-            
-            # Analyze token usage with the artificial subset vs full
-            analyze_tools_token_usage(subset_data, current_tools, quiet=quiet_mode)
-        else:
+        # If we're not doing the comparison, create a meaningful subset for comparison
+        if not args.no_all_tools:
             # Get the complete toolset that would be available with --load-all-tools
             all_tools = await get_complete_toolset(quiet=quiet_mode)
             
@@ -709,34 +688,23 @@ async def main():
             all_tool_count = len(all_tools["tools"])
             
             if abs(current_tool_count - all_tool_count) <= 2:  # Allow small difference
-                if not quiet_mode:
-                    console.print(f"[yellow]Warning: Current server has {current_tool_count} tools, "
-                                 f"which is very close to the expected all-tools count of {all_tool_count}[/yellow]")
-                    console.print("[yellow]This suggests the server is already running with --load-all-tools[/yellow]")
-                
                 # For accurate comparison when counts are the same, we should just use the same data for both
                 # to ensure metrics are consistent
-                same_tools_data = {  # noqa: F841
+                all_tools_data_adjusted = { # Renamed to avoid confusion
                     "tools": current_tools["tools"].copy(),
-                    "server_name": "Current Server",
+                    "server_name": "All Tools (Adjusted to Current)", # Clarified name
                     "server_version": current_tools["server_version"],
                     "server_instructions": current_tools["server_instructions"]
                 }
-                
-                # Create a deep copy to ensure they're exactly the same
-                all_tools = {
-                    "tools": current_tools["tools"].copy(),
-                    "server_name": "All Tools",
-                    "server_version": current_tools["server_version"],
-                    "server_instructions": current_tools["server_instructions"]
-                }
-            
-            # Analyze token usage with full prompt simulation
-            analyze_tools_token_usage(current_tools, all_tools, quiet=quiet_mode)
+                analyze_tools_token_usage(current_tools, all_tools_data_adjusted, quiet=quiet_mode)
+            else:
+                # Analyze token usage with full prompt simulation
+                analyze_tools_token_usage(current_tools, all_tools, quiet=quiet_mode)
+
     except KeyboardInterrupt:
         console.print("[bold yellow]Operation cancelled by user[/bold yellow]")
-    except Exception as e:
-        console.print(f"[bold red]Unexpected error:[/bold red] {str(e)}")
+    except Exception as e_main:
+        console.print(f"[bold red]Unexpected error in estimator:[/bold red] {str(e_main)}")
         if not quiet_mode:
             console.print(traceback.format_exc())
 

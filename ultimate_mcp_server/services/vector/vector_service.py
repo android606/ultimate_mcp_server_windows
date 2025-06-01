@@ -451,7 +451,7 @@ class VectorCollection:
             np.save(str(directory / "vectors.npy"), vectors_array)
             
             # Save IDs and metadata
-            with open(directory / "data.json", "w") as f:
+            with open(directory / "data.json", 'w', encoding='utf-8') as f:
                 json.dump({
                     "name": self.name,
                     "dimension": self.dimension,
@@ -502,7 +502,7 @@ class VectorCollection:
             vectors = [vectors_array[i] for i in range(len(vectors_array))]
             
             # Load data
-            with open(data_file, "r") as f:
+            with open(data_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             # Create collection

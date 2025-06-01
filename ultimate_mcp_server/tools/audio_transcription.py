@@ -1163,7 +1163,7 @@ async def check_dependencies(context: ProcessingContext) -> bool:
     
     # Check if whisper binary is available in PATH using shlex for command safety
     try:
-        result = subprocess.run(["which", "whisper-cli"], capture_output=True, text=True)
+        result = subprocess.run(["which", "whisper-cli"], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode == 0:
             whisper_path_found = result.stdout.strip()
             logger.debug(f"Found whisper-cli in PATH: {whisper_path_found}", emoji_key="dependency")

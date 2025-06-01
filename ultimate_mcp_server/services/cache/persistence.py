@@ -104,7 +104,7 @@ class CachePersistence:
         try:
             # Save metadata
             temp_file = f"{self.metadata_file}.tmp"
-            async with aiofiles.open(temp_file, 'w') as f:
+            async with aiofiles.open(temp_file, 'w', encoding='utf-8') as f:
                 await f.write(json.dumps(metadata, indent=2))
                 
             # Rename temp file to metadata file (atomic operation)
@@ -129,7 +129,7 @@ class CachePersistence:
             return None
             
         try:
-            async with aiofiles.open(self.metadata_file, 'r') as f:
+            async with aiofiles.open(self.metadata_file, 'r', encoding='utf-8') as f:
                 data = await f.read()
                 
             metadata = json.loads(data)

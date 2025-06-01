@@ -237,7 +237,7 @@ async def main(models_to_test: List[str], output_file: str, prompt: str):
 
     logger.info(f"Saving results to: {output_path}", emoji_key="save")
     try:
-        with open(output_path, 'w') as f:
+        with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=4)
         logger.info("Results saved successfully.", emoji_key="success")
     except IOError as e:

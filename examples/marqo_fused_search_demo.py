@@ -32,7 +32,7 @@ CONFIG_FILE_PATH = os.path.join(project_root, "marqo_index_config.json")
 def load_marqo_config() -> Dict[str, Any]:
     """Loads Marqo configuration from the JSON file."""
     try:
-        with open(CONFIG_FILE_PATH, 'r') as f:
+        with open(CONFIG_FILE_PATH, 'r', encoding='utf-8') as f:
             config = json.load(f)
             logger.info(f"Loaded Marqo config from {CONFIG_FILE_PATH}")
             return config

@@ -8,6 +8,7 @@ import os
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
+import httpx
 from openai import AsyncOpenAI
 
 from ultimate_mcp_server.constants import Provider
@@ -413,17 +414,54 @@ class TogetherProvider(BaseProvider):
                 return []
                 
         try:
-            models_response = await self.client.models.list()
+            # Together AI returns a raw list, not an OpenAI-compatible response
+            # So we need to make the API call directly using httpx or requests
+            
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.base_url}/models",
+                    headers=headers,
+                    timeout=30.0
+                )
+                response.raise_for_status()
+                models_data = response.json()
+            
             models = []
             
-            for model in models_response.data:
-                models.append({
-                    "id": model.id,
-                    "name": model.id,  # Together AI uses ID as the name
-                    "description": f"Together AI model: {model.id}",
-                    "provider": self.provider_name,
-                    "created": getattr(model, 'created', None),
-                })
+            # Handle the actual response format from Together AI
+            if isinstance(models_data, list):
+                # Direct list of models
+                for model in models_data:
+                    if isinstance(model, dict):
+                        model_id = model.get('id', model.get('name', 'unknown'))
+                        models.append({
+                            "id": model_id,
+                            "name": model_id,
+                            "description": f"Together AI model: {model_id}",
+                            "provider": self.provider_name,
+                            "created": model.get('created', None),
+                            "context_length": model.get('context_length', None),
+                            "pricing": model.get('pricing', {}),
+                        })
+            elif isinstance(models_data, dict) and 'data' in models_data:
+                # OpenAI-compatible format (fallback)
+                for model in models_data['data']:
+                    if isinstance(model, dict):
+                        model_id = model.get('id', model.get('name', 'unknown'))
+                        models.append({
+                            "id": model_id,
+                            "name": model_id,
+                            "description": f"Together AI model: {model_id}",
+                            "provider": self.provider_name,
+                            "created": model.get('created', None),
+                            "context_length": model.get('context_length', None),
+                            "pricing": model.get('pricing', {}),
+                        })
             
             self.models_cache = models
             

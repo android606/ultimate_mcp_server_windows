@@ -898,7 +898,7 @@ first and be prepared to adapt to available providers.
             all_tool_names.append("echo")
             
             # Write to file
-            with open("tools_list.json", "w") as f:
+            with open("tools_list.json", "w", encoding="utf-8") as f:
                 json.dump(all_tool_names, f, indent=2)
                 
             self.logger.info(f"Wrote {len(all_tool_names)} tool names to tools_list.json for context estimator")
@@ -2762,12 +2762,20 @@ def start_server(
                     print("The tool context estimator will run with limited functionality.", file=sys.stderr)
                     print("-" * 40, file=sys.stderr)
                 
+                # Set up environment for UTF-8 encoding
+                env = os.environ.copy()
+                env["PYTHONIOENCODING"] = "utf-8"
+                env["PYTHONUTF8"] = "1"
+                
                 # Run the tool context estimator script with the --quiet flag
                 # Use python -m instead of direct script execution to avoid import issues
                 result = subprocess.run(
                     ["python", "-m", "mcp_tool_context_estimator", "--quiet"],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=env
                 )
                 # Output the results to stderr
                 if result.stdout:

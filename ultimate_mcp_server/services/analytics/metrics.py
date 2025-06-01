@@ -176,7 +176,7 @@ class MetricsTracker:
         
         if metrics_file.exists():
             try:
-                with open(metrics_file, "r") as f:
+                with open(metrics_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
                 # Load general stats
@@ -332,7 +332,7 @@ class MetricsTracker:
             }
             
             # Save to temp file
-            async with aiofiles.open(temp_file, "w") as f:
+            async with aiofiles.open(temp_file, 'w', encoding='utf-8') as f:
                 await f.write(json.dumps(data, indent=2))
                 
             # Rename temp file to actual file
@@ -381,7 +381,7 @@ class MetricsTracker:
             }
             
             # Save to temp file
-            with open(temp_file, "w") as f:
+            with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
                 
             # Rename temp file to actual file

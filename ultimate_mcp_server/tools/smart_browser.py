@@ -1312,7 +1312,7 @@ def _start_vnc():  # Uses globals
     try:
         # Check if x11vnc command exists
         which_cmd = ["which", "x11vnc"]
-        result = subprocess.run(which_cmd, capture_output=True, text=True, check=False)
+        result = subprocess.run(which_cmd, capture_output=True, text=True, check=False, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             logger.warning("x11vnc command not found in PATH. Cannot start VNC server.")
             return

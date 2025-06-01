@@ -361,7 +361,7 @@ async def recommend_model(
     filepath = os.path.join(project_root, measured_speeds_file)
     if os.path.exists(filepath):
         try:
-            with open(filepath, 'r') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 measured_speeds = json.load(f)
             logger.info(f"Successfully loaded measured speed data from {filepath}")
         except (FileNotFoundError, json.JSONDecodeError, IOError) as e:

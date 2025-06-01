@@ -1717,7 +1717,7 @@ def _run_html_tidy(html: str) -> str:
             str(infile),
         ]
         try:
-            res = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False)  # noqa: F841
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=15, check=False, encoding="utf-8", errors="replace")  # noqa: F841
             tidied_html = infile.read_text(encoding="utf-8")
         except Exception as e:
             logger.error(f"Tidy failed: {e}")
