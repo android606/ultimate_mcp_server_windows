@@ -19,6 +19,7 @@ from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Set, Tupl
 import aiofiles
 import aiofiles.os
 from pydantic import BaseModel
+import stat  # Add this import
 
 from ultimate_mcp_server.config import FilesystemConfig, GatewayConfig, get_config
 from ultimate_mcp_server.exceptions import ToolError, ToolInputError
@@ -260,7 +261,7 @@ async def validate_path(
         try:
             lstat_info = await aiofiles.os.stat(current_validated_path, follow_symlinks=False)
             path_exists_locally = True  # stat succeeded, so the path entry itself exists
-            is_symlink = os.path.stat.S_ISLNK(lstat_info.st_mode)
+            is_symlink = stat.S_ISLNK(lstat_info.st_mode)  # Use stat module instead of os.path.stat
 
             if is_symlink:
                 try:
@@ -447,9 +448,9 @@ async def format_file_info(file_path: str, follow_symlinks: bool = False) -> Dic
         # Use stat with follow_symlinks parameter to control whether we stat the link or the target
         stat_info = await aiofiles.os.stat(file_path, follow_symlinks=follow_symlinks)
         mode = stat_info.st_mode
-        is_dir = os.path.stat.S_ISDIR(mode)
-        is_file = os.path.stat.S_ISREG(mode)  # Check for regular file
-        is_link = os.path.stat.S_ISLNK(mode)  # Check if the item stat looked at is a link
+        is_dir = stat.S_ISDIR(mode)  # Use stat module instead of os.path.stat
+        is_file = stat.S_ISREG(mode)  # Check for regular file - use stat module
+        is_link = stat.S_ISLNK(mode)  # Check if the item stat looked at is a link - use stat module
 
         # Use timezone-aware ISO format timestamps for machine readability.
         # Handle potential platform differences in ctime availability (fallback to mtime).
@@ -496,7 +497,7 @@ async def format_file_info(file_path: str, follow_symlinks: bool = False) -> Dic
             "is_file": is_file,
             "is_symlink": is_link,  # Indicate if the path itself is a symlink
             # Use S_IMODE for standard permission bits (mode & 0o777)
-            "permissions": oct(os.path.stat.S_IMODE(mode)),
+            "permissions": oct(stat.S_IMODE(mode)),
         }
 
         if is_link or (not follow_symlinks and await aiofiles.os.path.islink(file_path)):
@@ -1080,7 +1081,7 @@ async def _get_minimal_stat(path: str) -> Optional[Tuple[Tuple[float, float], st
 
         extension = (
             os.path.splitext(path)[1].lower()
-            if not os.path.stat.S_ISDIR(stat_info.st_mode)
+            if not stat.S_ISDIR(stat_info.st_mode)  # Use stat module instead of os.path.stat
             else ".<dir>"
         )
         return ((ctime, mtime), extension)
@@ -2275,9 +2276,9 @@ async def list_directory(path: str) -> Dict[str, Any]:
                 try:
                     stat_res = entry.stat(follow_symlinks=False)  # Use lstat via entry
                     mode = stat_res.st_mode
-                    l_is_dir = os.path.stat.S_ISDIR(mode)
-                    l_is_file = os.path.stat.S_ISREG(mode)
-                    l_is_link = os.path.stat.S_ISLNK(mode)  # Should match entry.is_symlink() result
+                    l_is_dir = stat.S_ISDIR(mode)  # Use stat module instead of os.path.stat
+                    l_is_file = stat.S_ISREG(mode)  # Use stat module instead of os.path.stat
+                    l_is_link = stat.S_ISLNK(mode)  # Should match entry.is_symlink() result - use stat module
 
                     if l_is_dir:
                         entry_info["type"] = "directory"
@@ -2452,9 +2453,9 @@ async def directory_tree(
                     # Use lstat via entry to avoid following links unexpectedly
                     stat_res = entry.stat(follow_symlinks=False)
                     mode = stat_res.st_mode
-                    l_is_dir = os.path.stat.S_ISDIR(mode)
-                    l_is_file = os.path.stat.S_ISREG(mode)
-                    l_is_link = os.path.stat.S_ISLNK(mode)
+                    l_is_dir = stat.S_ISDIR(mode)  # Use stat module instead of os.path.stat
+                    l_is_file = stat.S_ISREG(mode)  # Use stat module instead of os.path.stat
+                    l_is_link = stat.S_ISLNK(mode)  # Should match entry.is_symlink() result - use stat module
 
                     if l_is_dir:
                         entry_data["type"] = "directory"
@@ -2609,7 +2610,7 @@ async def move_file(
                 # Check if source and destination types are compatible for overwrite (e.g., cannot replace dir with file easily)
                 # Use stat with follow_symlinks=False for source type check as well.
                 source_stat = await aiofiles.os.stat(validated_source, follow_symlinks=False)
-                is_source_dir = os.path.stat.S_ISDIR(source_stat.st_mode)
+                is_source_dir = stat.S_ISDIR(source_stat.st_mode)  # Use stat module instead of os.path.stat
 
                 # Simple check: Prevent overwriting dir with file or vice-versa.
                 # Note: aiofiles.os.rename might handle some cases, but explicit check is safer.
@@ -2772,8 +2773,8 @@ async def delete_path(path: str) -> Dict[str, Any]:
             # We need to check if it's a directory or file - use follow_symlinks=True because
             # we already handled the symlink case above
             stat_info = await aiofiles.os.stat(validated_path, follow_symlinks=True)
-            is_dir = os.path.stat.S_ISDIR(stat_info.st_mode)
-            is_file = os.path.stat.S_ISREG(stat_info.st_mode)
+            is_dir = stat.S_ISDIR(stat_info.st_mode)  # Use stat module instead of os.path.stat
+            is_file = stat.S_ISREG(stat_info.st_mode)  # Use stat module instead of os.path.stat
 
             if is_dir:
                 deleted_type = "directory"
