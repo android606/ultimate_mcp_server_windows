@@ -1,0 +1,48 @@
+include README.md
+include LICENSE
+include pyproject.toml
+include uv.lock
+include *.md
+include *.yml
+include *.yaml
+include *.json
+include *.toml
+
+# Include all package data
+recursive-include ultimate_mcp_server *.py
+recursive-include ultimate_mcp_server *.json
+recursive-include ultimate_mcp_server *.yml
+recursive-include ultimate_mcp_server *.yaml
+recursive-include ultimate_mcp_server *.toml
+recursive-include ultimate_mcp_server *.md
+
+# Include examples
+recursive-include examples *.py
+recursive-include examples *.md
+recursive-include examples *.json
+recursive-include examples *.txt
+recursive-include examples *.yml
+recursive-include examples *.yaml
+
+# Include tests
+recursive-include tests *.py
+
+# Include configuration files
+include marqo_index_config.json.example
+include docker-compose.yml
+include Dockerfile
+
+# Include scripts
+include *.sh
+include *.bat
+include *.ps1
+
+# Exclude unwanted files
+exclude nul
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *~
+global-exclude .git*
+global-exclude __pycache__
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co] 
