@@ -11,12 +11,21 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 import aiofiles
-from diskcache import Cache
 
 from ultimate_mcp_server.config import get_config
 from ultimate_mcp_server.utils import get_logger
 
 logger = get_logger(__name__)
+
+def _get_diskcache():
+    """Lazy import for diskcache to avoid startup dependency."""
+    try:
+        from diskcache import Cache
+        return Cache
+    except ImportError as e:
+        logger.warning(f"Failed to import diskcache: {e}")
+        logger.warning("Disk caching will be disabled. Install with: pip install diskcache")
+        return None
 
 
 class CacheStats:
@@ -163,7 +172,14 @@ class CacheService:
         self.metrics = CacheStats()
         
         # Set up disk cache for large responses
-        self.disk_cache = Cache(directory=str(self.cache_dir / "disk_cache"))
+        Cache = _get_diskcache()
+        if Cache is not None:
+            self.disk_cache = Cache(directory=str(self.cache_dir / "disk_cache"))
+            self._disk_cache_available = True
+        else:
+            self.disk_cache = None
+            self._disk_cache_available = False
+            logger.warning("Disk caching disabled due to missing diskcache dependency")
         
         # Load existing cache if available
         if self.enable_persistence and self.cache_file.exists():
@@ -172,7 +188,8 @@ class CacheService:
         logger.info(
             f"Cache service initialized (enabled={self.enabled}, ttl={self.ttl}s, " +
             f"max_entries={self.max_entries}, persistence={self.enable_persistence}, " +
-            f"fuzzy_matching={self.enable_fuzzy_matching})",
+            f"fuzzy_matching={self.enable_fuzzy_matching}, " +
+            f"disk_cache={self._disk_cache_available})",
             emoji_key="cache"
         )
             
@@ -432,16 +449,21 @@ class CacheService:
             self._remove_from_fuzzy_lookup(key)
             return None
             
-        # Check if value is stored on disk
-        if isinstance(value, str) and value.startswith("disk:"):
-            disk_key = value[5:]
+        # Check for disk-stored large objects
+        if value == "__DISK_STORED__":
+            if not self._disk_cache_available:
+                # Disk cache not available, return None
+                return None
+            disk_key = f"large_{key}"
             value = self.disk_cache.get(disk_key)
             if value is None:
-                # Disk entry not found, remove from cache
+                # Remove invalid memory entry
                 del self.cache[key]
                 return None
-                
-        # Update statistics
+        else:
+            value = value
+        
+        # Update stats
         self.metrics.hits += 1
         
         # Automatically track token and cost savings if it's a ModelResponse
@@ -631,12 +653,11 @@ class CacheService:
             expiry_time = time.time() + ttl
             
             # Check if value should be stored on disk (for large objects)
-            if _should_store_on_disk(value):
-                disk_key = f"{key}_disk_{int(time.time())}"
+            if _should_store_on_disk(value) and self._disk_cache_available:
+                disk_key = f"large_{key}"
                 self.disk_cache.set(disk_key, value)
                 # Store reference to disk entry
-                disk_ref = f"disk:{disk_key}"
-                self.cache[key] = (disk_ref, expiry_time)
+                self.cache[key] = ("__DISK_STORED__", expiry_time)
             else:
                 # Store in memory
                 self.cache[key] = (value, expiry_time)
@@ -720,7 +741,8 @@ class CacheService:
         """Clear the cache."""
         self.cache.clear()
         self.fuzzy_lookup.clear()
-        self.disk_cache.clear()
+        if self.disk_cache:
+            self.disk_cache.clear()
         
         logger.info(
             "Cache cleared",
@@ -812,7 +834,8 @@ class CacheService:
                 "enabled": self.enable_persistence,
                 "directory": str(self.cache_dir)
             },
-            "fuzzy_matching": self.enable_fuzzy_matching
+            "fuzzy_matching": self.enable_fuzzy_matching,
+            "disk_cache": self._disk_cache_available
         }
         
     def update_saved_tokens(self, tokens: int, cost: float) -> None:

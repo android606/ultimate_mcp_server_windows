@@ -44,9 +44,34 @@ from typing import (
 )
 
 # Third-party imports
-import html2text
-from bs4 import BeautifulSoup, Tag
-from rapidfuzz import fuzz
+# import html2text  # REMOVED - Using lazy import
+# from bs4 import BeautifulSoup, Tag  # REMOVED - Using lazy import
+# from rapidfuzz import fuzz  # REMOVED - Using lazy import
+
+# Lazy import functions
+def _get_bs4():
+    """Lazy import for BeautifulSoup to avoid startup dependency."""
+    try:
+        from bs4 import BeautifulSoup, Tag
+        return BeautifulSoup, Tag
+    except ImportError as e:
+        raise ImportError("BeautifulSoup4 package is not installed. Please install with: pip install beautifulsoup4")
+
+def _get_html2text():
+    """Lazy import for html2text to avoid startup dependency."""
+    try:
+        import html2text
+        return html2text
+    except ImportError as e:
+        raise ImportError("html2text package is not installed. Please install with: pip install html2text")
+
+def _get_rapidfuzz():
+    """Lazy import for rapidfuzz to avoid startup dependency."""
+    try:
+        from rapidfuzz import fuzz
+        return fuzz
+    except ImportError as e:
+        raise ImportError("rapidfuzz package is not installed. Please install with: pip install rapidfuzz")
 
 # Local application imports
 from ultimate_mcp_server.constants import Provider
@@ -865,98 +890,81 @@ def _is_html_fragment(text: str) -> bool:
     return any(p.search(sample) for p in _HTML_PATTERNS)
 
 
-def _best_soup(html_txt: str) -> Tuple[BeautifulSoup, str]:
+def _best_soup(html_txt: str) -> Tuple[Any, str]:
     """Try progressively more forgiving parsers; fall back to empty soup."""
-    parsers = ("html.parser", "lxml", "html5lib")
-    last_exception = None
-    for p_name in parsers:
+    BeautifulSoup, Tag = _get_bs4()
+    
+    parsers_to_try = ["html.parser", "lxml", "html5lib"]
+    for p_name in parsers_to_try:
         try:
-            # Use ModuleNotFoundError for library availability checks
             return BeautifulSoup(html_txt, p_name), p_name
-        except ModuleNotFoundError:
-            logger.debug(f"HTML parser '{p_name}' not installed, skipping.")
-            continue
         except Exception as e_parse:
-            last_exception = e_parse
-            logger.debug(f"HTML parsing with '{p_name}' failed: {e_parse}")
+            logger.debug(f"Parser {p_name} failed on full HTML: {e_parse}")
             continue
 
-    if last_exception:
-        logger.warning(
-            f"All standard HTML parsers failed ({last_exception}), attempting fragment parsing."
-        )
-    wrapped_html = (
-        f"<!DOCTYPE html><html><head><title>Fragment</title></head><body>{html_txt}</body></html>"
-    )
     try:
+        # Last-ditch effort: wrap in minimal html/body structure and try basic parser
+        wrapped_html = f"<html><body>{html_txt}</body></html>"
         return BeautifulSoup(wrapped_html, "html.parser"), "html.parser-fragment"
     except Exception as e_frag:
-        logger.error(
+        logger.warning(
             f"Fragment parsing also failed: {e_frag}. Returning empty soup.", exc_info=True
         )
         return BeautifulSoup("", "html.parser"), "failed"
 
 
 def _clean_html(html_txt: str) -> Tuple[str, str]:
-    """Remove dangerous/pointless elements & attempt structural repair."""
-    soup, parser_used = _best_soup(html_txt)
-    if parser_used == "failed":
-        logger.warning("HTML cleaning skipped due to parsing failure.")
-        return html_txt, parser_used
-
-    tags_to_remove = [
-        "script",
-        "style",
-        "svg",
-        "iframe",
-        "canvas",
-        "noscript",
-        "meta",
-        "link",
-        "form",
-        "input",
-        "button",
-        "select",
-        "textarea",
-        "nav",
-        "aside",
-        "header",
-        "footer",
-        "video",
-        "audio",
-    ]
-    for el in soup(tags_to_remove):
-        el.decompose()
-
-    unsafe_attrs = ["style", "onclick", "onload", "onerror", "onmouseover", "onmouseout", "target"]
-    for tag in soup.find_all(True):
-        current_attrs = list(tag.attrs.keys())
-        for attr in current_attrs:
-            attr_val_str = str(tag.get(attr, "")).lower()
-            is_unsafe = (
-                attr in unsafe_attrs
-                or attr.startswith("on")
-                or attr.startswith("data-")
-                or (attr == "src" and ("javascript:" in attr_val_str or "data:" in attr_val_str))
-                or (attr == "href" and attr_val_str.startswith("javascript:"))
-            )
-            if is_unsafe and attr in tag.attrs:
-                del tag[attr]
+    """Cleans potentially unsafe HTML elements/attributes; returns (cleaned_html, parser_used)."""
+    BeautifulSoup, Tag = _get_bs4()
+    
     try:
+        soup, parser_used = _best_soup(html_txt)
+        
+        # Remove potentially problematic tags
+        tags_to_remove = [
+            "script",
+            "style", 
+            "noscript",
+            "iframe",
+            "object",
+            "embed",
+            "applet",
+            "form",
+            "input",
+            "button",
+            "textarea",
+            "select",
+            "option",
+            "meta",
+            "link",
+        ]
+        for el in soup(tags_to_remove):
+            el.decompose()
+
+        # Clean dangerous attributes
+        dangerous_attrs = ["onclick", "onload", "onerror", "href", "src", "action"]
+        for tag in soup.find_all(True):
+            current_attrs = list(tag.attrs.keys())
+            for attr in current_attrs:
+                attr_val_str = str(tag.get(attr, "")).lower()
+                is_unsafe = (
+                    attr.lower() in dangerous_attrs
+                    or "javascript:" in attr_val_str
+                    or "data:" in attr_val_str
+                    or "vbscript:" in attr_val_str
+                )
+                if is_unsafe and attr in tag.attrs:
+                    del tag[attr]
+
         text = str(soup)
-        text = html.unescape(text)
-        text = re.sub(r"[ \t\r\f\v]+", " ", text)
-        text = re.sub(r"\n\s*\n", "\n\n", text)
-        text = text.strip()
+        logger.debug(f"HTML cleaned with parser: {parser_used}")
+        return str(soup), parser_used
     except Exception as e:
-        logger.error(f"Error during HTML text processing (unescape/regex): {e}", exc_info=True)
         try:
             return str(soup), parser_used
         except Exception as stringify_error:
             logger.error(f"Could not stringify soup after error: {stringify_error}")
-            return html_txt, parser_used
-
-    return text, parser_used
+            return html_txt, "fallback"  # Return original if all else fails
 
 
 # --- Markdown Helpers ---
@@ -998,10 +1006,11 @@ def _improve(md: str) -> str:
     return md.strip()
 
 
-def _convert_html_table_to_markdown(table_tag: Tag) -> str:
+def _convert_html_table_to_markdown(table_tag: Any) -> str:
     """Converts a single BeautifulSoup table Tag to a Markdown string."""
     md_rows = []
-    num_cols = 0
+
+    # Try to find header from thead first
     header_row_tag = table_tag.find("thead")
     header_cells_tags = []
     if header_row_tag:
@@ -1073,32 +1082,42 @@ def _convert_html_table_to_markdown(table_tag: Tag) -> str:
 
 
 def _convert_html_tables_to_markdown(html_txt: str) -> str:
-    """Finds HTML tables and replaces them with Markdown format within the HTML string."""
-    soup, parser_used = _best_soup(html_txt)
-    if parser_used == "failed":
-        logger.warning("Skipping HTML table conversion due to parsing failure.")
-        return html_txt
-    tables = soup.find_all("table")
-    if not tables:
-        return html_txt
-    logger.debug(f"Found {len(tables)} HTML tables to convert to Markdown.")
-    for table_tag in tables:
-        try:
-            md_table_str = _convert_html_table_to_markdown(table_tag)
-            if md_table_str:
+    """Convert HTML tables to Markdown format."""
+    BeautifulSoup, Tag = _get_bs4()
+    
+    try:
+        soup, parser_used = _best_soup(html_txt)
+
+        # Find all tables and convert them
+        tables = soup.find_all("table")
+        if not tables:
+            return str(soup)
+
+        for table_tag in tables:
+            try:
+                md_table_str = _convert_html_table_to_markdown(table_tag)
+                # Replace the table with the markdown version
                 placeholder = soup.new_string(f"\n\n{md_table_str}\n\n")
                 table_tag.replace_with(placeholder)
-            else:
+                # Clean up the old table
                 table_tag.decompose()
-        except Exception as e:
-            logger.error(f"Failed to convert a table to Markdown: {e}", exc_info=True)
-    return str(soup)
+            except Exception as e:
+                logger.warning(f"Failed to convert table to markdown: {e}")
+
+        return str(soup)
+    except Exception as e:
+        logger.error(f"Error converting HTML tables: {e}")
+        return html_txt
 
 
 def _html_to_md_core(html_txt: str, links: bool, imgs: bool, tbls: bool, width: int) -> str:
     """Convert HTML to Markdown using primary and fallback libraries."""
     try:
-        h = html2text.HTML2Text()
+        html2text_module = _get_html2text()
+        if html2text_module is None:
+            raise ImportError("html2text module not available")
+        
+        h = html2text_module.HTML2Text()
         h.ignore_links = not links
         h.ignore_images = not imgs
         processed_html = html_txt
@@ -1119,88 +1138,22 @@ def _html_to_md_core(html_txt: str, links: bool, imgs: bool, tbls: bool, width: 
         return md_text.strip()
     except Exception as e_html2text:
         logger.warning(f"html2text failed ({e_html2text}); attempting fallback with markdownify")
-        if _markdownify_fallback and callable(_markdownify_fallback):
-            try:
-                md_opts = {
-                    "strip": [
-                        "script",
-                        "style",
-                        "meta",
-                        "link",
-                        "head",
-                        "iframe",
-                        "form",
-                        "button",
-                        "input",
-                        "select",
-                        "textarea",
-                        "nav",
-                        "aside",
-                        "header",
-                        "footer",
-                        "svg",
-                        "canvas",
-                        "video",
-                        "audio",
-                    ],
-                    "convert": [
-                        "a",
-                        "p",
-                        "img",
-                        "br",
-                        "hr",
-                        "h1",
-                        "h2",
-                        "h3",
-                        "h4",
-                        "h5",
-                        "h6",
-                        "li",
-                        "ul",
-                        "ol",
-                        "blockquote",
-                        "code",
-                        "pre",
-                        "strong",
-                        "em",
-                        "b",
-                        "i",
-                        "table",
-                        "tr",
-                        "td",
-                        "th",
-                    ],
-                    "heading_style": "ATX",
-                    "bullets": "-",
-                    "strong_em_symbol": "*",
-                    "autolinks": False,
-                }
-                if not links:
-                    md_opts["convert"] = [tag for tag in md_opts["convert"] if tag != "a"]
-                if not imgs:
-                    md_opts["convert"] = [tag for tag in md_opts["convert"] if tag != "img"]
-                if not tbls:
-                    md_opts["convert"] = [
-                        tag for tag in md_opts["convert"] if tag not in ["table", "tr", "td", "th"]
-                    ]
-                md_text = _markdownify_fallback(html_txt, **md_opts)
-                logger.debug("Markdownify fallback conversion successful.")
-                return md_text.strip()
-            except Exception as e_markdownify:
-                logger.error(f"Markdownify fallback also failed: {e_markdownify}", exc_info=True)
-                raise ToolError(
-                    "MARKDOWN_CONVERSION_FAILED",
-                    details={
-                        "reason": "Both failed",
-                        "html2text_error": str(e_html2text),
-                        "markdownify_error": str(e_markdownify),
-                    },
-                ) from e_markdownify
-        else:
-            logger.error("html2text failed and markdownify fallback is not available.")
+        # Markdownify fallback is not available, use simple text extraction
+        try:
+            BeautifulSoup, Tag = _get_bs4()
+            soup, _ = _best_soup(processed_html)
+            # Simple text extraction as fallback
+            text = soup.get_text(separator=' ', strip=True)
+            return text
+        except Exception as e_fallback:
+            logger.error(f"All HTML to markdown conversion methods failed: {e_fallback}", exc_info=True)
             raise ToolError(
                 "MARKDOWN_CONVERSION_FAILED",
-                details={"reason": "html2text failed, no fallback", "error": str(e_html2text)},
+                details={
+                    "reason": "All conversion methods failed", 
+                    "html2text_error": str(e_html2text),
+                    "fallback_error": str(e_fallback),
+                },
             ) from e_html2text
 
 
@@ -1856,7 +1809,7 @@ Corrected Output ({output_format}):"""
         # --- Post-processing LLM Output ---
         # Remove potential preamble/apologies
         enhanced_text = re.sub(
-            r"^(Okay, |Here is |Sure, |Here['’]s |Certainly, |Based on the text provided.*?\n)[:\n]?\s*",
+            r"^(Okay, |Here is |Sure, |Here['']s |Certainly, |Based on the text provided.*?\n)[:\n]?\s*",
             "",
             enhanced_text,
             flags=re.IGNORECASE | re.DOTALL,
@@ -2726,2587 +2679,222 @@ async def convert_document(
                     raw_text_pages = processed_pages_text
                     logger.info(f"OCR extraction successful for {len(raw_text_pages)} pages.")
 
-            # --- Stage 2 & 3 (Post-processing for non-Docling) ---
-            if strategy != "docling":
-                if not raw_text_pages:
-                    raise ToolError(
-                        "EXTRACTION_FAILED",
-                        details={"reason": f"Strategy '{strategy_used}' yielded no text."},
-                    )
-                final_raw_text = "\n\n".join(raw_text_pages).strip()
-                if section_filter and final_raw_text:
+            # --- Post-Processing (common to all strategies) ---
+            if raw_text_pages:
+                final_raw_text = "\n\n".join(raw_text_pages)
+                if section_filter:
+                    # Simple section filtering by keyword
+                    filtered_pages = []
+                    for page_text in raw_text_pages:
+                        if section_filter.lower() in page_text.lower():
+                            filtered_pages.append(page_text)
+                    final_raw_text = "\n\n".join(filtered_pages)
+                    logger.info(f"Applied section filter '{section_filter}', {len(filtered_pages)} pages match.")
+
+                # LLM Enhancement if requested
+                if enhance_with_llm and final_raw_text.strip():
                     try:
-                        pat = re.compile(section_filter, re.I | re.M)
-                        blocks = re.split(r"(\n\s*\n)", final_raw_text)
-                        kept_content = ""
-                        for i in range(0, len(blocks), 2):
-                            block = blocks[i]
-                            separator = blocks[i + 1] if i + 1 < len(blocks) else ""
-                        if block and pat.search(block):
-                            kept_content += block + separator
-                        final_raw_text = kept_content.strip()
-                        if not final_raw_text:
-                            logger.warning(
-                                f"Section filter '{section_filter}' removed all content."
+                        with _span("llm_enhancement"):
+                            enhanced_text = await _ocr_enhance_text_chunk(
+                                final_raw_text, effective_output_format, ocr_options.get("remove_headers", False)
                             )
-                        else:
-                            logger.info(f"Applied section filter: '{section_filter}'")
-                    except Exception as e_filter:
-                        logger.warning(f"Failed to apply section filter: {e_filter}")
-
-                if enhance_with_llm and final_raw_text:
-                    logger.info("Applying LLM enhancement.")
-                    result_content = ""
-                    with _span("llm_text_enhancement"):
-                        chunks = _ocr_split_text_into_chunks(
-                            final_raw_text
-                        )  # Use helper defined above
-                        if chunks:
-                            enhancement_tasks = [
-                                _ocr_enhance_text_chunk(
-                                    chunk,
-                                    output_format=effective_output_format,
-                                    remove_headers=ocr_options.get("remove_headers", False),
-                                )
-                                for chunk in chunks
-                            ]  # Use helper defined above
-                            enhanced_chunks = await asyncio.gather(*enhancement_tasks)
-                            result_content = "\n\n".join(enhanced_chunks).strip()
-                        else:
-                            logger.warning("Text empty pre-LLM.")
+                        result_content = enhanced_text
+                        logger.info("LLM enhancement completed successfully.")
+                    except Exception as e_enhance:
+                        logger.warning(f"LLM enhancement failed: {e_enhance}. Using raw text.")
+                        result_content = final_raw_text
                 else:
-                    result_content = final_raw_text or ""
-                if not doc_metadata or doc_metadata.get("is_fallback"):
-                    doc_metadata = _get_basic_metadata(str(result_content), total_doc_pages)
-                if enhance_with_llm and final_raw_text and ocr_options.get("assess_quality", False):
-                    logger.info("Performing OCR quality assessment.")
-                    with _span("ocr_quality_assessment"):
-                        quality_metrics = await _ocr_assess_text_quality(
-                            final_raw_text, str(result_content)
-                        )  # Use helper defined above
+                    result_content = final_raw_text
 
-            # ======================== POST-PROCESSING & RETURN ========================
-            final_content = result_content
-            if save_to_file and strategy != "docling":  # Docling saving handled above
-                fp = (
-                    Path(output_path)
-                    if output_path
-                    else _tmp_path(input_name, effective_output_format)
-                )
-                fp.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    content_to_save = (
-                        _json(final_content)
-                        if isinstance(final_content, dict)
-                        else str(final_content)
-                    )
-                    fp.write_text(content_to_save, encoding="utf-8")
-                    logger.info(
-                        f"Saved output ({effective_output_format}, strategy: {strategy_used}) to {fp}"
-                    )
-                    doc_metadata["saved_output_path"] = str(fp)
-                except Exception as e_save:
-                    logger.error(f"Failed to save output file to {fp}: {e_save}", exc_info=True)
-                    doc_metadata["save_error"] = f"Failed to save: {e_save}"
-
-            elapsed = round(time.time() - t0, 3)
-            response: Dict[str, Any] = {
-                "success": True,
-                "content": final_content,
-                "output_format": effective_output_format,
-                "processing_time": elapsed,
-                "document_metadata": doc_metadata,
+            # Final metadata and quality assessment
+            if not doc_metadata:
+                doc_metadata = _get_basic_metadata(str(result_content), total_doc_pages)
+            
+            doc_metadata.update({
                 "extraction_strategy_used": strategy_used,
-            }
-            if final_raw_text is not None and strategy != "docling":
-                response["raw_text"] = final_raw_text
-            if quality_metrics is not None:
-                response["ocr_quality_metrics"] = quality_metrics
-            if "saved_output_path" in doc_metadata:
-                response["file_path"] = doc_metadata["saved_output_path"]
-            logger.info(
-                f"Completed conversion '{input_name}' -> {effective_output_format} (strategy: {strategy_used}) in {elapsed}s"
-            )
-            return response
+                "output_format": effective_output_format,
+                "processing_time_seconds": round(time.time() - t0, 2),
+                "enhanced_with_llm": enhance_with_llm,
+                "pages_processed": total_doc_pages,
+            })
+
+            # Quality assessment if requested
+            if ocr_options.get("assess_quality", False) and enhance_with_llm and final_raw_text:
+                try:
+                    with _span("quality_assessment"):
+                        quality_metrics = await _ocr_assess_text_quality(final_raw_text, str(result_content))
+                    doc_metadata["quality_assessment"] = quality_metrics
+                except Exception as e_quality:
+                    logger.warning(f"Quality assessment failed: {e_quality}")
+
+    except ToolError:
+        raise
     except Exception as e:
-        logger.error(f"Error in convert_document for '{input_name}': {e}", exc_info=True)
-        if isinstance(e, (ToolInputError, ToolError)):
-            raise e
-        raise ToolError("CONVERSION_FAILED", details={"input": input_name, "error": str(e)}) from e
+        logger.error(f"Document conversion failed: {e}", exc_info=True)
+        raise ToolError("CONVERSION_FAILED", details={"error": str(e)}) from e
+
+    return {
+        "content": result_content,
+        "metadata": doc_metadata,
+        "format": effective_output_format,
+        "processing_time": round(time.time() - t0, 2),
+        "success": True,
+    }
 
 
-# <<< Part 1 code goes here >>>
-
-###############################################################################
-# Chunking Helpers (Internal)                                                 #
-###############################################################################
-
-
-async def _internal_token_chunks(doc: str, size: int, overlap: int) -> List[str]:
-    """Chunk document by tokens, respecting sentence boundaries (Internal Helper)."""
-    enc = _get_tiktoken_encoder()
-    if not enc:
-        logger.warning("Tiktoken not available, falling back to character chunking.")
-        char_size = size * 4
-        char_overlap = overlap * 4
-        return await _internal_char_chunks(doc, char_size, char_overlap)
-    if not doc:
-        return []
-    try:
-        tokens = enc.encode(doc, disallowed_special=())
-    except Exception as e:
-        logger.error(f"Tiktoken encoding failed: {e}. Falling back to char.", exc_info=True)
-        return await _internal_char_chunks(doc, size * 4, overlap * 4)
-    if not tokens:
-        return []
-    chunks: List[str] = []
-    current_pos = 0
-    n_tokens = len(tokens)
-    try:
-        sentence_end_tokens = {enc.encode(p)[0] for p in (".", "?", "!", "\n")}
-    except Exception as e:
-        encoding_name = getattr(enc, "name", "unknown")
-        if encoding_name == "cl100k_base":
-            sentence_end_tokens = {13, 30, 106, 198}
-        else:
-            try:
-                sentence_end_tokens = {enc.encode("\n")[0]}
-            except Exception:  # If even newline encoding fails
-                logger.error(
-                    f"Cannot encode even newline token for encoding '{encoding_name}'. Using empty set for sentence ends."
-                )
-                sentence_end_tokens = set()
-        logger.warning(
-            f"Could not encode sentence ends: {e}. Using fallback tokens: {sentence_end_tokens}"
-        )
-    while current_pos < n_tokens:
-        end_pos = min(current_pos + size, n_tokens)
-        best_split_pos = end_pos
-        if end_pos < n_tokens:
-            lookback_distance = min(overlap, size // 4, end_pos - current_pos)
-            search_start = max(current_pos, end_pos - lookback_distance)
-            for k in range(end_pos - 1, search_start - 1, -1):
-                if tokens[k] in sentence_end_tokens:
-                    best_split_pos = k + 1
-                    break
-        chunk_token_ids = tokens[current_pos:best_split_pos]
-        if not chunk_token_ids:
-            if current_pos >= n_tokens:
-                break
-            current_pos += 1
-            continue
-        try:
-            chunk_text = enc.decode(chunk_token_ids).strip()
-            if chunk_text:
-                chunks.append(chunk_text)
-        except Exception as decode_err:  # Keep variable for logging
-            logger.error(
-                f"Tiktoken decode failed for {current_pos}:{best_split_pos}: {decode_err}",
-                exc_info=False,
-            )
-        next_start_pos = best_split_pos - overlap
-        current_pos = max(current_pos + 1, next_start_pos)
-        if current_pos <= best_split_pos - size:
-            current_pos = best_split_pos
-    return chunks
-
-
-async def _internal_char_chunks(doc: str, size: int, overlap: int) -> List[str]:
-    """Chunk document by characters, respecting sentence/paragraph boundaries (Internal Helper)."""
-    if not doc:
-        return []
-    chunks: List[str] = []
-    current_pos = 0
-    n_chars = len(doc)
-    sentence_ends = (". ", "? ", "! ", "\n\n")
-    softer_breaks = ("\n", "; ", ": ", ", ", ".)", "?)", "!)", "\t", " ")
-    while current_pos < n_chars:
-        end_pos = min(current_pos + size, n_chars)
-        best_split_pos = end_pos
-        if end_pos < n_chars:
-            lookback_window_start = max(current_pos, end_pos - int(size * 0.2), end_pos - 150)
-            best_found_pos = -1
-            for marker in sentence_ends:
-                found_pos = doc.rfind(marker, lookback_window_start, end_pos)
-                if found_pos != -1:
-                    best_found_pos = max(best_found_pos, found_pos + len(marker))
-            if best_found_pos == -1:
-                for marker in softer_breaks:
-                    found_pos = doc.rfind(marker, lookback_window_start, end_pos)
-                    if found_pos != -1:
-                        best_found_pos = max(best_found_pos, found_pos + len(marker))
-            if best_found_pos > current_pos:
-                best_split_pos = best_found_pos
-        actual_chunk_text = doc[current_pos:best_split_pos].strip()
-        if actual_chunk_text:
-            chunks.append(actual_chunk_text)
-        next_start_pos = best_split_pos - overlap
-        current_pos = max(current_pos + 1, next_start_pos)
-        if current_pos <= best_split_pos - size:
-            current_pos = best_split_pos
-    return chunks
-
-
-async def _internal_paragraph_chunks(doc: str, size: int, overlap: int) -> List[str]:
-    """Chunk document by paragraphs, combining small ones (Internal Helper)."""
-    if not doc:
-        return []
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", doc) if p.strip()]
-    if not paragraphs:
-        return []
-    chunks = []
-    current_chunk_paragraphs: List[str] = []
-    current_chunk_len = 0
-
-    def get_len(text: str) -> int:
-        return len(text)
-
-    def is_markdown_table(text: str) -> bool:
-        lines = text.strip().split("\n")
-        return (
-            len(lines) >= 2
-            and all(line.strip().startswith("|") for line in lines[:2])
-            and "|" in lines[0]
-            and re.search(r"\|.*?(-{3,}|:{1,2}-{1,}:?).*?\|", lines[1]) is not None
-        )
-
-    for p in paragraphs:
-        p_len = get_len(p)
-        potential_new_len = (
-            current_chunk_len + (get_len("\n\n") if current_chunk_paragraphs else 0) + p_len
-        )
-        is_table = is_markdown_table(p)
-        if current_chunk_paragraphs and potential_new_len > size and not is_table:
-            chunks.append("\n\n".join(current_chunk_paragraphs))
-            current_chunk_paragraphs = [p]
-            current_chunk_len = p_len
-        elif p_len > size and not is_table:
-            logger.warning(
-                f"Paragraph (len {p_len}) starting '{p[:50]}...' exceeds size {size}. Splitting."
-            )
-            if current_chunk_paragraphs:
-                chunks.append("\n\n".join(current_chunk_paragraphs))
-            sub_chunks = await _internal_char_chunks(p, size, overlap)
-            chunks.extend(sub_chunks)
-            current_chunk_paragraphs = []
-            current_chunk_len = 0
-        else:
-            current_chunk_paragraphs.append(p)
-            current_chunk_len = potential_new_len
-    if current_chunk_paragraphs:
-        chunks.append("\n\n".join(current_chunk_paragraphs))
-    logger.info(f"Chunked into {len(chunks)} paragraphs/groups.")
-    return chunks
-
-
-async def _internal_section_chunks(doc: str, size: int, overlap: int) -> List[str]:
-    """Chunk document by identified sections (Internal Helper). Falls back to paragraphs."""
-    try:
-        # Call main tool function (defined in Part 3)
-        section_result = await identify_sections(document=doc)
-        if (
-            isinstance(section_result, dict)
-            and section_result.get("success")
-            and isinstance(section_result.get("sections"), list)
-        ):
-            sections = section_result["sections"]
-        else:
-            logger.warning(
-                "identify_sections failed/unexpected format. Falling back to paragraphs."
-            )
-            return await _internal_paragraph_chunks(doc, size, overlap)
-        if not sections:
-            logger.info("No sections identified, using paragraph fallback.")
-            return await _internal_paragraph_chunks(doc, size, overlap)
-        section_texts: List[str] = []
-        for s in sections:
-            title = s.get("title", "").strip()
-            text = s.get("text", "").strip()
-            if text:
-                use_title = title and title.lower() not in [
-                    "introduction",
-                    "main content",
-                    "body",
-                    "abstract",
-                    "summary",
-                ]
-                full_section_text = f"## {title}\n\n{text}" if use_title else text
-                section_texts.append(full_section_text.strip())
-
-        def contains_markdown_table(text: str) -> bool:
-            lines = text.strip().split("\n")
-            return (
-                len(lines) >= 2
-                and all(line.strip().startswith("|") for line in lines[:2])
-                and "|" in lines[0]
-                and re.search(r"\|.*?(-{3,}|:{1,2}-{1,}:?).*?\|", lines[1]) is not None
-            )
-
-        final_chunks = []
-        for text in section_texts:
-            text_len = len(text)
-            has_table = contains_markdown_table(text)
-            should_split = text_len > size * 1.1 and (not has_table or text_len > size * 2)
-            if should_split:
-                logger.warning(
-                    f"Section chunk (len {text_len}) starting '{text[:50]}...' exceeds size {size}. Sub-chunking."
-                )
-                sub_chunks = await _internal_paragraph_chunks(text, size, overlap)
-                final_chunks.extend(sub_chunks)
-            elif text:
-                final_chunks.append(text)
-        return final_chunks
-    except Exception as e:
-        logger.error(f"Section chunking failed: {e}. Falling back to paragraphs.", exc_info=True)
-        return await _internal_paragraph_chunks(doc, size, overlap)
-
-
-###############################################################################
-# Standalone Tool Functions (Continued)                                       #
-###############################################################################
-
-
-# ------------------------ Chunking Tool Function (Merged) --------------------
 @with_tool_metrics
 @with_error_handling
 async def chunk_document(
     document: str,
-    *,
     chunk_size: int = 1000,
     chunk_method: str = "paragraph",
     chunk_overlap: int = 0,
-    chunk_strategy: Optional[str] = None,  # Keep alias for compatibility
+    chunk_strategy: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Split document text into chunks using various strategies (Standalone Tool Function).
-
+    Split document text into chunks using various strategies.
+    
     Args:
         document: Text content to chunk.
         chunk_size: Target maximum size of each chunk (meaning depends on method: tokens or characters).
         chunk_method: Chunking method ('token', 'character', 'section', 'paragraph').
-        chunk_overlap: Number of tokens/characters to overlap between chunks (for token/char methods).
-                       Overlap logic for paragraph/section is heuristic/simplified.
+        chunk_overlap: Number of tokens/characters to overlap between chunks.
         chunk_strategy: Alias for chunk_method (for backward compatibility).
-
+    
     Returns:
         Dictionary containing list of chunked text strings.
-        Example: {"chunks": ["chunk 1 text...", "chunk 2 text..."], "success": True}
     """
-    # Use module logger directly
-    _logger = logger
-
-    if not document or not isinstance(document, str):
-        _logger.warning("Chunking called with empty or invalid document input.")
-        return {"chunks": [], "success": True}
-
-    size = max(100, int(chunk_size))
-    overlap = max(0, min(int(chunk_overlap), size // 3))
-    method = (chunk_strategy or chunk_method or "paragraph").lower()
-
-    # Map to internal helpers
-    chunker_map = {
-        "token": _internal_token_chunks,
-        "character": _internal_char_chunks,
-        "section": _internal_section_chunks,  # Relies on identify_sections tool
-        "paragraph": _internal_paragraph_chunks,
-    }
-
-    strat_func = chunker_map.get(method)
-    if not strat_func:
-        _logger.warning(f"Unknown chunk_method '{method}'. Defaulting to 'paragraph'.")
-        strat_func = _internal_paragraph_chunks
-        method = "paragraph"
-
-    _logger.info(f"Chunking document using method='{method}', size={size}, overlap={overlap}")
-    chunks: List[str] = []
-
-    try:
-        t0_chunk = time.time()
-        chunks = await strat_func(document, size, overlap)
-        elapsed_chunk = time.time() - t0_chunk
-        _logger.info(f"Chunking completed in {elapsed_chunk:.3f}s")
-    except Exception as e:
-        _logger.error(f"Error during chunking operation ({method}): {e}", exc_info=True)
-        raise ToolError("CHUNKING_FAILED", details={"method": method, "error": str(e)}) from e
-
-    final_chunks = [c for c in chunks if isinstance(c, str) and c]
-    _logger.info(f"Generated {len(final_chunks)} chunks.")
-    return {"chunks": final_chunks, "success": True}
-
-
-###############################################################################
-# HTML Processing Helpers & Tools                                             #
-###############################################################################
-
-
-# --- HTML Extraction Helpers ---
-def _extract_readability(html_txt: str) -> str:
-    """Extract main content using readability-lxml (Standalone)."""
-    if not _READABILITY_AVAILABLE or not readability:
-        logger.warning("Readability-lxml not installed. Cannot use readability extraction.")
-        return ""
-    try:
-        # Adjust readability settings for better extraction
-        # Use setdefault to avoid modifying the original regexes if called multiple times
-        # Ensure the default regexes exist before modifying
-        default_unlikely = readability.htmls.DEFAULT_REGEXES.get(
-            "unlikelyCandidates", re.compile(r"$^")
-        )  # Default to matching nothing
-        readability.htmls.DEFAULT_REGEXES["unlikelyCandidates"] = re.compile(
-            default_unlikely.pattern
-            + "|aside|footer|nav|sidebar|footnote|advertisement|related|recommend|share|social|comment|meta",
-            re.I,
-        )
-
-        default_positive = readability.htmls.DEFAULT_REGEXES.get("positive", re.compile(r"$^"))
-        readability.htmls.DEFAULT_REGEXES["positive"] = re.compile(
-            default_positive.pattern + "|article|main|content|post|entry|body", re.I
-        )
-
-        default_negative = readability.htmls.DEFAULT_REGEXES.get("negative", re.compile(r"$^"))
-        readability.htmls.DEFAULT_REGEXES["negative"] = re.compile(
-            default_negative.pattern + "|widget|menu|legal|promo|disclaimer", re.I
-        )
-
-        doc = readability.Document(html_txt)
-        summary_html = doc.summary(html_partial=True)
-        return summary_html
-    except Exception as e:
-        logger.warning(f"Readability extraction failed: {e}", exc_info=True)
-        return ""
-
-
-def _extract_trafilatura(html_txt: str) -> str:
-    """Extract main content using trafilatura (Standalone)."""
-    if not _TRAFILATURA_AVAILABLE or not trafilatura:
-        logger.warning("Trafilatura not installed. Cannot use trafilatura extraction.")
-        return ""
-    try:
-        extracted = trafilatura.extract(
-            html_txt,
-            include_comments=False,
-            include_tables=True,
-            favor_precision=True,
-            deduplicate=True,
-            target_language=None,
-            include_formatting=True,
-            output_format="html",
-        )
-        return extracted or ""
-    except Exception as e:
-        logger.warning(f"Trafilatura extraction failed: {e}", exc_info=True)
-        return ""
-
-
-# --- HTML Processing Tools ---
-
-
-@with_tool_metrics
-@with_error_handling
-async def clean_and_format_text_as_markdown(
-    text: str,
-    force_markdown_conversion: bool = False,
-    extraction_method: str = "auto",  # auto, readability, trafilatura, none
-    preserve_tables: bool = True,
-    preserve_links: bool = True,
-    preserve_images: bool = False,
-    max_line_length: int = 0,  # 0 means no wrapping
-) -> Dict[str, Any]:
-    """
-    Convert plain text or HTML to clean Markdown, optionally extracting main content (Standalone Tool).
-    """
-    start_time = time.time()
-    if not text or not isinstance(text, str):
-        raise ToolInputError("Input text must be a non-empty string", param_name="text")
-
-    # Detect content type (function defined in Part 3)
-    content_type_result = await detect_content_type(text)
-    input_type = content_type_result.get("content_type", "unknown")
-    input_confidence = content_type_result.get("confidence", 0.0)
-
-    was_html = (input_type == "html" and input_confidence > 0.3) or (
-        input_type != "markdown" and input_type != "code" and _is_html_fragment(text)
-    )
-
-    extraction_method_used = "none"
-    processed_text = text
-
-    logger.debug(f"Input content type detected as: {input_type}, treating as HTML: {was_html}")
-
-    if was_html or force_markdown_conversion:
-        was_html = True
-        actual_extraction = extraction_method.lower()
-        if actual_extraction == "auto":
-            if _TRAFILATURA_AVAILABLE:
-                actual_extraction = "trafilatura"
-            elif _READABILITY_AVAILABLE:
-                actual_extraction = "readability"
+    if chunk_strategy:
+        chunk_method = chunk_strategy
+    
+    chunks = []
+    
+    if chunk_method == "paragraph":
+        # Split by paragraphs
+        paragraphs = document.split('\n\n')
+        current_chunk = ""
+        
+        for para in paragraphs:
+            if len(current_chunk) + len(para) + 2 <= chunk_size:
+                if current_chunk:
+                    current_chunk += "\n\n" + para
+                else:
+                    current_chunk = para
             else:
-                actual_extraction = "none"
-            logger.debug(f"Auto-selected extraction method: {actual_extraction}")
-
-        extraction_method_used = actual_extraction
-
-        if actual_extraction != "none":
-            extracted_html = ""
-            logger.info(f"Attempting HTML content extraction using: {actual_extraction}")
-            try:
-                if actual_extraction == "readability":
-                    extracted_html = _extract_readability(processed_text)
-                elif actual_extraction == "trafilatura":
-                    extracted_html = _extract_trafilatura(processed_text)
-
-                if extracted_html and len(extracted_html.strip()) > 50:
-                    processed_text = extracted_html
-                    logger.info(f"Successfully extracted content using {actual_extraction}")
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = para
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+    
+    elif chunk_method == "character":
+        # Split by character count
+        for i in range(0, len(document), chunk_size - chunk_overlap):
+            chunk = document[i:i + chunk_size]
+            chunks.append(chunk)
+    
+    elif chunk_method == "token":
+        # Simple token-based splitting (rough approximation: 4 chars per token)
+        approx_tokens = len(document) // 4
+        token_chunk_size = chunk_size * 4
+        for i in range(0, len(document), token_chunk_size - (chunk_overlap * 4)):
+            chunk = document[i:i + token_chunk_size]
+            chunks.append(chunk)
+    
+    else:  # Default to sentence-based
+        sentences = document.split('. ')
+        current_chunk = ""
+        
+        for sentence in sentences:
+            if len(current_chunk) + len(sentence) + 2 <= chunk_size:
+                if current_chunk:
+                    current_chunk += ". " + sentence
                 else:
-                    logger.warning(
-                        f"{actual_extraction.capitalize()} extraction yielded minimal content. Using original."
-                    )
-                    extraction_method_used = f"{actual_extraction} (failed)"
-            except Exception as e_extract:
-                logger.error(
-                    f"Error during {actual_extraction} extraction: {e_extract}", exc_info=True
-                )
-                extraction_method_used = f"{actual_extraction} (error)"
-
-        try:
-            logger.info(
-                f"Converting HTML (extracted: {extraction_method_used != 'none'}) to Markdown..."
-            )
-            md_text = _html_to_md_core(
-                processed_text,
-                links=preserve_links,
-                imgs=preserve_images,
-                tbls=preserve_tables,
-                width=0,  # Disable html2text wrapping here
-            )
-            md_text = _sanitize(md_text)
-            md_text = _improve(md_text)
-            processed_text = md_text
-        except Exception as e_conv:
-            logger.error(f"Error converting HTML to Markdown: {e_conv}", exc_info=True)
-            processed_text = _sanitize(processed_text)
-            logger.warning("HTML to Markdown conversion failed, returning sanitized input.")
-
-    elif input_type == "markdown" and not force_markdown_conversion:
-        logger.debug("Input detected as Markdown, applying cleanup.")
-        processed_text = _sanitize(text)
-        processed_text = _improve(processed_text)
-
-    elif input_type == "text" or input_type == "unknown":
-        logger.debug(f"Input detected as {input_type}, applying basic text formatting.")
-        processed_text = re.sub(r"\n{2,}", "<TEMP_PARA_BREAK>", text)
-        processed_text = re.sub(r"\n", " ", processed_text)
-        processed_text = processed_text.replace("<TEMP_PARA_BREAK>", "\n\n")
-        processed_text = _sanitize(processed_text)
-        processed_text = _improve(processed_text)
-
-    # Apply line wrapping if requested (using textwrap module)
-    if max_line_length > 0:
-        try:
-            wrapped_lines = []
-            current_block = ""
-            in_code_block = False
-            for line in processed_text.split("\n"):
-                line_stripped = line.strip()
-                if line_stripped.startswith("```"):
-                    in_code_block = not in_code_block
-                    if current_block:
-                        wrapped_lines.extend(
-                            textwrap.wrap(
-                                current_block.strip(),
-                                width=max_line_length,
-                                break_long_words=False,
-                                break_on_hyphens=False,
-                            )
-                        )
-                    current_block = ""
-                    wrapped_lines.append(line)
-                elif (
-                    in_code_block
-                    or line_stripped.startswith(("#", ">", "- ", "* ", "+ "))
-                    or re.match(r"^\d+\.\s", line_stripped)
-                    or line_stripped == ""
-                    or line_stripped.startswith("|")
-                ):
-                    if current_block:
-                        wrapped_lines.extend(
-                            textwrap.wrap(
-                                current_block.strip(),
-                                width=max_line_length,
-                                break_long_words=False,
-                                break_on_hyphens=False,
-                            )
-                        )
-                    current_block = ""
-                    wrapped_lines.append(line)
-                else:
-                    current_block += line + " "
-            if current_block:
-                wrapped_lines.extend(
-                    textwrap.wrap(
-                        current_block.strip(),
-                        width=max_line_length,
-                        break_long_words=False,
-                        break_on_hyphens=False,
-                    )
-                )
-            processed_text = "\n".join(wrapped_lines)
-        except Exception as e_wrap:
-            logger.error(f"Error during line wrapping: {e_wrap}")
-
-    processing_time = time.time() - start_time
+                    current_chunk = sentence
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = sentence
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+    
     return {
+        "chunks": chunks,
         "success": True,
-        "markdown_text": processed_text.strip(),
-        "original_content_type": input_type,
-        "was_html": was_html,
-        "extraction_method_used": extraction_method_used,
-        "processing_time": processing_time,
+        "chunk_count": len(chunks),
+        "method": chunk_method,
+        "chunk_size": chunk_size,
+        "overlap": chunk_overlap
     }
-
-
-@with_tool_metrics
-@with_error_handling
-async def detect_content_type(text: str) -> Dict[str, Any]:
-    """
-    Detect if text is primarily HTML, Markdown, code, or plain text (Standalone Tool).
-    """
-    t0 = time.time()
-    if not text or not isinstance(text, str):
-        raise ToolInputError("Input text must be a non-empty string", param_name="text")
-
-    sample_size = 4000
-    if len(text) > sample_size * 2:
-        sample = text[:sample_size] + "\n" + text[-sample_size:]
-    else:
-        sample = text
-
-    scores = {"html": 0.0, "markdown": 0.0, "code": 0.0, "text": 1.0}
-    detection_criteria: Dict[str, List[str]] = {"html": [], "markdown": [], "code": [], "text": []}
-    max_score = 0.0
-
-    for type_name, patterns in _CONTENT_PATTERNS.items():
-        type_score = 0.0
-        for pattern, weight in patterns:
-            matches = pattern.findall(sample)
-            if matches:
-                type_score += weight * 0.2
-                density_score = min(1.0, len(matches) / 10.0)
-                type_score += weight * density_score * 0.8
-                detection_criteria[type_name].append(
-                    f"Pattern matched ({len(matches)}x): {pattern.pattern[:50]}..."
-                )
-
-        scores[type_name] = min(scores[type_name] + type_score, 5.0)
-        max_score = max(max_score, scores[type_name])
-
-    if scores["html"] > 0.1 and any(
-        p[0].pattern in ["<html", "<head", "<body", "<!DOCTYPE"] for p in _CONTENT_PATTERNS["html"]
-    ):
-        scores["html"] *= 1.5
-
-    if max_score < 0.5:
-        if (
-            len(re.findall(r"\b(the|a|is|was|in|on|at)\b", sample, re.I)) > 10
-            and len(re.findall(r"[.?!]\s", sample)) > 3
-        ):
-            detection_criteria["text"].append("Natural language indicators found")
-            scores["text"] += 0.5
-
-    if max_score > 0.2:
-        scores["text"] *= 0.8
-
-    primary_type = max(scores, key=lambda k: scores[k])
-
-    confidence = min(1.0, scores[primary_type] / max(1.0, max_score * 0.8))
-    sorted_scores = sorted(scores.values(), reverse=True)
-    if len(sorted_scores) > 1 and sorted_scores[0] > sorted_scores[1] * 2:
-        confidence = min(1.0, confidence * 1.2)
-    confidence = min(0.95, confidence) if scores[primary_type] < 3.0 else confidence
-    confidence = min(1.0, confidence)
-
-    processing_time = time.time() - t0
-    return {
-        "success": True,
-        "content_type": primary_type,
-        "confidence": round(confidence, 3),
-        "detection_criteria": detection_criteria[primary_type],
-        "all_scores": {k: round(v, 2) for k, v in scores.items()},
-        "processing_time": round(processing_time, 3),
-    }
-
-
-@with_tool_metrics
-@with_error_handling
-async def batch_format_texts(
-    texts: List[str],
-    force_markdown_conversion: bool = False,
-    extraction_method: str = "auto",
-    max_concurrency: int = 5,
-    preserve_tables: bool = True,
-    preserve_links: bool = True,
-    preserve_images: bool = False,
-) -> Dict[str, Any]:
-    """Applies 'clean_and_format_text_as_markdown' to texts concurrently (Standalone Tool)."""
-    if not texts or not isinstance(texts, list):
-        raise ToolInputError("Input must be a non-empty list", param_name="texts")
-    if not all(isinstance(t, str) for t in texts):
-        raise ToolInputError("All items in 'texts' list must be strings", param_name="texts")
-    max_concurrency = max(1, max_concurrency)
-    sem = asyncio.Semaphore(max_concurrency)
-    tasks = []
-
-    async def _process_one_standalone(idx: int, txt: str):
-        async with sem:
-            logger.debug(f"Starting batch formatting for text index {idx}")
-            result_dict = {"original_index": idx}
-            try:
-                res = await clean_and_format_text_as_markdown(
-                    text=txt,
-                    force_markdown_conversion=force_markdown_conversion,
-                    extraction_method=extraction_method,
-                    preserve_tables=preserve_tables,
-                    preserve_links=preserve_links,
-                    preserve_images=preserve_images,
-                    max_line_length=0,
-                )
-                result_dict.update(res)
-                result_dict["success"] = bool(res.get("success", False))
-                if result_dict["success"]:
-                    logger.debug(f"Successfully batch formatted text index {idx}")
-            except ToolInputError as e_input:
-                logger.warning(f"Input error formatting text index {idx}: {e_input}")
-                result_dict.update(
-                    {
-                        "error": str(e_input),
-                        "success": False,
-                        "error_type": "ToolInputError",
-                        "error_code": e_input.error_code,
-                    }
-                )
-            except ToolError as e_tool:
-                logger.warning(
-                    f"Processing error formatting text index {idx}: {e_tool.error_code} - {str(e_tool)}"
-                )
-                result_dict.update(
-                    {
-                        "error": str(e_tool),
-                        "success": False,
-                        "error_code": e_tool.error_code,
-                        "error_type": "ToolError",
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Unexpected error formatting text index {idx}: {e}", exc_info=True)
-                result_dict.update({"error": str(e), "success": False, "error_type": "Exception"})
-            return result_dict
-
-    tic = time.perf_counter()
-    logger.info(
-        f"Starting batch formatting for {len(texts)} texts with concurrency {max_concurrency}..."
-    )
-    for i, t in enumerate(texts):
-        tasks.append(_process_one_standalone(i, t))
-    all_results = await asyncio.gather(*tasks)
-    toc = time.perf_counter()
-    logger.info(f"Batch formatting completed in {toc - tic:.3f}s")
-
-    all_results.sort(key=lambda r: r.get("original_index", -1))
-    final_results = []
-    success_count = 0
-    failure_count = 0
-    for r in all_results:
-        if r.get("success"):
-            success_count += 1
-        else:
-            failure_count += 1
-        r.pop("original_index", None)
-        final_results.append(r)
-    return {
-        "results": final_results,
-        "total_processing_time": round(toc - tic, 3),
-        "success_count": success_count,
-        "failure_count": failure_count,
-        "success": True,
-    }
-
-
-@with_tool_metrics
-@with_error_handling
-async def optimize_markdown_formatting(
-    markdown: str,
-    normalize_headings: bool = False,
-    fix_lists: bool = True,
-    fix_links: bool = True,
-    add_line_breaks: bool = True,
-    compact_mode: bool = False,
-    max_line_length: int = 0,
-) -> Dict[str, Any]:
-    """
-    Clean up and standardize existing Markdown text (Standalone Tool).
-    Note: `normalize_headings` is currently a basic implementation.
-    """
-    t0 = time.time()
-    if not markdown or not isinstance(markdown, str):
-        raise ToolInputError("Input markdown must be a non-empty string", param_name="markdown")
-
-    content_type_result = await detect_content_type(markdown)
-    input_type = content_type_result.get("content_type", "unknown")
-    actual_markdown = markdown
-    conversion_note = ""
-
-    if input_type == "html":
-        logger.info("Input detected as HTML, converting to Markdown before optimizing.")
-        conversion_note = "⚠️ Input was detected as HTML and automatically converted. "
-        try:
-            conversion_result = await clean_and_format_text_as_markdown(
-                text=markdown, force_markdown_conversion=True, extraction_method="none"
-            )
-            if conversion_result.get("success", False):
-                actual_markdown = conversion_result.get("markdown_text", "")
-            else:
-                raise ToolError(
-                    "FORMAT_CONVERSION_FAILED",
-                    details={"error": conversion_result.get("error", "Unknown")},
-                )
-        except Exception as e_conv:
-            logger.error(f"Failed to convert HTML input for optimization: {e_conv}", exc_info=True)
-            return {
-                "success": False,
-                "error": f"Input HTML conversion failed: {e_conv}",
-                "error_code": "FORMAT_CONVERSION_FAILED",
-            }
-    elif input_type != "markdown":
-        logger.warning(
-            f"Input detected as {input_type}, applying Markdown optimization rules anyway."
-        )
-        conversion_note = f"⚠️ Input detected as {input_type}, not Markdown. "
-
-    optimized = actual_markdown
-    changes = []
-
-    if normalize_headings:
-        logger.warning("normalize_headings is not fully implemented.")
-        changes.append("Attempted heading normalization (basic)")
-
-    if fix_lists:
-        optimized = _sanitize(optimized)  # Handles basic list marker normalization
-        changes.append("Standardized list formatting via sanitize")
-
-    if fix_links:
-        optimized = re.sub(r"\[\s*([^\]]+?)\s*\]\s*\(\s*([^)]+?)\s*\)", r"[\1](\2)", optimized)
-        changes.append("Cleaned link formatting")
-
-    if compact_mode:
-        optimized = re.sub(r"\n{3,}", "\n\n", optimized)
-        optimized = re.sub(r"[ \t]+$", "", optimized, flags=re.MULTILINE)
-        changes.append("Applied compact formatting")
-    elif add_line_breaks:
-        optimized = _improve(optimized)
-        changes.append("Added standard line breaks")
-
-    if max_line_length > 0:
-        try:
-            wrapped_lines = []
-            current_block = ""
-            in_code_block = False
-            for line in optimized.split("\n"):
-                line_stripped = line.strip()
-                if line_stripped.startswith("```"):
-                    in_code_block = not in_code_block
-                    if current_block:
-                        wrapped_lines.extend(
-                            textwrap.wrap(
-                                current_block.strip(),
-                                width=max_line_length,
-                                break_long_words=False,
-                                break_on_hyphens=False,
-                            )
-                        )
-                    current_block = ""
-                    wrapped_lines.append(line)
-                elif (
-                    in_code_block
-                    or line_stripped.startswith(("#", ">", "- ", "* ", "+ "))
-                    or re.match(r"^\d+\.\s", line_stripped)
-                    or line_stripped == ""
-                    or line_stripped.startswith("|")
-                ):
-                    if current_block:
-                        wrapped_lines.extend(
-                            textwrap.wrap(
-                                current_block.strip(),
-                                width=max_line_length,
-                                break_long_words=False,
-                                break_on_hyphens=False,
-                            )
-                        )
-                    current_block = ""
-                    wrapped_lines.append(line)
-                else:
-                    current_block += line + " "
-            if current_block:
-                wrapped_lines.extend(
-                    textwrap.wrap(
-                        current_block.strip(),
-                        width=max_line_length,
-                        break_long_words=False,
-                        break_on_hyphens=False,
-                    )
-                )
-            optimized = "\n".join(wrapped_lines)
-            changes.append(f"Wrapped lines at {max_line_length} chars")
-        except Exception as e_wrap:
-            logger.error(f"Error during line wrapping: {e_wrap}")
-
-    return {
-        "success": True,
-        "optimized_markdown": optimized.strip(),
-        "changes_summary": conversion_note
-        + (", ".join(changes) if changes else "No specific optimizations applied."),
-        "processing_time": time.time() - t0,
-    }
-
-
-# <<< Part 1 and 2 code goes here >>>
-
-###############################################################################
-# Document Analysis Tools (Standalone)                                        #
-###############################################################################
-
-
-@with_tool_metrics
-@with_error_handling
-async def identify_sections(document: str) -> Dict[str, Any]:
-    """Identifies logical sections in a document using regex patterns (Standalone Tool)."""
-    if not document or not isinstance(document, str):
-        logger.warning("identify_sections called with empty or invalid input.")
-        return {"sections": [], "success": True}
-
-    domain_rules = _get_active_domain_rules()
-    bound_rx = domain_rules.get("bound_rx")
-    custom_sect_rx = domain_rules.get("custom_sect_rx", [])
-    if not bound_rx or not isinstance(bound_rx, re.Pattern):
-        raise ToolError(
-            "INITIALIZATION_ERROR", details={"reason": "Section boundary regex not loaded/compiled"}
-        )
-
-    sections_found: List[Dict[str, Any]] = []
-    last_section_end = 0
-    try:
-        matches = list(bound_rx.finditer(document))
-        if not matches:
-            logger.info(
-                "No regex-based section boundaries found. Treating document as single section."
-            )
-            if document.strip():
-                sections_found.append(
-                    {
-                        "title": "Main Content",
-                        "text": document.strip(),
-                        "position": 0,
-                        "start_char": 0,
-                        "end_char": len(document),
-                    }
-                )
-        else:
-            logger.info(f"Found {len(matches)} potential section boundaries based on regex.")
-            first_match_start = matches[0].start()
-            if first_match_start > 0:
-                initial_text = document[last_section_end:first_match_start].strip()
-                if initial_text:
-                    sections_found.append(
-                        {
-                            "title": "Introduction",
-                            "text": initial_text,
-                            "position": 0,
-                            "start_char": last_section_end,
-                            "end_char": first_match_start,
-                        }
-                    )
-                    last_section_end = first_match_start
-            for i, match in enumerate(matches):
-                title_raw = match.group(0).strip()
-                title_start_char = match.start()
-                title_end_char = match.end()
-                section_content_start = title_end_char
-                section_content_end = (
-                    matches[i + 1].start() if i < len(matches) - 1 else len(document)
-                )
-                section_text = document[section_content_start:section_content_end].strip()
-                section_title = title_raw
-                if custom_sect_rx:
-                    for pat, label in custom_sect_rx:
-                        if isinstance(pat, re.Pattern) and pat.search(title_raw):
-                            section_title = label
-                            logger.debug(
-                                f"Applied custom label '{label}' to section '{title_raw}'."
-                            )
-                            break
-                if section_text:
-                    sections_found.append(
-                        {
-                            "title": section_title,
-                            "text": section_text,
-                            "position": len(sections_found),
-                            "start_char": title_start_char,
-                            "end_char": section_content_end,
-                        }
-                    )
-                else:
-                    logger.debug(
-                        f"Skipping section '{section_title}' (no content)."
-                    )  # Corrected typo
-                last_section_end = section_content_end
-    except Exception as e:
-        logger.error(f"Error during section identification: {e}", exc_info=True)
-        raise ToolError("SECTION_IDENTIFICATION_FAILED", details={"error": str(e)}) from e
-    return {"sections": sections_found, "success": True}
-
-
-@with_tool_metrics
-@with_error_handling
-async def extract_entities(
-    document: str, entity_types: Optional[List[str]] = None
-) -> Dict[str, Any]:
-    """Extracts named entities from document text using an LLM (Standalone Tool)."""
-    if not document or not isinstance(document, str):
-        raise ToolInputError("Input document must be non-empty string", param_name="document")
-    max_context = 3800
-    context = document[:max_context] + ("..." if len(document) > max_context else "")
-    if len(document) > max_context:
-        logger.warning(f"Doc truncated to ~{max_context} chars for entity extraction.")
-    entity_focus = (
-        f"Extract only: {', '.join(entity_types)}."
-        if entity_types
-        else "Extract common types (PERSON, ORG, LOC, DATE, MONEY...)."
-    )
-    prompt = f"""Analyze text, extract entities. {entity_focus} Output ONLY valid JSON object (keys=TYPE, values=list of unique strings).
-Text:
-\"\"\"
-{context}
-\"\"\"
-JSON Output:
-"""
-    logger.info(f"Requesting entity extraction. Focus: {entity_types or 'common'}")
-    llm_response_raw = ""
-    try:
-        llm_response_raw = await _standalone_llm_call(
-            prompt=prompt, max_tokens=1500, temperature=0.1
-        )
-        logger.debug(f"LLM raw response for entities:\n{llm_response_raw}")
-        json_str = llm_response_raw
-        json_match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", json_str)
-        if json_match:
-            json_str = json_match.group(1).strip()
-        start_brace = json_str.find("{")
-        end_brace = json_str.rfind("}")
-        if start_brace != -1 and end_brace != -1 and start_brace < end_brace:
-            json_str = json_str[start_brace : end_brace + 1]
-        else:
-            logger.warning("Could not find JSON object boundaries for entities.")
-        try:
-            entities_dict = json.loads(json_str)
-        except json.JSONDecodeError as json_e:
-            logger.warning(f"Initial JSON parse failed: {json_e}. Trying lenient find.")
-            match = re.search(r"\{.*\}", llm_response_raw, re.DOTALL)
-            if match:
-                try:
-                    entities_dict = json.loads(match.group(0))
-                except json.JSONDecodeError as final_json_e:
-                    raise ValueError(f"Could not parse JSON: {final_json_e}") from final_json_e
-            else:
-                raise ValueError("No JSON object found") from json_e
-        if not isinstance(entities_dict, dict):
-            raise ValueError("LLM response is not JSON object.")
-        validated_entities: Dict[str, List[str]] = {}
-        for key, value in entities_dict.items():
-            entity_type = str(key).upper().strip()
-            if not entity_type:
-                continue
-            sanitized_values: Set[str] = set()
-            items_to_process = value if isinstance(value, list) else [value]
-            for item in items_to_process:
-                text_val = None
-                if isinstance(item, str) and item.strip():
-                    text_val = item.strip()
-                elif (
-                    isinstance(item, dict)
-                    and isinstance(item.get("text"), str)
-                    and item["text"].strip()
-                ):
-                    text_val = item["text"].strip()
-                if text_val:
-                    text_val = re.sub(r"^[.,!?;:'\"\(] +|[ .,!?;:'\"\) ]+$", "", text_val)
-                if text_val:
-                    sanitized_values.add(text_val)
-            if sanitized_values:
-                validated_entities[entity_type] = sorted(list(sanitized_values))
-        logger.info(f"Successfully extracted entities for types: {list(validated_entities.keys())}")
-        return {
-            "entities": validated_entities,
-            "success": True,
-            "raw_llm_response": llm_response_raw,
-        }
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Failed to parse LLM response for entities: {e}")
-        return {
-            "entities": {},
-            "error": f"Parse fail: {e}",
-            "raw_llm_response": llm_response_raw,
-            "success": False,
-            "error_code": "LLM_INVALID_RESPONSE",
-        }
-    except ToolError as e:
-        logger.error(f"LLM call failed during entity extraction: {e}", exc_info=False)
-        return {
-            "entities": {},
-            "error": f"LLM fail: {str(e)}",
-            "raw_llm_response": llm_response_raw,
-            "success": False,
-            "error_code": e.error_code,
-        }
-    except Exception as e:
-        logger.error(f"Unexpected entity extraction error: {e}", exc_info=True)
-        return {
-            "entities": {},
-            "error": f"Unexpected: {e}",
-            "raw_llm_response": llm_response_raw,
-            "success": False,
-            "error_code": "ENTITY_EXTRACTION_FAILED",
-        }
-
-
-@with_tool_metrics
-@with_error_handling
-async def generate_qa_pairs(document: str, num_questions: int = 5) -> Dict[str, Any]:
-    """Generates question-answer pairs based on the document content using an LLM (Standalone Tool)."""
-    if not document or not isinstance(document, str):
-        raise ToolInputError("Input must be non-empty string", param_name="document")
-    if not isinstance(num_questions, int) or num_questions <= 0:
-        raise ToolInputError("num_questions must be positive int")
-    max_context = 3800
-    context = document[:max_context] + ("..." if len(document) > max_context else "")
-    if len(document) > max_context:
-        logger.warning(f"Doc truncated to ~{max_context} chars for QA generation.")
-    prompt = f"""Based ONLY on text, generate {num_questions} relevant QA pairs. Output ONLY JSON list of objects (keys "question", "answer").
-Text:
-\"\"\"
-{context}
-\"\"\"
-JSON Output:
-"""
-    logger.info(f"Requesting {num_questions} QA pairs.")
-    llm_response_raw = ""
-    try:
-        llm_max_tokens = num_questions * 150 + 200
-        llm_response_raw = await _standalone_llm_call(
-            prompt=prompt, max_tokens=llm_max_tokens, temperature=0.4
-        )
-        logger.debug(f"LLM raw response for QA pairs:\n{llm_response_raw}")
-        json_str = llm_response_raw
-        json_match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", json_str, re.I)
-        if json_match:
-            json_str = json_match.group(1).strip()
-        start_bracket = json_str.find("[")
-        end_bracket = json_str.rfind("]")
-        if start_bracket != -1 and end_bracket != -1 and start_bracket < end_bracket:
-            json_str = json_str[start_bracket : end_bracket + 1]
-        else:
-            logger.warning("Could not find JSON list boundaries for QA.")
-        try:
-            qa_list = json.loads(json_str)
-        except json.JSONDecodeError as json_e:
-            logger.warning(f"JSON parse for QA failed: {json_e}. Trying regex.")
-            pairs = []
-            extracted = re.findall(
-                r'\{\s*"question":\s*"(.*?)",\s*"answer":\s*"(.*?)"\s*\}',
-                llm_response_raw,
-                re.DOTALL | re.I,
-            )
-            pairs = [
-                {
-                    "question": q.strip().replace('\\"', '"'),
-                    "answer": a.strip().replace('\\"', '"'),
-                }
-                for q, a in extracted
-                if q.strip() and a.strip()
-            ]
-            if pairs:
-                logger.info(f"Regex fallback extracted {len(pairs)} pairs.")
-                return {
-                    "qa_pairs": pairs[:num_questions],
-                    "success": True,
-                    "warning": "Used regex fallback.",
-                    "raw_llm_response": llm_response_raw,
-                }
-            else:
-                raise ValueError("Regex fallback found no QA pairs.") from json_e
-        if not isinstance(qa_list, list):
-            raise ValueError("LLM response is not JSON list.")
-        validated_pairs: List[Dict[str, str]] = []
-        for item in qa_list:
-            if isinstance(item, dict):
-                q = item.get("question")
-                a = item.get("answer")
-                if isinstance(q, str) and q.strip() and isinstance(a, str) and a.strip():
-                    validated_pairs.append({"question": q.strip(), "answer": a.strip()})
-                else:
-                    logger.warning(f"Skipping invalid QA item: {item}")
-            else:
-                logger.warning(f"Skipping non-dict item in QA list: {item}")
-        if not validated_pairs:
-            logger.warning("LLM response parsed but no valid QA pairs found.")
-        else:
-            logger.info(f"Successfully generated {len(validated_pairs)} valid QA pairs.")
-        return {
-            "qa_pairs": validated_pairs[:num_questions],
-            "success": True,
-            "raw_llm_response": llm_response_raw,
-        }
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Failed to parse LLM response for QA pairs: {e}")
-        return {
-            "qa_pairs": [],
-            "error": f"Parse fail: {e}",
-            "raw_llm_response": llm_response_raw,
-            "success": False,
-            "error_code": "LLM_INVALID_RESPONSE",
-        }
-    except ToolError as e:
-        logger.error(f"LLM call failed during QA generation: {e}", exc_info=False)
-        return {
-            "qa_pairs": [],
-            "error": f"LLM fail: {str(e)}",
-            "raw_llm_response": llm_response_raw,
-            "success": False,
-            "error_code": e.error_code,
-        }
-    except Exception as e:
-        logger.error(f"Unexpected QA generation error: {e}", exc_info=True)
-        return {
-            "qa_pairs": [],
-            "error": f"Unexpected: {e}",
-            "raw_llm_response": llm_response_raw,
-            "success": False,
-            "error_code": "QA_GENERATION_FAILED",
-        }
 
 
 @with_tool_metrics
 @with_error_handling
 async def summarize_document(
-    document: str, max_length: int = 150, focus: Optional[str] = None
+    document: str,
+    max_length: int = 150,
+    focus: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Generates a concise summary of the document text using an LLM (Standalone Tool).
+    Generates a concise summary of the document text using an LLM.
+    
+    Args:
+        document: Text content to summarize.
+        max_length: Maximum length of the summary in words.
+        focus: Optional focus area for the summary.
+    
+    Returns:
+        Dictionary containing the summary and metadata.
     """
-    _logger = logger
-    if not document or not isinstance(document, str):
-        raise ToolInputError("Input document must be a non-empty string", param_name="document")
-    if not isinstance(max_length, int) or max_length <= 10:
-        raise ToolInputError("max_length must be a positive integer > 10", param_name="max_length")
-
-    llm_caller = _standalone_llm_call
-    max_context = 8000
-    context = document[:max_context] + ("..." if len(document) > max_context else "")
-    if len(document) > max_context:
-        _logger.warning(f"Document truncated to ~{max_context} chars for summarization.")
-
-    focus_instruction = (
-        f" Focus particularly on aspects related to: {focus}." if focus and focus.strip() else ""
-    )
-    prompt = f"""Generate a concise, coherent summary of the following text, about {max_length} words long.{focus_instruction}
-Capture the main points and key information accurately based ONLY on the provided text. Do not add external information or opinions.
-Output ONLY the summary text itself, without any introductory phrases like "Here is the summary:".
-
-Text:
-\"\"\"
-{context}
-\"\"\"
-
-Summary:
-"""
-    _logger.info(
-        f"Requesting summary from LLM (max_length≈{max_length}, focus='{focus or 'none'}')."
-    )
-    llm_response_raw = ""
-    try:
-        llm_max_tokens = max(50, min(4000, int(max_length / 0.6)))
-        summary_text = await llm_caller(prompt=prompt, max_tokens=llm_max_tokens, temperature=0.5)
-        llm_response_raw = summary_text
-        summary_text = re.sub(
-            r"^(Here is a summary:|Summary:|The text discusses|This document is about)\s*:?\s*",
-            "",
-            summary_text,
-            flags=re.I,
-        ).strip()
-        word_count = len(summary_text.split())
-        _logger.info(f"Generated summary with {word_count} words (target: {max_length}).")
-        if word_count < max_length * 0.5:
-            _logger.warning(f"Summary ({word_count} words) shorter than requested ({max_length}).")
-        elif word_count > max_length * 1.5:
-            _logger.warning(f"Summary ({word_count} words) longer than requested ({max_length}).")
+    if not document.strip():
         return {
-            "summary": summary_text,
+            "summary": "",
+            "word_count": 0,
+            "success": True,
+            "focus": focus
+        }
+    
+    # Build the prompt
+    prompt = f"Please provide a concise summary of the following document in approximately {max_length} words"
+    if focus:
+        prompt += f", focusing on {focus}"
+    prompt += ":\n\n" + document
+    
+    try:
+        # Use the standalone LLM call function
+        summary = await _standalone_llm_call(
+            prompt=prompt,
+            provider=Provider.OPENAI.value,
+            temperature=0.3,
+            max_tokens=max_length * 2  # Rough approximation
+        )
+        
+        word_count = len(summary.split())
+        
+        return {
+            "summary": summary.strip(),
             "word_count": word_count,
-            "success": True,
-            "raw_llm_response": llm_response_raw,
+            "original_length": len(document),
+            "compression_ratio": round(len(document) / len(summary), 2) if summary else 0,
+            "focus": focus,
+            "success": True
         }
-    except ToolError as te:
-        _logger.error(f"ToolError during summarization: {te.error_code} - {str(te)}", exc_info=True)
+    
+    except Exception as e:
+        logger.error(f"Failed to generate summary: {e}")
+        # Fallback to simple truncation
+        words = document.split()[:max_length]
+        fallback_summary = " ".join(words) + "..." if len(words) == max_length else " ".join(words)
+        
         return {
-            "summary": "",
-            "word_count": 0,
-            "error": str(te),
-            "success": False,
-            "raw_llm_response": llm_response_raw,
-            "error_code": te.error_code,
-        }
-    except Exception as e:
-        _logger.error(f"Unexpected error during summarization: {str(e)}", exc_info=True)
-        return {
-            "summary": "",
-            "word_count": 0,
-            "error": f"Unexpected error: {e}",
-            "success": False,
-            "raw_llm_response": llm_response_raw,
-            "error_code": "SUMMARIZATION_FAILED",
-        }
-
-
-@with_tool_metrics
-@with_error_handling
-async def extract_metrics(document: str) -> Dict[str, Any]:
-    """Extracts numeric metrics based on domain patterns (Standalone Tool)."""
-    if not document or not isinstance(document, str):
-        raise ToolInputError("Input must be non-empty string", param_name="document")
-    domain_rules = _get_active_domain_rules()
-    metric_rx_list = domain_rules.get("metric_rx")
-    if not metric_rx_list or not isinstance(metric_rx_list, list):
-        logger.warning(
-            f"No metric patterns found for domain '{domain_rules.get('active_domain', 'unknown')}'."
-        )
-        return {"metrics": {}, "success": True}
-    extracted_metrics: Dict[str, List[float]] = {}
-    logger.info(
-        f"Starting metric extraction for domain '{domain_rules.get('active_domain')}' ({len(metric_rx_list)} types)."
-    )
-    for metric_name, pattern in metric_rx_list:
-        if not isinstance(pattern, re.Pattern):
-            logger.warning(f"Skipping invalid pattern type for metric '{metric_name}'.")
-            continue
-        found_values: Set[float] = set()
-        try:
-            matches = pattern.findall(document)
-            if matches:
-                logger.debug(f"Found {len(matches)} potential matches for metric '{metric_name}'")
-            for match_groups in matches:
-                val_str = None
-                if isinstance(match_groups, tuple) and len(match_groups) >= 2:
-                    val_str = str(match_groups[1]).strip()
-                elif isinstance(match_groups, str):
-                    val_str = match_groups.strip()
-                if val_str is None:
-                    continue
-                val_str_cleaned = re.sub(r"[$,€£\s,]", "", val_str)
-                if val_str_cleaned.endswith("."):
-                    val_str_cleaned = val_str_cleaned[:-1]
-                if not val_str_cleaned or val_str_cleaned == "-":
-                    continue
-                try:
-                    found_values.add(float(val_str_cleaned))
-                except ValueError:
-                    logger.debug(
-                        f"Could not convert value '{val_str_cleaned}' for metric '{metric_name}'."
-                    )
-        except Exception as e:
-            logger.error(f"Error processing regex for metric '{metric_name}': {e}", exc_info=True)
-        if found_values:
-            unique_values = sorted(list(found_values))
-            extracted_metrics[metric_name] = unique_values
-            logger.info(
-                f"Extracted {len(unique_values)} unique value(s) for metric '{metric_name}': {unique_values}"
-            )
-    return {"metrics": extracted_metrics, "success": True}
-
-
-@with_tool_metrics
-@with_error_handling
-async def flag_risks(document: str) -> Dict[str, Any]:
-    """Flags potential risks using domain patterns (Standalone Tool)."""
-    if not document or not isinstance(document, str):
-        raise ToolInputError("Input must be non-empty string", param_name="document")
-    domain_rules = _get_active_domain_rules()
-    risk_rx_dict = domain_rules.get("risk_rx")
-    if not risk_rx_dict or not isinstance(risk_rx_dict, dict):
-        logger.warning(
-            f"No risk patterns found for domain '{domain_rules.get('active_domain', 'unknown')}'."
-        )
-        return {"risks": {}, "success": True}
-    flagged_risks: Dict[str, Dict[str, Any]] = {}
-    logger.info(
-        f"Starting risk flagging for domain '{domain_rules.get('active_domain')}' ({len(risk_rx_dict)} types)."
-    )
-    context_window = 50
-    max_samples = 3
-    for risk_type, pattern in risk_rx_dict.items():
-        if not isinstance(pattern, re.Pattern):
-            logger.warning(f"Skipping invalid pattern type for risk '{risk_type}'.")
-            continue
-        match_contexts: List[str] = []
-        match_count = 0
-        try:
-            for match in pattern.finditer(document):
-                match_count += 1
-                if len(match_contexts) < max_samples:
-                    start, end = match.start(), match.end()
-                    ctx_start = max(0, start - context_window)
-                    ctx_end = min(len(document), end + context_window)
-                    snippet = document[ctx_start:ctx_end].replace("\n", " ").strip()
-                    prefix = "..." if ctx_start > 0 else ""
-                    suffix = "..." if ctx_end < len(document) else ""
-                    hl_start = start - ctx_start + len(prefix)
-                    hl_end = end - ctx_start + len(prefix)
-                    formatted_snippet = f"{prefix}{snippet[:hl_start]}**{snippet[hl_start:hl_end]}**{snippet[hl_end:]}{suffix}"
-                    match_contexts.append(formatted_snippet)
-            if match_count > 0:
-                logger.info(f"Flagged risk '{risk_type}' {match_count} time(s).")
-                flagged_risks[risk_type] = {"count": match_count, "sample_contexts": match_contexts}
-        except Exception as e:
-            logger.error(f"Error processing regex for risk '{risk_type}': {e}", exc_info=True)
-    return {"risks": flagged_risks, "success": True}
-
-
-@with_tool_metrics
-@with_error_handling
-async def canonicalise_entities(entities_input: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalizes and attempts to merge similar entities using fuzzy matching (Standalone Tool)."""
-    entities_list: List[Dict[str, Any]] = []
-    raw_entities = entities_input.get("entities")
-    if isinstance(raw_entities, dict):
-        for etype, text_list in raw_entities.items():
-            entity_type_str = str(etype).upper().strip()
-            if isinstance(text_list, list) and entity_type_str:
-                for text in text_list:
-                    if isinstance(text, str) and text.strip():
-                        entities_list.append({"text": text.strip(), "type": entity_type_str})
-            else:
-                logger.warning(
-                    f"Expected list for entity type '{etype}', got {type(text_list)}. Skipping."
-                )
-    elif isinstance(raw_entities, list):
-        for item in raw_entities:
-            if (
-                isinstance(item, dict)
-                and isinstance(item.get("text"), str)
-                and item["text"].strip()
-                and isinstance(item.get("type"), str)
-                and item["type"].strip()
-            ):
-                entities_list.append(
-                    {
-                        "text": item["text"].strip(),
-                        "type": item["type"].upper().strip(),
-                        "metadata": {k: v for k, v in item.items() if k not in ["text", "type"]},
-                    }
-                )
-            else:
-                logger.warning(f"Skipping invalid item in entity list: {item}")
-    else:
-        raise ToolInputError(
-            'Input dict must contain "entities" key with either Dict[str, List[str]] or List[Dict[str, Any]].',
-            param_name="entities_input",
-        )
-    if not entities_list:
-        logger.info("No entities provided for canonicalization.")
-        return {"canonicalized": {}, "success": True}
-    entities_by_type: Dict[str, List[Dict[str, Any]]] = {}
-    for entity in entities_list:
-        etype = entity.get("type", "UNKNOWN")
-        entities_by_type.setdefault(etype, []).append(entity)
-    canonicalized_output: Dict[str, List[Dict[str, Any]]] = {}
-    similarity_threshold = 85
-    for entity_type, entity_group in entities_by_type.items():
-        logger.debug(f"Canonicalising {len(entity_group)} entities of type '{entity_type}'...")
-        entity_group.sort(key=lambda x: len(x.get("text", "")), reverse=True)
-        merged_entities: List[Dict[str, Any]] = []
-        processed_indices = set()
-        for i in range(len(entity_group)):
-            if i in processed_indices:
-                continue
-            current_entity = entity_group[i]
-            canonical_form = current_entity.get("text", "")
-            if not canonical_form:
-                processed_indices.add(i)
-                continue
-            cluster_variants_data = [current_entity]
-            processed_indices.add(i)
-            for j in range(i + 1, len(entity_group)):
-                if j in processed_indices:
-                    continue
-                other_entity = entity_group[j]
-                other_text = other_entity.get("text", "")
-                if not other_text:
-                    processed_indices.add(j)
-                    continue
-                score = fuzz.token_sort_ratio(canonical_form.lower(), other_text.lower())
-                if score >= similarity_threshold:
-                    cluster_variants_data.append(other_entity)
-                    processed_indices.add(j)
-                    logger.debug(
-                        f"  Merging '{other_text}' into '{canonical_form}' (score: {score:.0f})"
-                    )
-            if cluster_variants_data:
-                canonical_text = cluster_variants_data[0].get("text", "")
-                variant_texts = sorted(
-                    list({ent.get("text", "") for ent in cluster_variants_data if ent.get("text")})
-                )
-                merged_metadata = {}
-                scores = [
-                    ent.get("metadata", {}).get("score")
-                    for ent in cluster_variants_data
-                    if ent.get("metadata", {}).get("score") is not None
-                ]
-                if scores:
-                    merged_metadata["scores"] = scores
-                merged_entities.append(
-                    {
-                        "text": canonical_text,
-                        "count": len(cluster_variants_data),
-                        "type": entity_type,
-                        "variants": variant_texts,
-                        "metadata": merged_metadata,
-                    }
-                )
-        merged_entities.sort(key=lambda x: (-x.get("count", 0), x.get("text", "")))
-        canonicalized_output[entity_type] = merged_entities
-        logger.info(
-            f"Canonicalised type '{entity_type}': {len(entity_group)} input -> {len(merged_entities)} unique entities."
-        )
-    return {"canonicalized": canonicalized_output, "success": True}
-
-
-###############################################################################
-# OCR-Specific Tools (Standalone)                                             #
-###############################################################################
-
-
-@with_tool_metrics
-@with_retry(max_retries=2, retry_delay=1.5)
-@with_error_handling
-async def ocr_image(
-    image_path: Optional[str] = None,
-    image_data: Optional[str] = None,  # Base64 encoded string
-    ocr_options: Optional[Dict] = None,
-    enhance_with_llm: bool = True,
-    output_format: str = "markdown",
-) -> Dict[str, Any]:
-    """
-    Performs OCR on a single image and optionally enhances the text with an LLM (Standalone Tool).
-
-    Args:
-        image_path: Path to the image file (e.g., PNG, JPG). Mutually exclusive with image_data.
-        image_data: Base64-encoded image data string. Mutually exclusive with image_path.
-        ocr_options: Dictionary of options for OCR/Enhancement:
-            - language (str): Tesseract language(s). Default: "eng".
-            - preprocessing (dict): Image preprocessing options.
-            - remove_headers (bool): Attempt header/footer removal (less effective on single images). Default: False.
-            - assess_quality (bool): Run LLM quality assessment. Default: False.
-            - detect_tables (bool): Attempt to detect tables in the image (used for metadata). Default: True.
-            - tesseract_config (str): Additional Tesseract config options (e.g., '--psm 6'). Default: "".
-        enhance_with_llm: If True (default), enhance the raw OCR text using an LLM.
-        output_format: Target format ('markdown' or 'text').
-
-    Returns:
-        Dictionary with OCR results (see convert_document return structure).
-    """
-    t0 = time.time()
-    ocr_opts = ocr_options or {}
-    output_format = output_format.lower()
-    if output_format not in _OCR_COMPATIBLE_FORMATS:
-        logger.warning(
-            f"Output format '{output_format}' not ideal for image OCR. Using 'markdown'."
-        )
-        output_format = "markdown"
-
-    # --- Dependency Checks ---
-    _ocr_check_dep("Pillow", _PIL_AVAILABLE, "Image OCR")
-    _ocr_check_dep("pytesseract", _PYTESSERACT_AVAILABLE, "Image OCR")
-    can_use_cv2 = _CV2_AVAILABLE and _NUMPY_AVAILABLE
-    if ocr_opts.get("preprocessing") and not can_use_cv2:
-        logger.warning(
-            "Preprocessing options provided but OpenCV/NumPy missing. Preprocessing limited."
-        )
-    if ocr_opts.get("detect_tables", True) and not can_use_cv2:
-        logger.warning(
-            "Table detection requires OpenCV/NumPy. Disabling table detection for metadata."
-        )
-        ocr_opts["detect_tables"] = False
-
-    # --- Input Handling ---
-    if not image_path and not image_data:
-        raise ToolInputError("Either 'image_path' or 'image_data' must be provided.")
-    if image_path and image_data:
-        raise ToolInputError("Provide either 'image_path' or 'image_data', not both.")
-
-    img: Optional["PILImage.Image"] = None
-    preprocessed_img: Optional["PILImage.Image"] = None
-    input_name = "image_data"
-
-    try:
-        if image_path:
-            img_path_obj = _ocr_validate_file_path(image_path)
-            input_name = img_path_obj.name
-            with _span(f"load_image_{input_name}"):
-                img = Image.open(img_path_obj)  # type: ignore
-        elif image_data:
-            if not isinstance(image_data, str):
-                raise ToolInputError("image_data must be a base64 encoded string.")
-            try:
-                if image_data.startswith("data:image"):
-                    image_data = image_data.split(";base64,", 1)[1]
-                img_bytes = base64.b64decode(image_data)
-                with _span("load_image_bytes"):
-                    img = Image.open(io.BytesIO(img_bytes))  # type: ignore
-                input_name = f"base64_input_{_hash(image_data[:100])}"
-            except (base64.binascii.Error, ValueError, TypeError) as e_b64:
-                raise ToolInputError(
-                    f"Invalid base64 image data: {e_b64}", param_name="image_data"
-                ) from e_b64
-            except Exception as e_img_open:
-                raise ToolError(
-                    "IMAGE_LOAD_FAILED",
-                    details={"error": f"Failed to open image from bytes: {e_img_open}"},
-                ) from e_img_open
-
-        if img is None or not _PIL_AVAILABLE:  # Added check for _PIL_AVAILABLE
-            raise ToolError(
-                "IMAGE_LOAD_FAILED",
-                details={"reason": "Image object is None or Pillow unavailable."},
-            )
-
-        img = img.convert("RGB")
-
-        # --- OCR Pipeline ---
-        loop = asyncio.get_running_loop()
-        with _span("image_preprocessing"):
-            preprocessed_img = await loop.run_in_executor(
-                None, _ocr_preprocess_image, img, ocr_opts.get("preprocessing")
-            )
-
-        ocr_lang = ocr_opts.get("language", "eng")
-        ocr_config_str = ocr_opts.get("tesseract_config", "")
-        with _span("tesseract_ocr"):
-            raw_text = await loop.run_in_executor(
-                None, _ocr_run_tesseract, preprocessed_img, ocr_lang, ocr_config_str
-            )
-
-        # --- LLM Enhancement ---
-        final_content = raw_text
-        quality_metrics = None
-        if enhance_with_llm and raw_text.strip():
-            with _span("llm_image_text_enhancement"):
-                remove_headers = ocr_opts.get("remove_headers", False)
-                final_content = await _ocr_enhance_text_chunk(
-                    raw_text, output_format=output_format, remove_headers=remove_headers
-                )
-
-            if ocr_opts.get("assess_quality", False):
-                with _span("ocr_quality_assessment"):
-                    quality_metrics = await _ocr_assess_text_quality(raw_text, final_content)
-        else:
-            final_content = raw_text
-
-        # --- Metadata ---
-        tables_detected = False
-        if ocr_opts.get("detect_tables", True) and can_use_cv2:
-            # Run detection on the preprocessed image
-            detected_regions = await loop.run_in_executor(
-                None, _ocr_detect_tables, preprocessed_img
-            )
-            tables_detected = len(detected_regions) > 0
-        elif ocr_opts.get("detect_tables", True):
-            logger.warning("Table detection requested but OpenCV/Numpy unavailable.")
-
-        doc_metadata = {
-            "num_pages": 1,
-            "has_tables": tables_detected,
-            "has_figures": True,
-            "has_sections": bool(re.search(r"^#{1,6}\s+", final_content, re.M))
-            if output_format == "markdown"
-            else False,
-            "image_width": img.width,
-            "image_height": img.height,
-            "ocr_language": ocr_lang,
-        }
-
-        # --- Construct Response ---
-        elapsed = round(time.time() - t0, 3)
-        response = {
+            "summary": fallback_summary,
+            "word_count": len(words),
+            "original_length": len(document),
+            "compression_ratio": round(len(document) / len(fallback_summary), 2),
+            "focus": focus,
             "success": True,
-            "content": final_content,
-            "output_format": output_format,
-            "processing_time": elapsed,
-            "document_metadata": doc_metadata,
-            "extraction_strategy_used": "ocr",
+            "fallback": True,
+            "error": str(e)
         }
-        if enhance_with_llm:
-            response["raw_text"] = raw_text
-        if quality_metrics:
-            response["ocr_quality_metrics"] = quality_metrics
-
-        logger.info(f"Completed OCR for '{input_name}' in {elapsed}s")
-        return response
-
-    except Exception as e:
-        logger.error(f"Error during image OCR for '{input_name}': {e}", exc_info=True)
-        if isinstance(e, (ToolInputError, ToolError)):
-            raise e
-        raise ToolError("IMAGE_OCR_FAILED", details={"input": input_name, "error": str(e)}) from e
-    finally:
-        if img:
-            img.close()
-        if preprocessed_img and preprocessed_img != img:
-            preprocessed_img.close()
-
-
-@with_tool_metrics
-@with_retry(max_retries=2, retry_delay=1.0)
-@with_error_handling
-async def enhance_ocr_text(
-    text: str,
-    output_format: str = "markdown",
-    enhancement_options: Optional[Dict] = None,
-) -> Dict[str, Any]:
-    """
-    Enhances existing OCR text using an LLM to correct errors and improve formatting (Standalone Tool).
-
-    Args:
-        text: The raw OCR text to enhance.
-        output_format: Target format ('markdown' or 'text').
-        enhancement_options: Dictionary of options:
-            - remove_headers (bool): Attempt to remove headers/footers. Default: False.
-            - assess_quality (bool): Run LLM quality assessment comparing input vs output. Default: False.
-
-    Returns:
-        Dictionary containing enhanced text and metadata.
-    """
-    t0 = time.time()
-    if not text or not isinstance(text, str):
-        raise ToolInputError("Input 'text' must be a non-empty string", param_name="text")
-
-    options = enhancement_options or {}
-    output_format = output_format.lower()
-    if output_format not in _OCR_COMPATIBLE_FORMATS:
-        logger.warning(
-            f"Output format '{output_format}' not ideal for text enhancement. Using 'markdown'."
-        )
-        output_format = "markdown"
-
-    try:
-        final_content = ""
-        quality_metrics = None
-
-        with _span("llm_text_enhancement"):
-            max_direct_process_len = 15000
-            if len(text) > max_direct_process_len:
-                logger.info(f"Splitting large text ({len(text)} chars) for enhancement.")
-                chunks = _ocr_split_text_into_chunks(text)  # Helper defined earlier
-            else:
-                chunks = [text]
-
-            if not chunks:
-                logger.warning("Input text resulted in zero chunks for enhancement.")
-            else:
-                enhancement_tasks = [
-                    _ocr_enhance_text_chunk(
-                        chunk,
-                        output_format=output_format,
-                        remove_headers=options.get("remove_headers", False),
-                    )
-                    for chunk in chunks
-                ]  # Helper defined earlier
-                enhanced_chunks = await asyncio.gather(*enhancement_tasks)
-                final_content = "\n\n".join(enhanced_chunks).strip()
-
-        if options.get("assess_quality", False):
-            with _span("ocr_quality_assessment"):
-                quality_metrics = await _ocr_assess_text_quality(
-                    text, final_content
-                )  # Helper defined earlier
-
-        elapsed = round(time.time() - t0, 3)
-        response = {
-            "success": True,
-            "content": final_content,
-            "output_format": output_format,
-            "processing_time": elapsed,
-            "raw_text": text,
-        }
-        if quality_metrics:
-            response["ocr_quality_metrics"] = quality_metrics
-        logger.info(f"Completed OCR text enhancement in {elapsed}s")
-        return response
-
-    except Exception as e:
-        logger.error(f"Error during OCR text enhancement: {e}", exc_info=True)
-        if isinstance(e, (ToolInputError, ToolError)):
-            raise e
-        raise ToolError("TEXT_ENHANCEMENT_FAILED", details={"error": str(e)}) from e
-
-
-@with_tool_metrics
-@with_retry(max_retries=2, retry_delay=1.0)
-@with_error_handling
-async def analyze_pdf_structure(
-    file_path: Optional[str] = None,
-    document_data: Optional[bytes] = None,
-    extract_metadata: bool = True,
-    extract_outline: bool = True,
-    extract_fonts: bool = False,
-    extract_images: bool = False,
-    estimate_ocr_needs: bool = True,
-) -> Dict[str, Any]:
-    """
-    Analyzes PDF structure (metadata, outline, fonts, images, OCR needs) without full text extraction (Standalone Tool).
-    Requires either PyMuPDF or PDFPlumber.
-    """
-    t0 = time.time()
-    if not _PYMUPDF_AVAILABLE and not _PDFPLUMBER_AVAILABLE:
-        raise ToolError("DEPENDENCY_MISSING", details={"dependency": "PyMuPDF or PDFPlumber"})
-
-    pdf_lib = "pymupdf" if _PYMUPDF_AVAILABLE else "pdfplumber"
-    logger.info(f"Analyzing PDF structure using {pdf_lib}.")
-
-    input_path_obj: Optional[Path] = None
-    is_temp_file = False
-    input_name = "input_data"
-    try:
-        input_path_obj, is_temp_file = _get_input_path_or_temp(file_path, document_data)
-        input_name = input_path_obj.name
-        if not input_path_obj.suffix.lower() == ".pdf":
-            raise ToolInputError(f"Input must be PDF, got: {input_path_obj.suffix}")
-
-        with _handle_temp_file(input_path_obj, is_temp_file) as current_input_path:
-            result: Dict[str, Any] = {
-                "success": False,
-                "file_info": input_name,
-                "analysis_engine": pdf_lib,
-                "processing_time": 0.0,
-            }
-            loop = asyncio.get_running_loop()
-
-            if pdf_lib == "pymupdf":
-
-                def _analyze_with_pymupdf_sync():
-                    analysis_data = {}
-                    _ocr_check_dep("PyMuPDF", _PYMUPDF_AVAILABLE, "PDF Analysis")
-                    if pymupdf is None:
-                        raise ToolError("INTERNAL_ERROR", details={"reason": "pymupdf is None"})
-                    with pymupdf.open(current_input_path) as doc:  # type: ignore
-                        analysis_data["page_count"] = len(doc)
-                        if extract_metadata:
-                            analysis_data["metadata"] = {
-                                k: doc.metadata.get(k, "")
-                                for k in [
-                                    "title",
-                                    "author",
-                                    "subject",
-                                    "keywords",
-                                    "creator",
-                                    "producer",
-                                    "creationDate",
-                                    "modDate",
-                                ]
-                            }
-                        if extract_outline:
-                            toc = doc.get_toc()
-                            analysis_data["outline"] = (
-                                _ocr_process_toc(toc) if toc else []
-                            )  # Helper defined earlier
-                        if extract_fonts:
-                            fonts: Set[str] = set()
-                            embedded_fonts: Set[str] = set()
-                            limit = min(10, len(doc))
-                            for i in range(limit):
-                                for font_info in doc.get_page_fonts(i):
-                                    fonts.add(font_info[3])
-                                    embedded_fonts.add(font_info[3]) if font_info[4] else None
-                            analysis_data["font_info"] = {
-                                "total_fonts": len(fonts),
-                                "embedded_fonts": len(embedded_fonts),
-                                "font_names": sorted(list(fonts)),
-                            }
-                        if extract_images:
-                            img_count = 0
-                            img_types: Dict[str, int] = {}
-                            total_size = 0
-                            limit = min(5, len(doc))
-                            for i in range(limit):
-                                for img in doc.get_page_images(i, full=True):
-                                    img_count += 1
-                                    xref = img[0]
-                                    try:
-                                        img_info = doc.extract_image(xref)
-                                        img_ext = img_info["ext"]
-                                        img_size = len(img_info["image"])
-                                    except Exception:
-                                        img_ext = "unknown"
-                                        img_size = 0
-                                    img_types[img_ext] = img_types.get(img_ext, 0) + 1
-                                    total_size += img_size
-                            est_total = (
-                                int(img_count * (len(doc) / max(1, limit)))
-                                if limit > 0
-                                else img_count
-                            )
-                            avg_size_kb = (
-                                int(total_size / max(1, img_count) / 1024) if img_count > 0 else 0
-                            )
-                            analysis_data["image_info"] = {
-                                "sampled_images": img_count,
-                                "estimated_total_images": est_total,
-                                "image_types": img_types,
-                                "average_size_kb": avg_size_kb,
-                            }
-                        if estimate_ocr_needs:
-                            text_pages = 0
-                            sample_size = min(10, len(doc))
-                            min_chars = 50
-                            for i in range(sample_size):
-                                if len(doc[i].get_text("text").strip()) > min_chars:
-                                    text_pages += 1
-                            text_ratio = text_pages / max(1, sample_size)
-                            needs_ocr = text_ratio < 0.8
-                            confidence = (
-                                "high" if text_ratio < 0.2 or text_ratio > 0.95 else "medium"
-                            )
-                            reason = (
-                                "Likely scanned or image-based."
-                                if needs_ocr and confidence == "high"
-                                else "Likely contains extractable text."
-                                if not needs_ocr and confidence == "high"
-                                else "Mix of text/image pages likely."
-                            )
-                            analysis_data["ocr_assessment"] = {
-                                "needs_ocr": needs_ocr,
-                                "confidence": confidence,
-                                "reason": reason,
-                                "text_coverage_ratio": round(text_ratio, 2),
-                            }
-                    return analysis_data
-
-                result.update(await loop.run_in_executor(None, _analyze_with_pymupdf_sync))
-            elif pdf_lib == "pdfplumber":
-
-                def _analyze_with_pdfplumber_sync():
-                    analysis_data = {}
-                    _ocr_check_dep("pdfplumber", _PDFPLUMBER_AVAILABLE, "PDF Analysis")
-                    if pdfplumber is None:
-                        raise ToolError("INTERNAL_ERROR", details={"reason": "pdfplumber is None"})
-                    with pdfplumber.open(current_input_path) as pdf:  # type: ignore
-                        analysis_data["page_count"] = len(pdf.pages)
-                        if extract_metadata:
-                            analysis_data["metadata"] = {
-                                k: pdf.metadata.get(k.capitalize(), "")
-                                for k in [
-                                    "title",
-                                    "author",
-                                    "subject",
-                                    "keywords",
-                                    "creator",
-                                    "producer",
-                                    "creationDate",
-                                    "modDate",
-                                ]
-                            }
-                        if extract_outline:
-                            analysis_data["outline"] = {
-                                "error": "Outline extraction not supported by pdfplumber."
-                            }
-                        if extract_fonts:
-                            analysis_data["font_info"] = {
-                                "error": "Font extraction not supported by pdfplumber."
-                            }
-                        if extract_images:
-                            analysis_data["image_info"] = {
-                                "error": "Image info not supported by pdfplumber."
-                            }
-                        if estimate_ocr_needs:
-                            text_pages = 0
-                            sample_size = min(10, len(pdf.pages))
-                            min_chars = 50
-                            for i in range(sample_size):
-                                if len((pdf.pages[i].extract_text() or "").strip()) > min_chars:
-                                    text_pages += 1
-                            text_ratio = text_pages / max(1, sample_size)
-                            needs_ocr = text_ratio < 0.8
-                            confidence = (
-                                "high" if text_ratio < 0.2 or text_ratio > 0.95 else "medium"
-                            )
-                            reason = (
-                                "Likely scanned or image-based."
-                                if needs_ocr and confidence == "high"
-                                else "Likely contains extractable text."
-                                if not needs_ocr and confidence == "high"
-                                else "Mix of text/image pages likely."
-                            )
-                            analysis_data["ocr_assessment"] = {
-                                "needs_ocr": needs_ocr,
-                                "confidence": confidence,
-                                "reason": reason,
-                                "text_coverage_ratio": round(text_ratio, 2),
-                            }
-                    return analysis_data
-
-                result.update(await loop.run_in_executor(None, _analyze_with_pdfplumber_sync))
-
-            result["success"] = True
-            result["processing_time"] = round(time.time() - t0, 3)
-            logger.info(
-                f"PDF structure analysis for '{input_name}' completed in {result['processing_time']:.3f}s using {pdf_lib}"
-            )
-            return result
-    except Exception as e:
-        logger.error(f"Error during PDF structure analysis for '{input_name}': {e}", exc_info=True)
-        if isinstance(e, (ToolInputError, ToolError)):
-            raise e
-        raise ToolError(
-            "PDF_ANALYSIS_FAILED", details={"input": input_name, "error": str(e)}
-        ) from e
-
-
-@with_tool_metrics
-@with_error_handling
-async def extract_tables(
-    document_path: Optional[str] = None,
-    document_data: Optional[bytes] = None,
-    *,
-    table_mode: str = "csv",
-    output_dir: Optional[str] = None,
-    accelerator_device: str = "auto",
-    num_threads: int = 4,
-) -> Dict[str, Any]:
-    """
-    Extracts tables found in a document using Docling and returns them (Standalone Tool).
-    NOTE: This tool currently *requires* the 'docling' extraction strategy implicitly.
-    """
-    _ocr_check_dep("docling", _DOCLING_AVAILABLE, "Table Extraction (extract_tables tool)")
-
-    valid_modes = {"csv", "json", "pandas"}
-    table_mode = table_mode.lower()
-    if table_mode not in valid_modes:
-        raise ToolInputError(
-            f"table_mode must be one of {', '.join(valid_modes)}", param_name="table_mode"
-        )
-    if table_mode == "pandas":
-        _ocr_check_dep("pandas", _PANDAS_AVAILABLE, "extract_tables(mode='pandas')")
-        if pd is None:
-            raise ToolError(
-                "INTERNAL_ERROR", details={"reason": "Pandas check passed but pd is None."}
-            )
-
-    input_path_obj: Optional[Path] = None
-    is_temp_file = False
-    input_name = "input_data"
-    try:
-        input_path_obj, is_temp_file = _get_input_path_or_temp(document_path, document_data)
-        input_name = input_path_obj.name
-        logger.info(f"Starting Docling table extraction from {input_name}, mode='{table_mode}'")
-
-        with _handle_temp_file(input_path_obj, is_temp_file) as current_input_path:
-            try:
-                device_str = accelerator_device.lower()
-                if device_str not in _ACCEL_MAP:
-                    logger.warning(f"Invalid device '{device_str}', using 'auto'.")
-                    device_str = "auto"
-                device = _ACCEL_MAP[device_str]
-                conv = _get_docling_converter(device, num_threads)
-                loop = asyncio.get_running_loop()
-                with _span("docling_table_conversion"):
-                    result = await loop.run_in_executor(None, conv.convert, current_input_path)
-                if result and result.document:
-                    doc_obj = result.document
-                    logger.info("Docling conversion successful.")
-                else:
-                    raise ToolError(
-                        "CONVERSION_FAILED", details={"reason": "Docling returned empty result"}
-                    )
-            except Exception as e:
-                logger.error(f"Error during Docling conversion: {e}", exc_info=True)
-                raise ToolError(
-                    "CONVERSION_FAILED", details={"doc": str(current_input_path), "error": str(e)}
-                ) from e
-
-            if not doc_obj:
-                return {
-                    "tables": [],
-                    "saved_files": [],
-                    "success": False,
-                    "error": "Conversion failed.",
-                    "error_code": "CONVERSION_FAILED",
-                }
-
-            tables_raw_data: List[List[List[str]]] = []
-            try:
-                with _span("docling_table_extraction"):
-                    if hasattr(doc_obj, "get_tables") and callable(doc_obj.get_tables):
-                        tables_raw_data = doc_obj.get_tables() or []
-                    elif hasattr(doc_obj, "pages") and isinstance(doc_obj.pages, list):
-                        logger.warning("Using page iteration for tables.")
-                        for page in doc_obj.pages:
-                            if (
-                                hasattr(page, "content")
-                                and page.content
-                                and callable(getattr(page.content, "has_tables", None))
-                                and page.content.has_tables()
-                            ):
-                                page_tables = page.content.get_tables()
-                                if page_tables and isinstance(page_tables, list):
-                                    tables_raw_data.extend(
-                                        pt for pt in page_tables if isinstance(pt, list)
-                                    )
-                    else:
-                        logger.error("Cannot extract tables: Missing get_tables/pages.")
-                sanitized_tables = []
-                for tbl in tables_raw_data:
-                    if isinstance(tbl, list) and all(isinstance(row, list) for row in tbl):
-                        sanitized_tables.append(
-                            [[str(cell) if cell is not None else "" for cell in row] for row in tbl]
-                        )
-                    else:
-                        logger.warning(f"Skipping malformed table: {type(tbl)}")
-                tables_raw_data = sanitized_tables
-            except Exception as e:
-                logger.error(f"Error accessing tables: {e}", exc_info=True)
-
-            if not tables_raw_data:
-                logger.warning(f"No tables found in {input_name}.")
-                return {"tables": [], "saved_files": [], "success": True}
-            logger.info(f"Extracted {len(tables_raw_data)} raw tables.")
-
-            output_tables: List[Any] = []
-            saved_files: List[str] = []
-            output_dir_path = Path(output_dir) if output_dir else None
-            if output_dir_path:
-                output_dir_path.mkdir(parents=True, exist_ok=True)
-
-            with _span("table_formatting_saving"):
-                for i, raw_table in enumerate(tables_raw_data):
-                    processed_table: Any = None
-                    file_ext = ""
-                    try:
-                        if table_mode == "csv":
-                            output = StringIO()
-                            writer = csv.writer(output, quoting=csv.QUOTE_MINIMAL)
-                            writer.writerows(raw_table)
-                            processed_table = output.getvalue()
-                            file_ext = "csv"
-                            save_content = processed_table
-                        elif table_mode == "json":
-                            processed_table = raw_table
-                            file_ext = "json"
-                            save_content = _json(processed_table)
-                        elif table_mode == "pandas":
-                            df = pd.DataFrame(raw_table)
-                            if not df.empty and len(df) > 1:
-                                first_row = df.iloc[0]
-                                is_header = (
-                                    sum(
-                                        1
-                                        for cell in first_row
-                                        if not str(cell).replace(".", "", 1).strip("-").isdigit()
-                                    )
-                                    > len(first_row) / 2
-                                )
-                                if is_header:
-                                    df.columns = first_row
-                                    df = df[1:].reset_index(drop=True)
-                            processed_table = df
-                            file_ext = "csv"
-                            save_content = df
-                        output_tables.append(processed_table)
-                        if output_dir_path and file_ext and save_content is not None:
-                            base_name = Path(input_name).stem
-                            fp = output_dir_path / f"{base_name}_table_{i + 1}.{file_ext}"
-                            try:
-                                if isinstance(save_content, str):
-                                    fp.write_text(save_content, encoding="utf-8")
-                                elif isinstance(save_content, pd.DataFrame):
-                                    save_content.to_csv(fp, index=False, encoding="utf-8")
-                                saved_files.append(str(fp))
-                                logger.debug(f"Saved table {i + 1} to {fp}")
-                            except Exception as e_save:
-                                logger.error(
-                                    f"Failed to save table {i + 1} to {fp}: {e_save}", exc_info=True
-                                )
-                    except Exception as e_format:
-                        logger.error(
-                            f"Failed to format table {i} into '{table_mode}': {e_format}",
-                            exc_info=True,
-                        )
-            logger.info(f"Processed {len(output_tables)} tables into '{table_mode}'.")
-            return {"tables": output_tables, "saved_files": saved_files, "success": True}
-    except Exception as e:
-        logger.error(f"Error in extract_tables for '{input_name}': {e}", exc_info=True)
-        if isinstance(e, (ToolInputError, ToolError)):
-            raise e
-        raise ToolError(
-            "TABLE_EXTRACTION_FAILED", details={"input": input_name, "error": str(e)}
-        ) from e
-
-
-###############################################################################
-# Batch Processing Tool (Standalone)                                          #
-###############################################################################
-
-
-# Map operation names to the standalone functions
-# Placed here to ensure all target functions are defined above
-_OP_MAP: Dict[str, Callable[..., Awaitable[Any]]] = {
-    "convert_document": convert_document,
-    "ocr_image": ocr_image,
-    "enhance_ocr_text": enhance_ocr_text,
-    "clean_and_format_text_as_markdown": clean_and_format_text_as_markdown,
-    "optimize_markdown_formatting": optimize_markdown_formatting,
-    "detect_content_type": detect_content_type,
-    "chunk_document": chunk_document,
-    "summarize_document": summarize_document,
-    "extract_entities": extract_entities,
-    "generate_qa_pairs": generate_qa_pairs,
-    "identify_sections": identify_sections,
-    "extract_metrics": extract_metrics,
-    "flag_risks": flag_risks,
-    "canonicalise_entities": canonicalise_entities,
-    "analyze_pdf_structure": analyze_pdf_structure,
-    "extract_tables": extract_tables,
-    "batch_format_texts": batch_format_texts,
-}
-
-# Assume necessary imports and _OP_MAP are defined above
-
-
-@with_tool_metrics
-@with_error_handling  # Catch errors setting up the batch itself
-async def process_document_batch(
-    inputs: List[Dict[str, Any]],
-    operations: List[Dict[str, Any]],
-    max_concurrency: int = 5,
-) -> List[Dict[str, Any]]:
-    """
-    Processes a list of input items through a sequence of operations concurrently (Standalone Tool).
-
-    Args:
-        inputs: List of input dictionaries. Each dict represents an item (e.g., {"document_path": "..."}).
-        operations: List of operation specifications. Each dict defines:
-            - operation (str): Name of the tool function to call (from _OP_MAP).
-            - output_key (str): Key to store the operation's result under in the item's state.
-            - params (dict): Fixed parameters for the operation.
-            Optional:
-            - input_key (str): Key in item state holding primary input (default conventions apply).
-            - input_keys_map (dict): Map function parameters to item state keys.
-            - promote_output (str): Key in result dict to promote to top-level "content".
-        max_concurrency: Max parallel items per operation step.
-
-    Returns:
-        List of dictionaries, representing the final state of each input item.
-    """
-    # --- Input Validation ---
-    if not isinstance(inputs, list):
-        raise ToolInputError("'inputs' must be a list.")
-    if not isinstance(operations, list):
-        raise ToolInputError("'operations' must be a list.")
-    if not all(isinstance(item, dict) for item in inputs):
-        raise ToolInputError("All items in 'inputs' must be dictionaries.")
-    if not all(isinstance(op, dict) for op in operations):
-        raise ToolInputError("All items in 'operations' must be dictionaries.")
-    max_concurrency = max(1, max_concurrency)
-    if not inputs:
-        logger.warning("Input list is empty.")
-        return []
-
-    # --- Initialize Results State ---
-    results_state: List[Dict[str, Any]] = []
-    for i, item in enumerate(inputs):
-        state_item = item.copy()
-        state_item["_original_index"] = i
-        state_item["_error_log"] = []
-        state_item["_status"] = "pending"
-        results_state.append(state_item)
-
-    logger.info(f"Starting batch processing: {len(inputs)} items, {len(operations)} operations.")
-
-    # --- Define Worker Outside the Loop ---
-    # This worker now takes all potentially changing parameters explicitly
-    async def _apply_op_to_item_worker(
-        item_state: Dict[str, Any],
-        semaphore: asyncio.Semaphore,
-        op_func: Callable,
-        op_name: str,
-        step_label: str,
-        op_output_key: str,
-        op_input_key: Optional[str],
-        op_params: Dict,
-        op_input_map: Dict,
-        op_promote: Optional[str],
-    ) -> Dict[str, Any]:
-        item_idx = item_state["_original_index"]
-        if item_state["_status"] == "failed":
-            return item_state  # Don't process failed items
-
-        async with semaphore:
-            logger.debug(f"Applying {step_label} to item {item_idx}")
-            call_kwargs = {}
-            primary_input_arg_name = None
-            input_source_key = None
-
-            try:
-                # 1. Determine Primary Input Source Key
-                if op_input_key and op_input_key in item_state:
-                    input_source_key = op_input_key
-                else:
-                    potential_keys = []
-                    if op_name.startswith(
-                        ("convert_document", "ocr_image", "analyze_pdf_structure", "extract_tables")
-                    ):
-                        potential_keys = [
-                            "document_path",
-                            "image_path",
-                            "file_path",
-                            "document_data",
-                            "image_data",
-                        ]
-                    elif op_name == "canonicalise_entities":
-                        potential_keys = ["entities_input"]
-                    elif op_name == "batch_format_texts":
-                        potential_keys = ["texts"]
-                    else:
-                        potential_keys = ["content", "document", "text"]
-
-                    for key in potential_keys:
-                        if key in item_state:
-                            input_source_key = key
-                            break
-                    if not input_source_key:
-                        if "content" in item_state:
-                            input_source_key = "content"
-                        elif "document" in item_state:
-                            input_source_key = "document"
-                        else:
-                            raise ToolInputError(
-                                f"Cannot determine input for op '{op_name}' for item {item_idx}."
-                            )
-
-                primary_input_value = item_state[input_source_key]
-
-                # 2. Determine Primary Input Argument Name
-                primary_param_map = {
-                    "document_path": "document_path",
-                    "image_path": "image_path",
-                    "file_path": "file_path",
-                    "document_data": "document_data",
-                    "image_data": "image_data",
-                    "text": "text",
-                    "entities_input": "entities_input",
-                    "texts": "texts",
-                    "document": "document",
-                    "content": "document",
-                }
-                primary_input_arg_name = primary_param_map.get(input_source_key)
-                if not primary_input_arg_name:
-                    # Inspect function signature to find the likely primary argument
-                    try:
-                        func_vars = op_func.__code__.co_varnames[: op_func.__code__.co_argcount]
-                        primary_input_arg_name = (
-                            "document"
-                            if "document" in func_vars
-                            else "text"
-                            if "text" in func_vars
-                            else func_vars[0]
-                            if func_vars
-                            else "input"
-                        )
-                    except (
-                        AttributeError
-                    ):  # Handle cases where introspection fails (e.g., built-ins)
-                        primary_input_arg_name = "document"  # Default guess
-                    logger.warning(
-                        f"Assuming primary arg for op '{op_name}' is '{primary_input_arg_name}'."
-                    )
-
-                call_kwargs[primary_input_arg_name] = primary_input_value
-
-                # 3. Handle Mapped Inputs
-                if isinstance(op_input_map, dict):
-                    for param_name, state_key in op_input_map.items():
-                        if state_key not in item_state:
-                            raise ToolInputError(
-                                f"Mapped key '{state_key}' not found for item {item_idx}.",
-                                param_name=state_key,
-                            )
-                        if param_name != primary_input_arg_name:
-                            call_kwargs[param_name] = item_state[state_key]
-                        elif call_kwargs[primary_input_arg_name] != item_state[state_key]:
-                            logger.warning(
-                                f"Mapped input '{param_name}' overrides primary input for item {item_idx}."
-                            )
-                            call_kwargs[primary_input_arg_name] = item_state[state_key]
-
-                # 4. Add Fixed Params
-                if isinstance(op_params, dict):
-                    for p_name, p_value in op_params.items():
-                        if p_name == primary_input_arg_name and p_name in call_kwargs:
-                            logger.warning(
-                                f"Fixed param '{p_name}' overrides dynamic input for item {item_idx}."
-                            )
-                        call_kwargs[p_name] = p_value
-
-                # --- Execute Operation ---
-                logger.debug(
-                    f"Calling {op_name} for item {item_idx} with args: {list(call_kwargs.keys())}"
-                )
-                op_result = await op_func(**call_kwargs)  # Call the standalone function
-
-                # --- Process Result ---
-                if not isinstance(op_result, dict):
-                    raise ToolError(
-                        "INVALID_RESULT_FORMAT",
-                        details={"operation": op_name, "result_type": type(op_result).__name__},
-                    )
-                item_state[op_output_key] = op_result  # Store full result
-
-                # Promote output if requested
-                if op_promote and isinstance(op_promote, str):
-                    if op_promote in op_result:
-                        item_state["content"] = op_result[op_promote]
-                        logger.debug(f"Promoted '{op_promote}' to 'content' for item {item_idx}")
-                    else:
-                        logger.warning(
-                            f"Cannot promote key '{op_promote}' for item {item_idx}: key not found in result."
-                        )
-
-                # Update status based on success flag
-                if not op_result.get("success", False):
-                    err_msg = op_result.get("error", f"Op '{op_name}' failed.")
-                    err_code = op_result.get("error_code", "PROCESSING_ERROR")
-                    log_entry = f"{step_label} Failed: [{err_code}] {err_msg}"
-                    item_state["_error_log"].append(log_entry)
-                    item_state["_status"] = "failed"
-                    logger.warning(f"Op '{op_name}' failed for item {item_idx}: {err_msg}")
-                elif item_state["_status"] != "failed":
-                    item_state["_status"] = "processed"
-
-            # --- Error Handling for Worker ---
-            except ToolInputError as tie:
-                error_msg = f"{step_label} Input Error: [{tie.error_code}] {str(tie)}"
-                logger.error(f"{error_msg} for item {item_idx}", exc_info=False)
-                item_state["_error_log"].append(error_msg)
-                item_state["_status"] = "failed"
-                item_state[op_output_key] = {
-                    "error": str(tie),
-                    "error_code": tie.error_code,
-                    "success": False,
-                }
-            except ToolError as te:
-                error_msg = f"{step_label} Tool Error: [{te.error_code}] {str(te)}"
-                logger.error(f"{error_msg} for item {item_idx}", exc_info=True)
-                item_state["_error_log"].append(error_msg)
-                item_state["_status"] = "failed"
-                item_state[op_output_key] = {
-                    "error": str(te),
-                    "error_code": te.error_code,
-                    "success": False,
-                }
-            except Exception as e:
-                error_msg = f"{step_label} Unexpected Error: {type(e).__name__}: {str(e)}"
-                logger.error(f"{error_msg} for item {item_idx}", exc_info=True)
-                item_state["_error_log"].append(error_msg)
-                item_state["_status"] = "failed"
-                item_state[op_output_key] = {
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                    "success": False,
-                }
-            return item_state
-
-    # --- Apply Operations Sequentially ---
-    for op_index, op_spec in enumerate(operations):
-        op_name = op_spec.get("operation")
-        op_output_key = op_spec.get("output_key")
-        op_params = op_spec.get("params", {})
-        op_input_key = op_spec.get("input_key")
-        op_input_map = op_spec.get("input_keys_map", {})
-        op_promote = op_spec.get("promote_output")
-
-        # --- Validate Operation Spec (robust checks) ---
-        if not op_name or not isinstance(op_name, str) or op_name not in _OP_MAP:
-            error_msg = f"Invalid/unknown operation '{op_name}' at step {op_index + 1}."
-            logger.error(error_msg + " Skipping step for all items.")
-            for item_state in results_state:
-                if item_state["_status"] != "failed":
-                    item_state["_error_log"].append(error_msg + " (Skipped)")
-                    item_state["_status"] = "failed"
-            continue
-        if not op_output_key or not isinstance(op_output_key, str):
-            error_msg = f"Missing/invalid 'output_key' for '{op_name}' at step {op_index + 1}."
-            logger.error(error_msg + " Skipping step for all items.")
-            for item_state in results_state:
-                if item_state["_status"] != "failed":
-                    item_state["_error_log"].append(error_msg + " (Skipped)")
-                    item_state["_status"] = "failed"
-            continue
-        if not isinstance(op_params, dict):
-            error_msg = f"Invalid 'params' (must be dict) for '{op_name}' at step {op_index + 1}."
-            logger.error(error_msg + " Skipping step for all items.")
-            for item_state in results_state:
-                if item_state["_status"] != "failed":
-                    item_state["_error_log"].append(error_msg + " (Skipped)")
-                    item_state["_status"] = "failed"
-            continue
-
-        # Get the actual function from the map
-        current_op_func = _OP_MAP[op_name]
-        current_step_label = f"Step {op_index + 1}/{len(operations)}: '{op_name}'"
-        logger.info(f"--- Starting {current_step_label} (Concurrency: {max_concurrency}) ---")
-
-        # --- Run Tasks for Current Step ---
-        step_semaphore = asyncio.Semaphore(max_concurrency)
-        step_tasks = [
-            # Call the single worker function, passing the current loop's values
-            _apply_op_to_item_worker(
-                item_state=item_state,
-                semaphore=step_semaphore,
-                op_func=current_op_func,
-                op_name=op_name,
-                step_label=current_step_label,
-                op_output_key=op_output_key,
-                op_input_key=op_input_key,
-                op_params=op_params,
-                op_input_map=op_input_map,
-                op_promote=op_promote,
-            )
-            for item_state in results_state
-        ]
-        updated_states = await asyncio.gather(*step_tasks)
-        results_state = updated_states  # Update the main state list
-
-        # Log summary after step
-        step_processed_count = sum(1 for s in results_state if s.get("_status") == "processed")
-        step_fail_count = sum(1 for s in results_state if s.get("_status") == "failed")
-        logger.info(
-            f"--- Finished {current_step_label} (Processed: {step_processed_count}, Failed: {step_fail_count}) ---"
-        )
-
-    # --- Final Cleanup ---
-    final_results = []
-    for item_state in results_state:
-        final_item = item_state.copy()
-        final_item.pop("_original_index", None)
-        # Keep _status and _error_log for visibility
-        final_results.append(final_item)
-
-    logger.info(f"Batch processing finished for {len(inputs)} items.")
-    return final_results

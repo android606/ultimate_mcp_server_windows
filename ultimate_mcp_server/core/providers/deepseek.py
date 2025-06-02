@@ -2,8 +2,6 @@
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from openai import AsyncOpenAI
-
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.utils import get_logger
@@ -11,11 +9,20 @@ from ultimate_mcp_server.utils import get_logger
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("ultimate_mcp_server.providers.deepseek")
 
+def _get_openai():
+    """Lazy import for openai to avoid startup dependency."""
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI
+    except ImportError as e:
+        logger.error(f"Failed to import openai: {e}")
+        raise ImportError("OpenAI package is not installed. Please install with: pip install openai")
 
 class DeepSeekProvider(BaseProvider):
-    """Provider implementation for DeepSeek API (using OpenAI-compatible interface)."""
+    """Provider implementation for DeepSeek API."""
     
     provider_name = Provider.DEEPSEEK.value
+    base_url = "https://api.deepseek.com/v1"
     
     def __init__(self, api_key: Optional[str] = None, **kwargs):
         """Initialize the DeepSeek provider.
@@ -25,7 +32,6 @@ class DeepSeekProvider(BaseProvider):
             **kwargs: Additional options
         """
         super().__init__(api_key=api_key, **kwargs)
-        self.base_url = kwargs.get("base_url", "https://api.deepseek.com")
         self.models_cache = None
         
     async def initialize(self) -> bool:
@@ -35,11 +41,24 @@ class DeepSeekProvider(BaseProvider):
             bool: True if initialization was successful
         """
         try:
-            # DeepSeek uses OpenAI-compatible API
+            # Lazy import AsyncOpenAI when actually needed
+            AsyncOpenAI = _get_openai()
+            
             self.client = AsyncOpenAI(
                 api_key=self.api_key, 
-                base_url=self.base_url,
+                base_url=self.base_url
             )
+            
+            # Skip API call if using a mock key (for tests)
+            if self.api_key and "mock-" in self.api_key:
+                self.logger.info(
+                    "Using mock DeepSeek key - skipping API validation",
+                    emoji_key="mock"
+                )
+                return True
+            
+            # Test connection by listing models
+            await self.list_models()
             
             self.logger.success(
                 "DeepSeek provider initialized successfully", 

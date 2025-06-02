@@ -5,8 +5,17 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-import numpy as np
+# import numpy as np  # REMOVED - Using lazy import
 from openai import AsyncOpenAI
+
+# Lazy import function
+def _get_numpy():
+    """Lazy import for numpy to avoid startup dependency."""
+    try:
+        import numpy as np
+        return np
+    except ImportError as e:
+        raise ImportError("numpy package is not installed. Please install with: pip install numpy")
 
 from ultimate_mcp_server.config import get_config
 from ultimate_mcp_server.utils import get_logger
@@ -67,7 +76,7 @@ class EmbeddingCache:
         """
         return self.cache_dir / f"{key}.npy"
         
-    def get(self, text: str, model: str) -> Optional[np.ndarray]:
+    def get(self, text: str, model: str) -> Optional[any]:
         """Get embedding from cache.
         
         Args:
@@ -87,6 +96,7 @@ class EmbeddingCache:
         cache_file = self._get_cache_file_path(key)
         if cache_file.exists():
             try:
+                np = _get_numpy()
                 embedding = np.load(str(cache_file))
                 # Add to in-memory cache
                 self.cache[key] = embedding
@@ -99,7 +109,7 @@ class EmbeddingCache:
                 
         return None
         
-    def set(self, text: str, model: str, embedding: np.ndarray) -> None:
+    def set(self, text: str, model: str, embedding: any) -> None:
         """Set embedding in cache.
         
         Args:
@@ -115,6 +125,7 @@ class EmbeddingCache:
         # Save to disk
         cache_file = self._get_cache_file_path(key)
         try:
+            np = _get_numpy()
             np.save(str(cache_file), embedding)
         except Exception as e:
             logger.error(

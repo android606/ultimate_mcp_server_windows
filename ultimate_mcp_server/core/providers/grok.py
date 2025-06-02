@@ -2,9 +2,6 @@
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from openai import AsyncOpenAI
-
-from ultimate_mcp_server.config import get_config
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.utils import get_logger
@@ -12,6 +9,14 @@ from ultimate_mcp_server.utils import get_logger
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("ultimate_mcp_server.providers.grok")
 
+def _get_openai():
+    """Lazy import for openai to avoid startup dependency."""
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI
+    except ImportError as e:
+        logger.error(f"Failed to import openai: {e}")
+        raise ImportError("OpenAI package is not installed. Please install with: pip install openai")
 
 class GrokProvider(BaseProvider):
     """Provider implementation for xAI's Grok API."""
@@ -36,7 +41,7 @@ class GrokProvider(BaseProvider):
             bool: True if initialization was successful
         """
         try:
-            self.client = AsyncOpenAI(
+            self.client = _get_openai()(
                 api_key=self.api_key, 
                 base_url=self.base_url,
             )

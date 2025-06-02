@@ -9,7 +9,7 @@ import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import httpx
-from openai import AsyncOpenAI
+# from openai import AsyncOpenAI  # REMOVED - Using lazy import
 
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
@@ -18,6 +18,13 @@ from ultimate_mcp_server.utils import get_logger
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("ultimate_mcp_server.providers.together")
 
+def _get_openai():
+    """Lazy import of OpenAI client to avoid startup cost."""
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI
+    except ImportError:
+        return None
 
 class TogetherProvider(BaseProvider):
     """Provider implementation for Together AI API."""
@@ -69,6 +76,14 @@ class TogetherProvider(BaseProvider):
             return False
             
         try:
+            AsyncOpenAI = _get_openai()
+            if AsyncOpenAI is None:
+                self.logger.error(
+                    "OpenAI library not available. Install with: pip install openai",
+                    emoji_key="error"
+                )
+                return False
+                
             self.client = AsyncOpenAI(
                 api_key=self.api_key, 
                 base_url=self.base_url,

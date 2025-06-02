@@ -1,12 +1,10 @@
 # ultimate_mcp_server/providers/anthropic.py
-"""Anthropic (Claude) provider implementation."""
+"""Anthropic provider implementation."""
 
 import json
 import re
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
-
-from anthropic import AsyncAnthropic
 
 from ultimate_mcp_server.constants import Provider, TaskType  # Import TaskType for logging
 from ultimate_mcp_server.core.providers.base import (
@@ -18,9 +16,17 @@ from ultimate_mcp_server.utils import get_logger
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("ultimate_mcp_server.providers.anthropic")
 
+def _get_anthropic():
+    """Lazy import for anthropic to avoid startup dependency."""
+    try:
+        from anthropic import AsyncAnthropic
+        return AsyncAnthropic
+    except ImportError as e:
+        logger.error(f"Failed to import anthropic: {e}")
+        raise ImportError("Anthropic package is not installed. Please install with: pip install anthropic")
 
 class AnthropicProvider(BaseProvider):
-    """Provider implementation for Anthropic (Claude) API."""
+    """Provider implementation for Anthropic API."""
 
     provider_name = Provider.ANTHROPIC.value
 
@@ -42,11 +48,10 @@ class AnthropicProvider(BaseProvider):
         Returns:
             bool: True if initialization was successful
         """
-        if not self.api_key:
-            self.logger.error("Anthropic API key is not configured.", emoji_key="error")
-            return False
-
         try:
+            # Lazy import AsyncAnthropic when actually needed
+            AsyncAnthropic = _get_anthropic()
+            
             self.client = AsyncAnthropic(
                 api_key=self.api_key,
                 base_url=self.base_url,
@@ -61,13 +66,9 @@ class AnthropicProvider(BaseProvider):
                 self.is_initialized = True
                 return True
 
-            # Optional: Add a quick check_api_key() call here if desired,
-            # but initialize might succeed even if key is invalid later.
-            # is_valid = await self.check_api_key() # This makes initialize slower
-            # if not is_valid:
-            #     self.logger.error("Anthropic API key appears invalid.", emoji_key="error")
-            #     return False
-
+            # Test the connection by making a simple API call
+            await self.list_models()
+            
             self.logger.success("Anthropic provider initialized successfully", emoji_key="provider")
             self.is_initialized = True  # Mark as initialized
             return True

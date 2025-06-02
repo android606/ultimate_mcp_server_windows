@@ -9,7 +9,7 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional, Set
 
-import networkx as nx
+# import networkx as nx  # REMOVED - Using lazy import
 
 from ultimate_mcp_server.constants import COST_PER_MILLION_TOKENS
 from ultimate_mcp_server.exceptions import ToolError, ToolInputError
@@ -31,6 +31,14 @@ from ultimate_mcp_server.utils import get_logger
 from ultimate_mcp_server.utils.text import count_tokens
 
 logger = get_logger("ultimate_mcp_server.tools.optimization")
+
+def _get_networkx():
+    """Lazy import of networkx to avoid startup cost."""
+    try:
+        import networkx as nx
+        return nx
+    except ImportError:
+        return None
 
 # --- Constants for Speed Score Mapping ---
 # Define bins for mapping tokens/second to a 1-5 score (lower is faster)
@@ -809,6 +817,10 @@ async def execute_optimized_workflow(
 
     # --- Advanced Workflow Validation Using NetworkX ---
     # Build directed graph from workflow
+    nx = _get_networkx()
+    if nx is None:
+        raise ToolError("NetworkX library not available. Install with: pip install networkx", error_code="DEPENDENCY_MISSING")
+    
     dag = nx.DiGraph()
     
     # Add all stages as nodes
@@ -937,6 +949,11 @@ async def execute_optimized_workflow(
     async def execute_dag() -> Dict[str, Any]:
         """Execute the entire workflow DAG with proper dependency handling."""
         try:
+            # Get networkx lazily
+            nx = _get_networkx()
+            if nx is None:
+                raise ToolError("NetworkX library is required for workflow execution but not available.")
+            
             # Start with a topological sort to get execution order respecting dependencies
             try:
                 execution_order = list(nx.topological_sort(dag))

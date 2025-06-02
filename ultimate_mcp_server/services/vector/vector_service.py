@@ -6,8 +6,22 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+# Lazy import functions
+def _get_numpy():
+    """Lazy import for numpy to avoid startup dependency."""
+    try:
+        import numpy as np
+        return np
+    except ImportError as e:
+        raise ImportError("numpy package is not installed. Please install with: pip install numpy")
+
+def _get_sklearn():
+    """Lazy import for sklearn to avoid startup dependency."""
+    try:
+        from sklearn.metrics.pairwise import cosine_similarity
+        return cosine_similarity
+    except ImportError as e:
+        raise ImportError("scikit-learn package is not installed. Please install with: pip install scikit-learn")
 
 from ultimate_mcp_server.services.vector.embeddings import get_embedding_service
 from ultimate_mcp_server.utils import get_logger

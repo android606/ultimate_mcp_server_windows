@@ -10,7 +10,16 @@ import re  # Added for code extraction
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import jsonschema
+# import jsonschema  # REMOVED - Using lazy import
+
+# Lazy import function
+def _get_jsonschema():
+    """Lazy import for jsonschema to avoid startup dependency."""
+    try:
+        import jsonschema
+        return jsonschema
+    except ImportError as e:
+        raise ImportError("jsonschema package is not installed. Please install with: pip install jsonschema")
 
 from ultimate_mcp_server.constants import Provider
 
@@ -244,10 +253,15 @@ async def extract_json(
         if success and json_schema and validate_output:
             validation_result = {"valid": True, "errors": []}
             try: 
-                jsonschema.validate(instance=extracted_data, schema=json_schema)
+                jsonschema_module = _get_jsonschema()
+                jsonschema_module.validate(instance=extracted_data, schema=json_schema)
                 logger.debug("JSON validated successfully against schema.")
-            except jsonschema.exceptions.ValidationError as e:
-                validation_result = {"valid": False, "errors": [str(e)]}
+            except Exception as e:
+                # Handle both ImportError and ValidationError
+                if "jsonschema package is not installed" in str(e):
+                    validation_result = {"valid": False, "errors": [f"Schema validation unavailable: {str(e)}"]}
+                else:
+                    validation_result = {"valid": False, "errors": [str(e)]}
                 logger.warning(f"JSON validation failed: {e}")
                 # Keep success=True as extraction worked, but validation failed
 
@@ -636,9 +650,10 @@ async def extract_semantic_schema(
         # Validate against the provided schema if extraction succeeded
         if success:
             try:
-                jsonschema.validate(instance=extracted_data, schema=semantic_schema)
+                jsonschema_module = _get_jsonschema()
+                jsonschema_module.validate(instance=extracted_data, schema=semantic_schema)
                 logger.debug("Successfully parsed and validated semantic schema JSON.")
-            except jsonschema.exceptions.ValidationError as e:
+            except Exception as e:
                  error_message = f"Warning: LLM output did not strictly conform to schema: {str(e)}"
                  logger.warning(f"{error_message}. Data: {extracted_data}")
                  # Still consider extraction successful if parsable

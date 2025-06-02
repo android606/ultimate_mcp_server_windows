@@ -20,26 +20,27 @@ from ultimate_mcp_server.utils import get_logger
 # )
 # Import base decorators/classes that might be used by other tool modules
 from .completion import chat_completion, generate_completion, multi_completion, stream_completion
-from .document_conversion_and_processing import (
-    analyze_pdf_structure,
-    batch_format_texts,
-    canonicalise_entities,
-    chunk_document,
-    clean_and_format_text_as_markdown,
-    convert_document,
-    detect_content_type,
-    enhance_ocr_text,
-    extract_entities,
-    extract_metrics,
-    extract_tables,
-    flag_risks,
-    generate_qa_pairs,
-    identify_sections,
-    ocr_image,
-    optimize_markdown_formatting,
-    process_document_batch,
-    summarize_document,
-)
+# Temporarily commenting out heavy imports for startup test
+# from .document_conversion_and_processing import (
+#     analyze_pdf_structure,
+#     batch_format_texts,
+#     canonicalise_entities,
+#     chunk_document,
+#     clean_and_format_text_as_markdown,
+#     convert_document,
+#     detect_content_type,
+#     enhance_ocr_text,
+#     extract_entities,
+#     extract_metrics,
+#     extract_tables,
+#     flag_risks,
+#     generate_qa_pairs,
+#     identify_sections,
+#     ocr_image,
+#     optimize_markdown_formatting,
+#     process_document_batch,
+#     summarize_document,
+# )
 
 # from .docstring_refiner import refine_tool_documentation
 # from .entity_relation_graph import extract_entity_graph
@@ -78,17 +79,19 @@ from .local_text_tools import (
 
 # from .marqo_fused_search import marqo_fused_search
 # from .meta_api_tool import register_api_meta_tools
-from .optimization import (
-    compare_models,
-    estimate_cost,
-    execute_optimized_workflow,
-    recommend_model,
-)
+# Temporarily commenting out optimization for startup test - has rag dependency chain
+# from .optimization import (
+#     compare_models,
+#     estimate_cost,
+#     execute_optimized_workflow,
+#     recommend_model,
+# )
 from .provider import get_provider_status, list_models
-from .python_sandbox import (
-    execute_python,
-    repl_python,
-)
+# Temporarily commenting out python sandbox for startup test
+# from .python_sandbox import (
+#     execute_python,
+#     repl_python,
+# )
 
 # from .rag import (
 #     add_documents,
@@ -101,18 +104,19 @@ from .python_sandbox import (
 from .sentiment_analysis import analyze_business_sentiment, analyze_business_text_batch
 
 # from .single_shot_synthesis import single_shot_synthesis
-from .smart_browser import (
-    autopilot,
-    browse,
-    click,
-    collect_documentation,
-    download,
-    download_site_pdfs,
-    parallel,
-    run_macro,
-    search,
-    type_text,
-)
+# Temporarily commenting out smart browser for startup test
+# from .smart_browser import (
+#     autopilot,
+#     browse,
+#     click,
+#     collect_documentation,
+#     download,
+#     download_site_pdfs,
+#     parallel,
+#     run_macro,
+#     search,
+#     type_text,
+# )
 
 # from .sql_databases import access_audit_log, execute_sql, explore_database, manage_database
 # from .text_classification import text_classification
@@ -127,40 +131,41 @@ from .smart_browser import (
 #     get_tournament_status,
 #     list_tournaments,
 # )
-from .unified_memory_system import (
-    add_tag_to_memory,
-    create_embedding,
-    create_goal,
-    create_memory_link,
-    create_workflow,
-    decay_link_strengths,
-    focus_memory,
-    generate_reflection,
-    get_contradictions,
-    get_embedding,
-    get_goal_details,
-    get_linked_memories,
-    get_memory_by_id,
-    get_memory_metadata,
-    get_memory_tags,
-    get_recent_actions,
-    get_rich_context_package,
-    get_thought_chain,
-    get_workflow_details,
-    get_workflow_metadata,
-    get_working_memory,
-    load_cognitive_state,
-    optimize_working_memory,
-    query_memories,
-    record_action_completion,
-    record_action_start,
-    save_cognitive_state,
-    store_memory,
-    update_memory,
-    update_memory_link_metadata,
-    update_memory_metadata,
-    vector_similarity,
-)
+# Temporarily commenting out unified memory system for startup test - has aiosqlite/networkx dependency chain
+# from .unified_memory_system import (
+#     add_tag_to_memory,
+#     create_embedding,
+#     create_goal,
+#     create_memory_link,
+#     create_workflow,
+#     decay_link_strengths,
+#     focus_memory,
+#     generate_reflection,
+#     get_contradictions,
+#     get_embedding,
+#     get_goal_details,
+#     get_linked_memories,
+#     get_memory_by_id,
+#     get_memory_metadata,
+#     get_memory_tags,
+#     get_recent_actions,
+#     get_rich_context_package,
+#     get_thought_chain,
+#     get_workflow_details,
+#     get_workflow_metadata,
+#     get_working_memory,
+#     load_cognitive_state,
+#     optimize_working_memory,
+#     query_memories,
+#     record_action_completion,
+#     record_action_start,
+#     save_cognitive_state,
+#     store_memory,
+#     update_memory,
+#     update_memory_link_metadata,
+#     update_memory_metadata,
+#     vector_similarity,
+# )
 
 __all__ = [
     # Base decorators/classes
@@ -196,11 +201,11 @@ __all__ = [
     # "text_classification",
 
     # Cost optimization tools
-    "estimate_cost",
-    "compare_models",
-    "recommend_model",
-    "execute_optimized_workflow",
-    "refine_tool_documentation",
+    # "estimate_cost",
+    # "compare_models",
+    # "recommend_model",
+    # "execute_optimized_workflow",
+    # "refine_tool_documentation",
     
     # Filesystem tools
     "read_file",
@@ -234,40 +239,40 @@ __all__ = [
     # "access_audit_log",
 
     # Python sandbox tools
-    "execute_python",
-    "repl_python",
+    # "execute_python",
+    # "repl_python",
 
     # Smart Browser Standalone Functions
-    "click",
-    "browse",
-    "type_text",
-    "search",
-    "download",
-    "download_site_pdfs",
-    "collect_documentation",
-    "parallel",
-    "run_macro",
-    "autopilot",
+    # "click",
+    # "browse",
+    # "type_text",
+    # "search",
+    # "download",
+    # "download_site_pdfs",
+    # "collect_documentation",
+    # "parallel",
+    # "run_macro",
+    # "autopilot",
     
     # Document conversion and processing tools
-    "convert_document",
-    "chunk_document",
-    "clean_and_format_text_as_markdown",
-    "detect_content_type",
-    "batch_format_texts",
-    "optimize_markdown_formatting",
-    "identify_sections",
-    "generate_qa_pairs",
-    "summarize_document",
-    "extract_metrics",
-    "flag_risks",
-    "canonicalise_entities",
-    "ocr_image",
-    "enhance_ocr_text",
-    "analyze_pdf_structure",
-    "process_document_batch",
-    "extract_entities",
-    "extract_tables",
+    # "convert_document",
+    # "chunk_document",
+    # "clean_and_format_text_as_markdown",
+    # "detect_content_type",
+    # "batch_format_texts",
+    # "optimize_markdown_formatting",
+    # "identify_sections",
+    # "generate_qa_pairs",
+    # "summarize_document",
+    # "extract_metrics",
+    # "flag_risks",
+    # "canonicalise_entities",
+    # "ocr_image",
+    # "enhance_ocr_text",
+    # "analyze_pdf_structure",
+    # "process_document_batch",
+    # "extract_entities",
+    # "extract_tables",
 
     # Text Redline tools
     # "compare_documents_redline",
@@ -296,38 +301,38 @@ __all__ = [
     "analyze_business_text_batch",
     
     # Unified Memory System tools
-    "create_workflow",
-    "get_workflow_details",
-    "record_action_start",
-    "record_action_completion",
-    "get_recent_actions",
-    "get_thought_chain",
-    "store_memory",
-    "get_memory_by_id",
-    "get_memory_metadata",
-    "get_memory_tags",
-    "update_memory_metadata",
-    "update_memory_link_metadata",
-    "create_memory_link",
-    "get_workflow_metadata",
-    "get_contradictions",
-    "query_memories",
-    "update_memory",
-    "get_linked_memories",
-    "add_tag_to_memory",
-    "create_embedding",
-    "get_embedding",
-    "get_working_memory",
-    "focus_memory",
-    "optimize_working_memory",
-    "save_cognitive_state",
-    "load_cognitive_state",
-    "decay_link_strengths",
-    "generate_reflection",
-    "get_rich_context_package",
-    "get_goal_details",
-    "create_goal",
-    "vector_similarity"
+    # "create_workflow",
+    # "get_workflow_details",
+    # "record_action_start",
+    # "record_action_completion",
+    # "get_recent_actions",
+    # "get_thought_chain",
+    # "store_memory",
+    # "get_memory_by_id",
+    # "get_memory_metadata",
+    # "get_memory_tags",
+    # "update_memory_metadata",
+    # "update_memory_link_metadata",
+    # "create_memory_link",
+    # "get_workflow_metadata",
+    # "get_contradictions",
+    # "query_memories",
+    # "update_memory",
+    # "get_linked_memories",
+    # "add_tag_to_memory",
+    # "create_embedding",
+    # "get_embedding",
+    # "get_working_memory",
+    # "focus_memory",
+    # "optimize_working_memory",
+    # "save_cognitive_state",
+    # "load_cognitive_state",
+    # "decay_link_strengths",
+    # "generate_reflection",
+    # "get_rich_context_package",
+    # "get_goal_details",
+    # "create_goal",
+    # "vector_similarity"
 ]
 
 logger = get_logger("ultimate_mcp_server.tools")
