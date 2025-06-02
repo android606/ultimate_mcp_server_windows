@@ -2,8 +2,6 @@
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
-from google import genai
-
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.utils import get_logger
@@ -11,6 +9,14 @@ from ultimate_mcp_server.utils import get_logger
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("ultimate_mcp_server.providers.gemini")
 
+def _get_genai():
+    """Lazy import for google.generativeai to avoid startup dependency."""
+    try:
+        import google.generativeai as genai
+        return genai
+    except ImportError as e:
+        logger.error(f"Failed to import google.generativeai: {e}")
+        raise ImportError("Google Generative AI package is not installed. Please install with: pip install google-generativeai")
 
 class GeminiProvider(BaseProvider):
     """Provider implementation for Google Gemini API."""
@@ -42,12 +48,15 @@ class GeminiProvider(BaseProvider):
                 )
                 self.client = {"mock_client": True}
                 return True
+            
+            # Lazy import genai when actually needed
+            genai = _get_genai()
                 
-            # Create a client instance instead of configuring globally
-            self.client = genai.Client(
-                api_key=self.api_key,
-                http_options={"api_version": "v1alpha"}
-            )
+            # Configure the API with the key (modern API approach)
+            genai.configure(api_key=self.api_key)
+            
+            # Store a flag to indicate successful initialization
+            self.client = {"configured": True}
             
             self.logger.success(
                 "Gemini provider initialized successfully", 
@@ -89,6 +98,9 @@ class GeminiProvider(BaseProvider):
         """
         if not self.client:
             await self.initialize()
+        
+        # Get genai for this specific call
+        genai = _get_genai()
             
         # Use default model if not specified
         model = model or self.get_default_model()
@@ -203,20 +215,37 @@ class GeminiProvider(BaseProvider):
                 processing_time = 0.1
                 response = None
             else:
-                # Pass everything in the correct structure according to the API
+                # Get genai for this specific call
+                genai = _get_genai()
+                
+                # Create the model instance
+                model_instance = genai.GenerativeModel(model)
+                
+                # Prepare generation config
+                generation_config = genai.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                    **{k: v for k, v in config.items() if k not in ['temperature', 'max_output_tokens']}
+                )
+                
+                # Handle different content formats
                 if isinstance(content, list):  # messages format
-                    response = self.client.models.generate_content(
-                        model=model,
-                        contents=content,
-                        config=config,  # Pass config dict containing temperature, max_output_tokens, etc.
-                        **request_params  # Pass other params directly if needed
+                    # Convert to simpler format for GenerativeModel
+                    formatted_content = []
+                    for msg in content:
+                        role = msg.get("role", "user")
+                        parts = msg.get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "")
+                            formatted_content.append({"role": role, "parts": [text]})
+                    response = model_instance.generate_content(
+                        formatted_content,
+                        generation_config=generation_config
                     )
                 else:  # prompt format (string)
-                    response = self.client.models.generate_content(
-                        model=model,
-                        contents=content,
-                        config=config,  # Pass config dict containing temperature, max_output_tokens, etc.
-                        **request_params  # Pass other params directly if needed
+                    response = model_instance.generate_content(
+                        content,
+                        generation_config=generation_config
                     )
                 
                 processing_time = time.time() - start_time
@@ -403,23 +432,42 @@ class GeminiProvider(BaseProvider):
         total_chunks = 0
         
         try:
+            # Get genai for this specific call
+            genai = _get_genai()
+            
+            # Create the model instance
+            model_instance = genai.GenerativeModel(model)
+            
+            # Prepare generation config
+            generation_config = genai.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                **{k: v for k, v in config.items() if k not in ['temperature', 'max_output_tokens']}
+            )
+            
             # Use the dedicated streaming method as per Google's documentation
             try:
                 if isinstance(content, list):  # messages format
-                    stream_response = self.client.models.generate_content_stream(
-                        model=model,
-                        contents=content,
-                        config=config,
-                        **request_params
+                    # Convert to simpler format for GenerativeModel
+                    formatted_content = []
+                    for msg in content:
+                        role = msg.get("role", "user")
+                        parts = msg.get("parts", [])
+                        if parts:
+                            text = parts[0].get("text", "")
+                            formatted_content.append({"role": role, "parts": [text]})
+                    stream_response = model_instance.generate_content(
+                        formatted_content,
+                        generation_config=generation_config,
+                        stream=True
                     )
                 else:  # prompt format (string)
-                    stream_response = self.client.models.generate_content_stream(
-                        model=model,
-                        contents=content,
-                        config=config,
-                        **request_params
+                    stream_response = model_instance.generate_content(
+                        content,
+                        generation_config=generation_config,
+                        stream=True
                     )
-                    
+                
                 # Process the stream - iterating over chunks
                 async def iterate_response():
                     # Convert sync iterator to async

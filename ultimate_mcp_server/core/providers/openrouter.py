@@ -4,15 +4,22 @@ import os
 import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
 
-from openai import AsyncOpenAI
-
-from ultimate_mcp_server.config import get_config
-from ultimate_mcp_server.constants import DEFAULT_MODELS, Provider
+from ultimate_mcp_server.constants import Provider, DEFAULT_MODELS
 from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
+from ultimate_mcp_server.config import get_config
 from ultimate_mcp_server.utils import get_logger
 
 # Use the same naming scheme everywhere: logger at module level
 logger = get_logger("ultimate_mcp_server.providers.openrouter")
+
+def _get_openai():
+    """Lazy import for openai to avoid startup dependency."""
+    try:
+        from openai import AsyncOpenAI
+        return AsyncOpenAI
+    except ImportError as e:
+        logger.error(f"Failed to import openai: {e}")
+        raise ImportError("OpenAI package is not installed. Please install with: pip install openai")
 
 # Default OpenRouter Base URL (can be overridden by config)
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -75,7 +82,7 @@ class OpenRouterProvider(BaseProvider):
                 return False
                 
             # Create the client
-            self.client = AsyncOpenAI(
+            self.client = _get_openai()(
                 base_url=self.base_url,
                 api_key=self.api_key,
                 default_headers=headers,
