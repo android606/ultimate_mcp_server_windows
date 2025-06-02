@@ -78,7 +78,7 @@ from .local_text_tools import (
 )
 
 # from .marqo_fused_search import marqo_fused_search
-# from .meta_api_tool import register_api_meta_tools
+from .meta_api_tool import register_api_meta_tools
 # Temporarily commenting out optimization for startup test - has rag dependency chain
 # from .optimization import (
 #     compare_models,
@@ -279,7 +279,7 @@ __all__ = [
     # "create_html_redline",
 
     # Meta API tools
-    # "register_api_meta_tools",
+    "register_api_meta_tools",
 
     # Marqo tool
     # "marqo_fused_search",

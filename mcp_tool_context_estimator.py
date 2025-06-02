@@ -64,9 +64,20 @@ def get_server_url() -> str:
     """
     Get the MCP server URL from .env file or environment variables
     
+    Always ensures the URL ends with '/sse' since we're using SSE transport.
+    
     Returns:
-        The server URL to connect to
+        The server URL to connect to (always ending with '/sse')
     """
+    # Helper function to ensure URL has /sse endpoint
+    def ensure_sse_endpoint(url: str) -> str:
+        """Ensure URL ends with /sse for SSE transport"""
+        if not url.endswith('/sse'):
+            # Remove trailing slash if present, then add /sse
+            url = url.rstrip('/')
+            url += '/sse'
+        return url
+    
     # Try to get from python-decouple (.env file)
     try:
         host = decouple_config('MCP_SERVER_HOST', default='localhost')
@@ -75,7 +86,7 @@ def get_server_url() -> str:
     except Exception:
         # Fallback to environment variables if decouple fails
         if "MCP_SERVER_URL" in os.environ:
-            return os.environ["MCP_SERVER_URL"]
+            return ensure_sse_endpoint(os.environ["MCP_SERVER_URL"])
         
         if "MCP_SERVER_HOST" in os.environ and "MCP_SERVER_PORT" in os.environ:
             host = os.environ["MCP_SERVER_HOST"]
@@ -417,10 +428,22 @@ def analyze_tools_token_usage(current_tools: Dict[str, Any], all_tools: Dict[str
     all_tools_costs = {model: (price * all_tools_prompt_tokens / 1000) 
                           for model, price in MODEL_PRICES.items()}
     
+    # Save this to a file for inspection
+    # This is what is actually sent to the LLM
+    output_filename = "current_tools_sent_to_llm.json"
+    try:
+        with open(output_filename, "w", encoding="utf-8") as f:
+            # We want to save the list of tool dicts, not the whole prompt string
+            json.dump(current_tools["tools"], f, indent=2)
+        if not quiet:
+            console.print(f"[green]Current tool definitions saved to {output_filename}[/green]")
+    except Exception as e:
+        if not quiet:
+            console.print(f"[red]Error saving current tool definitions: {str(e)}[/red]")
+    
     # Save the complete, untruncated text to files
-    with open("current_tools_sent_to_llm.json", "w", encoding="utf-8") as f:
+    with open("current_tools_sent_to_llm.json.full_prompt.txt", "w", encoding="utf-8") as f:
         f.write(current_tools_prompt)
-    console.print("[green]Saved current tools JSON to current_tools_sent_to_llm.json[/green]")
     
     with open("all_tools_sent_to_llm.json", "w", encoding="utf-8") as f:
         f.write(all_tools_prompt)
@@ -667,7 +690,20 @@ async def main():
     args = parse_args()
     
     # Get server URL from arguments or auto-detect
-    server_url = args.url or get_server_url()
+    if args.url:
+        # Apply the same SSE endpoint logic to command-line provided URLs
+        def ensure_sse_endpoint(url: str) -> str:
+            """Ensure URL ends with /sse for SSE transport"""
+            if not url.endswith('/sse'):
+                # Remove trailing slash if present, then add /sse
+                url = url.rstrip('/')
+                url += '/sse'
+            return url
+        
+        server_url = ensure_sse_endpoint(args.url)
+    else:
+        server_url = get_server_url()
+    
     quiet_mode = args.quiet
     
     try:

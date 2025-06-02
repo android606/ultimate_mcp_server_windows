@@ -158,6 +158,81 @@ umcp run --port 8013 &
 curl http://localhost:8013/sse
 ```
 
+## Server Endpoints & Monitoring
+
+### SSE (Server-Sent Events) Endpoint
+
+The Ultimate MCP Server uses **Server-Sent Events (SSE)** for MCP protocol communication. When connecting to the server:
+
+- **Correct endpoint**: `http://host:port/sse`
+- **Incorrect**: `http://host:port` (will return 404)
+
+Examples:
+```bash
+# Default local server
+curl http://localhost:8013/sse
+
+# Custom port
+curl http://localhost:8014/sse
+
+# Remote server
+curl http://your-server.com:8013/sse
+```
+
+### Tool Status Monitoring
+
+The server includes a `get_all_tools_status` tool that provides comprehensive status information about all tools and their dependencies:
+
+```python
+# Using the MCP client programmatically
+import asyncio
+from mcp import ClientSession
+from mcp.client.sse import sse_client
+
+async def check_tool_status():
+    async with sse_client("http://localhost:8013/sse") as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            result = await session.call_tool("get_all_tools_status", {})
+            print(result)
+
+# Run the status check
+asyncio.run(check_tool_status())
+```
+
+This tool reports:
+- **Tool availability** (AVAILABLE, UNAVAILABLE, LOADING, DISABLED_BY_CONFIG, ERROR)
+- **LLM provider status** for tools that depend on external APIs
+- **Missing dependencies** and configuration issues
+- **Detailed error messages** for troubleshooting
+
+### Configuration for External Clients
+
+When connecting external MCP clients (like Cursor AI, the tool context estimator, or custom applications), ensure you:
+
+1. **Use the correct SSE endpoint**: Always append `/sse` to your server URL
+2. **Configure environment variables** for server discovery:
+   ```bash
+   # In your .env file
+   MCP_SERVER_HOST=127.0.0.1
+   MCP_SERVER_PORT=8013
+   MCP_SERVER_URL=http://127.0.0.1:8013/sse  # Full URL with /sse
+   ```
+
+### Testing Connectivity
+
+Use the included tool context estimator to verify your server is accessible:
+
+```bash
+# Test connection to default server
+python mcp_tool_context_estimator.py --quiet
+
+# Test specific server
+python mcp_tool_context_estimator.py --url http://localhost:8014 --quiet
+
+# The script will automatically append /sse if missing
+```
+
 ## Upgrading
 
 ### From PyPI (when available)

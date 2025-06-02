@@ -395,6 +395,80 @@ docker compose up --build # Add --build the first time or after changes
 
 Once running, the server will typically be available at `http://localhost:8013` (or the host/port configured in your `.env` or command line). You should see log output indicating the server has started and which tools are registered.
 
+## 🔗 Server Connectivity & Monitoring
+
+### SSE (Server-Sent Events) Endpoint
+
+**Important**: The Ultimate MCP Server uses **Server-Sent Events (SSE)** for MCP protocol communication. When connecting programmatically or via external clients:
+
+- ✅ **Correct endpoint**: `http://host:port/sse`
+- ❌ **Incorrect**: `http://host:port` (will return HTTP 404)
+
+#### Examples:
+```bash
+# Test connectivity with curl
+curl http://localhost:8013/sse
+
+# For custom ports
+curl http://localhost:8014/sse
+
+# For remote servers
+curl http://your-server.com:8013/sse
+```
+
+#### Client Connection Examples:
+```python
+# Using MCP client library
+from mcp.client.sse import sse_client
+from mcp import ClientSession
+
+async with sse_client("http://localhost:8013/sse") as (read, write):
+    async with ClientSession(read, write) as session:
+        await session.initialize()
+        # Now you can call tools
+```
+
+### Tool Status Monitoring
+
+The server includes a comprehensive `get_all_tools_status` tool that provides real-time status information about all tools and their dependencies:
+
+```python
+# Check tool and provider status
+result = await session.call_tool("get_all_tools_status", {})
+```
+
+This tool reports:
+- **Tool availability status**: AVAILABLE, UNAVAILABLE, LOADING, DISABLED_BY_CONFIG, ERROR
+- **LLM provider health**: For tools that depend on external APIs
+- **Configuration issues**: Missing API keys, dependencies, etc.
+- **Detailed error messages**: For troubleshooting failed tools
+
+Example output structure:
+```json
+{
+  "tools_status": [
+    {
+      "tool_name": "generate_completion",
+      "status": "AVAILABLE",
+      "details": {
+        "provider_name": "openai",
+        "llm_provider_status": {
+          "enabled": true,
+          "available": true,
+          "api_key_configured": true,
+          "models_count": 12
+        }
+      }
+    }
+  ],
+  "summary": {
+    "total_tools": 67,
+    "available": 65,
+    "unavailable": 2
+  }
+}
+```
+
 ## 💻 Command Line Interface (CLI)
 
 The Ultimate MCP Server provides a powerful command-line interface (CLI) through the `umcp` command that allows you to manage the server, interact with LLM providers, test features, and explore examples. This section details all available commands and their options.

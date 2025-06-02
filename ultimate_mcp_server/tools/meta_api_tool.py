@@ -60,6 +60,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx
+import dataclasses
 
 from ultimate_mcp_server.exceptions import ToolError, ToolInputError
 from ultimate_mcp_server.services.cache import with_cache
@@ -69,6 +70,20 @@ from ultimate_mcp_server.tools.base import (
     with_tool_metrics,
 )
 from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.config import get_config, ToolRegistrationConfig
+from ultimate_mcp_server.utils.tool_status import tool_status as global_tool_status_manager
+# Attempt to import WINDOWS_EXCEL_AVAILABLE, will default to False if not found or not applicable
+try:
+    from ultimate_mcp_server.tools.excel_spreadsheet_automation import WINDOWS_EXCEL_AVAILABLE
+except ImportError:
+    WINDOWS_EXCEL_AVAILABLE = False # Assume not available if import fails
+
+# It's generally preferred to access provider status via the LLMProviderManager
+# or by having the server inject this information if available,
+# rather than one tool trying to directly call another tool's API endpoint internally.
+# For now, we'll assume an LLMProviderManager might be accessible via mcp_server or ctx.
+# This part might need refinement based on actual server architecture.
+
 
 logger = get_logger("ultimate_mcp_server.tools.meta_api")
 
@@ -1129,28 +1144,272 @@ async def list_available_tools(
 
     return {"success": True, "tools": tools, "tools_count": len(tools)}
 
+@with_tool_metrics
+@with_error_handling
+async def get_all_tools_status(ctx: Optional[Dict[str, Any]] = None):
+    """
+    Provides the operational status for all known tools in the Ultimate MCP Server.
+
+    This tool inspects the server's configuration, tool registration,
+    and real-time status of dependencies (like LLM providers and external libraries)
+    to report whether each tool is available, unavailable, loading, or disabled,
+    along with a reason if it's not fully available.
+
+    Returns:
+        A dictionary containing a list of all tools and their status:
+        {
+            "tools_status": [
+                {
+                    "tool_name": "tool_example_name",
+                    "status": "AVAILABLE" | "UNAVAILABLE" | "LOADING" | "DISABLED_BY_CONFIG" | "ERROR",
+                    "reason": "Optional reason if not available",
+                    "category": "Optional tool category",
+                    "details": {} # Optional dictionary for more detailed status context
+                }
+            ],
+            "summary": {
+                "total_tools": 0, "available": 0, "unavailable": 0, 
+                "loading": 0, "error": 0, "disabled_by_config": 0
+            }
+        }
+    """
+    if ctx is None or "mcp" not in ctx:
+        # Try to get the global gateway instance
+        try:
+            from ultimate_mcp_server.core import server
+            gateway = server._gateway_instance
+            if gateway and hasattr(gateway, 'mcp'):
+                mcp_server = gateway.mcp
+            else:
+                return {
+                    "tools_status": [],
+                    "summary": {"total_tools": 0, "available": 0, "unavailable": 0, "loading": 0, "error": 0, "disabled_by_config": 0},
+                    "error": "MCP server context not available. Cannot retrieve tool list."
+                }
+        except Exception as e:
+            return {
+                "tools_status": [],
+                "summary": {"total_tools": 0, "available": 0, "unavailable": 0, "loading": 0, "error": 0, "disabled_by_config": 0},
+                "error": f"Could not access MCP server instance: {str(e)}"
+            }
+    else:
+        mcp_server = ctx["mcp"]
+        
+    all_statuses = []
+    
+    # Get configuration
+    try:
+        config = get_config()
+        tool_reg_config: ToolRegistrationConfig = config.tool_registration
+    except Exception as e:
+        logger.warning(f"Could not get tool registration config: {e}")
+        tool_reg_config = None
+    
+    # Get registered tool names
+    registered_tool_names = []
+    try:
+        if hasattr(mcp_server, 'tools') and isinstance(mcp_server.tools, dict):
+            registered_tool_names = list(mcp_server.tools.keys())
+        elif hasattr(mcp_server, 'get_tool_definitions'):
+            try:
+                tool_definitions = await mcp_server.get_tool_definitions()
+                registered_tool_names = [td.name for td in tool_definitions]
+            except Exception as e:
+                logger.warning(f"Could not retrieve tool definitions: {e}")
+                registered_tool_names = []
+    except Exception as e:
+        logger.error(f"Error getting registered tools: {e}")
+        registered_tool_names = []
+
+    # Get provider status manager if available
+    provider_status_manager = None
+    try:
+        if hasattr(mcp_server, 'llm_provider_manager'):
+            provider_status_manager = mcp_server.llm_provider_manager
+        elif hasattr(mcp_server, 'provider_status_manager'):
+            provider_status_manager = mcp_server.provider_status_manager
+    except Exception as e:
+        logger.warning(f"Could not access provider status manager: {e}")
+
+    # Define provider-dependent tools (simplified mapping)
+    PROVIDER_DEPENDENT_TOOLS = {
+        "generate_completion": "openai",
+        "chat_completion": "openai", 
+        "multi_completion": "openai",
+        "estimate_cost": None,  # Uses multiple providers
+        "compare_models": None,  # Uses multiple providers
+        "recommend_model": None,  # Uses multiple providers
+        "list_models": None,  # Uses multiple providers
+        "get_provider_status": None,  # Meta tool
+    }
+
+    # Environment-specific tools
+    ENVIRONMENT_SPECIFIC_TOOLS = {
+        "excel_execute": WINDOWS_EXCEL_AVAILABLE,
+    }
+
+    # Build master tool list
+    master_tool_list = set(registered_tool_names)
+    master_tool_list.update(PROVIDER_DEPENDENT_TOOLS.keys())
+    master_tool_list.update(ENVIRONMENT_SPECIFIC_TOOLS.keys())
+    master_tool_list.add("get_all_tools_status")  # Self-awareness
+
+    # Initialize summary counters
+    summary_counts = {
+        "total_tools": len(master_tool_list),
+        "available": 0,
+        "unavailable": 0,
+        "loading": 0,
+        "error": 0,
+        "disabled_by_config": 0
+    }
+
+    # Process each tool
+    for tool_name in sorted(list(master_tool_list)):
+        status_info = {
+            "tool_name": tool_name,
+            "status": "UNKNOWN",
+            "reason": None,
+            "category": None,
+            "details": {}
+        }
+
+        try:
+            # Check if tool is registered
+            if tool_name in registered_tool_names:
+                status_info["status"] = "AVAILABLE"
+            else:
+                status_info["status"] = "UNAVAILABLE"
+                status_info["reason"] = "Tool is not currently registered with the server."
+
+            # Check configuration filters
+            if tool_reg_config and tool_reg_config.filter_enabled:
+                if tool_reg_config.included_tools and tool_name not in tool_reg_config.included_tools:
+                    status_info["status"] = "DISABLED_BY_CONFIG"
+                    status_info["reason"] = "Not included in server's 'included_tools' configuration."
+                elif tool_name in tool_reg_config.excluded_tools:
+                    status_info["status"] = "DISABLED_BY_CONFIG"
+                    status_info["reason"] = "Excluded by server's 'excluded_tools' configuration."
+
+            # Check tool status manager
+            if global_tool_status_manager:
+                try:
+                    tool_specific_status = global_tool_status_manager.get_tool_status(tool_name)
+                    if tool_specific_status:
+                        current_state = tool_specific_status.get('status')
+                        if current_state:
+                            current_state_str = str(current_state.value if hasattr(current_state, 'value') else current_state).upper()
+                            if current_state_str == "LOADING":
+                                status_info["status"] = "LOADING"
+                                status_info["reason"] = tool_specific_status.get('message', 'Tool is currently loading dependencies.')
+                            elif current_state_str in ["ERROR", "FAILED"]:
+                                status_info["status"] = "ERROR"
+                                status_info["reason"] = tool_specific_status.get('error', 'Tool reported an error.')
+                            elif current_state_str == "DISABLED":
+                                status_info["status"] = "UNAVAILABLE"
+                                status_info["reason"] = tool_specific_status.get('message', 'Tool is disabled or a dependency is missing.')
+                except Exception as e:
+                    logger.warning(f"Could not get status for {tool_name} from ToolStatusManager: {e}")
+
+            # Check environment dependencies
+            if tool_name in ENVIRONMENT_SPECIFIC_TOOLS:
+                if not ENVIRONMENT_SPECIFIC_TOOLS[tool_name]:
+                    status_info["status"] = "UNAVAILABLE"
+                    status_info["reason"] = f"Missing environment dependency for {tool_name}."
+
+            # Check provider dependencies (simplified)
+            provider_name = PROVIDER_DEPENDENT_TOOLS.get(tool_name)
+            if provider_name and provider_status_manager and status_info["status"] in ["AVAILABLE", "UNKNOWN"]:
+                try:
+                    if hasattr(provider_status_manager, 'get_status'):
+                        p_status = provider_status_manager.get_status(provider_name)
+                        if p_status:
+                            status_info["details"]["provider_name"] = provider_name
+                            if hasattr(p_status, 'available') and not p_status.available:
+                                status_info["status"] = "UNAVAILABLE"
+                                error_msg = getattr(p_status, 'error', 'Provider unavailable')
+                                status_info["reason"] = f"Provider '{provider_name}' is unavailable: {error_msg}"
+                            
+                            # Add provider status safely
+                            try:
+                                if dataclasses.is_dataclass(p_status):
+                                    status_info["details"]["llm_provider_status"] = dataclasses.asdict(p_status)
+                                else:
+                                    status_info["details"]["llm_provider_status"] = str(p_status)
+                            except Exception as conv_e:
+                                logger.warning(f"Could not convert provider status to dict: {conv_e}")
+                                status_info["details"]["llm_provider_status"] = {"error": "Could not serialize provider status"}
+
+                except Exception as e:
+                    logger.warning(f"Error checking provider status for {tool_name}: {e}")
+
+        except Exception as e:
+            logger.error(f"Error processing tool {tool_name}: {e}")
+            status_info["status"] = "ERROR"
+            status_info["reason"] = f"Error during status check: {str(e)}"
+
+        # Update summary counts
+        status_key = status_info["status"].lower()
+        if status_key == "available":
+            summary_counts["available"] += 1
+        elif status_key == "unavailable":
+            summary_counts["unavailable"] += 1
+        elif status_key == "loading":
+            summary_counts["loading"] += 1
+        elif status_key == "error":
+            summary_counts["error"] += 1
+        elif status_key == "disabled_by_config":
+            summary_counts["disabled_by_config"] += 1
+
+        all_statuses.append(status_info)
+
+    return {
+        "tools_status": all_statuses,
+        "summary": summary_counts
+    }
+
 # Now we have all our stateless functions defined:
 # register_api, list_registered_apis, get_api_details, unregister_api
 # call_dynamic_tool, refresh_api, get_tool_details, list_available_tools
 
 def register_api_meta_tools(mcp_server):
-    """Registers API Meta-Tool with the MCP server.
+    """Registers API meta-tools with the MCP server."""
+    # The functions get_all_tools_status, get_tool_details, list_available_tools
+    # are already in this module's scope and do not need to be re-imported here.
 
-    Args:
-        mcp_server: MCP server instance
-    """
-    # Register tools with MCP server
-    mcp_server.tool(name="register_api")(register_api)
-    mcp_server.tool(name="list_registered_apis")(list_registered_apis)
-    mcp_server.tool(name="get_api_details")(get_api_details)
-    mcp_server.tool(name="unregister_api")(unregister_api)
-    mcp_server.tool(name="call_dynamic_tool")(call_dynamic_tool)
-    mcp_server.tool(name="refresh_api")(refresh_api)
-    mcp_server.tool(name="get_tool_details")(get_tool_details)
-    mcp_server.tool(name="list_available_tools")(list_available_tools)
+    if not mcp_server:
+        logger.error("MCP server instance is None, cannot register API meta-tools.")
+        return
 
-    logger.info("Registered API Meta-Tool functions")
-    return None  # No need to return an instance anymore
+    # Tools to register, mapping name to the function object
+    tools_to_register_map = {
+        "register_api": register_api,
+        "list_registered_apis": list_registered_apis,
+        "get_api_details": get_api_details,
+        "unregister_api": unregister_api,
+        "call_dynamic_tool": call_dynamic_tool,
+        "refresh_api": refresh_api,
+        "get_tool_details": get_tool_details, # Note: "get_tool_details" is listed twice, ensure this is intended or correct one.
+        "list_available_tools": list_available_tools,
+        "get_all_tools_status": get_all_tools_status
+    }
+
+    registered_tool_count = 0
+    for tool_name, tool_func in tools_to_register_map.items():
+        if tool_func and callable(tool_func):
+            try:
+                mcp_server.tool(name=tool_name)(tool_func)
+                logger.info(f"Successfully registered API Meta-Tool: {tool_name}")
+                registered_tool_count += 1
+            except Exception as e:
+                logger.error(f"Failed to register API Meta-Tool {tool_name}: {e}", exc_info=True)
+        else:
+            logger.warning(f"API Meta-Tool function '{tool_name}' not found in this module or is not callable.")
+
+    if registered_tool_count > 0:
+        logger.info(f"Finished registering {registered_tool_count} API Meta-Tool functions.")
+    else:
+        logger.warning("No API Meta-Tool functions were registered from meta_api_tool.py.")
 
 
 # Example usage if this module is run directly
