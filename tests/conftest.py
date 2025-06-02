@@ -1,12 +1,117 @@
 """Pytest fixtures for Ultimate MCP Server tests."""
 import asyncio
+import importlib.util
 import json
 import os
+import sys
+import platform
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional
 
 import pytest
 from pytest import MonkeyPatch
+
+# =====================================================================
+# Virtual Environment and Project Installation Verification
+# =====================================================================
+
+# Check if environment check should be skipped
+SKIP_ENV_CHECK = os.environ.get("UMCP_SKIP_ENV_CHECK") == "1"
+
+# Check for correct Python version before proceeding
+REQUIRED_PYTHON_VERSION = (3, 13)
+current_version = sys.version_info[:2]
+
+# Check if we're in a virtual environment - modern Python may not have 'real_prefix'
+# so we need to check for base_prefix being different from prefix
+in_virtualenv = (
+    hasattr(sys, 'real_prefix') or 
+    (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix) or
+    os.path.exists(os.path.join(sys.prefix, 'pyvenv.cfg'))
+)
+
+# Project name to check for
+PROJECT_NAME = "ultimate_mcp_server"
+
+# Check if the project is installed in development mode
+project_installed = False
+try:
+    import ultimate_mcp_server
+    # Check if it's an editable installation by checking the path
+    project_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    module_path = os.path.dirname(os.path.dirname(ultimate_mcp_server.__file__))
+    project_installed = os.path.normpath(project_path) == os.path.normpath(module_path)
+except ImportError:
+    project_installed = False
+
+# Comprehensive verification of environment
+ENV_PROBLEMS = []
+
+if current_version < REQUIRED_PYTHON_VERSION:
+    ENV_PROBLEMS.append(f"Python {REQUIRED_PYTHON_VERSION[0]}.{REQUIRED_PYTHON_VERSION[1]}+ is required, but you have {platform.python_version()}")
+
+if not in_virtualenv:
+    ENV_PROBLEMS.append("You are not running in a virtual environment")
+
+if not project_installed:
+    ENV_PROBLEMS.append(f"The {PROJECT_NAME} package is not installed in development mode")
+
+# Required packages for testing
+REQUIRED_PACKAGES = [
+    "pytest-asyncio",  # Required for async tests
+    "pytest-cov",      # Required for coverage reports
+    "pytest-mock",     # Required for mocking
+    "anyio",           # Required for async functionality
+]
+
+# More robust way to check for installed packages
+missing_packages = []
+for package in REQUIRED_PACKAGES:
+    package_name = package.replace('-', '_')
+    try:
+        # Try direct import first
+        __import__(package_name)
+    except ImportError:
+        # If that fails, check with importlib
+        if importlib.util.find_spec(package_name) is None:
+            missing_packages.append(package)
+
+if missing_packages:
+    ENV_PROBLEMS.append(f"Missing required packages: {', '.join(missing_packages)}")
+
+# If there are any environment problems, print them and exit
+# Unless UMCP_SKIP_ENV_CHECK is set to 1
+if ENV_PROBLEMS and not SKIP_ENV_CHECK:
+    print("\n" + "=" * 80)
+    print("ERROR: Tests must be run in the project's virtual environment")
+    print("=" * 80)
+    print("\nThe following problems were detected:\n")
+    
+    for i, problem in enumerate(ENV_PROBLEMS, 1):
+        print(f"{i}. {problem}")
+    
+    print("\nTo set up the environment correctly:")
+    print("\n1. Ensure Python 3.13+ is installed")
+    print("2. Create a virtual environment in the project directory:")
+    print("   python -m venv .venv")
+    print("\n3. Activate the virtual environment:")
+    print("   - Windows: .venv\\Scripts\\activate.bat")
+    print("   - Linux/Mac: source .venv/bin/activate")
+    print("\n4. Install the package in development mode with test dependencies:")
+    print("   pip install -e \".[test]\"")
+    
+    print("\nTo bypass this check, set the environment variable UMCP_SKIP_ENV_CHECK=1")
+    
+    print("\nCurrent Python: " + sys.executable)
+    print("=" * 80)
+    
+    # Exit with an error code
+    sys.exit(1)
+elif ENV_PROBLEMS and SKIP_ENV_CHECK:
+    print("\n" + "=" * 80)
+    print("WARNING: Environment check bypassed with UMCP_SKIP_ENV_CHECK=1")
+    print("Some tests may fail due to missing dependencies or incorrect environment")
+    print("=" * 80)
 
 from ultimate_mcp_server.config import GatewayConfig, get_config
 from ultimate_mcp_server.constants import Provider
