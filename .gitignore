@@ -241,3 +241,7 @@ storage/unified_agent_memory.db-journal
 storage/exercise_mental_health_quiz.html
 storage/exercise_mental_health_report.md
 storage/unified_agent_memory.dbOLD
+
+# Cursor IDE
+.cursor/
+.cursor/*
