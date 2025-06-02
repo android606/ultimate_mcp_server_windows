@@ -1,338 +1,482 @@
 # 📦 Ultimate MCP Server Installation Guide
 
-## Quick Installation
+> **🙏 Massive Credit and Thanks to [Dicklesworthstone](https://github.com/Dicklesworthstone)** for creating the original [Ultimate MCP Server](https://github.com/Dicklesworthstone/ultimate_mcp_server)! This Windows-optimized fork builds upon their incredible work to provide enhanced compatibility and features for Windows environments. All the core innovation, architecture, and functionality comes from their original project. Please visit and star the original repository to show your appreciation for their amazing contributions to the MCP ecosystem.
 
-### Option 1: Install from PyPI (Recommended - when published)
-```bash
-# Install the package
-pip install ultimate-mcp-server
+## Quick Installation from GitHub
 
-# Run the server
-umcp run --port 8013
-```
+**Important**: This installation method uses the Windows-optimized fork that includes additional environment validation, enhanced compatibility, and Windows-specific improvements.
 
-### Option 2: Install from Source (Current)
-```bash
-# Clone the repository
-git clone https://github.com/Dicklesworthstone/ultimate_mcp_server.git
-cd ultimate_mcp_server
+### Prerequisites
 
-# Install with uv (recommended)
-uv sync
-uv run umcp run --port 8013
-
-# Or with pip
-pip install -e .
-umcp run --port 8013
-```
-
-### Option 3: Docker (Containerized)
-```bash
-# Build and run with Docker
-docker build -t ultimate-mcp-server .
-docker run -p 8013:8013 ultimate-mcp-server
-
-# Or use docker-compose
-docker-compose up
-```
-
-## System Requirements
-
-- **Python**: 3.13 or higher
-- **Operating System**: Windows, macOS, Linux
-- **RAM**: 4GB minimum, 8GB+ recommended
+- **Python**: 3.8 or higher (3.13+ recommended)
+- **Git**: For cloning the repository
+- **Operating System**: Windows 10/11 (primary focus), macOS, Linux (community supported)
+- **RAM**: 4GB minimum, 8GB+ recommended for full functionality
 - **Storage**: 2GB for dependencies and caching
 
-## Installation Methods Detailed
+### Installation Methods
 
-### Method 1: uv (Ultra-fast Python Package Manager)
+#### Method 1: Quick Setup with Activation Scripts (Recommended)
 
-First install `uv` if you don't have it:
+This method uses the included activation scripts that automatically handle virtual environment setup and validation.
+
 ```bash
-# On macOS/Linux
+# Clone the Windows-optimized repository
+git clone https://github.com/android606/ultimate_mcp_server_windows.git
+cd ultimate_mcp_server_windows
+
+# Create virtual environment (first time only)
+python -m venv .venv
+
+# Windows: Use the activation script
+activate_and_run.bat
+
+# Linux/Mac: Use the shell script
+chmod +x activate_and_run.sh
+./activate_and_run.sh
+```
+
+The activation scripts will:
+- ✅ Verify virtual environment is activated
+- ✅ Validate all required dependencies are installed
+- ✅ Check Python version compatibility
+- ✅ Start the server with appropriate settings
+- ✅ Provide helpful error messages and suggestions
+
+#### Method 2: Manual Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/android606/ultimate_mcp_server_windows.git
+cd ultimate_mcp_server_windows
+
+# Create and activate virtual environment
+python -m venv .venv
+
+# Activate virtual environment
+# Windows:
+.venv\Scripts\activate.bat
+# Linux/Mac:
+source .venv/bin/activate
+
+# Install the package in development mode
+pip install -e .
+
+# Verify environment is properly configured
+python -m ultimate_mcp_server.cli env --verbose
+
+# Start the server
+python -m ultimate_mcp_server.cli run --debug
+```
+
+#### Method 3: Using uv (Ultra-fast Package Manager)
+
+```bash
+# Install uv if you don't have it
+# Windows:
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+# Linux/Mac:
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# On Windows
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+# Clone and install
+git clone https://github.com/android606/ultimate_mcp_server_windows.git
+cd ultimate_mcp_server_windows
 
-Then install and run:
-```bash
-git clone https://github.com/Dicklesworthstone/ultimate_mcp_server.git
-cd ultimate_mcp_server
-uv sync  # Install all dependencies
-uv run umcp run --port 8013
-```
-
-### Method 2: Traditional pip
-
-```bash
-git clone https://github.com/Dicklesworthstone/ultimate_mcp_server.git
-cd ultimate_mcp_server
-pip install -e ".[all]"  # Install with all optional dependencies
-umcp run --port 8013
-```
-
-### Method 3: Development Setup
-
-```bash
-git clone https://github.com/Dicklesworthstone/ultimate_mcp_server.git
-cd ultimate_mcp_server
-
-# Install development dependencies
-uv sync --dev
-
-# Install pre-commit hooks
-uv run pre-commit install
-
-# Run tests
-uv run pytest
+# Create virtual environment and install dependencies
+uv sync
 
 # Run the server
-uv run umcp run --port 8013
+uv run python -m ultimate_mcp_server.cli run --debug
 ```
 
-## Optional Dependencies
+## Environment Validation and Setup
 
-The package includes several optional dependency groups:
+This Windows-optimized fork includes comprehensive environment validation to ensure your installation works correctly.
+
+### Built-in Environment Checking
+
+The installation includes several tools to help you verify and troubleshoot your setup:
 
 ```bash
-# Install with advanced ML features (torch, transformers)
-pip install "ultimate-mcp-server[advanced]"
+# Check environment status
+python -m ultimate_mcp_server.cli env
 
-# Install with development tools
-pip install "ultimate-mcp-server[dev]"
+# Detailed environment information
+python -m ultimate_mcp_server.cli env --verbose
 
-# Install with documentation tools  
-pip install "ultimate-mcp-server[docs]"
+# Get setup suggestions if issues are found
+python -m ultimate_mcp_server.cli env --suggest
 
-# Install everything
-pip install "ultimate-mcp-server[all]"
+# Quick validation (exit code 0 = success, 1 = issues)
+python -m ultimate_mcp_server.cli env --check-only
+
+# Require virtual environment (strict mode)
+python -m ultimate_mcp_server.cli env --strict
 ```
+
+### Environment Validation Features
+
+The validation system checks:
+
+- ✅ **Virtual Environment**: Detects if running in venv, virtualenv, or conda
+- ✅ **Python Version**: Ensures Python 3.8+ compatibility
+- ✅ **Required Packages**: Validates all necessary dependencies are installed
+- ✅ **Package Versions**: Checks for compatible package versions
+- ✅ **Environment Path**: Locates project virtual environment if not activated
+
+### Automatic Environment Validation
+
+By default, the server performs environment validation on startup. You can control this behavior:
+
+```bash
+# Normal startup with environment checking (default)
+python -m ultimate_mcp_server.cli run
+
+# Skip environment validation (not recommended)
+python -m ultimate_mcp_server.cli run --skip-env-check
+
+# Strict mode - require virtual environment
+python -m ultimate_mcp_server.cli env --strict && python -m ultimate_mcp_server.cli run
+```
+
+### Troubleshooting Environment Issues
+
+If you encounter environment problems:
+
+1. **Check Environment Status**:
+   ```bash
+   python -m ultimate_mcp_server.cli env --verbose
+   ```
+
+2. **Get Setup Suggestions**:
+   ```bash
+   python -m ultimate_mcp_server.cli env --suggest
+   ```
+
+3. **Recreate Virtual Environment**:
+   ```bash
+   # Remove old environment
+   rmdir /s .venv  # Windows
+   rm -rf .venv    # Linux/Mac
+   
+   # Create new environment
+   python -m venv .venv
+   .venv\Scripts\activate.bat  # Windows
+   source .venv/bin/activate   # Linux/Mac
+   
+   # Reinstall
+   pip install -e .
+   ```
+
+4. **Verify Installation**:
+   ```bash
+   python -c "import ultimate_mcp_server; print('✅ Import successful')"
+   ```
 
 ## Configuration
 
 ### Environment Variables
-Create a `.env` file in your project directory:
+
+Create a `.env` file in your project directory for API keys and configuration:
+
 ```bash
-# LLM Provider API Keys
+# LLM Provider API Keys (add the ones you plan to use)
 OPENAI_API_KEY=your_openai_key_here
 ANTHROPIC_API_KEY=your_anthropic_key_here
 GOOGLE_API_KEY=your_google_key_here
 DEEPSEEK_API_KEY=your_deepseek_key_here
+XAI_API_KEY=your_xai_key_here
 
-# Optional configurations
+# Server Configuration (optional)
 MCP_HOST=127.0.0.1
 MCP_PORT=8013
 MCP_LOG_LEVEL=INFO
+
+# Tool-specific Configuration (optional)
+ALLOWED_DIRS=/path/to/safe/directories  # For filesystem tools
 ```
 
 ### Basic Configuration
+
 ```bash
 # Check available providers
-umcp providers
+python -m ultimate_mcp_server.cli providers
 
-# Test a provider
-umcp test openai --prompt "Hello, world!"
-
-# Run with specific settings
-umcp run --host 0.0.0.0 --port 8013 --debug
-```
-
-## Verification
-
-After installation, verify everything works:
-
-```bash
-# Check version
-umcp --version
+# Test a provider connection
+python -m ultimate_mcp_server.cli test openai --prompt "Hello, world!"
 
 # Check available tools
-umcp tools
+python -m ultimate_mcp_server.cli tools
 
-# Test basic functionality
-umcp complete --provider openai --prompt "What is 2+2?"
-
-# Start the server and test with curl
-umcp run --port 8013 &
-curl http://localhost:8013/sse
+# Run with specific settings
+python -m ultimate_mcp_server.cli run --host 0.0.0.0 --port 8013 --debug
 ```
 
-## Server Endpoints & Monitoring
+## Running the Server
+
+### Basic Server Startup
+
+```bash
+# Default startup (Base Toolset only)
+python -m ultimate_mcp_server.cli run
+
+# With all tools loaded
+python -m ultimate_mcp_server.cli run --load-all-tools
+
+# Debug mode for development
+python -m ultimate_mcp_server.cli run --debug
+
+# Custom port to avoid conflicts
+python -m ultimate_mcp_server.cli run --port 8014
+```
+
+### Advanced Server Options
+
+```bash
+# Load specific additional tools
+python -m ultimate_mcp_server.cli run --include-tools browser,audio
+
+# Load all tools except specific ones
+python -m ultimate_mcp_server.cli run --load-all-tools --exclude-tools filesystem
+
+# Server accessible from network
+python -m ultimate_mcp_server.cli run --host 0.0.0.0 --port 8013
+
+# Multiple workers for high concurrency
+python -m ultimate_mcp_server.cli run --workers 4
+```
+
+### Using the Activation Scripts
+
+The included activation scripts make server management easier:
+
+```bash
+# Windows - Simple server startup
+activate_and_run.bat
+
+# Windows - Pass specific arguments
+activate_and_run.bat run --load-all-tools --debug
+
+# Linux/Mac - Simple server startup
+./activate_and_run.sh
+
+# Linux/Mac - Pass specific arguments
+./activate_and_run.sh run --port 8014 --debug
+```
+
+## Verification and Testing
+
+### Basic Functionality Tests
+
+```bash
+# Check installation and version
+python -m ultimate_mcp_server.cli --version
+
+# Test environment
+python -m ultimate_mcp_server.cli env --check-only
+
+# List available tools
+python -m ultimate_mcp_server.cli tools
+
+# Test LLM provider connectivity
+python -m ultimate_mcp_server.cli test openai --prompt "What is 2+2?"
+
+# Generate a completion directly
+python -m ultimate_mcp_server.cli complete --provider openai --prompt "Hello, world!"
+```
+
+### Server Connectivity Tests
+
+```bash
+# Start server in background
+python -m ultimate_mcp_server.cli run --port 8013 &
+
+# Test SSE endpoint (correct endpoint)
+curl http://localhost:8013/sse
+
+# Test with alternative port
+curl http://localhost:8014/sse
+```
+
+### Advanced Testing
+
+```bash
+# Run the included test suite
+python -m pytest tests/ -v
+
+# Test specific tool status
+python test_get_all_tools_status.py
+
+# Run environment validation tests
+python test_environment_validation.py
+
+# Test MCP connectivity
+python smart_mcp_test.py
+```
+
+## Server Endpoints & MCP Integration
 
 ### SSE (Server-Sent Events) Endpoint
 
-The Ultimate MCP Server uses **Server-Sent Events (SSE)** for MCP protocol communication. When connecting to the server:
+The Ultimate MCP Server uses **Server-Sent Events (SSE)** for MCP protocol communication:
 
 - **Correct endpoint**: `http://host:port/sse`
 - **Incorrect**: `http://host:port` (will return 404)
 
-Examples:
-```bash
-# Default local server
-curl http://localhost:8013/sse
+### MCP Client Integration
 
-# Custom port
-curl http://localhost:8014/sse
-
-# Remote server
-curl http://your-server.com:8013/sse
-```
-
-### Tool Status Monitoring
-
-The server includes a `get_all_tools_status` tool that provides comprehensive status information about all tools and their dependencies:
+For AI agents and external applications:
 
 ```python
-# Using the MCP client programmatically
+# Example MCP client connection
 import asyncio
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
-async def check_tool_status():
+async def connect_to_server():
     async with sse_client("http://localhost:8013/sse") as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
+            
+            # List available tools
+            tools = await session.list_tools()
+            print(f"Available tools: {[tool.name for tool in tools.tools]}")
+            
+            # Check tool status
             result = await session.call_tool("get_all_tools_status", {})
-            print(result)
+            print(f"Tool status: {result}")
 
-# Run the status check
-asyncio.run(check_tool_status())
+# Run the client
+asyncio.run(connect_to_server())
 ```
-
-This tool reports:
-- **Tool availability** (AVAILABLE, UNAVAILABLE, LOADING, DISABLED_BY_CONFIG, ERROR)
-- **LLM provider status** for tools that depend on external APIs
-- **Missing dependencies** and configuration issues
-- **Detailed error messages** for troubleshooting
 
 ### Configuration for External Clients
 
-When connecting external MCP clients (like Cursor AI, the tool context estimator, or custom applications), ensure you:
+When connecting external MCP clients (like Cursor AI):
 
 1. **Use the correct SSE endpoint**: Always append `/sse` to your server URL
-2. **Configure environment variables** for server discovery:
+2. **Configure environment variables** for service discovery:
    ```bash
-   # In your .env file
    MCP_SERVER_HOST=127.0.0.1
    MCP_SERVER_PORT=8013
-   MCP_SERVER_URL=http://127.0.0.1:8013/sse  # Full URL with /sse
+   MCP_SERVER_URL=http://127.0.0.1:8013/sse
    ```
 
-### Testing Connectivity
+## Port Management and Conflicts
 
-Use the included tool context estimator to verify your server is accessible:
+### Avoiding Port Conflicts
+
+The installation includes port management to prevent conflicts with existing services:
 
 ```bash
-# Test connection to default server
-python mcp_tool_context_estimator.py --quiet
+# Production server typically runs on port 8013
+# Use different ports for testing and development
 
-# Test specific server
-python mcp_tool_context_estimator.py --url http://localhost:8014 --quiet
+# Development server
+python -m ultimate_mcp_server.cli run --port 8014
 
-# The script will automatically append /sse if missing
+# Testing
+python -m ultimate_mcp_server.cli run --port 8015
+
+# Alternative production port
+python -m ultimate_mcp_server.cli run --port 8016
 ```
 
-## Upgrading
+### Port Allocation Reference
 
-### From PyPI (when available)
-```bash
-pip install --upgrade ultimate-mcp-server
-```
-
-### From Source
-```bash
-cd ultimate_mcp_server
-git pull origin main
-uv sync  # Update dependencies
-```
-
-### Using Release Script (for maintainers)
-```bash
-# Bump version and create release
-python setup_release.py patch  # or minor, major
-```
+| Service Type | Port | Purpose |
+|--------------|------|---------|
+| Production | 8013 | Default production server |
+| Development | 8014 | Development and testing |
+| Testing | 8015-8030 | Automated tests and CI |
+| User Testing | 8031+ | Manual testing by users |
 
 ## Troubleshooting
 
-### Common Issues
+### Common Installation Issues
 
-1. **Import Errors**: Make sure you have Python 3.13+
+1. **Python Version Issues**:
    ```bash
-   python --version  # Should be 3.13+
+   python --version  # Should be 3.8+
+   python -m ultimate_mcp_server.cli env --verbose
    ```
 
-2. **Missing Dependencies**: Reinstall with all dependencies
+2. **Virtual Environment Issues**:
    ```bash
-   pip install -e ".[all]"
+   # Check if in virtual environment
+   python -m ultimate_mcp_server.cli env
+   
+   # Create new virtual environment
+   python -m venv .venv
+   .venv\Scripts\activate.bat  # Windows
+   source .venv/bin/activate   # Linux/Mac
    ```
 
-3. **Port Conflicts**: Change the port
+3. **Missing Dependencies**:
    ```bash
-   umcp run --port 8014
+   # Reinstall all dependencies
+   pip install -e .
+   
+   # Check what's missing
+   python -m ultimate_mcp_server.cli env --suggest
    ```
 
-4. **Permission Issues**: On some systems, use user installs
+4. **Import Errors**:
    ```bash
-   pip install --user -e .
+   # Test basic import
+   python -c "import ultimate_mcp_server; print('Success')"
+   
+   # Check Python path
+   python -c "import sys; print('\n'.join(sys.path))"
+   ```
+
+5. **Port Conflicts**:
+   ```bash
+   # Check what's using port 8013
+   netstat -an | find "8013"  # Windows
+   lsof -i :8013              # Linux/Mac
+   
+   # Use different port
+   python -m ultimate_mcp_server.cli run --port 8014
+   ```
+
+### Windows-Specific Issues
+
+1. **Long Path Support**: Enable long path support in Windows if you encounter path-related errors
+2. **Antivirus Software**: Add exclusions for the virtual environment directory
+3. **PowerShell Execution Policy**: You may need to enable script execution:
+   ```powershell
+   Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
    ```
 
 ### Getting Help
 
-- **Documentation**: Check the main README.md
-- **Issues**: Report bugs on GitHub
-- **Examples**: See the `examples/` directory
-- **CLI Help**: Run `umcp --help` for command details
-
-### Platform-Specific Notes
-
-#### Windows
-- Use PowerShell or Command Prompt
-- Some OCR features require Visual C++ redistributables
-- Windows Defender may need exclusions for large ML models
-
-#### macOS
-- Install Xcode command line tools: `xcode-select --install`
-- Some dependencies may require Homebrew packages
-
-#### Linux
-- Install system dependencies for OCR:
-  ```bash
-  sudo apt-get install tesseract-ocr poppler-utils
-  ```
-
-## Development Installation
-
-For contributors and developers:
-
-```bash
-# Clone and setup development environment
-git clone https://github.com/Dicklesworthstone/ultimate_mcp_server.git
-cd ultimate_mcp_server
-
-# Install in development mode with all dependencies
-uv sync --dev
-
-# Install pre-commit hooks for code quality
-uv run pre-commit install
-
-# Run the test suite
-uv run pytest
-
-# Run linting and type checks
-uv run ruff check
-uv run mypy ultimate_mcp_server
-
-# Start the server for development
-uv run umcp run --debug --port 8013
-```
+- **Environment Diagnostics**: Run `python -m ultimate_mcp_server.cli env --verbose --suggest`
+- **Issues**: Report problems at [GitHub Issues](https://github.com/android606/ultimate_mcp_server_windows/issues)
+- **Original Project**: Visit [Dicklesworthstone's Ultimate MCP Server](https://github.com/Dicklesworthstone/ultimate_mcp_server) for core documentation
+- **CLI Help**: Run `python -m ultimate_mcp_server.cli --help` for command details
 
 ## Next Steps
 
-After installation:
+After successful installation:
 
-1. **Configure API Keys**: Add your LLM provider keys to `.env`
-2. **Test Basic Functionality**: Run `umcp test openai` 
-3. **Explore Examples**: Check out `examples/` directory
-4. **Read Documentation**: Review the main README.md
-5. **Join Development**: See CONTRIBUTING.md for contribution guidelines 
+1. **🔑 Configure API Keys**: Add your LLM provider keys to `.env` file
+2. **🧪 Test Basic Functionality**: Run `python -m ultimate_mcp_server.cli test openai`
+3. **🔍 Explore Tools**: Check `python -m ultimate_mcp_server.cli tools`
+4. **📚 Run Examples**: Explore the `examples/` directory
+5. **📖 Read Documentation**: Review the main README.md and original project documentation
+6. **🚀 Start Building**: Begin integrating the server with your AI applications
+
+## Contributing
+
+This Windows-optimized fork welcomes contributions, especially for:
+- Windows compatibility improvements
+- Environment validation enhancements
+- Installation automation
+- Testing framework improvements
+
+Please see CONTRIBUTING.md for guidelines, and don't forget to contribute back to [Dicklesworthstone's original project](https://github.com/Dicklesworthstone/ultimate_mcp_server) when possible!
+
+---
+
+> **Again, huge thanks to [Dicklesworthstone](https://github.com/Dicklesworthstone)** for creating this incredible MCP server platform. This fork simply adds Windows-specific optimizations and environment validation to make the installation and setup process smoother for Windows users. All the core functionality, innovation, and hard work comes from the original project! 

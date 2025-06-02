@@ -197,7 +197,7 @@ marqo_index_config.json
 marqo_docstring_cache.json
 cache/disk_cache/cache.db-shm
 cache/disk_cache/cache.db-wal
-logs
+/logs
 *.db-shm
 *.db-wal
 cache/disk_cache/cache.db-shm
@@ -245,7 +245,49 @@ storage/unified_agent_memory.dbOLD
 # Cursor IDE
 .cursor/
 .cursor/*
-
-# Cursor specific files
 .cursorrules
 CURSOR_INTEGRATION_GUIDE.md
+
+# Windows Fork - Temporary and Generated Files
+temp_current_tools.json
+current_tools_sent_to_llm.json*
+all_tools_sent_to_llm.json
+*_temp.json
+*_debug.py
+start_server_*.py
+debug_diagnostics.txt
+dev_diagnostics.txt
+bug_report_env.txt
+
+# Windows specific temporary files
+*.tmp
+*.bak
+Thumbs.db
+Desktop.ini
+
+# Environment and Secrets
+/.env
+/.env.local
+/.env.*.local
+.env.secrets
+.env.*.secrets
+
+# Cache and Temporary Files
+.cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+.coverage
+coverage.xml
+.github/cache/
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.secrets
+.env.*.local

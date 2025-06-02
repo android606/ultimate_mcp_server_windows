@@ -1,30 +1,22 @@
-name: CI/CD Pipeline
+name: Tests
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.13"]
     
     steps:
     - uses: actions/checkout@v4
     
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
-        python-version: ${{ matrix.python-version }}
-    
-    - name: Install uv
-      run: |
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        python-version: '3.11'
     
     - name: Load environment files
       run: |
@@ -61,11 +53,15 @@ jobs:
             fi
           done < .github/.env.secrets
         fi
-
+        
     - name: Install dependencies
       run: |
-        uv sync --dev
-    
+        python -m pip install --upgrade pip
+        pip install -e ".[test]"
+        
+    - name: Create cache directory
+      run: mkdir -p .github/cache
+        
     - name: Run tests
       env:
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -73,6 +69,16 @@ jobs:
         GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         MARQO_API_KEY: ${{ secrets.MARQO_API_KEY }}
+        # Test-specific overrides
+        MCP_SERVER_HOST: localhost
+        MCP_SERVER_PORT: 8024  # Use test port to avoid conflicts
+        MCP_DEBUG: true
+        MCP_LOG_LEVEL: DEBUG
+        PYTEST_TIMEOUT: 30
+        TEST_SERVER_PORT: 8024
+        RELOAD_ON_CHANGE: false
+        WATCH_FOR_CHANGES: false
+        ENABLE_DISK_CACHE: true
+        CACHE_DIR: .github/cache
       run: |
-        pytest tests/unit -v
-        pytest tests/integration -v 
+        pytest tests/ -v 

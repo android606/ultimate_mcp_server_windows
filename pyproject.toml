@@ -119,26 +119,58 @@ advanced = [
 
 # Development and testing
 dev = [
-    "pytest>=0",
+    # Testing framework
+    "pytest>=8.0",
     "pytest-asyncio>=0",
     "pytest-cov>=0",
-    "isort>=0",
-    "mypy>=0",
-    "ruff>=0",
+    "pytest-playwright>=0",
+    "pytest-mock>=0",
+    
+    # Code quality and formatting
+    "black>=24.0",
+    "isort>=5.0",
+    "mypy>=1.0",
+    "ruff>=0.1.0",
+    "flake8>=6.0",
+    
+    # Type checking
     "types-aiofiles>=0",
-    "pre-commit>=0",
+    "types-requests>=0", 
+    "types-setuptools>=0",
+    
+    # Git hooks and workflow
+    "pre-commit>=3.0",
+    
+    # Development utilities
+    "ipython>=8.0",
+    "ipdb>=0",
+]
+
+# Testing dependencies (subset for CI)
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0",
+    "pytest-cov>=0",
+    "pytest-mock>=0",
+]
+
+# Windows-specific development tools
+windows = [
+    "pywin32>=0; sys_platform == 'win32'",
+    "colorama>=0.4.6",  # Better Windows terminal support
 ]
 
 # Documentation
 docs = [
-    "mkdocs>=0",
-    "mkdocs-material>=0",
+    "mkdocs>=1.5",
+    "mkdocs-material>=9.0",
     "mkdocstrings>=0",
-    "mkdocstrings-python>=0",
+    "mkdocstrings-python>=1.0",
+    "pymdown-extensions>=10.0",
 ]
 
 # All extras
-all = ["ultimate_mcp_server[advanced,dev,docs]"]
+all = ["ultimate_mcp_server[advanced,dev,test,windows,docs]"]
 
 [[tool.uv.index]]
 name = "pypi"

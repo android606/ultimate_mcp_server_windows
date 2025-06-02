@@ -25,6 +25,13 @@ from ultimate_mcp_server.cli.commands import (
 )
 from ultimate_mcp_server.constants import BASE_TOOLSET_CATEGORIES
 from ultimate_mcp_server.utils import get_logger
+from ultimate_mcp_server.utils.environment import (
+    validate_environment,
+    print_environment_status,
+    suggest_environment_setup,
+    is_virtual_environment,
+    get_virtual_env_info
+)
 
 # Use consistent namespace and get console for Rich output
 logger = get_logger("ultimate_mcp_server.cli")
@@ -395,6 +402,7 @@ def run(
     include_tools: List[str] = INCLUDE_TOOLS_OPTION,
     exclude_tools: List[str] = EXCLUDE_TOOLS_OPTION,
     load_all_tools: bool = LOAD_ALL_TOOLS_OPTION,
+    skip_env_check: bool = typer.Option(False, "--skip-env-check", help="Skip virtual environment validation", rich_help_panel="Environment Options"),
 ):
     """
     [bold green]Run the Ultimate MCP Server[/bold green]
@@ -415,6 +423,44 @@ def run(
       [cyan]umcp run --include-tools browser,audio[/cyan] (Adds browser and audio tools to the Base Toolset)
       [cyan]umcp run --load-all-tools --exclude-tools filesystem[/cyan] (Loads all tools except filesystem)
     """
+    # Environment validation (unless skipped)
+    if not skip_env_check:
+        is_valid, issues = validate_environment(strict=False)  # Don't require venv but warn
+        env_info = get_virtual_env_info()
+        
+        if not env_info['is_virtual_env']:
+            console.print(Panel(
+                "[yellow]⚠️  Warning: Not running in a virtual environment[/yellow]\n\n"
+                "It's recommended to run Ultimate MCP Server in a virtual environment "
+                "to avoid package conflicts. Use [cyan]--skip-env-check[/cyan] to bypass this check.\n\n"
+                "[bold]To create and activate a virtual environment:[/bold]\n"
+                "  python -m venv .venv\n"
+                "  .venv\\Scripts\\activate.bat  # Windows\n"
+                "  source .venv/bin/activate   # Linux/Mac\n\n"
+                "[bold]Or run:[/bold] [cyan]umcp env --suggest[/cyan]",
+                title="[bold yellow]Environment Warning[/bold yellow]",
+                border_style="yellow",
+                expand=False
+            ))
+            
+            # Ask if user wants to continue
+            if not Confirm.ask("\nContinue anyway?", default=True):
+                console.print("[red]Startup cancelled.[/red]")
+                raise typer.Exit(1)
+        
+        # Check for missing packages (always validate this)
+        if not is_valid and issues:
+            console.print(Panel(
+                f"[red]Environment validation failed:[/red]\n\n" + 
+                "\n".join(f"• {issue}" for issue in issues) +
+                "\n\n[bold]Run this command for detailed diagnostics:[/bold]\n"
+                "[cyan]umcp env --verbose --suggest[/cyan]",
+                title="[bold red]Environment Error[/bold red]",
+                border_style="red",
+                expand=False
+            ))
+            raise typer.Exit(1)
+
     # Set debug mode if requested
     if debug:
         os.environ["LOG_LEVEL"] = "DEBUG"
@@ -749,64 +795,29 @@ def tools(
         console.print("  [cyan]umcp examples <example_name>[/cyan]")
 
 
-@app.command(name="examples")
-def examples(
-    example_name: Optional[str] = typer.Argument(None, help="Name of the example to run"),
-    category: Optional[str] = CATEGORY_FILTER_OPTION,
-    list_examples: bool = LIST_OPTION,
-):
-    """
-    [bold green]Run or List Example Scripts[/bold green]
+def list_available_examples(examples_dir: Path, category_filter: Optional[str] = None) -> None:
+    """List available example scripts, optionally filtered by category."""
+    # Create Rich table for display
+    table = Table(title="Ultimate MCP Server Example Scripts")
+    table.add_column("Category", style="cyan")
+    table.add_column("Example Script", style="green")
+    
+    # List available examples by category
+    for category_name, script_names in sorted(EXAMPLE_CATEGORIES.items()):
+        if category_filter and category_name != category_filter:
+            continue
+        for script_name in sorted(script_names):
+            table.add_row(category_name, script_name)
+    
+    console.print(table)
+    
+    # Print help for running examples
+    console.print("\n[bold]Run an example:[/bold]")
+    console.print("  [cyan]umcp examples <example_name>[/cyan]")
 
-    Browse and execute the demonstration Python scripts included with Ultimate MCP Server.
-    These examples showcase real-world usage patterns and integration techniques for
-    different server capabilities, from basic completions to complex workflows.
-    
-    Examples are organized by functional category (text-generation, document-processing,
-    browser-automation, etc.) and contain fully functional code that interacts with
-    a running MCP server. They serve as both educational resources and starting
-    points for your own implementations.
 
-    Usage:
-      umcp examples               # List all available example scripts
-      umcp examples --list        # List-only mode (same as above)
-      umcp examples --category browser-automation  # Filter by category
-      umcp examples rag_example   # Run specific example (with or without .py extension)
-      umcp examples rag_example.py  # Explicit extension version
-
-    Examples:
-      umcp examples simple_completion_demo  # Run the basic completion example
-    """
-    # Ensure we have the examples directory
-    project_root = Path(__file__).parent.parent.parent
-    examples_dir = project_root / "examples"
-    
-    if not examples_dir.exists() or not examples_dir.is_dir():
-        console.print(f"[bold red]Error:[/bold red] Examples directory not found at: {examples_dir}")
-        console.print(Panel(f"Examples directory not found at: {examples_dir}", title="[bold red]Error[/bold red]", border_style="red"))
-        return 1
-    
-    # If just listing examples
-    if list_examples or not example_name:
-        # Create Rich table for display
-        table = Table(title="Ultimate MCP Server Example Scripts")
-        table.add_column("Category", style="cyan")
-        table.add_column("Example Script", style="green")
-        
-        # List available examples by category
-        for category_name, script_names in sorted(EXAMPLE_CATEGORIES.items()):
-            for script_name in sorted(script_names):
-                table.add_row(category_name, script_name)
-        
-        console.print(table)
-        
-        # Print help for running examples
-        console.print("\n[bold]Run an example:[/bold]")
-        console.print("  [cyan]umcp examples <example_name>[/cyan]")
-        
-        return 0
-    
-    # Run the specified example
+def run_example_script(examples_dir: Path, example_name: str) -> None:
+    """Run a specific example script."""
     example_file = None
     
     # Check if .py extension was provided
@@ -830,12 +841,13 @@ def examples(
     if not example_file:
         console.print(f"[bold red]Error:[/bold red] Example '{example_name}' not found")
         console.print(Panel(f"Example script '{example_name}' not found in {examples_dir}", title="[bold red]Error[/bold red]", border_style="red"))
-        return 1
+        raise typer.Exit(1)
     
     # Run the example script
     console.print(f"[bold blue]Running example:[/bold blue] {example_file.name}")
     
     # Change to the project root directory to ensure imports work
+    project_root = examples_dir.parent
     os.chdir(project_root)
     
     # Use subprocess to run the script
@@ -846,38 +858,121 @@ def examples(
             [sys.executable, str(example_file)], 
             check=True
         )
-        return result.returncode
     except subprocess.CalledProcessError as e:
         console.print(f"[bold red]Error:[/bold red] Example script failed with exit code {e.returncode}")
         console.print(Panel(f"Example script '{example_file.name}' failed with exit code {e.returncode}", title="[bold red]Execution Error[/bold red]", border_style="red"))
-        return e.returncode
+        raise typer.Exit(e.returncode)
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] Failed to run example: {str(e)}")
         console.print(Panel(f"Failed to run example '{example_file.name}':\n{str(e)}", title="[bold red]Execution Error[/bold red]", border_style="red"))
-        return 1
+        raise typer.Exit(1)
+
+
+@app.command(name="examples")
+def examples(
+    example_name: Optional[str] = typer.Argument(None, help="Name of the example to run"),
+    category: Optional[str] = CATEGORY_FILTER_OPTION,
+    list_examples: bool = LIST_OPTION,
+):
+    """
+    [bold green]Run Example Scripts[/bold green]
+
+    Explore Ultimate MCP Server capabilities by running curated example scripts.
+    These demonstrate integration patterns, tool usage, and advanced workflows
+    across different categories like text generation, document processing, and search.
+
+    The examples are organized by functional category and include comprehensive
+    documentation, making them perfect for learning the platform or as templates
+    for your own integrations.
+
+    Usage:
+      umcp examples                               # List all available examples
+      umcp examples browser_automation_demo.py   # Run specific example
+      umcp examples --category text-generation   # Show examples in category
+
+    Examples:
+      umcp examples simple_completion_demo.py    # Basic LLM text generation
+      umcp examples rag_example.py               # Retrieval-augmented generation
+      umcp examples browser_automation_demo.py   # Web scraping and automation
+    """
+    examples_dir = Path(__file__).parent.parent / "examples"
+    
+    if list_examples or example_name is None:
+        list_available_examples(examples_dir, category_filter=category)
+        return
+    
+    if category:
+        console.print(f"[yellow]Note:[/yellow] Category filter ignored when running specific example")
+    
+    run_example_script(examples_dir, example_name)
+
+
+@app.command(name="env")
+def env(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed environment information", rich_help_panel="Display Options"),
+    suggest: bool = typer.Option(False, "--suggest", help="Show setup suggestions if issues are found", rich_help_panel="Display Options"),
+    strict: bool = typer.Option(False, "--strict", "-s", help="Require virtual environment activation", rich_help_panel="Validation Options"),
+    check_only: bool = typer.Option(False, "--check-only", help="Only check environment, don't show status details", rich_help_panel="Validation Options"),
+):
+    """
+    [bold green]Check Environment Status[/bold green]
+
+    Validate that the Ultimate MCP Server environment is correctly configured.
+    This command checks virtual environment activation, required package availability,
+    Python version compatibility, and provides suggestions for fixing any issues.
+
+    Use this command to troubleshoot installation problems, verify dependencies,
+    or ensure your environment is ready for running the server.
+
+    [bold]Examples:[/bold]
+      [cyan]umcp env[/cyan]                    # Basic environment check
+      [cyan]umcp env --verbose[/cyan]          # Detailed environment information  
+      [cyan]umcp env --suggest[/cyan]          # Show setup suggestions
+      [cyan]umcp env --strict[/cyan]           # Require virtual environment
+      [cyan]umcp env --check-only[/cyan]       # Quick validation only
+
+    [bold]Exit Codes:[/bold]
+      0: Environment is valid
+      1: Environment has issues that need attention
+    """
+    if check_only:
+        # Just validate and exit with appropriate code
+        is_valid, issues = validate_environment(strict=strict)
+        if not is_valid:
+            console.print(f"[red]Environment validation failed:[/red]")
+            for issue in issues:
+                console.print(f"  • {issue}")
+            raise typer.Exit(1)
+        else:
+            console.print("✅ Environment validation passed")
+            raise typer.Exit(0)
+    
+    # Show full environment status
+    print_environment_status(verbose=verbose)
+    
+    # Check if we should show suggestions
+    is_valid, issues = validate_environment(strict=strict)
+    
+    if suggest or not is_valid:
+        suggest_environment_setup()
+    
+    # Exit with appropriate code
+    if not is_valid:
+        raise typer.Exit(1)
 
 
 @app.callback()
 def main(
     version: bool = VERSION_OPTION,
 ):
-    """Ultimate MCP Server - A comprehensive AI agent operating system.
-    
-    The Ultimate MCP Server provides a unified interface to manage LLM providers,
-    tools, and capabilities through the Model Context Protocol (MCP). It enables
-    AI agents to access dozens of powerful capabilities including file operations,
-    browser automation, document processing, database access, and much more.
-
-    This CLI provides commands to:
-    • Start and configure the server
-    • Manage and test LLM providers
-    • Generate text completions directly
-    • View and clear the response cache
-    • Benchmark provider performance
-    • List available tools and capabilities
-    • Run example scripts demonstrating usage patterns
     """
-    # This function will be called before any command
+    [bold green]Ultimate MCP Server CLI[/bold green]
+    
+    A unified command-line interface for managing multi-provider LLM operations,
+    document processing, search capabilities, and AI tool orchestration.
+    
+    [italic]Get started by running a command or use --help for detailed options.[/italic]
+    """
     pass
 
 

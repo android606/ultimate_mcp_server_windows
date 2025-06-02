@@ -197,6 +197,10 @@ class Gateway:
     the ultimate_mcp_server.core._gateway_instance reference.
     """
     
+    # Class-level flag to track if application resources have been initialized
+    _application_initialized = False
+    _initialization_lock = asyncio.Lock()
+    
     def __init__(
         self, 
         name: str = "main", 
@@ -255,7 +259,7 @@ class Gateway:
         # Create MCP server with host and port settings
         self.mcp = FastMCP(
             self.name,
-            lifespan=self._server_lifespan,
+            lifespan=self._session_lifespan,  # Changed from _server_lifespan
             host=get_config().server.host,
             port=get_config().server.port,
             instructions=self.system_instructions,
@@ -278,8 +282,110 @@ class Gateway:
             self._register_tools(load_all=self.load_all_tools)
             self._register_resources()
         
+        # REMOVED: Problematic asyncio.create_task call that caused "no running event loop" error
+        # Application initialization now happens in _session_lifespan() when the async context is available
+        
         self.logger.info(f"Ultimate MCP Server '{self.name}' initialized")
     
+    async def _ensure_application_initialized(self):
+        """
+        Ensure application-wide resources are initialized exactly once.
+        This is called from __init__ and uses a class-level lock to prevent multiple initialization.
+        """
+        async with Gateway._initialization_lock:
+            if not Gateway._application_initialized:
+                try:
+                    self.logger.info("Performing one-time application initialization...")
+                    await self._initialize_application_resources()
+                    Gateway._application_initialized = True
+                    self.logger.info("Application initialization completed successfully")
+                except Exception as e:
+                    self.logger.error(f"Application initialization failed: {e}", exc_info=True)
+                    # Don't set the flag so we can try again
+                    raise
+    
+    @asynccontextmanager
+    async def _session_lifespan(self, server: FastMCP):
+        """
+        Per-session lifespan context manager for FastMCP.
+        
+        IMPORTANT: This is called for EACH SSE connection, not just once at startup.
+        This method should be lightweight and NOT block MCP protocol initialization.
+        Application-level initialization should happen BEFORE the MCP server starts.
+        """
+        # CRITICAL FIX: Ensure application initialization happens within async context
+        # This prevents "Received request before initialization was complete" errors
+        try:
+            await self._ensure_application_initialized()
+        except Exception as e:
+            self.logger.error(f"Failed to initialize application resources in session lifespan: {e}")
+            raise
+        
+        # Create lightweight session context - DO NOT block on application initialization
+        session_id = id(self)
+        context = {
+            "session_id": session_id,
+            "started_at": time.time(),
+            "request_count": 0
+        }
+        
+        self.logger.debug(f"Session {session_id} started")
+        
+        try:
+            yield context
+        finally:
+            # Lightweight session cleanup only
+            self.logger.debug(f"Session {session_id} ended after {context['request_count']} requests")
+            # DO NOT call application shutdown from session lifespan
+
+    async def _initialize_application_resources(self):
+        """
+        Initialize application-wide resources that should only be set up once.
+        This is separate from the per-session lifespan context.
+        """
+        self.logger.info(f"Starting Ultimate MCP Server '{self.name}' - Application Level")
+        
+        # Initialize providers (this is safe to do multiple times)
+        await self._initialize_providers()
+
+        # --- OPTIONAL: Pre-initialize SmartBrowser ---
+        try:
+            self.logger.info("Pre-initializing Smart Browser components...")
+            # Call the imported initialization function
+            # await smart_browser_ensure_initialized()  # Commented out - function not available
+            self.logger.info("Smart Browser successfully pre-initialized.")
+        except Exception as e:
+            # Log warning but don't stop server startup if pre-init fails
+            self.logger.warning(f"Could not pre-initialize Smart Browser: {e}")
+        # ---------------------------------------------------------------------
+
+        # --- Trigger Dynamic Docstring Generation ---
+        # This should run after config is loaded but before the server is fully ready
+        # It checks cache and potentially calls an LLM.
+        self.logger.info("Initiating dynamic docstring generation for Marqo tool...")
+        try:
+            # Import the function here to avoid circular imports
+            # from ultimate_mcp_server.tools.marqo_fused_search import (
+            #     trigger_dynamic_docstring_generation,
+            # )
+            # await trigger_dynamic_docstring_generation()
+            self.logger.info("Dynamic docstring generation/loading complete.")
+        except Exception as e:
+            self.logger.error(f"Error during dynamic docstring generation startup task: {e}", exc_info=True)
+        # ---------------------------------------------
+
+        # --- Set the global instance variable --- 
+        # Make the fully initialized instance accessible globally AFTER init
+        ultimate_mcp_server.core._gateway_instance = self
+        self.logger.info("Global gateway instance set.")
+        # ----------------------------------------
+        
+        self.logger.info("Application-level initialization completed")
+        
+        # Clear "ready for requests" message
+        self.logger.info("🚀 SERVER READY FOR REQUESTS - All initialization complete")
+        print("🚀 SERVER READY FOR REQUESTS - All initialization complete", file=sys.stderr)
+
     def log_tool_calls(self, func):
         """
         Decorator to log MCP tool calls with detailed timing and result information.
@@ -343,116 +449,34 @@ class Gateway:
                 raise
         return wrapper
     
-    @asynccontextmanager
-    async def _server_lifespan(self, server: FastMCP):
+    async def _shutdown_application_resources(self):
         """
-        Async context manager managing the server lifecycle during startup and shutdown.
-        
-        This method implements the lifespan protocol used by FastMCP (based on ASGI) to:
-        1. Perform startup initialization before the server begins accepting requests
-        2. Clean up resources when the server is shutting down
-        3. Make shared context available to request handlers during the server's lifetime
-        
-        During startup, this method:
-        - Initializes all configured LLM providers
-        - Triggers dynamic docstring generation for tools that need it
-        - Sets the global Gateway instance for access from other components
-        - Prepares a shared context dictionary for use by request handlers
-        
-        During shutdown, it:
-        - Clears the global Gateway instance reference
-        - Handles any necessary cleanup of resources
-        
-        The lifespan context is active throughout the entire server runtime, from
-        startup until shutdown is initiated.
-        
-        Args:
-            server: The FastMCP server instance that's starting up, which provides
-                   the framework context for the lifespan.
-            
-        Yields:
-            Dict containing initialized resources that will be available to all
-            request handlers during the server's lifetime.
-            
-        Note:
-            This method is called automatically by the FastMCP framework during
-            server startup and is not intended to be called directly.
+        Shutdown application-wide resources. This should only be called when
+        the entire application is shutting down, not for each SSE session.
         """
-        self.logger.info(f"Starting Ultimate MCP Server '{self.name}'")
+        self.logger.info("Shutting down application-level resources...")
         
-        # Initialize providers
-        await self._initialize_providers()
-
-        # --- OPTIONAL: Pre-initialize SmartBrowser ---
         try:
-            self.logger.info("Pre-initializing Smart Browser components...")
-            # Call the imported initialization function
-            # await smart_browser_ensure_initialized()  # Commented out - function not available
-            self.logger.info("Smart Browser successfully pre-initialized.")
+            # --- Shutdown SQL Tools State ---
+            # await shutdown_sql_tools()
+            self.logger.info("SQL tools state shut down.")
         except Exception as e:
-            # Log warning but don't stop server startup if pre-init fails
-            self.logger.warning(f"Could not pre-initialize Smart Browser: {e}")
-        # ---------------------------------------------------------------------
-
-        # --- Trigger Dynamic Docstring Generation ---
-        # This should run after config is loaded but before the server is fully ready
-        # It checks cache and potentially calls an LLM.
-        self.logger.info("Initiating dynamic docstring generation for Marqo tool...")
-        try:
-            # Import the function here to avoid circular imports
-            # from ultimate_mcp_server.tools.marqo_fused_search import (
-            #     trigger_dynamic_docstring_generation,
-            # )
-            # await trigger_dynamic_docstring_generation()
-            self.logger.info("Dynamic docstring generation/loading complete.")
-        except Exception as e:
-            self.logger.error(f"Error during dynamic docstring generation startup task: {e}", exc_info=True)
-        # ---------------------------------------------
-
-        # --- Set the global instance variable --- 
-        # Make the fully initialized instance accessible globally AFTER init
-        ultimate_mcp_server.core._gateway_instance = self
-        self.logger.info("Global gateway instance set.")
-        # ----------------------------------------
-
-        # Create lifespan context (still useful for framework calls)
-        context = {
-            "providers": self.providers,
-            "provider_status": self.provider_status,
-        }
-        
-        self.logger.info("Lifespan context initialized, MCP server ready to handle requests")
-        
-        try:
-            # Import and call trigger_dynamic_docstring_generation again
-            # from ultimate_mcp_server.tools.marqo_fused_search import (
-            #     trigger_dynamic_docstring_generation,
-            # )
-            # await trigger_dynamic_docstring_generation()
-            logger.info("Dynamic docstring generation/loading complete.")
-            yield context
-        finally:
-            try:
-                # --- Shutdown SQL Tools State ---
-                # await shutdown_sql_tools()
-                self.logger.info("SQL tools state shut down.")
-            except Exception as e:
-                self.logger.error(f"Failed to shut down SQL tools state: {e}", exc_info=True)
-        
-            # 2. Shutdown Smart Browser explicitly
-            try:
-                self.logger.info("Initiating explicit Smart Browser shutdown...")
-                # await smart_browser_shutdown() # Call the imported function - commented out, function not available
-                self.logger.info("Smart Browser shutdown completed successfully.")
-            except Exception as e:
-                logger.error(f"Error during explicit Smart Browser shutdown: {e}", exc_info=True)
-                        
-            # --- Clear the global instance on shutdown --- 
-            ultimate_mcp_server.core._gateway_instance = None
-            self.logger.info("Global gateway instance cleared.")
-            # -------------------------------------------
-            self.logger.info(f"Shutting down Ultimate MCP Server '{self.name}'")
+            self.logger.error(f"Failed to shut down SQL tools state: {e}", exc_info=True)
     
+        # 2. Shutdown Smart Browser explicitly
+        try:
+            self.logger.info("Initiating explicit Smart Browser shutdown...")
+            # await smart_browser_shutdown() # Call the imported function - commented out, function not available
+            self.logger.info("Smart Browser shutdown completed successfully.")
+        except Exception as e:
+            self.logger.error(f"Error during explicit Smart Browser shutdown: {e}", exc_info=True)
+                    
+        # --- Clear the global instance on shutdown --- 
+        ultimate_mcp_server.core._gateway_instance = None
+        self.logger.info("Global gateway instance cleared.")
+        # -------------------------------------------
+        self.logger.info(f"Ultimate MCP Server '{self.name}' application shutdown complete")
+
     async def _initialize_providers(self):
         """
         Initialize all enabled LLM providers based on the loaded configuration.
@@ -2031,677 +2055,6 @@ def create_server() -> FastAPI:
     # Check if server already exists
     if _server_app is not None:
         return _server_app
-        
-    # Initialize the gateway if not already created
-    global _gateway_instance
-    if not _gateway_instance:
-        _gateway_instance = Gateway()
-    
-    # Use FastMCP's app directly instead of mounting it
-    app = _gateway_instance.mcp.app
-    
-    # Add CORS middleware
-    from fastapi.middleware.cors import CORSMiddleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-    
-    # Add custom endpoints for UMS Explorer and database access
-    from pathlib import Path
-
-    from fastapi.responses import FileResponse, JSONResponse
-    
-    # Get the project root directory (where storage/ is located)
-    project_root = Path(__file__).parent.parent.parent
-    tools_dir = project_root / "ultimate_mcp_server" / "tools"
-    storage_dir = project_root / "storage"
-    
-    # Add custom endpoint for UMS Explorer HTML file
-    @app.get("/tools/ums_explorer.html")
-    async def serve_ums_explorer():
-        """Serve the UMS Explorer HTML file."""
-        html_path = tools_dir / "ums_explorer.html"
-        if html_path.exists():
-            # Don't set filename to avoid Content-Disposition: attachment header
-            return FileResponse(
-                path=str(html_path),
-                media_type="text/html"
-            )
-        else:
-            return JSONResponse(
-                {"error": "UMS Explorer HTML file not found"},
-                status_code=404
-            )
-    
-    # Add custom endpoint for database file
-    @app.get("/storage/unified_agent_memory.db")
-    async def serve_database():
-        """Serve the unified agent memory database file."""
-        db_path = storage_dir / "unified_agent_memory.db"
-        if db_path.exists():
-            return FileResponse(
-                path=str(db_path),
-                media_type="application/x-sqlite3",
-                filename="unified_agent_memory.db"
-            )
-        else:
-            return JSONResponse(
-                {"error": "Database file not found"},
-                status_code=404
-            )
-    
-    # Add health check endpoint
-    @app.get("/health")
-    async def health():
-        """
-        Health check endpoint for monitoring server status.
-        
-        This endpoint provides a simple way to verify that the server is running and
-        responsive. It can be used by load balancers, monitoring systems, or client
-        applications to check if the server is operational.
-        
-        Returns:
-            dict: A simple status object containing:
-                - status: "ok" if the server is healthy
-                - version: Current server version string
-        
-        Example response:
-            ```json
-            {
-                "status": "ok",
-                "version": "0.1.0"
-            }
-            ```
-        """
-        return {
-            "status": "ok",
-            "version": "0.1.0",
-        }
-    
-    # Add UMS Explorer endpoint
-    @app.get("/ums-explorer")
-    async def ums_explorer():
-        """
-        UMS Explorer web interface.
-        
-        Redirects to the UMS Explorer HTML interface for viewing and analyzing
-        the Unified Memory System database through a web browser.
-        """
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url="/tools/ums_explorer.html")
-    
-    # ===== UMS EXPLORER API ENDPOINTS =====
-    
-    import json
-    import math
-    import sqlite3
-    from typing import Optional
-
-    from fastapi import HTTPException
-    
-    # Database configuration for UMS Explorer
-    DATABASE_PATH = str(storage_dir / "unified_agent_memory.db")
-    
-    def get_db_connection():
-        """Get database connection for UMS Explorer API"""
-        conn = sqlite3.connect(DATABASE_PATH)
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    # Helper functions for UMS Explorer API
-    def calculate_state_complexity(state_data: dict) -> float:
-        """Calculate complexity score for a cognitive state"""
-        if not state_data:
-            return 0.0
-        
-        # Count different types of components
-        component_count = len(state_data.keys())
-        
-        # Calculate nested depth
-        max_depth = calculate_dict_depth(state_data)
-        
-        # Count total values
-        total_values = count_dict_values(state_data)
-        
-        # Normalize to 0-100 scale
-        complexity = min(100, (component_count * 5) + (max_depth * 10) + (total_values * 0.5))
-        return round(complexity, 2)
-
-    def calculate_dict_depth(d: dict, current_depth: int = 0) -> int:
-        """Calculate maximum depth of nested dictionary"""
-        if not isinstance(d, dict):
-            return current_depth
-        
-        if not d:
-            return current_depth
-        
-        return max(calculate_dict_depth(v, current_depth + 1) for v in d.values())
-
-    def count_dict_values(d: dict) -> int:
-        """Count total number of values in nested dictionary"""
-        count = 0
-        for v in d.values():
-            if isinstance(v, dict):
-                count += count_dict_values(v)
-            elif isinstance(v, list):
-                count += len(v)
-            else:
-                count += 1
-        return count
-
-    def compute_state_diff(state1: dict, state2: dict) -> dict:
-        """Compute difference between two cognitive states"""
-        diff_result = {
-            'added': {},
-            'removed': {},
-            'modified': {},
-            'magnitude': 0.0
-        }
-        
-        all_keys = set(state1.keys()) | set(state2.keys())
-        changes = 0
-        total_keys = len(all_keys)
-        
-        for key in all_keys:
-            if key not in state1:
-                diff_result['added'][key] = state2[key]
-                changes += 1
-            elif key not in state2:
-                diff_result['removed'][key] = state1[key]
-                changes += 1
-            elif state1[key] != state2[key]:
-                diff_result['modified'][key] = {
-                    'before': state1[key],
-                    'after': state2[key]
-                }
-                changes += 1
-        
-        # Calculate magnitude as percentage of changed keys
-        if total_keys > 0:
-            diff_result['magnitude'] = (changes / total_keys) * 100
-        
-        return diff_result
-
-    def format_file_size(size_bytes: int) -> str:
-        """Format file size in human readable format"""
-        if size_bytes == 0:
-            return "0 B"
-        
-        size_names = ["B", "KB", "MB", "GB", "TB"]
-        i = int(math.floor(math.log(size_bytes, 1024)))
-        p = math.pow(1024, i)
-        s = round(size_bytes / p, 2)
-        return f"{s} {size_names[i]}"
-
-    # === COGNITIVE STATES API ===
-    @app.get("/api/cognitive-states")
-    async def get_cognitive_states(
-        start_time: Optional[float] = None,
-        end_time: Optional[float] = None,
-        limit: int = 100,
-        offset: int = 0,
-        pattern_type: Optional[str] = None
-    ):
-        """Get cognitive states with optional filtering"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Base query
-            query = """
-                SELECT 
-                    cs.*,
-                    w.title as workflow_title,
-                    COUNT(DISTINCT m.memory_id) as memory_count,
-                    COUNT(DISTINCT a.action_id) as action_count
-                FROM cognitive_timeline_states cs
-                LEFT JOIN workflows w ON cs.workflow_id = w.workflow_id
-                LEFT JOIN memories m ON cs.workflow_id = m.workflow_id
-                LEFT JOIN actions a ON cs.workflow_id = a.workflow_id
-                WHERE 1=1
-            """
-            params = []
-            
-            if start_time:
-                query += " AND cs.timestamp >= ?"
-                params.append(start_time)
-            
-            if end_time:
-                query += " AND cs.timestamp <= ?"
-                params.append(end_time)
-            
-            if pattern_type:
-                query += " AND cs.state_type = ?"
-                params.append(pattern_type)
-            
-            query += """
-                GROUP BY cs.state_id
-                ORDER BY cs.timestamp DESC
-                LIMIT ? OFFSET ?
-            """
-            params.extend([limit, offset])
-            
-            cursor.execute(query, params)
-            columns = [description[0] for description in cursor.description]
-            states = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-            
-            # Enhance states with additional metadata
-            enhanced_states = []
-            for state in states:
-                # Parse state_data if it's JSON
-                try:
-                    state_data = json.loads(state.get('state_data', '{}'))
-                except Exception:
-                    state_data = {}
-                
-                enhanced_state = {
-                    **state,
-                    'state_data': state_data,
-                    'formatted_timestamp': datetime.fromtimestamp(state['timestamp']).isoformat(),
-                    'age_minutes': (datetime.now().timestamp() - state['timestamp']) / 60,
-                    'complexity_score': calculate_state_complexity(state_data),
-                    'change_magnitude': 0  # Will be calculated with diffs
-                }
-                enhanced_states.append(enhanced_state)
-            
-            # Calculate change magnitudes by comparing adjacent states
-            for i in range(len(enhanced_states) - 1):
-                current_state = enhanced_states[i]
-                previous_state = enhanced_states[i + 1]  # Ordered DESC, so next is previous
-                
-                diff_result = compute_state_diff(previous_state['state_data'], current_state['state_data'])
-                current_state['change_magnitude'] = diff_result.get('magnitude', 0)
-            
-            conn.close()
-            
-            return {
-                "states": enhanced_states,
-                "total": len(enhanced_states),
-                "has_more": len(enhanced_states) == limit
-            }
-            
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    @app.get("/api/cognitive-states/timeline")
-    async def get_cognitive_timeline(
-        hours: int = 24,
-        granularity: str = "hour"  # hour, minute, second
-    ):
-        """Get cognitive state timeline data optimized for visualization"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            since_timestamp = datetime.now().timestamp() - (hours * 3600)
-            
-            # First try to get from cognitive_timeline_states table
-            try:
-                cursor.execute("""
-                    SELECT 
-                        state_id,
-                        timestamp,
-                        state_type,
-                        state_data,
-                        workflow_id,
-                        description,
-                        ROW_NUMBER() OVER (ORDER BY timestamp) as sequence_number
-                    FROM cognitive_timeline_states 
-                    WHERE timestamp >= ?
-                    ORDER BY timestamp ASC
-                """, (since_timestamp,))
-                
-                states = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                # If we found states, process them
-                if states:
-                    timeline_data = []
-                    for i, state in enumerate(states):
-                        try:
-                            state_data = json.loads(state.get('state_data', '{}'))
-                        except Exception:
-                            state_data = {}
-                        
-                        # Calculate change magnitude from previous state
-                        change_magnitude = 0
-                        if i > 0:
-                            prev_state_data = json.loads(states[i-1].get('state_data', '{}'))
-                            diff_result = compute_state_diff(prev_state_data, state_data)
-                            change_magnitude = diff_result.get('magnitude', 0)
-                        
-                        timeline_item = {
-                            'state_id': state['state_id'],
-                            'timestamp': state['timestamp'],
-                            'formatted_time': datetime.fromtimestamp(state['timestamp']).isoformat(),
-                            'state_type': state['state_type'],
-                            'workflow_id': state['workflow_id'],
-                            'description': state['description'],
-                            'sequence_number': state['sequence_number'],
-                            'complexity_score': calculate_state_complexity(state_data),
-                            'change_magnitude': change_magnitude,
-                        }
-                        timeline_data.append(timeline_item)
-                    
-                    conn.close()
-                    
-                    return {
-                        'timeline_data': timeline_data,
-                        'total_states': len(timeline_data),
-                        'time_range_hours': hours,
-                        'granularity': granularity,
-                        'summary_stats': {
-                            'avg_complexity': sum(item['complexity_score'] for item in timeline_data) / len(timeline_data) if timeline_data else 0,
-                            'total_transitions': len(timeline_data) - 1 if len(timeline_data) > 1 else 0,
-                            'max_change_magnitude': max((item['change_magnitude'] for item in timeline_data), default=0)
-                        }
-                    }
-                    
-            except sqlite3.OperationalError:
-                # Table doesn't exist, fall back to memories table
-                pass
-            
-            # Fallback: Create timeline from memories table
-            cursor.execute("""
-                SELECT 
-                    memory_id,
-                    memory_type,
-                    content,
-                    importance,
-                    confidence,
-                    created_at,
-                    workflow_id,
-                    ROW_NUMBER() OVER (ORDER BY created_at) as sequence_number
-                FROM memories 
-                WHERE memory_type IN ('thought', 'reasoning', 'analysis', 'plan', 'goal')
-                AND created_at >= ?
-                ORDER BY created_at ASC
-                LIMIT 100
-            """, (since_timestamp,))
-            
-            memories = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-            
-            # Convert memories to timeline format
-            timeline_data = []
-            for i, memory in enumerate(memories):
-                # Calculate change magnitude based on content differences
-                change_magnitude = 0
-                if i > 0:
-                    prev_content = memories[i-1].get('content', '')
-                    curr_content = memory.get('content', '')
-                    # Simple content-based change calculation
-                    if prev_content and curr_content:
-                        change_magnitude = min(100, abs(len(curr_content) - len(prev_content)) / max(len(prev_content), 1) * 100)
-                
-                timeline_item = {
-                    'state_id': memory['memory_id'],
-                    'timestamp': memory['created_at'],
-                    'formatted_time': datetime.fromtimestamp(memory['created_at']).isoformat(),
-                    'state_type': memory['memory_type'],
-                    'workflow_id': memory['workflow_id'],
-                    'description': memory['content'][:100] + ('...' if len(memory.get('content', '')) > 100 else ''),
-                    'sequence_number': memory['sequence_number'],
-                    'complexity_score': (memory.get('importance', 5) * 10),  # Convert 1-10 to 0-100 scale
-                    'change_magnitude': change_magnitude,
-                }
-                timeline_data.append(timeline_item)
-            
-            conn.close()
-            
-            return {
-                'timeline_data': timeline_data,
-                'total_states': len(timeline_data),
-                'time_range_hours': hours,
-                'granularity': granularity,
-                'summary_stats': {
-                    'avg_complexity': sum(item['complexity_score'] for item in timeline_data) / len(timeline_data) if timeline_data else 0,
-                    'total_transitions': len(timeline_data) - 1 if len(timeline_data) > 1 else 0,
-                    'max_change_magnitude': max((item['change_magnitude'] for item in timeline_data), default=0)
-                }
-            }
-            
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    # === ARTIFACTS API ===
-    @app.get("/api/artifacts")
-    async def get_artifacts(
-        artifact_type: Optional[str] = None,
-        workflow_id: Optional[str] = None,
-        tags: Optional[str] = None,
-        search: Optional[str] = None,
-        sort_by: str = "created_at",
-        sort_order: str = "desc",
-        limit: int = 50,
-        offset: int = 0
-    ):
-        """Get artifacts with filtering and search"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Base query
-            query = """
-                SELECT 
-                    a.*,
-                    w.title as workflow_title,
-                    COUNT(ar.target_artifact_id) as relationship_count,
-                    COUNT(versions.artifact_id) as version_count
-                FROM artifacts a
-                LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
-                LEFT JOIN artifact_relationships ar ON a.artifact_id = ar.source_artifact_id
-                LEFT JOIN artifacts versions ON a.artifact_id = versions.parent_artifact_id
-                WHERE 1=1
-            """
-            params = []
-            
-            if artifact_type:
-                query += " AND a.artifact_type = ?"
-                params.append(artifact_type)
-            
-            if workflow_id:
-                query += " AND a.workflow_id = ?"
-                params.append(workflow_id)
-            
-            if tags:
-                query += " AND a.tags LIKE ?"
-                params.append(f"%{tags}%")
-            
-            if search:
-                query += " AND (a.name LIKE ? OR a.description LIKE ?)"
-                params.extend([f"%{search}%", f"%{search}%"])
-            
-            query += f"""
-                GROUP BY a.artifact_id
-                ORDER BY a.{sort_by} {'DESC' if sort_order == 'desc' else 'ASC'}
-                LIMIT ? OFFSET ?
-            """
-            params.extend([limit, offset])
-            
-            cursor.execute(query, params)
-            columns = [description[0] for description in cursor.description]
-            artifacts = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-            
-            # Enhance artifacts with metadata
-            for artifact in artifacts:
-                # Parse tags and metadata
-                try:
-                    artifact['tags'] = json.loads(artifact.get('tags', '[]')) if artifact.get('tags') else []
-                    artifact['metadata'] = json.loads(artifact.get('metadata', '{}')) if artifact.get('metadata') else {}
-                except Exception:
-                    artifact['tags'] = []
-                    artifact['metadata'] = {}
-                
-                # Add computed fields
-                artifact['formatted_created_at'] = datetime.fromtimestamp(artifact['created_at']).isoformat()
-                artifact['formatted_updated_at'] = datetime.fromtimestamp(artifact['updated_at']).isoformat()
-                artifact['age_days'] = (datetime.now().timestamp() - artifact['created_at']) / 86400
-                artifact['file_size_human'] = format_file_size(artifact.get('file_size', 0))
-            
-            conn.close()
-            
-            return {
-                "artifacts": artifacts,
-                "total": len(artifacts),
-                "has_more": len(artifacts) == limit
-            }
-            
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    @app.get("/api/artifacts/stats")
-    async def get_artifact_stats():
-        """Get artifact statistics"""
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            
-            # Total counts by type
-            cursor.execute("""
-                SELECT 
-                    artifact_type,
-                    COUNT(*) as count,
-                    AVG(importance) as avg_importance,
-                    SUM(file_size) as total_size,
-                    MAX(access_count) as max_access_count
-                FROM artifacts 
-                GROUP BY artifact_type
-            """)
-            
-            type_stats = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-            
-            # Overall stats
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as total_artifacts,
-                    COUNT(DISTINCT workflow_id) as unique_workflows,
-                    AVG(importance) as avg_importance,
-                    SUM(file_size) as total_file_size,
-                    SUM(access_count) as total_access_count
-                FROM artifacts
-            """)
-            
-            overall_stats = dict(zip([d[0] for d in cursor.description], cursor.fetchone(), strict=False))
-            
-            conn.close()
-            
-            return {
-                'overall': {
-                    **overall_stats,
-                    'total_file_size_human': format_file_size(overall_stats.get('total_file_size', 0))
-                },
-                'by_type': type_stats,
-            }
-            
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e)) from e
-
-    
-    # Store the app instance
-    _server_app = app
-    
-    return app
-
-def start_server(
-    host: Optional[str] = None,
-    port: Optional[int] = None,
-    workers: Optional[int] = None,
-    log_level: Optional[str] = None,
-    reload: bool = False,
-    transport_mode: str = "stdio",  # Changed default from "sse" to "stdio"
-    include_tools: Optional[List[str]] = None,
-    exclude_tools: Optional[List[str]] = None,
-    load_all_tools: bool = False,  # Added: Flag to control tool loading
-) -> None:
-    """
-    Start the Ultimate MCP Server with configurable settings.
-    
-    This function serves as the main entry point for starting the Ultimate MCP Server
-    in either SSE (HTTP server) or stdio (direct process communication) mode. It handles
-    complete server initialization including:
-    
-    1. Configuration loading and parameter validation
-    2. Logging setup with proper levels and formatting
-    3. Gateway instantiation with tool registration
-    4. Transport mode selection and server startup
-    
-    The function provides flexibility in server configuration through parameters that
-    override settings from the configuration file, allowing for quick adjustments without
-    modifying configuration files. It also supports tool filtering, enabling selective
-    registration of specific tools.
-    
-    Args:
-        host: Hostname or IP address to bind the server to (e.g., "localhost", "0.0.0.0").
-             If None, uses the value from the configuration file.
-        port: TCP port for the server to listen on when in SSE mode.
-             If None, uses the value from the configuration file.
-        workers: Number of worker processes to spawn for handling requests.
-                Higher values improve concurrency but increase resource usage.
-                If None, uses the value from the configuration file.
-        log_level: Logging verbosity level. One of "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL".
-                  If None, uses the value from the configuration file.
-        reload: Whether to automatically reload the server when code changes are detected.
-               Useful during development but not recommended for production.
-        transport_mode: Communication mode for the server. Options:
-                      - "stdio": Run using standard input/output for direct process communication (default)
-                      - "sse": Run as an HTTP server with Server-Sent Events for streaming
-        include_tools: Optional list of specific tool names to include in registration.
-                      If provided, only these tools will be registered unless they are
-                      also in exclude_tools. If None, all tools are included by default.
-        exclude_tools: Optional list of tool names to exclude from registration.
-                      These tools will not be registered even if they are also in include_tools.
-        load_all_tools: If True, load all available tools. If False (default), load only the base set.
-                      
-    Raises:
-        ValueError: If transport_mode is not one of the valid options.
-        ConfigurationError: If there are critical errors in the server configuration.
-        
-    Note:
-        This function does not return as it initiates the server event loop, which
-        runs until interrupted (e.g., by a SIGINT signal). In SSE mode, it starts 
-        a Uvicorn server; in stdio mode, it runs the FastMCP stdio handler.
-    """
-    server_host = host or get_config().server.host
-    server_port = port or get_config().server.port
-    server_workers = workers or get_config().server.workers
-    
-    # Get the current config and update tool registration settings
-    cfg = get_config()
-    if include_tools or exclude_tools:
-        cfg.tool_registration.filter_enabled = True
-        
-    if include_tools:
-        cfg.tool_registration.included_tools = include_tools
-        
-    if exclude_tools:
-        cfg.tool_registration.excluded_tools = exclude_tools
-    
-    # Validate transport_mode
-    if transport_mode not in ["sse", "stdio"]:
-        raise ValueError(f"Invalid transport_mode: {transport_mode}. Must be 'sse' or 'stdio'")
-    
-    # Determine final log level from the provided parameter or fallback to INFO
-    final_log_level = (log_level or "INFO").upper()
-
-    # Update LOGGING_CONFIG with the final level
-    LOGGING_CONFIG["root"]["level"] = final_log_level
-    LOGGING_CONFIG["loggers"]["ultimate_mcp_server"]["level"] = final_log_level
-    LOGGING_CONFIG["loggers"]["ultimate_mcp_server.tools"]["level"] = final_log_level
-    LOGGING_CONFIG["loggers"]["ultimate_mcp_server.completions"]["level"] = final_log_level
-    
-    # Set Uvicorn access level based on final level
-    LOGGING_CONFIG["loggers"]["uvicorn.access"]["level"] = final_log_level if final_log_level != "CRITICAL" else "CRITICAL"
-    
-    # Ensure Uvicorn base/error logs are at least INFO unless final level is DEBUG
-    uvicorn_base_level = "INFO" if final_log_level not in ["DEBUG"] else "DEBUG"
-    LOGGING_CONFIG["loggers"]["uvicorn"]["level"] = uvicorn_base_level
-    LOGGING_CONFIG["loggers"]["uvicorn.error"]["level"] = uvicorn_base_level
-
-    # Configure logging
-    logging.config.dictConfig(LOGGING_CONFIG)
     
     # Initialize the gateway if not already created
     global _gateway_instance
@@ -2714,13 +2067,17 @@ def start_server(
             load_all_tools=load_all_tools  # Pass the flag to Gateway
         )
     
+    # NOTE: Application initialization now happens in _session_lifespan to prevent race conditions
+    # This ensures initialization occurs in the proper async context before MCP requests are processed
+    
     # Log startup info to stderr instead of using logging directly
     print("Starting Ultimate MCP Server server", file=sys.stderr)
-    print(f"Host: {server_host}", file=sys.stderr)
-    print(f"Port: {server_port}", file=sys.stderr)
-    print(f"Workers: {server_workers}", file=sys.stderr)
-    print(f"Log level: {final_log_level}", file=sys.stderr)
-    print(f"Transport mode: {transport_mode}", file=sys.stderr)
+    print(f"Host: {cfg.server.host}", file=sys.stderr)
+    print(f"Port: {cfg.server.port}", file=sys.stderr)
+    print(f"Workers: {cfg.server.workers}", file=sys.stderr)
+    print(f"Log level: {cfg.server.log_level}", file=sys.stderr)
+    # Note: This server runs in SSE mode
+    print(f"Transport mode: SSE", file=sys.stderr)
     
     # Log tool loading strategy
     if load_all_tools:
@@ -2737,1343 +2094,257 @@ def start_server(
         if cfg.tool_registration.excluded_tools:
             print(f"Excluding tools: {', '.join(cfg.tool_registration.excluded_tools)}", file=sys.stderr)
     
-    if transport_mode == "sse":
-        # Run in SSE mode (HTTP server)
-        import os
-        import subprocess
-        import threading
-        import time
+    # Run in SSE mode (HTTP server)
+    import os
+    import subprocess
+    import threading
+    import time
 
-        import uvicorn
-        
-        # Set up a function to run the tool context estimator after the server starts
-        def run_tool_context_estimator():
-            # Wait a bit for the server to start up
-            time.sleep(5)
-            try:
-                # Ensure tools_list.json exists
-                if not os.path.exists("tools_list.json"):
-                    print("\n--- Tool Context Window Analysis ---", file=sys.stderr)
-                    print("Error: tools_list.json not found. Tool registration may have failed.", file=sys.stderr)
-                    print("The tool context estimator will run with limited functionality.", file=sys.stderr)
-                    print("-" * 40, file=sys.stderr)
-                
-                # Set up environment for UTF-8 encoding
-                env = os.environ.copy()
-                env["PYTHONIOENCODING"] = "utf-8"
-                env["PYTHONUTF8"] = "1"
-                
-                # Run the tool context estimator script with the --quiet flag
-                # Use python -m instead of direct script execution to avoid import issues
-                result = subprocess.run(
-                    ["python", "-m", "mcp_tool_context_estimator", "--quiet"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    env=env
-                )
-                # Output the results to stderr
-                if result.stdout:
-                    print("\n--- Tool Context Window Analysis ---", file=sys.stderr)
-                    print(result.stdout, file=sys.stderr)
-                    print("-" * 40, file=sys.stderr)
-                # Check if there was an error
-                if result.returncode != 0:
-                    print("\n--- Tool Context Estimator Error ---", file=sys.stderr)
-                    print("Failed to run mcp_tool_context_estimator.py - likely due to an error.", file=sys.stderr)
-                    print("Error output:", file=sys.stderr)
-                    print(result.stderr, file=sys.stderr)
-                    print("-" * 40, file=sys.stderr)
-            except Exception as e:
-                print(f"\nError running tool context estimator: {str(e)}", file=sys.stderr)
-                print("Check if mcp_tool_context_estimator.py exists and is executable.", file=sys.stderr)
-        
-        # Start the tool context estimator in a separate thread
-        if os.path.exists("mcp_tool_context_estimator.py"):
-            threading.Thread(target=run_tool_context_estimator, daemon=True).start()
-        
-        # Setup graceful shutdown
-        logger = logging.getLogger("ultimate_mcp_server.server")
-        
-        # Configure graceful shutdown with error suppression
-        enable_quiet_shutdown()
-        
-        # Create a shutdown handler for gateway cleanup
-        async def cleanup_resources():
-            """Performs cleanup for various components during shutdown."""
-            
-            # First attempt quick tasks then long tasks with timeouts
-            print("Cleaning up Gateway instance and associated resources...", file=sys.stderr)
-            
-            # Shutdown SQL Tools with timeout
-            try:
-                # await asyncio.wait_for(shutdown_sql_tools(), timeout=3.0)
-                pass  # SQL tools shutdown temporarily disabled
-            except (asyncio.TimeoutError, Exception):
-                pass  # Suppress errors during shutdown
-            
-            # Shutdown Connection Manager with timeout
-            try:
-                # from ultimate_mcp_server.tools.sql_databases import _connection_manager
-                # await asyncio.wait_for(_connection_manager.shutdown(), timeout=2.0)
-                pass  # Connection manager shutdown temporarily disabled
-            except (asyncio.TimeoutError, Exception):
-                pass  # Suppress errors during shutdown
-            
-            # Shutdown Smart Browser with timeout
-            try:
-                await asyncio.wait_for(smart_browser_shutdown(), timeout=5.0)
-            except (asyncio.TimeoutError, Exception):
-                pass  # Suppress errors during shutdown
-        
-        # Register the cleanup function with the graceful shutdown system
-        register_shutdown_handler(cleanup_resources)
-        
-        # Get the SSE app from FastMCP
-        app = _gateway_instance.mcp.sse_app()
-        print(f"[DEBUG] SSE app type: {type(app)}", file=sys.stderr)
-        print(f"[DEBUG] SSE app routes before adding custom routes: {len(app.routes) if hasattr(app, 'routes') else 'unknown'}", file=sys.stderr)
-        
-        # Add static file serving for UMS Explorer and database access to SSE app
-        from pathlib import Path
-
-        from starlette.responses import FileResponse
-        
-        # Get the project root directory (where storage/ is located)
-        project_root = Path(__file__).parent.parent.parent
-        tools_dir = project_root / "ultimate_mcp_server" / "tools"
-        storage_dir = project_root / "storage"
-        
-        # Add custom endpoint for UMS Explorer HTML file instead of mounting tools directory
-        async def serve_ums_explorer(request):
-            """Serve the UMS Explorer HTML file."""
-            html_path = tools_dir / "ums_explorer.html"
-            if html_path.exists():
-                # Don't set filename to avoid Content-Disposition: attachment header
-                return FileResponse(
-                    path=str(html_path),
-                    media_type="text/html"
-                )
-            else:
-                from starlette.responses import JSONResponse
-                return JSONResponse(
-                    {"error": "UMS Explorer HTML file not found"},
-                    status_code=404
-                )
-        
-        app.add_route("/tools/ums_explorer.html", serve_ums_explorer, methods=["GET"])
-        print("[DEBUG] Registered UMS Explorer endpoint: /tools/ums_explorer.html", file=sys.stderr)
-        print(f"[DEBUG] Tools directory path: {tools_dir}", file=sys.stderr)
-        print(f"[DEBUG] UMS Explorer file exists: {(tools_dir / 'ums_explorer.html').exists()}", file=sys.stderr)
-        
-        # Add custom endpoint for database file instead of mounting storage directory
-        async def serve_database(request):
-            """Serve the unified agent memory database file."""
-            db_path = storage_dir / "unified_agent_memory.db"
-            print(f"[DEBUG] Database endpoint called. Looking for: {db_path}", file=sys.stderr)
-            print(f"[DEBUG] Database file exists: {db_path.exists()}", file=sys.stderr)
-            if db_path.exists():
-                print(f"[DEBUG] Serving database file: {db_path}", file=sys.stderr)
-                return FileResponse(
-                    path=str(db_path),
-                    media_type="application/x-sqlite3",
-                    filename="unified_agent_memory.db"
-                )
-            else:
-                print(f"[DEBUG] Database file not found at: {db_path}", file=sys.stderr)
-                from starlette.responses import JSONResponse
-                return JSONResponse(
-                    {"error": f"Database file not found at {db_path}"},
-                    status_code=404
-                )
-        
-        app.add_route("/storage/unified_agent_memory.db", serve_database, methods=["GET"])
-        print("[DEBUG] Registered database endpoint: /storage/unified_agent_memory.db", file=sys.stderr)
-        print(f"[DEBUG] Storage directory path: {storage_dir}", file=sys.stderr)
-        print(f"[DEBUG] Storage directory exists: {storage_dir.exists()}", file=sys.stderr)
-        
-        # Add UMS Explorer endpoint to SSE app
-        from starlette.responses import RedirectResponse
-        
-        async def ums_explorer(request):
-            """UMS Explorer web interface."""
-            return RedirectResponse(url="/tools/ums_explorer.html")
-        
-        app.add_route("/ums-explorer", ums_explorer, methods=["GET"])
-        
-        # ===== RESTORE ALL MISSING UMS EXPLORER API ENDPOINTS =====
-        
-        # First, add all the helper functions that support the API endpoints
-        def get_action_status_indicator(status: str, execution_time: float) -> dict:
-            """Get status indicator with color and icon for action status"""
-            indicators = {
-                'running': {'color': 'blue', 'icon': 'play', 'label': 'Running'},
-                'executing': {'color': 'blue', 'icon': 'cpu', 'label': 'Executing'},
-                'in_progress': {'color': 'orange', 'icon': 'clock', 'label': 'In Progress'},
-                'completed': {'color': 'green', 'icon': 'check', 'label': 'Completed'},
-                'failed': {'color': 'red', 'icon': 'x', 'label': 'Failed'},
-                'cancelled': {'color': 'gray', 'icon': 'stop', 'label': 'Cancelled'},
-                'timeout': {'color': 'yellow', 'icon': 'timer-off', 'label': 'Timeout'}
-            }
-            
-            indicator = indicators.get(status, {'color': 'gray', 'icon': 'help', 'label': 'Unknown'})
-            
-            # Add urgency flag for long-running actions
-            if status in ['running', 'executing', 'in_progress'] and execution_time > 120:  # 2 minutes
-                indicator['urgency'] = 'high'
-            elif status in ['running', 'executing', 'in_progress'] and execution_time > 60:  # 1 minute
-                indicator['urgency'] = 'medium'
-            else:
-                indicator['urgency'] = 'low'
-            
-            return indicator
-
-        def categorize_action_performance(execution_time: float, estimated_duration: float) -> str:
-            """Categorize action performance based on execution time vs estimate"""
-            if estimated_duration <= 0:
-                return 'unknown'
-            
-            ratio = execution_time / estimated_duration
-            
-            if ratio <= 0.5:
-                return 'excellent'
-            elif ratio <= 0.8:
-                return 'good'
-            elif ratio <= 1.2:
-                return 'acceptable'
-            elif ratio <= 2.0:
-                return 'slow'
-            else:
-                return 'very_slow'
-
-        def get_action_resource_usage(action_id: str) -> dict:
-            """Get resource usage for an action (placeholder implementation)"""
-            return {
-                'cpu_usage': 0.0,
-                'memory_usage': 0.0,
-                'network_io': 0.0,
-                'disk_io': 0.0
-            }
-
-        def estimate_wait_time(position: int, queue: list) -> float:
-            """Estimate wait time based on queue position and historical data"""
-            if position == 0:
-                return 0.0
-            avg_action_time = 30.0
-            return position * avg_action_time
-
-        def get_priority_label(priority: int) -> str:
-            """Get human-readable priority label"""
-            if priority <= 1:
-                return 'Critical'
-            elif priority <= 3:
-                return 'High'
-            elif priority <= 5:
-                return 'Normal'
-            elif priority <= 7:
-                return 'Low'
-            else:
-                return 'Very Low'
-
-        def calculate_action_performance_score(action: dict) -> float:
-            """Calculate performance score for a completed action"""
-            if action['status'] != 'completed':
-                return 0.0
-            
-            execution_time = action.get('execution_duration', 0)
-            if execution_time <= 0:
-                return 100.0
-            
-            if execution_time <= 5:
-                return 100.0
-            elif execution_time <= 15:
-                return 90.0
-            elif execution_time <= 30:
-                return 80.0
-            elif execution_time <= 60:
-                return 70.0
-            elif execution_time <= 120:
-                return 60.0
-            else:
-                return max(50.0, 100.0 - (execution_time / 10))
-
-        def calculate_efficiency_rating(execution_time: float, result_size: int) -> str:
-            """Calculate efficiency rating based on time and output"""
-            if execution_time <= 0:
-                return 'unknown'
-            
-            efficiency_score = result_size / execution_time if execution_time > 0 else 0
-            
-            if efficiency_score >= 100:
-                return 'excellent'
-            elif efficiency_score >= 50:
-                return 'good'
-            elif efficiency_score >= 20:
-                return 'fair'
-            else:
-                return 'poor'
-
-        def calculate_performance_summary(actions: list) -> dict:
-            """Calculate performance summary from action history"""
-            if not actions:
-                return {
-                    'avg_score': 0.0,
-                    'top_performer': None,
-                    'worst_performer': None,
-                    'efficiency_distribution': {}
-                }
-            
-            scores = [a.get('performance_score', 0) for a in actions]
-            avg_score = sum(scores) / len(scores)
-            
-            best_action = max(actions, key=lambda a: a.get('performance_score', 0))
-            worst_action = min(actions, key=lambda a: a.get('performance_score', 0))
-            
-            from collections import Counter
-            efficiency_counts = Counter(a.get('efficiency_rating', 'unknown') for a in actions)
-            
-            return {
-                'avg_score': round(avg_score, 2),
-                'top_performer': {
-                    'tool_name': best_action.get('tool_name', ''),
-                    'score': best_action.get('performance_score', 0)
-                },
-                'worst_performer': {
-                    'tool_name': worst_action.get('tool_name', ''),
-                    'score': worst_action.get('performance_score', 0)
-                },
-                'efficiency_distribution': dict(efficiency_counts)
-            }
-
-        def generate_performance_insights(overall_stats: dict, tool_stats: list, hourly_metrics: list) -> list:
-            """Generate actionable performance insights"""
-            insights = []
-            
-            success_rate = (overall_stats.get('successful_actions', 0) / overall_stats.get('total_actions', 1)) * 100
-            if success_rate < 80:
-                insights.append({
-                    'type': 'warning',
-                    'title': 'Low Success Rate',
-                    'message': f'Current success rate is {success_rate:.1f}%. Consider investigating failing tools.',
-                    'severity': 'high'
-                })
-            
-            if tool_stats:
-                slowest_tool = max(tool_stats, key=lambda t: t.get('avg_duration', 0))
-                if slowest_tool.get('avg_duration', 0) > 60:
-                    insights.append({
-                        'type': 'info',
-                        'title': 'Performance Optimization',
-                        'message': f'{slowest_tool["tool_name"]} is taking {slowest_tool["avg_duration"]:.1f}s on average. Consider optimization.',
-                        'severity': 'medium'
-                    })
-            
-            if hourly_metrics:
-                peak_hour = max(hourly_metrics, key=lambda h: h.get('action_count', 0))
-                insights.append({
-                    'type': 'info',
-                    'title': 'Peak Usage',
-                    'message': f'Peak usage occurs at {peak_hour["hour"]}:00 with {peak_hour["action_count"]} actions.',
-                    'severity': 'low'
-                })
-            
-            return insights
-
-        def calculate_tool_reliability_score(tool_stats: dict) -> float:
-            """Calculate reliability score for a tool"""
-            total_calls = tool_stats.get('total_calls', 0)
-            successful_calls = tool_stats.get('successful_calls', 0)
-            
-            if total_calls == 0:
-                return 0.0
-            
-            success_rate = successful_calls / total_calls
-            volume_factor = min(1.0, total_calls / 100)
-            
-            return round(success_rate * volume_factor * 100, 2)
-
-        def categorize_tool_performance(avg_execution_time: float) -> str:
-            """Categorize tool performance based on average execution time"""
-            if avg_execution_time is None:
-                return 'unknown'
-            
-            if avg_execution_time <= 5:
-                return 'fast'
-            elif avg_execution_time <= 15:
-                return 'normal'
-            elif avg_execution_time <= 30:
-                return 'slow'
-            else:
-                return 'very_slow'
-
-        # Additional cognitive state helper functions
-        def extract_key_state_components(state_data: dict) -> list:
-            """Extract key components from state data for visualization"""
-            components = []
-            
-            for key, value in state_data.items():
-                component = {
-                    'name': key,
-                    'type': type(value).__name__,
-                    'summary': str(value)[:100] + '...' if len(str(value)) > 100 else str(value)
-                }
-                
-                if isinstance(value, dict):
-                    component['count'] = len(value)
-                elif isinstance(value, list):
-                    component['count'] = len(value)
-                
-                components.append(component)
-            
-            return components[:10]
-
-        def generate_state_tags(state_data: dict, state_type: str) -> list:
-            """Generate descriptive tags for a cognitive state"""
-            tags = [state_type]
-            
-            if 'goals' in state_data:
-                tags.append('goal-oriented')
-            
-            if 'working_memory' in state_data:
-                tags.append('memory-active')
-            
-            if 'error' in str(state_data).lower():
-                tags.append('error-state')
-            
-            if 'decision' in str(state_data).lower():
-                tags.append('decision-point')
-            
-            return tags
-
-        def generate_timeline_segments(timeline_data: list, granularity: str, hours: int) -> list:
-            """Generate timeline segments for visualization"""
-            if not timeline_data:
-                return []
-            
-            start_time = min(item['timestamp'] for item in timeline_data)
-            end_time = max(item['timestamp'] for item in timeline_data)
-            
-            if granularity == 'minute':
-                segment_duration = 60
-            elif granularity == 'hour':
-                segment_duration = 3600
-            else:
-                segment_duration = 1
-            
-            segments = []
-            current_time = start_time
-            
-            while current_time < end_time:
-                segment_end = current_time + segment_duration
-                
-                segment_states = [
-                    item for item in timeline_data
-                    if current_time <= item['timestamp'] < segment_end
-                ]
-                
-                if segment_states:
-                    avg_complexity = sum(s['complexity_score'] for s in segment_states) / len(segment_states)
-                    max_change = max(s['change_magnitude'] for s in segment_states)
-                    
-                    from collections import Counter
-                    segments.append({
-                        'start_time': current_time,
-                        'end_time': segment_end,
-                        'state_count': len(segment_states),
-                        'avg_complexity': avg_complexity,
-                        'max_change_magnitude': max_change,
-                        'dominant_type': Counter(s['state_type'] for s in segment_states).most_common(1)[0][0]
-                    })
-                
-                current_time = segment_end
-            
-            return segments
-
-        def calculate_timeline_stats(timeline_data: list) -> dict:
-            """Calculate summary statistics for timeline data"""
-            if not timeline_data:
-                return {}
-            
-            complexities = [item['complexity_score'] for item in timeline_data]
-            changes = [item['change_magnitude'] for item in timeline_data if item['change_magnitude'] > 0]
-            
-            from collections import Counter
-            state_types = Counter(item['state_type'] for item in timeline_data)
-            
-            return {
-                'avg_complexity': sum(complexities) / len(complexities),
-                'max_complexity': max(complexities),
-                'avg_change_magnitude': sum(changes) / len(changes) if changes else 0,
-                'max_change_magnitude': max(changes) if changes else 0,
-                'most_common_type': state_types.most_common(1)[0][0] if state_types else None,
-                'type_distribution': dict(state_types),
-                'total_duration_hours': (timeline_data[-1]['timestamp'] - timeline_data[0]['timestamp']) / 3600
-            }
-
-        # More cognitive state helper functions
-        def calculate_state_complexity(state_data: dict) -> float:
-            """Calculate complexity score for a cognitive state"""
-            if not state_data:
-                return 0.0
-            
-            component_count = len(state_data.keys())
-            max_depth = calculate_dict_depth(state_data)
-            total_values = count_dict_values(state_data)
-            
-            complexity = min(100, (component_count * 5) + (max_depth * 10) + (total_values * 0.5))
-            return round(complexity, 2)
-
-        def calculate_dict_depth(d: dict, current_depth: int = 0) -> int:
-            """Calculate maximum depth of nested dictionary"""
-            if not isinstance(d, dict):
-                return current_depth
-            
-            if not d:
-                return current_depth
-            
-            return max(calculate_dict_depth(v, current_depth + 1) for v in d.values())
-
-        def count_dict_values(d: dict) -> int:
-            """Count total number of values in nested dictionary"""
-            count = 0
-            for v in d.values():
-                if isinstance(v, dict):
-                    count += count_dict_values(v)
-                elif isinstance(v, list):
-                    count += len(v)
-                else:
-                    count += 1
-            return count
-
-        def compute_state_diff(state1: dict, state2: dict) -> dict:
-            """Compute difference between two cognitive states"""
-            diff_result = {
-                'added': {},
-                'removed': {},
-                'modified': {},
-                'magnitude': 0.0
-            }
-            
-            all_keys = set(state1.keys()) | set(state2.keys())
-            changes = 0
-            total_keys = len(all_keys)
-            
-            for key in all_keys:
-                if key not in state1:
-                    diff_result['added'][key] = state2[key]
-                    changes += 1
-                elif key not in state2:
-                    diff_result['removed'][key] = state1[key]
-                    changes += 1
-                elif state1[key] != state2[key]:
-                    diff_result['modified'][key] = {
-                        'before': state1[key],
-                        'after': state2[key]
-                    }
-                    changes += 1
-            
-            if total_keys > 0:
-                diff_result['magnitude'] = (changes / total_keys) * 100
-            
-            return diff_result
-
-        def format_file_size(size_bytes: int) -> str:
-            """Format file size in human readable format"""
-            if size_bytes == 0:
-                return "0 B"
-            
-            import math
-            size_names = ["B", "KB", "MB", "GB", "TB"]
-            i = int(math.floor(math.log(size_bytes, 1024)))
-            p = math.pow(1024, i)
-            s = round(size_bytes / p, 2)
-            return f"{s} {size_names[i]}"
-
-        # Pattern analysis functions
-        def find_cognitive_patterns(states: list, min_length: int, similarity_threshold: float) -> list:
-            """Find recurring patterns in cognitive states"""
-            patterns = []
-            
-            from collections import defaultdict
-            type_sequences = defaultdict(list)
-            for state in states:
-                type_sequences[state['state_type']].append(state)
-            
-            for state_type, sequence in type_sequences.items():
-                if len(sequence) >= min_length * 2:
-                    for length in range(min_length, len(sequence) // 2 + 1):
-                        for start in range(len(sequence) - length * 2 + 1):
-                            subseq1 = sequence[start:start + length]
-                            subseq2 = sequence[start + length:start + length * 2]
-                            
-                            similarity = calculate_sequence_similarity(subseq1, subseq2)
-                            if similarity >= similarity_threshold:
-                                patterns.append({
-                                    'type': f'repeating_{state_type}',
-                                    'length': length,
-                                    'similarity': similarity,
-                                    'occurrences': 2,
-                                    'first_occurrence': subseq1[0]['timestamp'],
-                                    'pattern_description': f"Repeating {state_type} sequence of {length} states"
-                                })
-            
-            return sorted(patterns, key=lambda p: p['similarity'], reverse=True)
-
-        def calculate_sequence_similarity(seq1: list, seq2: list) -> float:
-            """Calculate similarity between two state sequences"""
-            if len(seq1) != len(seq2):
-                return 0.0
-            
-            total_similarity = 0.0
-            for s1, s2 in zip(seq1, seq2, strict=False):
-                state_sim = calculate_single_state_similarity(s1, s2)
-                total_similarity += state_sim
-            
-            return total_similarity / len(seq1)
-
-        def calculate_single_state_similarity(state1: dict, state2: dict) -> float:
-            """Calculate similarity between two individual states"""
-            data1 = state1.get('state_data', {})
-            data2 = state2.get('state_data', {})
-            
-            if not data1 and not data2:
-                return 1.0
-            
-            if not data1 or not data2:
-                return 0.0
-            
-            keys1 = set(data1.keys())
-            keys2 = set(data2.keys())
-            key_similarity = len(keys1 & keys2) / len(keys1 | keys2) if keys1 | keys2 else 1.0
-            
-            common_keys = keys1 & keys2
-            value_similarity = 0.0
-            if common_keys:
-                matching_values = sum(1 for key in common_keys if data1[key] == data2[key])
-                value_similarity = matching_values / len(common_keys)
-            
-            return (key_similarity + value_similarity) / 2
-
-        def analyze_state_transitions(states: list) -> list:
-            """Analyze transitions between cognitive states"""
-            from collections import defaultdict
-            transitions = defaultdict(int)
-            
-            for i in range(len(states) - 1):
-                current_type = states[i]['state_type']
-                next_type = states[i + 1]['state_type']
-                transition = f"{current_type} → {next_type}"
-                transitions[transition] += 1
-            
-            sorted_transitions = sorted(transitions.items(), key=lambda x: x[1], reverse=True)
-            
-            return [
-                {
-                    'transition': transition,
-                    'count': count,
-                    'percentage': (count / (len(states) - 1)) * 100 if len(states) > 1 else 0
-                }
-                for transition, count in sorted_transitions
-            ]
-
-        def detect_cognitive_anomalies(states: list) -> list:
-            """Detect anomalous cognitive states"""
-            anomalies = []
-            
-            if len(states) < 3:
-                return anomalies
-            
-            complexities = [calculate_state_complexity(s.get('state_data', {})) for s in states]
-            avg_complexity = sum(complexities) / len(complexities)
-            std_complexity = (sum((c - avg_complexity) ** 2 for c in complexities) / len(complexities)) ** 0.5
-            
-            for i, state in enumerate(states):
-                complexity = complexities[i]
-                z_score = (complexity - avg_complexity) / std_complexity if std_complexity > 0 else 0
-                
-                if abs(z_score) > 2:
-                    anomalies.append({
-                        'state_id': state['state_id'],
-                        'timestamp': state['timestamp'],
-                        'anomaly_type': 'complexity_outlier',
-                        'z_score': z_score,
-                        'description': f"Unusual complexity: {complexity:.1f} (avg: {avg_complexity:.1f})",
-                        'severity': 'high' if abs(z_score) > 3 else 'medium'
-                    })
-            
-            return anomalies
-
-        # ===== EXTENDED COGNITIVE STATES API ENDPOINTS =====
-        
-        # Add required imports and helper functions
-        import json
-        from datetime import datetime
-        
-        def get_db_connection():
-            """Get database connection for UMS Explorer API"""
-            import sqlite3
-            # Use the storage_dir that's already defined in this context
-            database_path = str(storage_dir / "unified_agent_memory.db")
-            conn = sqlite3.connect(database_path)
-            conn.row_factory = sqlite3.Row
-            return conn
-        
-        async def api_cognitive_state_detail(request):
-            """Get detailed cognitive state by ID"""
-            state_id = request.path_params['state_id']
-            
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                cursor.execute("""
-                    SELECT 
-                        cs.*,
-                        w.title as workflow_title,
-                        w.goal as workflow_goal
-                    FROM cognitive_timeline_states cs
-                    LEFT JOIN workflows w ON cs.workflow_id = w.workflow_id
-                    WHERE cs.state_id = ?
-                """, (state_id,))
-                
-                row = cursor.fetchone()
-                if not row:
-                    return JSONResponse({"error": "Cognitive state not found"}, status_code=404)
-                
-                columns = [description[0] for description in cursor.description]
-                state = dict(zip(columns, row, strict=False))
-                
-                # Parse state data
-                try:
-                    state['state_data'] = json.loads(state.get('state_data', '{}'))
-                except Exception:
-                    state['state_data'] = {}
-                
-                # Get associated memories and actions
-                cursor.execute("""
-                    SELECT memory_id, memory_type, content, importance, created_at
-                    FROM memories 
-                    WHERE workflow_id = ? 
-                    ORDER BY created_at DESC
-                    LIMIT 20
-                """, (state.get('workflow_id', ''),))
-                
-                memories = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                cursor.execute("""
-                    SELECT action_id, action_type, tool_name, status, started_at
-                    FROM actions 
-                    WHERE workflow_id = ? 
-                    ORDER BY started_at DESC
-                    LIMIT 20
-                """, (state.get('workflow_id', ''),))
-                
-                actions = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                conn.close()
-                
-                return JSONResponse({
-                    **state,
-                    'memories': memories,
-                    'actions': actions,
-                    'formatted_timestamp': datetime.fromtimestamp(state['timestamp']).isoformat(),
-                    'complexity_score': calculate_state_complexity(state['state_data'])
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        async def api_cognitive_patterns(request):
-            """Analyze recurring cognitive patterns"""
-            query_params = request.query_params
-            lookback_hours = int(query_params.get('lookback_hours', 24))
-            min_pattern_length = int(query_params.get('min_pattern_length', 3))
-            similarity_threshold = float(query_params.get('similarity_threshold', 0.7))
-            
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                since_timestamp = datetime.now().timestamp() - (lookback_hours * 3600)
-                cursor.execute("""
-                    SELECT state_id, timestamp, state_type, state_data, workflow_id
-                    FROM cognitive_timeline_states 
-                    WHERE timestamp >= ?
-                    ORDER BY timestamp ASC
-                """, (since_timestamp,))
-                
-                states = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                # Parse state data
-                for state in states:
-                    try:
-                        state['state_data'] = json.loads(state.get('state_data', '{}'))
-                    except Exception:
-                        state['state_data'] = {}
-                
-                # Analyze patterns
-                patterns = find_cognitive_patterns(states, min_pattern_length, similarity_threshold)
-                transitions = analyze_state_transitions(states)
-                anomalies = detect_cognitive_anomalies(states)
-                
-                conn.close()
-                
-                return JSONResponse({
-                    'total_states': len(states),
-                    'time_range_hours': lookback_hours,
-                    'patterns': patterns,
-                    'transitions': transitions,
-                    'anomalies': anomalies,
-                    'summary': {
-                        'pattern_count': len(patterns),
-                        'most_common_transition': transitions[0] if transitions else None,
-                        'anomaly_count': len(anomalies)
-                    }
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        # ===== ACTION MONITOR API ENDPOINTS =====
-        
-        async def api_running_actions(request):
-            """Get currently executing actions with real-time status"""
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                cursor.execute("""
-                    SELECT 
-                        a.*,
-                        w.title as workflow_title,
-                        (unixepoch() - a.started_at) as execution_time,
-                        CASE 
-                            WHEN a.tool_data IS NOT NULL THEN json_extract(a.tool_data, '$.estimated_duration')
-                            ELSE NULL 
-                        END as estimated_duration
-                    FROM actions a
-                    LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
-                    WHERE a.status IN ('running', 'executing', 'in_progress')
-                    ORDER BY a.started_at ASC
-                """)
-                
-                columns = [description[0] for description in cursor.description]
-                running_actions = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-                
-                # Enhance with real-time metrics
-                enhanced_actions = []
-                for action in running_actions:
-                    try:
-                        tool_data = json.loads(action.get('tool_data', '{}'))
-                    except Exception:
-                        tool_data = {}
-                    
-                    execution_time = action.get('execution_time', 0)
-                    estimated_duration = action.get('estimated_duration') or 30
-                    progress_percentage = min(95, (execution_time / estimated_duration) * 100) if estimated_duration > 0 else 0
-                    
-                    enhanced_action = {
-                        **action,
-                        'tool_data': tool_data,
-                        'execution_time_seconds': execution_time,
-                        'progress_percentage': progress_percentage,
-                        'status_indicator': get_action_status_indicator(action['status'], execution_time),
-                        'performance_category': categorize_action_performance(execution_time, estimated_duration),
-                        'resource_usage': get_action_resource_usage(action['action_id']),
-                        'formatted_start_time': datetime.fromtimestamp(action['started_at']).isoformat()
-                    }
-                    enhanced_actions.append(enhanced_action)
-                
-                conn.close()
-                
-                return JSONResponse({
-                    'running_actions': enhanced_actions,
-                    'total_running': len(enhanced_actions),
-                    'avg_execution_time': sum(a['execution_time_seconds'] for a in enhanced_actions) / len(enhanced_actions) if enhanced_actions else 0,
-                    'timestamp': datetime.now().isoformat()
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        async def api_action_queue(request):
-            """Get queued actions waiting for execution"""
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                cursor.execute("""
-                    SELECT 
-                        a.*,
-                        w.title as workflow_title,
-                        (unixepoch() - a.created_at) as queue_time,
-                        CASE 
-                            WHEN a.tool_data IS NOT NULL THEN json_extract(a.tool_data, '$.priority')
-                            ELSE 5 
-                        END as priority
-                    FROM actions a
-                    LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
-                    WHERE a.status IN ('queued', 'pending', 'waiting')
-                    ORDER BY priority ASC, a.created_at ASC
-                """)
-                
-                columns = [description[0] for description in cursor.description]
-                queued_actions = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-                
-                # Enhance queue data
-                enhanced_queue = []
-                for i, action in enumerate(queued_actions):
-                    try:
-                        tool_data = json.loads(action.get('tool_data', '{}'))
-                    except Exception:
-                        tool_data = {}
-                    
-                    enhanced_action = {
-                        **action,
-                        'tool_data': tool_data,
-                        'queue_position': i + 1,
-                        'queue_time_seconds': action.get('queue_time', 0),
-                        'estimated_wait_time': estimate_wait_time(i, queued_actions),
-                        'priority_label': get_priority_label(action.get('priority', 5)),
-                        'formatted_queue_time': datetime.fromtimestamp(action['created_at']).isoformat()
-                    }
-                    enhanced_queue.append(enhanced_action)
-                
-                conn.close()
-                
-                return JSONResponse({
-                    'queued_actions': enhanced_queue,
-                    'total_queued': len(enhanced_queue),
-                    'avg_queue_time': sum(a['queue_time_seconds'] for a in enhanced_queue) / len(enhanced_queue) if enhanced_queue else 0,
-                    'next_action': enhanced_queue[0] if enhanced_queue else None,
-                    'timestamp': datetime.now().isoformat()
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        # ===== MORE MISSING API ENDPOINTS =====
-        
-        async def api_action_history(request):
-            """Get completed actions with performance metrics"""
-            query_params = request.query_params
-            limit = int(query_params.get('limit', 50))
-            offset = int(query_params.get('offset', 0))
-            status_filter = query_params.get('status_filter')
-            tool_filter = query_params.get('tool_filter')
-            hours_back = int(query_params.get('hours_back', 24))
-            
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
-                
-                query = """
-                    SELECT 
-                        a.*,
-                        w.title as workflow_title,
-                        (a.completed_at - a.started_at) as execution_duration,
-                        CASE 
-                            WHEN a.tool_data IS NOT NULL THEN json_extract(a.tool_data, '$.result_size')
-                            ELSE 0 
-                        END as result_size
-                    FROM actions a
-                    LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
-                    WHERE a.status IN ('completed', 'failed', 'cancelled', 'timeout')
-                    AND a.completed_at >= ?
-                """
-                params = [since_timestamp]
-                
-                if status_filter:
-                    query += " AND a.status = ?"
-                    params.append(status_filter)
-                
-                if tool_filter:
-                    query += " AND a.tool_name = ?"
-                    params.append(tool_filter)
-                
-                query += " ORDER BY a.completed_at DESC LIMIT ? OFFSET ?"
-                params.extend([limit, offset])
-                
-                cursor.execute(query, params)
-                columns = [description[0] for description in cursor.description]
-                completed_actions = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-                
-                # Calculate performance metrics
-                enhanced_history = []
-                for action in completed_actions:
-                    try:
-                        tool_data = json.loads(action.get('tool_data', '{}'))
-                        result_data = json.loads(action.get('result', '{}'))
-                    except Exception:
-                        tool_data = {}
-                        result_data = {}
-                    
-                    execution_duration = action.get('execution_duration', 0)
-                    
-                    enhanced_action = {
-                        **action,
-                        'tool_data': tool_data,
-                        'result_data': result_data,
-                        'execution_duration_seconds': execution_duration,
-                        'performance_score': calculate_action_performance_score(action),
-                        'efficiency_rating': calculate_efficiency_rating(execution_duration, action.get('result_size', 0)),
-                        'success_rate_impact': 1 if action['status'] == 'completed' else 0,
-                        'formatted_start_time': datetime.fromtimestamp(action['started_at']).isoformat(),
-                        'formatted_completion_time': datetime.fromtimestamp(action['completed_at']).isoformat() if action['completed_at'] else None
-                    }
-                    enhanced_history.append(enhanced_action)
-                
-                conn.close()
-                
-                # Calculate aggregate metrics
-                total_actions = len(enhanced_history)
-                successful_actions = len([a for a in enhanced_history if a['status'] == 'completed'])
-                avg_duration = sum(a['execution_duration_seconds'] for a in enhanced_history) / total_actions if total_actions > 0 else 0
-                
-                return JSONResponse({
-                    'action_history': enhanced_history,
-                    'total_actions': total_actions,
-                    'success_rate': (successful_actions / total_actions * 100) if total_actions > 0 else 0,
-                    'avg_execution_time': avg_duration,
-                    'performance_summary': calculate_performance_summary(enhanced_history),
-                    'timestamp': datetime.now().isoformat()
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        async def api_action_metrics(request):
-            """Get comprehensive action execution metrics and analytics"""
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                # Get metrics for last 24 hours
-                since_timestamp = datetime.now().timestamp() - (24 * 3600)
-                
-                # Overall statistics
-                cursor.execute("""
-                    SELECT 
-                        COUNT(*) as total_actions,
-                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_actions,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_actions,
-                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration
-                    FROM actions 
-                    WHERE created_at >= ?
-                """, (since_timestamp,))
-                
-                overall_stats = dict(zip([d[0] for d in cursor.description], cursor.fetchone(), strict=False))
-                
-                # Tool usage statistics
-                cursor.execute("""
-                    SELECT 
-                        tool_name,
-                        COUNT(*) as usage_count,
-                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success_count,
-                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration
-                    FROM actions 
-                    WHERE created_at >= ?
-                    GROUP BY tool_name
-                    ORDER BY usage_count DESC
-                """, (since_timestamp,))
-                
-                tool_stats = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                # Performance distribution over time (hourly)
-                cursor.execute("""
-                    SELECT 
-                        strftime('%H', datetime(started_at, 'unixepoch')) as hour,
-                        COUNT(*) as action_count,
-                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_duration,
-                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as success_count
-                    FROM actions 
-                    WHERE started_at >= ?
-                    GROUP BY hour
-                    ORDER BY hour
-                """, (since_timestamp,))
-                
-                hourly_metrics = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                conn.close()
-                
-                # Calculate derived metrics
-                success_rate = (overall_stats['successful_actions'] / overall_stats['total_actions'] * 100) if overall_stats['total_actions'] > 0 else 0
-                
-                return JSONResponse({
-                    'overall_metrics': {
-                        **overall_stats,
-                        'success_rate_percentage': success_rate,
-                        'failure_rate_percentage': 100 - success_rate,
-                        'avg_duration_seconds': overall_stats['avg_duration'] or 0
-                    },
-                    'tool_usage_stats': tool_stats,
-                    'hourly_performance': hourly_metrics,
-                    'performance_insights': generate_performance_insights(overall_stats, tool_stats, hourly_metrics),
-                    'timestamp': datetime.now().isoformat()
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        async def api_tools_usage(request):
-            """Get detailed tool usage statistics with performance breakdown"""
-            query_params = request.query_params
-            hours_back = int(query_params.get('hours_back', 24))
-            include_performance = query_params.get('include_performance', 'true').lower() == 'true'  # noqa: F841
-            
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                since_timestamp = datetime.now().timestamp() - (hours_back * 3600)
-                
-                # Comprehensive tool statistics
-                cursor.execute("""
-                    SELECT 
-                        tool_name,
-                        COUNT(*) as total_calls,
-                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as successful_calls,
-                        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed_calls,
-                        AVG(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as avg_execution_time,
-                        MIN(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as min_execution_time,
-                        MAX(CASE WHEN completed_at IS NOT NULL THEN completed_at - started_at ELSE NULL END) as max_execution_time,
-                        COUNT(DISTINCT workflow_id) as unique_workflows,
-                        MAX(started_at) as last_used
-                    FROM actions 
-                    WHERE created_at >= ?
-                    GROUP BY tool_name
-                    ORDER BY total_calls DESC
-                """, (since_timestamp,))
-                
-                tool_statistics = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                # Enhance with calculated metrics
-                enhanced_tool_stats = []
-                for tool in tool_statistics:
-                    success_rate = (tool['successful_calls'] / tool['total_calls'] * 100) if tool['total_calls'] > 0 else 0
-                    
-                    enhanced_tool = {
-                        **tool,
-                        'success_rate_percentage': success_rate,
-                        'reliability_score': calculate_tool_reliability_score(tool),
-                        'performance_category': categorize_tool_performance(tool['avg_execution_time']),
-                        'usage_trend': 'increasing',  # This would be calculated with historical data
-                        'last_used_formatted': datetime.fromtimestamp(tool['last_used']).isoformat()
-                    }
-                    enhanced_tool_stats.append(enhanced_tool)
-                
-                conn.close()
-                
-                return JSONResponse({
-                    'success': True
-                })
-
-            except Exception as e:
-                logger.error(f"Error fetching tool statistics: {str(e)}")
-                return JSONResponse({
-                    'error': f'Failed to fetch tool statistics: {str(e)}',
-                    'success': False
-                }, status_code=500)
-
-        # Add missing API function definitions
-        async def api_cognitive_states(request):
-            """Get cognitive states with optional filtering"""
-            query_params = request.query_params
-            start_time = float(query_params.get('start_time')) if query_params.get('start_time') else None
-            end_time = float(query_params.get('end_time')) if query_params.get('end_time') else None
-            limit = int(query_params.get('limit', 100))
-            offset = int(query_params.get('offset', 0))
-            pattern_type = query_params.get('pattern_type')
-            
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                query = """
-                    SELECT 
-                        cs.*,
-                        w.title as workflow_title,
-                        COUNT(DISTINCT m.memory_id) as memory_count,
-                        COUNT(DISTINCT a.action_id) as action_count
-                    FROM cognitive_timeline_states cs
-                    LEFT JOIN workflows w ON cs.workflow_id = w.workflow_id
-                    LEFT JOIN memories m ON cs.workflow_id = m.workflow_id
-                    LEFT JOIN actions a ON cs.workflow_id = a.workflow_id
-                    WHERE 1=1
-                """
-                params = []
-                
-                if start_time:
-                    query += " AND cs.timestamp >= ?"
-                    params.append(start_time)
-                
-                if end_time:
-                    query += " AND cs.timestamp <= ?"
-                    params.append(end_time)
-                
-                if pattern_type:
-                    query += " AND cs.state_type = ?"
-                    params.append(pattern_type)
-                
-                query += """
-                    GROUP BY cs.state_id
-                    ORDER BY cs.timestamp DESC
-                    LIMIT ? OFFSET ?
-                """
-                params.extend([limit, offset])
-                
-                cursor.execute(query, params)
-                columns = [description[0] for description in cursor.description]
-                states = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-                
-                conn.close()
-                
-                return JSONResponse({
-                    "states": states,
-                    "total": len(states),
-                    "has_more": len(states) == limit
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        async def api_cognitive_timeline(request):
-            """Get cognitive state timeline data"""
-            query_params = request.query_params
-            hours = int(query_params.get('hours', 24))
-            
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                since_timestamp = datetime.now().timestamp() - (hours * 3600)
-                cursor.execute("""
-                    SELECT 
-                        state_id,
-                        timestamp,
-                        state_type,
-                        state_data,
-                        workflow_id,
-                        description
-                    FROM cognitive_timeline_states 
-                    WHERE timestamp >= ?
-                    ORDER BY timestamp ASC
-                """, (since_timestamp,))
-                
-                timeline_data = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                conn.close()
-                
-                return JSONResponse({
-                    'timeline_data': timeline_data,
-                    'total_states': len(timeline_data),
-                    'time_range_hours': hours
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        async def api_artifacts(request):
-            """Get artifacts with filtering"""
-            query_params = request.query_params
-            limit = int(query_params.get('limit', 50))
-            offset = int(query_params.get('offset', 0))
-            
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                cursor.execute("""
-                    SELECT 
-                        a.*,
-                        w.title as workflow_title
-                    FROM artifacts a
-                    LEFT JOIN workflows w ON a.workflow_id = w.workflow_id
-                    ORDER BY a.created_at DESC
-                    LIMIT ? OFFSET ?
-                """, [limit, offset])
-                
-                columns = [description[0] for description in cursor.description]
-                artifacts = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-                
-                conn.close()
-                
-                return JSONResponse({
-                    "artifacts": artifacts,
-                    "total": len(artifacts),
-                    "has_more": len(artifacts) == limit
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        async def api_artifact_stats(request):
-            """Get artifact statistics"""
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                
-                cursor.execute("""
-                    SELECT 
-                        artifact_type,
-                        COUNT(*) as count
-                    FROM artifacts 
-                    GROUP BY artifact_type
-                """)
-                
-                type_stats = [dict(zip([d[0] for d in cursor.description], row, strict=False)) for row in cursor.fetchall()]
-                
-                conn.close()
-                
-                return JSONResponse({
-                    'by_type': type_stats,
-                })
-                
-            except Exception as e:
-                return JSONResponse({"error": str(e)}, status_code=500)
-
-        # Add all missing API endpoints to the SSE app
-        app.add_route("/api/cognitive-states", api_cognitive_states, methods=["GET"])
-        app.add_route("/api/cognitive-states/timeline", api_cognitive_timeline, methods=["GET"])
-        app.add_route("/api/cognitive-states/{state_id}", api_cognitive_state_detail, methods=["GET"])
-        app.add_route("/api/cognitive-patterns", api_cognitive_patterns, methods=["GET"])
-        app.add_route("/api/artifacts", api_artifacts, methods=["GET"])
-        app.add_route("/api/artifacts/stats", api_artifact_stats, methods=["GET"])
-        app.add_route("/api/actions/running", api_running_actions, methods=["GET"])
-        app.add_route("/api/actions/queue", api_action_queue, methods=["GET"])
-        app.add_route("/api/actions/history", api_action_history, methods=["GET"])
-        app.add_route("/api/actions/metrics", api_action_metrics, methods=["GET"])
-        app.add_route("/api/tools/usage", api_tools_usage, methods=["GET"])
-        
-        print(f"[DEBUG] SSE app routes after adding API routes: {len(app.routes) if hasattr(app, 'routes') else 'unknown'}", file=sys.stderr)
-        
-        # Create a quiet server to suppress Uvicorn's default logging
-        print("Starting SSE (HTTP) server...", file=sys.stderr)
-        
-        # Create uvicorn config
-        import uvicorn
-        config = uvicorn.Config(
-            app,
-            host=server_host,
-            port=server_port,
-            workers=server_workers if server_workers > 1 else 1,
-            log_config=LOGGING_CONFIG,
-            access_log=True,
-            reload=reload,
-            lifespan="on"
-        )
-        
-        # Create and run the quiet server
-        quiet_server = create_quiet_server(config)
-        quiet_server.run()
+    import uvicorn
     
-    else:
-        # Run in stdio mode (direct process communication)
-        print("Starting stdio mode...", file=sys.stderr)
+    # Set up a function to run the tool context estimator after the server starts
+    def run_tool_context_estimator():
+        # Wait a bit for the server to start up
+        time.sleep(5)
+        try:
+            # Ensure tools_list.json exists
+            if not os.path.exists("tools_list.json"):
+                print("\n--- Tool Context Window Analysis ---", file=sys.stderr)
+                print("Error: tools_list.json not found. Tool registration may have failed.", file=sys.stderr)
+                print("The tool context estimator will run with limited functionality.", file=sys.stderr)
+                print("-" * 40, file=sys.stderr)
+            
+            # Set up environment for UTF-8 encoding
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
+            
+            # Run the tool context estimator script with the --quiet flag
+            # Use python -m instead of direct script execution to avoid import issues
+            result = subprocess.run(
+                ["python", "-m", "mcp_tool_context_estimator", "--quiet"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env
+            )
+            # Output the results to stderr
+            if result.stdout:
+                print("\n--- Tool Context Window Analysis ---", file=sys.stderr)
+                print(result.stdout, file=sys.stderr)
+                print("-" * 40, file=sys.stderr)
+            # Check if there was an error
+            if result.returncode != 0:
+                print("\n--- Tool Context Estimator Error ---", file=sys.stderr)
+                print("Failed to run mcp_tool_context_estimator.py - likely due to an error.", file=sys.stderr)
+                print("Error output:", file=sys.stderr)
+                print(result.stderr, file=sys.stderr)
+                print("-" * 40, file=sys.stderr)
+        except Exception as e:
+            print(f"\nError running tool context estimator: {str(e)}", file=sys.stderr)
+            print("Check if mcp_tool_context_estimator.py exists and is executable.", file=sys.stderr)
+    
+    # Start the tool context estimator in a separate thread
+    if os.path.exists("mcp_tool_context_estimator.py"):
+        threading.Thread(target=run_tool_context_estimator, daemon=True).start()
+    
+    # Setup graceful shutdown
+    logger = logging.getLogger("ultimate_mcp_server.server")
+    
+    # Configure graceful shutdown with error suppression
+    enable_quiet_shutdown()
+    
+    # Create a shutdown handler for gateway cleanup
+    async def cleanup_resources():
+        """Performs cleanup for various components during shutdown."""
         
-        # Use FastMCP's run_stdio method
-        import asyncio
-        asyncio.run(_gateway_instance.mcp.run_stdio())
+        # First attempt quick tasks then long tasks with timeouts
+        print("Cleaning up Gateway instance and associated resources...", file=sys.stderr)
+        
+        # Shutdown SQL Tools with timeout
+        try:
+            # await asyncio.wait_for(shutdown_sql_tools(), timeout=3.0)
+            pass  # SQL tools shutdown temporarily disabled
+        except (asyncio.TimeoutError, Exception):
+            pass  # Suppress errors during shutdown
+        
+        # Shutdown Connection Manager with timeout
+        try:
+            # from ultimate_mcp_server.tools.sql_databases import _connection_manager
+            # await asyncio.wait_for(_connection_manager.shutdown(), timeout=2.0)
+            pass  # Connection manager shutdown temporarily disabled
+        except (asyncio.TimeoutError, Exception):
+            pass  # Suppress errors during shutdown
+        
+        # Shutdown Smart Browser with timeout
+        try:
+            await asyncio.wait_for(smart_browser_shutdown(), timeout=5.0)
+        except (asyncio.TimeoutError, Exception):
+            pass  # Suppress errors during shutdown
+    
+    # Register the cleanup function with the graceful shutdown system
+    register_shutdown_handler(cleanup_resources)
+    
+    # Get the SSE app from FastMCP
+    app = _gateway_instance.mcp.sse_app()
+    print(f"[DEBUG] SSE app type: {type(app)}", file=sys.stderr)
+    print(f"[DEBUG] SSE app routes before adding custom routes: {len(app.routes) if hasattr(app, 'routes') else 'unknown'}", file=sys.stderr)
+    
+    # Add static file serving for UMS Explorer and database access to SSE app
+    from pathlib import Path
+    from starlette.responses import FileResponse
+    from starlette.routing import Route
+    from starlette.staticfiles import StaticFiles
+    
+    # Create a proper health check endpoint
+    async def health_check(request):
+        from starlette.responses import JSONResponse
+        return JSONResponse({"status": "healthy", "server": "Ultimate MCP Server"})
+    
+    # Add health check to main app
+    app.routes.append(Route("/health", endpoint=health_check, methods=["GET"]))
+    
+    # Add UMS Explorer static files
+    try:
+        storage_path = Path("storage")
+        ums_explorer_path = storage_path / "ums_explorer"
+        
+        if ums_explorer_path.exists():
+            # Serve the entire static directory
+            app.mount("/ums", StaticFiles(directory=str(ums_explorer_path), html=True), name="ums_explorer")
+            print(f"[DEBUG] Mounted UMS Explorer at /ums from {ums_explorer_path}", file=sys.stderr)
+        else:
+            print(f"[WARNING] UMS Explorer not found at {ums_explorer_path}", file=sys.stderr)
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to mount UMS Explorer: {e}", file=sys.stderr)
+    
+    # Add database schema viewer
+    try:
+        async def schema_viewer(request):
+            """Simple database schema viewer endpoint."""
+            from starlette.responses import JSONResponse
+            try:
+                # Import here to avoid circular imports
+                from ultimate_mcp_server.tools.sql_databases import get_connection_manager
+                
+                manager = get_connection_manager()
+                if not manager or not manager.connections:
+                    return JSONResponse({"error": "No database connections available"})
+                
+                schemas = {}
+                for db_name, conn_info in manager.connections.items():
+                    try:
+                        # Get basic schema info without executing complex queries
+                        schemas[db_name] = {
+                            "database_type": conn_info.get("database_type", "unknown"),
+                            "host": conn_info.get("host", "unknown"),
+                            "status": "connected" if manager.get_connection(db_name) else "disconnected"
+                        }
+                    except Exception as db_error:
+                        schemas[db_name] = {"error": str(db_error)}
+                
+                return JSONResponse({"databases": schemas})
+            except Exception as e:
+                return JSONResponse({"error": f"Failed to get database info: {e}"})
+        
+        app.routes.append(Route("/databases", endpoint=schema_viewer, methods=["GET"]))
+        print("[DEBUG] Added database schema viewer at /databases", file=sys.stderr)
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to add database schema viewer: {e}", file=sys.stderr)
+    
+    # Add simple API info endpoint
+    async def api_info(request):
+        """API information endpoint."""
+        from starlette.responses import JSONResponse
+        return JSONResponse({
+            "name": "Ultimate MCP Server",
+            "version": "1.0.0",
+            "endpoints": {
+                "/health": "Health check",
+                "/sse": "SSE connection endpoint",
+                "/messages/": "MCP message endpoint",
+                "/databases": "Database schema viewer",
+                "/ums": "UMS Explorer (if available)"
+            }
+        })
+    
+    app.routes.append(Route("/api/info", endpoint=api_info, methods=["GET"]))
+    
+    print(f"[DEBUG] SSE app routes after adding API routes: {len(app.routes) if hasattr(app, 'routes') else 'unknown'}", file=sys.stderr)
+    
+    # Create a quiet server to suppress Uvicorn's default logging
+    print("🌐 Starting Ultimate MCP Server HTTP endpoint...", file=sys.stderr)
+    print(f"🌐 Server will be available at http://{cfg.server.host}:{cfg.server.port}", file=sys.stderr)
+    
+    # Create uvicorn config
+    import uvicorn
+    config = uvicorn.Config(
+        app,
+        host=cfg.server.host,
+        port=cfg.server.port,
+        workers=cfg.server.workers if cfg.server.workers > 1 else 1,
+        log_config=LOGGING_CONFIG,
+        access_log=True,
+        reload=cfg.server.debug  # Use debug flag for reload functionality
+        # Note: FastMCP handles its own lifespan internally through the SSE app
+        # The lifespan context is managed by the FastMCP server instance
+    )
+    
+    # Create and run the quiet server
+    quiet_server = create_quiet_server(config)
+    quiet_server.run()
+
+
+def start_server(
+    host: str = "127.0.0.1",
+    port: int = 8013,
+    workers: int = 1,
+    log_level: str = "info",
+    transport_mode: str = "sse",
+    include_tools: Optional[List[str]] = None,
+    exclude_tools: Optional[List[str]] = None,
+    load_all_tools: bool = False,
+) -> None:
+    """
+    Start the Ultimate MCP Server with the specified configuration.
+    
+    This function serves as the main entry point for starting the Ultimate MCP Server
+    from the command line interface. It sets up the configuration, initializes the
+    Gateway, and starts the appropriate server mode (SSE or stdio).
+    
+    Args:
+        host: Network interface to bind to (default: "127.0.0.1")
+        port: TCP port to listen on (default: 8013)
+        workers: Number of parallel worker processes (default: 1)
+        log_level: Logging verbosity level (default: "info")
+        transport_mode: Communication protocol mode (default: "sse")
+        include_tools: List of specific tool names to include
+        exclude_tools: List of specific tool names to exclude
+        load_all_tools: Whether to load all tools or just the base set
+    """
+    # Update the global load_all_tools variable from the parameter
+    globals()['load_all_tools'] = load_all_tools
+    
+    # Load and update configuration
+    cfg = get_config()
+    cfg.server.host = host
+    cfg.server.port = port
+    cfg.server.workers = workers
+    cfg.server.log_level = log_level
+    # Note: transport_mode is handled separately in create_server, not stored in config
+    
+    # Update tool registration config
+    if include_tools or exclude_tools:
+        cfg.tool_registration.filter_enabled = True
+        
+    if include_tools:
+        cfg.tool_registration.included_tools = include_tools
+        
+    if exclude_tools:
+        cfg.tool_registration.excluded_tools = exclude_tools
+    
+    # Start the server by calling create_server (which contains the startup logic)
+    create_server()

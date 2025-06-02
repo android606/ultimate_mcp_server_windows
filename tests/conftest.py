@@ -8,7 +8,7 @@ from typing import Any, Dict, Generator, List, Optional
 import pytest
 from pytest import MonkeyPatch
 
-from ultimate_mcp_server.config import Config, get_config
+from ultimate_mcp_server.config import GatewayConfig, get_config
 from ultimate_mcp_server.constants import Provider
 from ultimate_mcp_server.core.providers.base import BaseProvider, ModelResponse
 from ultimate_mcp_server.core.server import Gateway
@@ -172,10 +172,10 @@ def mock_env_vars(monkeypatch: MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def test_config() -> Config:
+def test_config() -> GatewayConfig:
     """Get a test configuration."""
     # Create a test configuration
-    test_config = Config()
+    test_config = GatewayConfig()
     
     # Override settings for testing
     test_config.cache.enabled = True
