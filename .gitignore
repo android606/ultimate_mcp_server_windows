@@ -245,3 +245,7 @@ storage/unified_agent_memory.dbOLD
 # Cursor IDE
 .cursor/
 .cursor/*
+
+# Cursor specific files
+.cursorrules
+CURSOR_INTEGRATION_GUIDE.md
