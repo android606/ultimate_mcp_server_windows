@@ -402,7 +402,8 @@ def run(
     include_tools: List[str] = INCLUDE_TOOLS_OPTION,
     exclude_tools: List[str] = EXCLUDE_TOOLS_OPTION,
     load_all_tools: bool = LOAD_ALL_TOOLS_OPTION,
-    skip_env_check: bool = typer.Option(False, "--skip-env-check", help="Skip virtual environment validation", rich_help_panel="Environment Options"),
+    skip_env_check: bool = typer.Option(True, "--skip-env-check/--require-env-check", help="Skip virtual environment validation (default: True)", rich_help_panel="Environment Options"),
+    force: bool = typer.Option(False, "--force", help="Force server to start even with environment issues", rich_help_panel="Environment Options"),
 ):
     """
     [bold green]Run the Ultimate MCP Server[/bold green]
@@ -425,7 +426,7 @@ def run(
     """
     # Environment validation (unless skipped)
     if not skip_env_check:
-        is_valid, issues = validate_environment(strict=False)  # Don't require venv but warn
+        is_valid, errors, warnings = validate_environment(strict=False)  # Don't require venv but warn
         env_info = get_virtual_env_info()
         
         if not env_info['is_virtual_env']:
@@ -435,7 +436,7 @@ def run(
                 "to avoid package conflicts. Use [cyan]--skip-env-check[/cyan] to bypass this check.\n\n"
                 "[bold]To create and activate a virtual environment:[/bold]\n"
                 "  python -m venv .venv\n"
-                "  .venv\\Scripts\\activate.bat  # Windows\n"
+                r"  .venv\Scripts\activate.bat  # Windows\n"
                 "  source .venv/bin/activate   # Linux/Mac\n\n"
                 "[bold]Or run:[/bold] [cyan]umcp env --suggest[/cyan]",
                 title="[bold yellow]Environment Warning[/bold yellow]",
@@ -449,17 +450,31 @@ def run(
                 raise typer.Exit(1)
         
         # Check for missing packages (always validate this)
-        if not is_valid and issues:
+        if not is_valid and errors:
             console.print(Panel(
                 f"[red]Environment validation failed:[/red]\n\n" + 
-                "\n".join(f"• {issue}" for issue in issues) +
+                "\n".join(f"• {error}" for error in errors) +
                 "\n\n[bold]Run this command for detailed diagnostics:[/bold]\n"
                 "[cyan]umcp env --verbose --suggest[/cyan]",
                 title="[bold red]Environment Error[/bold red]",
                 border_style="red",
                 expand=False
             ))
-            raise typer.Exit(1)
+            # Only exit if --force is not provided
+            if not force:
+                raise typer.Exit(1)
+            else:
+                console.print("[yellow]WARNING: Starting server despite environment issues (--force flag used)[/yellow]")
+        
+        # Show warnings if any
+        if warnings:
+            warning_text = "\n".join(f"• {warning}" for warning in warnings)
+            console.print(Panel(
+                f"[yellow]Environment has warnings:[/yellow]\n\n{warning_text}",
+                title="[bold yellow]⚠️ Environment Warnings[/bold yellow]",
+                border_style="yellow",
+                expand=False
+            ))
 
     # Set debug mode if requested
     if debug:
@@ -937,21 +952,30 @@ def env(
     """
     if check_only:
         # Just validate and exit with appropriate code
-        is_valid, issues = validate_environment(strict=strict)
+        is_valid, errors, warnings = validate_environment(strict=strict)
         if not is_valid:
             console.print(f"[red]Environment validation failed:[/red]")
-            for issue in issues:
-                console.print(f"  • {issue}")
+            for error in errors:
+                console.print(f"  • {error}")
+            if warnings:
+                console.print(f"\n[yellow]Warnings:[/yellow]")
+                for warning in warnings:
+                    console.print(f"  • {warning}")
             raise typer.Exit(1)
         else:
-            console.print("✅ Environment validation passed")
+            if warnings:
+                console.print("⚠️ Environment validation passed with warnings:")
+                for warning in warnings:
+                    console.print(f"  • {warning}")
+            else:
+                console.print("✅ Environment validation passed")
             raise typer.Exit(0)
     
     # Show full environment status
     print_environment_status(verbose=verbose)
     
     # Check if we should show suggestions
-    is_valid, issues = validate_environment(strict=strict)
+    is_valid, errors, warnings = validate_environment(strict=strict)
     
     if suggest or not is_valid:
         suggest_environment_setup()
@@ -966,14 +990,30 @@ def main(
     version: bool = VERSION_OPTION,
 ):
     """
-    [bold green]Ultimate MCP Server CLI[/bold green]
-    
-    A unified command-line interface for managing multi-provider LLM operations,
-    document processing, search capabilities, and AI tool orchestration.
-    
-    [italic]Get started by running a command or use --help for detailed options.[/italic]
+    Callback function that is called before any command.
+    Handles global options like --version.
     """
-    pass
+    # Check Python version - Requires 3.13+
+    required_version = (3, 13)
+    current_version = sys.version_info[:2]
+    if current_version < required_version:
+        console.print(Panel(
+            f"[yellow bold]WARNING: Non-optimal Python Version[/yellow bold]\n\n"
+            f"Ultimate MCP Server is designed for Python {required_version[0]}.{required_version[1]}+, "
+            f"but you are running Python {current_version[0]}.{current_version[1]}.\n\n"
+            "[bold]The application may work but could have unexpected behaviors.[/bold]\n"
+            "For best results, consider:\n"
+            "1. Installing Python 3.13+ from https://www.python.org/downloads/\n"
+            "2. Creating a new virtual environment with the correct Python version\n\n"
+            "[yellow]For more information, run:[/yellow] umcp env --verbose --suggest",
+            title="[bold yellow]⚠️ Python Version Warning[/bold yellow]",
+            border_style="yellow",
+            expand=False
+        ))
+    
+    # No action needed for callback
+    if version:
+        pass  # Already handled by version_callback
 
 
 def cli():

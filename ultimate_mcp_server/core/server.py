@@ -492,61 +492,67 @@ class Gateway:
         - Configuration is incomplete or inconsistent
         - Initialization errors occur with specific providers
         
-        After initialization, the Gateway will have a populated providers dictionary
-        with available provider instances, and a comprehensive provider_status dictionary
-        with status information for all providers (including those that failed to initialize).
-        
-        This method is automatically called during server startup and is not intended
-        to be called directly by users of the Gateway class.
+        After successful initialization, the provider_status dictionary contains
+        ProviderStatus objects for each initialized provider, which can be used
+        for runtime decisions and status reporting.
         
         Raises:
-            No exceptions are propagated from this method. All provider initialization
-            errors are caught, logged, and reflected in the provider_status dictionary.
+            No exceptions are raised directly. Individual provider failures
+            are logged and tracked in the provider_status dictionary.
         """
         self.logger.info("Initializing LLM providers")
-
-        cfg = get_config()
-        providers_to_init = []
-
-        # Determine which providers to initialize based SOLELY on the loaded config
-        for provider_name in [p.value for p in Provider]:
-            # Skip providers that are in the exclusion list
-            if provider_name in self.provider_exclusions:
-                self.logger.debug(f"Skipping provider {provider_name} (excluded)")
+        
+        # Clear any existing provider status
+        self.provider_status = {}
+        
+        # Load the configuration object
+        config = get_config()
+        if not config:
+            self.logger.warning("No configuration available for provider initialization")
+            return
+        
+        # Get all available provider names from the configuration
+        all_provider_names = [
+            'openai', 'anthropic', 'deepseek', 'gemini', 'openrouter', 'ollama', 
+            'grok', 'mistral', 'aws', 'azure', 'together'
+        ]
+        
+        # Determine which providers to initialize
+        providers_to_initialize = []
+        for provider_name in all_provider_names:
+            provider_config = getattr(config.providers, provider_name, None)
+            
+            if provider_config is None:
                 continue
                 
-            provider_config = getattr(cfg.providers, provider_name, None)
-            # Special exception for Ollama: it doesn't require an API key since it runs locally
-            if provider_name == Provider.OLLAMA.value and provider_config and provider_config.enabled:
-                self.logger.debug(f"Found configured and enabled provider: {provider_name} (API key not required)")
-                providers_to_init.append(provider_name)
-            # Check if the provider is enabled AND has an API key configured in the loaded settings
-            elif provider_config and provider_config.enabled and provider_config.api_key:
-                self.logger.debug(f"Found configured and enabled provider: {provider_name}")
-                providers_to_init.append(provider_name)
-            elif provider_config and provider_config.enabled:
+            provider_enabled = getattr(provider_config, 'enabled', False)
+            provider_api_key = getattr(provider_config, 'api_key', None)
+            
+            if provider_enabled and provider_api_key:
+                providers_to_initialize.append(provider_name)
+            elif provider_enabled and not provider_api_key:
                 self.logger.warning(f"Provider {provider_name} is enabled but missing API key in config. Skipping.")
-            # else: # Provider not found in config or not enabled
-            #     self.logger.debug(f"Provider {provider_name} not configured or not enabled.")
-
+        
+        if not providers_to_initialize:
+            self.logger.warning("No providers available for initialization")
+            return
+        
         # Initialize providers in parallel
-        init_tasks = [
-            asyncio.create_task(
-                self._initialize_provider(provider_name),
-                name=f"init-{provider_name}"
-            )
-            for provider_name in providers_to_init
-        ]
-
-        if init_tasks:
-            await asyncio.gather(*init_tasks)
-
-        # Log initialization summary
-        available_providers = [
-            name for name, status in self.provider_status.items()
-            if status.available
-        ]
-        self.logger.info(f"Providers initialized: {len(available_providers)}/{len(providers_to_init)} available")
+        tasks = [self._initialize_provider(provider) for provider in providers_to_initialize]
+        
+        try:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Count successful initializations
+            success_count = sum(1 for result in results if not isinstance(result, Exception))
+            total_count = len(providers_to_initialize)
+            
+            self.logger.info(f"Providers initialized: {success_count}/{total_count} available")
+            
+        except Exception as e:
+            self.logger.error(f"Error during provider initialization: {e}")
+            
+        return self.provider_status
 
     async def _initialize_provider(self, provider_name: str):
         """
@@ -2018,37 +2024,31 @@ first and be prepared to adapt to available providers.
             
         # ... rest of MCP initialization ...
 
-def create_server() -> FastAPI:
+def create_server(quiet: bool = False) -> FastAPI:
     """
-    Create and configure the FastAPI server instance for the Ultimate MCP Server.
+    Create and initialize the Ultimate MCP Server FastAPI application.
     
-    This function serves as the main entry point for setting up the HTTP server
-    component of the Ultimate MCP Server using FastAPI. It handles:
+    This function performs the complete server initialization process, including:
+    1. Setting up a global Gateway instance for provider and tool management
+    2. Initializing providers and tools based on configuration
+    3. Configuring the FastAPI application with routes and middleware
+    4. Setting up asynchronous lifespan management for clean startup/shutdown
     
-    1. Singleton management - ensuring only one server instance exists
-    2. Gateway initialization - creating the Gateway if not already instantiated
-    3. CORS configuration - setting up Cross-Origin Resource Sharing middleware
-    4. Health check endpoints - adding utility endpoints for monitoring
-    
-    The function follows a singleton pattern, returning an existing server instance
-    if one has already been created, or creating a new one if needed. This ensures
-    consistent server state across multiple calls.
-    
-    The server instance created by this function can be used with ASGI servers like
-    Uvicorn to serve HTTP requests, or with the FastMCP transport modes for more
-    specialized communication patterns.
+    The server is configured according to environment variables and the loaded
+    configuration. Provider initialization happens asynchronously during server 
+    startup to ensure proper handling of async operations.
     
     Returns:
-        FastAPI: Configured FastAPI application instance ready for deployment.
-        The returned application has CORS middleware and health endpoints configured.
+        A configured FastAPI application ready to be run by an ASGI server like Uvicorn
         
-    Example:
-        ```python
-        # Create and run the server with Uvicorn
-        app = create_server()
-        import uvicorn
-        uvicorn.run(app, host="0.0.0.0", port=8000)
-        ```
+    Note:
+        This function does not start the server - it only creates and configures it.
+        To actually run the server, the returned FastAPI app should be passed to an
+        ASGI server like Uvicorn.
+    
+    Args:
+        quiet: If True, suppresses some logging and doesn't run the server directly.
+              Used for non-interactive server starting. Default is False.
     """
     global _server_app
     
@@ -2066,6 +2066,9 @@ def create_server() -> FastAPI:
             register_tools=True,
             load_all_tools=load_all_tools  # Pass the flag to Gateway
         )
+        
+        # Set the global instance reference immediately after creation
+        ultimate_mcp_server.core._gateway_instance = _gateway_instance
     
     # NOTE: Application initialization now happens in _session_lifespan to prevent race conditions
     # This ensures initialization occurs in the proper async context before MCP requests are processed
@@ -2102,6 +2105,76 @@ def create_server() -> FastAPI:
 
     import uvicorn
     
+    # Get the SSE app from FastMCP before trying to use it
+    app = _gateway_instance.mcp.sse_app()
+    
+    # Initialize providers immediately during startup so we can display their status
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_gateway_instance._initialize_providers())
+    except Exception as e:
+        print(f"Warning: Provider initialization failed: {e}", file=sys.stderr)
+    finally:
+        loop.close()
+    
+    # Add provider status display to the startup output
+    print("\n--- AI Service Providers ---", file=sys.stderr)
+    gateway = ultimate_mcp_server.core._gateway_instance
+    if gateway and hasattr(gateway, 'provider_status') and gateway.provider_status:
+        # Get the provider status dictionary
+        provider_status = gateway.provider_status
+        
+        # Count available providers
+        available_count = sum(1 for status in provider_status.values() if status.available)
+        configured_count = sum(1 for status in provider_status.values() if status.api_key_configured)
+        enabled_count = sum(1 for status in provider_status.values() if status.enabled)
+        
+        print(f"Status: {available_count} available / {configured_count} configured / {enabled_count} enabled", file=sys.stderr)
+        
+        # Display status for each provider
+        for provider_name, status in provider_status.items():
+            status_symbol = "✅" if status.available else "❌"
+            status_text = "AVAILABLE" if status.available else "UNAVAILABLE"
+            api_key_text = "API key configured" if status.api_key_configured else "No API key"
+            model_count = len(status.models) if hasattr(status, 'models') and status.models else 0
+            
+            # Format error message if there is one
+            error_text = f" - Error: {status.error}" if not status.available and status.error else ""
+            
+            # Display provider status
+            print(f"  {status_symbol} {provider_name.upper()}: {status_text} ({api_key_text}){error_text}", file=sys.stderr)
+            
+            # If provider is available, display its models
+            if status.available and model_count > 0:
+                print(f"     Models ({model_count}):", file=sys.stderr)
+                # Display up to 5 models to avoid overwhelming the output
+                for i, model in enumerate(status.models[:5]):
+                    model_id = model.get('id', 'unknown')
+                    model_name = model.get('name', model_id)
+                    print(f"       - {model_name} ({model_id})", file=sys.stderr)
+                
+                # If there are more models than we displayed, show a message
+                if model_count > 5:
+                    print(f"       - ... and {model_count - 5} more", file=sys.stderr)
+    else:
+        print("  No provider information available", file=sys.stderr)
+    print("---------------------------\n", file=sys.stderr)
+
+    # Run server with UVicorn
+    if not quiet:
+        # In non-quiet mode, we run the server in the current process
+        print(f"🌐 Starting Ultimate MCP Server HTTP endpoint...", file=sys.stderr)
+        print(f"🌐 Server will be available at http://{cfg.server.host}:{cfg.server.port}", file=sys.stderr)
+        uvicorn.run(
+            app,
+            host=cfg.server.host,
+            port=cfg.server.port,
+            log_level=cfg.server.log_level.lower(),
+            access_log=False
+        )
+
     # Set up a function to run the tool context estimator after the server starts
     def run_tool_context_estimator():
         # Wait a bit for the server to start up
@@ -2186,10 +2259,10 @@ def create_server() -> FastAPI:
     # Register the cleanup function with the graceful shutdown system
     register_shutdown_handler(cleanup_resources)
     
-    # Get the SSE app from FastMCP
-    app = _gateway_instance.mcp.sse_app()
-    print(f"[DEBUG] SSE app type: {type(app)}", file=sys.stderr)
-    print(f"[DEBUG] SSE app routes before adding custom routes: {len(app.routes) if hasattr(app, 'routes') else 'unknown'}", file=sys.stderr)
+    # The app is already defined above, so we don't need to get it again
+    # app = _gateway_instance.mcp.sse_app()
+    # print(f"[DEBUG] SSE app type: {type(app)}", file=sys.stderr)
+    # print(f"[DEBUG] SSE app routes before adding custom routes: {len(app.routes) if hasattr(app, 'routes') else 'unknown'}", file=sys.stderr)
     
     # Add static file serving for UMS Explorer and database access to SSE app
     from pathlib import Path

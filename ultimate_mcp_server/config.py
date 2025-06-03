@@ -18,9 +18,36 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 
 # from pydantic_settings import BaseSettings, SettingsConfigDict # Removed BaseSettings
 
+# Custom class to support multiple .env files
+class MultipleRepositoryEnv:
+    """Class to handle multiple .env files"""
+    
+    def __init__(self, *file_paths):
+        self.file_paths = file_paths
+        self.repositories = []
+        
+        for path in file_paths:
+            if os.path.isfile(path):
+                repo = RepositoryEnv(path)
+                self.repositories.append(repo)
+    
+    def __contains__(self, key):
+        """Check if a key exists in any of the repositories"""
+        for repo in self.repositories:
+            if key in repo:
+                return True
+        return False
+    
+    def __getitem__(self, key):
+        """Get a value from the first repository that contains the key"""
+        for repo in self.repositories:
+            if key in repo:
+                return repo[key]
+        raise KeyError(key)
+
 # --- Decouple Config Instance ---
-# This will read from .env file and environment variables
-decouple_config = DecoupleConfig(RepositoryEnv('.env'))
+# This will read from .env.secrets and .env files (in that order of precedence) and environment variables
+decouple_config = DecoupleConfig(MultipleRepositoryEnv('.env.secrets', '.env'))
 # --------------------------------
 
 # Default configuration file paths (Adapt as needed)
@@ -603,11 +630,7 @@ def load_config(
         if provider_conf:
             api_key_from_env = decouple_config.get(env_var, default=None)
             if api_key_from_env:
-                if provider_conf.api_key and provider_conf.api_key != api_key_from_env:
-                    config_logger.debug(f"Overriding API key for {provider_name} from env/'.env'.")
-                elif not provider_conf.api_key:
-                    config_logger.debug(f"Setting API key for {provider_name} from env/'.env'.")
-                provider_conf.api_key = api_key_from_env
+                setattr(provider_conf, 'api_key', api_key_from_env)
 
     try:
         # Use the default defined in GatewayConfig as the fallback if env/file doesn't specify
