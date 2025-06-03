@@ -26,7 +26,6 @@ if exist ".venv\Scripts\activate.bat" (
     if %errorlevel% neq 0 (
         echo [ERROR] Failed to activate virtual environment
         echo Please check your virtual environment setup.
-        pause
         exit /b 1
     )
     
@@ -40,7 +39,6 @@ if exist ".venv\Scripts\activate.bat" (
     echo   .venv\Scripts\activate.bat
     echo   pip install -e .
     echo.
-    pause
     exit /b 1
 )
 
@@ -55,7 +53,6 @@ if %errorlevel% neq 0 (
     echo Run this command for detailed diagnostics:
     echo   python -m ultimate_mcp_server env --verbose --suggest
     echo.
-    pause
     exit /b 1
 )
 
@@ -93,12 +90,9 @@ REM Check exit code
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] Server exited with error code %errorlevel%
-    pause
+    exit /b %errorlevel%
 ) else (
     echo.
     echo [OK] Server exited normally
-)
-
-echo.
-echo Press any key to exit...
-pause >nul 
+    exit /b 0
+) 
