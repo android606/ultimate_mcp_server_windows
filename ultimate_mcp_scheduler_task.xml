@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!-- 
+  Windows Task Scheduler XML Template for Ultimate MCP Server
+  
+  INSTRUCTIONS:
+  1. Replace all placeholders (marked with {{PLACEHOLDER}}) with your actual values
+  2. Save this file with .xml extension
+  3. Import into Task Scheduler using: Task Scheduler > Action > Import Task
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2024-03-25T12:00:00</Date>
+    <!-- Replace with your username or organization name -->
+    <Author>{{YOUR_USERNAME}}</Author>
+    <Description>Starts the Ultimate MCP Server in SSE mode</Description>
+    <URI>\Ultimate MCP Server</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <!-- Replace with your Windows username -->
+      <UserId>{{YOUR_WINDOWS_USERNAME}}</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <!-- Replace with your Windows username -->
+      <UserId>{{YOUR_WINDOWS_USERNAME}}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+    <WakeToRun>false</WakeToRun>
+    <!-- PT0S means no time limit -->
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions>
+    <Exec>
+      <!-- Replace with the full path to your startup batch file -->
+      <Command>{{PATH_TO_YOUR_START_SCRIPT}}</Command>
+      <!-- Replace with the full path to your Ultimate MCP Server directory -->
+      <WorkingDirectory>{{PATH_TO_UMCP_SERVER_DIRECTORY}}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task> 
+<!-- 
+  EXAMPLE:
+  
+  <Command>C:\path\to\ultimate_mcp_server\start_mcp_server.bat</Command>
+  <WorkingDirectory>C:\path\to\ultimate_mcp_server</WorkingDirectory>
+  
+  You'll need to create a batch file (start_mcp_server.bat) with commands to:
+  1. Activate your virtual environment
+  2. Start the Ultimate MCP Server
+  
+  Example start_mcp_server.bat content:
+  @echo off
+  cd /d %~dp0
+  call .venv\Scripts\activate.bat
+  python -m ultimate_mcp_server run --port 8013 --host 127.0.0.1
+--> 

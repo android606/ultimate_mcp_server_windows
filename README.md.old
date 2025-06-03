@@ -1,0 +1,376 @@
+# 🧠 Ultimate MCP Server
+
+<div align="center">
+
+[![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP Protocol](https://img.shields.io/badge/Protocol-MCP-purple.svg)](https://github.com/modelcontextprotocol)
+
+### A comprehensive Model Context Protocol (MCP) server providing advanced AI agents with dozens of powerful capabilities for cognitive augmentation, tool use, and intelligent orchestration
+
+<img src="https://raw.githubusercontent.com/Dicklesworthstone/ultimate_mcp_server/refs/heads/main/ultimate_mcp_banner.webp" alt="Illustration" width="600"/>
+
+**[Features](#-key-features) • [Usage](#-usage-examples) • [Architecture](#-architecture) • [Installation](INSTALLATION.md)**
+
+</div>
+
+---
+
+## 🤖 What is Ultimate MCP Server?
+
+**Ultimate MCP Server** is a comprehensive MCP-native system that serves as a complete AI agent operating system. It exposes dozens of powerful capabilities through the Model Context Protocol, enabling advanced AI agents to access a rich ecosystem of tools, cognitive systems, and specialized services.
+
+While it includes intelligent task delegation from sophisticated models (e.g., Claude 3.7 Sonnet) to cost-effective ones (e.g., Gemini Flash 2.0 Lite), this is just one facet of its extensive functionality. The server provides unified access to multiple LLM providers while optimizing for **cost**, **performance**, and **quality**.
+
+<div align="center">
+<img src="https://raw.githubusercontent.com/Dicklesworthstone/ultimate_mcp_server/refs/heads/main/ultimate_mcp_logo.webp" alt="Illustration" width="600"/>
+</div>
+
+---
+
+## 📦 Installation & Setup
+
+For detailed installation and setup instructions, please refer to the [INSTALLATION.md](INSTALLATION.md) guide. This includes:
+
+- Prerequisites
+- Quick installation options
+- Configuration
+- Running the server
+- Troubleshooting
+
+---
+
+## 💡 Why Use Ultimate MCP Server?
+
+### 🧰 Comprehensive AI Agent Toolkit
+A unified hub enabling advanced AI agents to access an extensive ecosystem of tools:
+- 🌐 Perform complex web automation tasks (**Playwright** integration)
+- 📊 Manipulate and analyze **Excel** spreadsheets with deep integration
+- 🧠 Access rich **cognitive memory** systems for persistent agent state
+- 💾 Interact securely with the **filesystem**
+- 🗄️ Interact with **databases** through SQL operations
+- 🖼️ Process documents with **OCR** capabilities
+- 🔍 Perform sophisticated **vector search** and **RAG** operations
+- 🏷️ Utilize specialized **text processing** and **classification**
+- ⌨️ Leverage command-line tools like **ripgrep**, **awk**, **sed**, **jq**
+- 🔌 Dynamically integrate external **REST APIs**
+
+### 💵 Cost Optimization
+API costs for advanced models can be substantial. Ultimate MCP Server helps reduce costs by:
+- 📉 Routing appropriate tasks to cheaper models (e.g., $0.01/1K tokens vs $0.15/1K tokens)
+- ⚡ Implementing **advanced caching** to avoid redundant API calls
+- 💰 Tracking and **optimizing costs** across providers
+- 🧭 Enabling **cost-aware task routing** decisions
+- 🛠️ Handling routine processing with specialized non-LLM tools
+
+### 🌐 Provider Abstraction
+Avoid provider lock-in with a unified interface:
+- 🔗 Standard API for **OpenAI**, **Anthropic (Claude)**, **Google (Gemini)**, **xAI (Grok)**, **DeepSeek**, and **OpenRouter**
+- 🔄 Ability to **swap providers** without changing application code
+- 🛡️ Protection against provider-specific outages and limitations through fallback mechanisms
+
+---
+
+## 🚀 Key Features
+
+### 🔌 MCP Protocol Integration
+- Native MCP Server built on the Model Context Protocol for seamless AI agent integration
+- All functionality exposed through standardized MCP tools with clear schemas
+- Supports dynamic listing and capability discovery for agents
+
+### 🤖 Intelligent Task Delegation
+- Analyzes tasks and routes to appropriate models or specialized tools
+- Chooses provider/model based on task requirements, cost, quality, or speed preferences
+- Monitors delegation patterns, costs, and outcomes via Analytics
+
+### 🧠 Cognitive & Agent Memory System
+- Working, episodic, semantic, procedural memory levels
+- Store/retrieve memories with metadata, relationships, importance tracking
+- Record agent actions, reasoning chains, artifacts, dependencies
+
+### 🌐 Browser Automation with Playwright
+- Navigate, click, type, scrape data, screenshots, PDFs, file up/download, JS execution
+- Automate searches across engines, extract structured data, monitor sites
+- Combine findings from multiple web sources into reports
+
+### 📊 Excel Spreadsheet Automation
+- Create, modify, format Excel files via natural language or structured instructions
+- Learn from examples, adapt templates, apply formatting patterns
+- Generate VBA code from instructions for complex automation
+
+### 📚 Retrieval-Augmented Generation (RAG)
+- Augment prompts with relevant retrieved documents/chunks
+- Reduce hallucinations by grounding responses in provided context
+- Seamlessly combine retrieval (vector/keyword search) with generation
+
+### 🗄️ SQL Database Interactions
+- Run SQL queries against various DB types (SQLite, PostgreSQL, etc.)
+- Analyze schemas, suggest optimizations (using LLM)
+- Generate SQL from natural language descriptions
+
+### 📄 Document Processing
+- Smart chunking (token-based, semantic boundary detection)
+- Extract structured data (JSON, tables, key-value) from unstructured text
+- Convert formats (HTML to Markdown, documents to structured data)
+- Apply OCR to images and PDFs with optional LLM enhancement
+
+### 🛠️ Local Text Processing
+- Integrate with command-line tools like ripgrep, awk, sed, jq
+- Process large files without API overhead
+- Perform complex text manipulations efficiently
+
+### 📊 Analytics and Reporting
+- Track API costs, token usage, and performance metrics
+- Generate cost reports and optimization suggestions
+- Monitor cache effectiveness and performance
+
+---
+
+## 💻 Command Line Interface
+
+The Ultimate MCP Server provides a powerful CLI through the `umcp` command:
+
+```bash
+# Start the server with all tools
+umcp run
+
+# Start with specific tools
+umcp run --include-tools completion chunk_document read_file
+
+# List available tools and their status
+umcp tools
+
+# List configured providers
+umcp providers
+
+# Test provider connectivity
+umcp test openai --prompt "Hello world"
+
+# Get help on commands
+umcp --help
+```
+
+---
+
+## 🧪 Usage Examples
+
+### Basic Completion
+
+```python
+from mcp.client.sse import sse_client
+from mcp import ClientSession
+
+async def generate_text():
+    async with sse_client("http://localhost:8013/sse") as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            result = await session.call_tool(
+                "generate_completion",
+                {
+                    "prompt": "Write a short poem about AI.",
+                    "provider": "openai",
+                    "model": "gpt-4"
+                }
+            )
+            
+            print(result["text"])
+```
+
+### Browser Automation for Research
+
+```python
+async def web_research():
+    async with sse_client("http://localhost:8013/sse") as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+            
+            # Initialize browser
+            browser = await session.call_tool("browser_init", {"headless": True})
+            
+            # Navigate to a website
+            await session.call_tool(
+                "browser_navigate",
+                {"url": "https://www.wikipedia.org", "tab_id": browser["tab_id"]}
+            )
+            
+            # Take screenshot
+            screenshot = await session.call_tool(
+                "browser_screenshot",
+                {"tab_id": browser["tab_id"]}
+            )
+            
+            # Extract page content
+            content = await session.call_tool(
+                "browser_extract_text",
+                {"tab_id": browser["tab_id"]}
+            )
+            
+            # Summarize findings
+            summary = await session.call_tool(
+                "generate_completion",
+                {
+                    "prompt": f"Summarize this webpage content:\n\n{content['text']}",
+                    "provider": "anthropic",
+                    "model": "claude-3-haiku-20240307"
+                }
+            )
+            
+            # Close browser
+            await session.call_tool(
+                "browser_close",
+                {"tab_id": browser["tab_id"]}
+            )
+            
+            return summary["text"]
+```
+
+### Cost-Optimized Workflow
+
+```python
+async def cost_optimized_workflow():
+    async with sse_client("http://localhost:8013/sse") as (read, write):
+        async with ClientSession(read, write) as session:
+            # Use cheaper model for data extraction
+            extract_result = await session.call_tool(
+                "extract_json_from_text",
+                {
+                    "text": "Customer: John Smith, Order #12345, Items: 2x Widget ($10), 1x Gadget ($25)",
+                    "provider": "gemini",  # Using a cheaper model for structured extraction
+                    "model": "gemini-1.5-flash"
+                }
+            )
+            
+            # Use more sophisticated model for complex analysis
+            analysis_result = await session.call_tool(
+                "generate_completion",
+                {
+                    "prompt": f"Analyze this order data and suggest related products:\n{extract_result['json']}",
+                    "provider": "anthropic",  # Using a more sophisticated model for complex reasoning
+                    "model": "claude-3-haiku-20240307"
+                }
+            )
+            
+            return analysis_result["text"]
+```
+
+### Excel Automation
+
+```python
+async def excel_automation():
+    async with sse_client("http://localhost:8013/sse") as (read, write):
+        async with ClientSession(read, write) as session:
+            # Create new Excel file with formatted data
+            excel_result = await session.call_tool(
+                "excel_create_and_modify",
+                {
+                    "instructions": """
+                    Create a new Excel file with the following:
+                    - Sheet named 'Sales Data'
+                    - Headers: Date, Product, Units, Price, Revenue
+                    - Add 5 sample rows of realistic sales data
+                    - Format the Revenue column as currency
+                    - Add a SUM formula for the Revenue column
+                    - Create a simple bar chart of Units by Product
+                    """
+                }
+            )
+            
+            return excel_result["file_path"]
+```
+
+---
+
+## 🧱 Architecture
+
+The Ultimate MCP Server transforms AI agents like Claude 3.7 Sonnet into autonomous systems capable of sophisticated operations:
+
+```
+                        interacts with
+┌─────────────┐ ────────────────────────► ┌───────────────────┐         ┌──────────────┐
+│ Claude 3.7  │                           │   Ultimate MCP     │ ───────►│ LLM Providers│
+│   (Agent)   │ ◄──────────────────────── │     Server        │ ◄───────│ External     │
+└─────────────┘      returns results      └───────────────────┘         │ Systems      │
+                                                │                        └──────────────┘
+                                                ▼
+                      ┌─────────────────────────────────────────────┐
+                      │ Cognitive Memory Systems                    │
+                      │ Web & Data: Browser, DB, RAG, Vector Search │
+                      │ Documents: Excel, OCR, PDF, Filesystem      │
+                      │ Analysis: Entity Graphs, Classification     │
+                      │ Integration: APIs, CLI, Audio, Multimedia   │
+                      └─────────────────────────────────────────────┘
+```
+
+The server is built entirely on the [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol), making it specifically designed to work with AI agents like Claude. All functionality is exposed through standardized MCP tools that can be directly called by these agents.
+
+---
+
+## 🌍 Real-World Use Cases
+
+### Enterprise Knowledge Management
+- Extract information from internal documents, reports, emails
+- Maintain persistent memory of organizational knowledge
+- Answer questions across disparate data sources
+
+### Software Development
+- Automate testing and quality assurance
+- Generate documentation from codebases
+- Assist with code reviews and refactoring
+
+### Data Analysis and Reporting
+- Extract insights from structured and unstructured data
+- Create visualizations and Excel reports
+- Generate natural language summaries of findings
+
+### Research and Analysis
+- Automate literature search and review
+- Extract structured data from studies
+- Maintain persistent research logs
+
+### Document Intelligence
+- Create end-to-end document processing pipelines
+- Extract key information from contracts, invoices, reports
+- Classify documents and identify key entities/relationships
+
+---
+
+## 🔐 Security Considerations
+
+When deploying the Ultimate MCP Server, consider these security aspects:
+
+1. **API Key Management:** Never hardcode API keys in source code or commit them to version control. Use environment variables or secrets management tools.
+
+2. **Network Exposure:** Bind to `127.0.0.1` by default to limit local connections. Use a reverse proxy for public access with proper authentication.
+
+3. **Input Validation:** Configure `ALLOWED_DIRS` strictly for filesystem tools. Use parameterized queries for SQL operations. Be cautious with tools that execute JavaScript or CLI commands.
+
+4. **Dependency Security:** Regularly update dependencies to patch known vulnerabilities.
+
+5. **Tool Security:** Review the security implications of each tool enabled. Disable tools that cannot be secured adequately for your environment.
+
+For more detailed security information, see the source code documentation.
+
+---
+
+## 📃 License
+
+This project is licensed under the MIT License - see the `LICENSE` file for details.
+
+---
+
+## 🙏 Acknowledgements
+
+Special thanks to [Dicklesworthstone](https://github.com/Dicklesworthstone) for creating the original Ultimate MCP Server! This Windows-optimized fork builds upon their incredible work. Please visit and star the original repository to show your appreciation.
+
+This project also builds upon many fantastic open-source projects and services:
+- [Model Context Protocol (MCP)](https://github.com/modelcontextprotocol)
+- [FastAPI](https://fastapi.tiangolo.com/)
+- [Pydantic](https://docs.pydantic.dev/)
+- [Playwright](https://playwright.dev/)
+- All the LLM providers (OpenAI, Anthropic, Google, DeepSeek, xAI, etc.)
+- The broader Python and open-source communities
+
+---
+
+> **For detailed installation instructions and setup guidance, please refer to [INSTALLATION.md](INSTALLATION.md)**
