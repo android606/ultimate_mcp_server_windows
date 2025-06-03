@@ -33,6 +33,40 @@ in_virtualenv = (
 # Project name to check for
 PROJECT_NAME = "ultimate_mcp_server"
 
+# Utility function to create a virtual environment if needed
+def create_virtualenv_if_needed(target_dir='.venv'):
+    """Create a virtual environment if one doesn't exist."""
+    if in_virtualenv:
+        return sys.executable
+    
+    # Try to import our custom EnvBuilder
+    try:
+        from tests.custom_venv import create_ultimate_mcp_venv
+        
+        print(f"Creating virtual environment in {target_dir}...")
+        venv_path = create_ultimate_mcp_venv(
+            target_dir,
+            system_site_packages=False,
+            clear=False,
+            with_pip=True
+        )
+        
+        # Return the path to the Python executable
+        if platform.system() == 'Windows':
+            return str(venv_path / 'Scripts' / 'python.exe')
+        else:
+            return str(venv_path / 'bin' / 'python')
+    except ImportError:
+        # Fall back to standard venv
+        import venv
+        venv.create(target_dir, with_pip=True)
+        
+        # Return the path to the Python executable
+        if platform.system() == 'Windows':
+            return os.path.join(target_dir, 'Scripts', 'python.exe')
+        else:
+            return os.path.join(target_dir, 'bin', 'python')
+
 # Check if the project is installed in development mode
 project_installed = False
 try:
@@ -72,9 +106,20 @@ for package in REQUIRED_PACKAGES:
         # Try direct import first
         __import__(package_name)
     except ImportError:
-        # If that fails, check with importlib
-        if importlib.util.find_spec(package_name) is None:
-            missing_packages.append(package)
+        try:
+            # Some packages have different import names than their pip package names
+            if package == "pytest-asyncio":
+                __import__("pytest_asyncio")
+            elif package == "pytest-cov":
+                __import__("pytest_cov")
+            elif package == "pytest-mock":
+                __import__("pytest_mock")
+            else:
+                # If that fails, check with importlib
+                if importlib.util.find_spec(package_name) is None:
+                    missing_packages.append(package)
+        except ImportError:
+        missing_packages.append(package)
 
 if missing_packages:
     ENV_PROBLEMS.append(f"Missing required packages: {', '.join(missing_packages)}")

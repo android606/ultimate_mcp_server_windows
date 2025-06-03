@@ -132,7 +132,7 @@ def get_ultimate_mcp_requirements() -> List[str]:
     ]
 
 
-def validate_environment(strict: bool = False) -> Tuple[bool, List[str]]:
+def validate_environment(strict: bool = False) -> Tuple[bool, List[str], List[str]]:
     """
     Validate the current environment for running Ultimate MCP Server.
     
@@ -140,14 +140,15 @@ def validate_environment(strict: bool = False) -> Tuple[bool, List[str]]:
         strict: If True, require virtual environment activation
     
     Returns:
-        Tuple of (is_valid, list_of_issues)
+        Tuple of (is_valid, list_of_errors, list_of_warnings)
     """
-    issues = []
+    errors = []
+    warnings = []
     
     # Check if in virtual environment
     env_info = get_virtual_env_info()
     if strict and not env_info['is_virtual_env']:
-        issues.append("Not running in a virtual environment")
+        errors.append("Not running in a virtual environment")
     
     # Check required packages
     required_packages = get_ultimate_mcp_requirements()
@@ -155,13 +156,16 @@ def validate_environment(strict: bool = False) -> Tuple[bool, List[str]]:
     
     missing_packages = [pkg for pkg, available in package_status.items() if not available]
     if missing_packages:
-        issues.append(f"Missing required packages: {', '.join(missing_packages)}")
+        errors.append(f"Missing required packages: {', '.join(missing_packages)}")
     
-    # Check Python version
-    if sys.version_info < (3, 8):
-        issues.append(f"Python 3.8+ required, but running {sys.version_info.major}.{sys.version_info.minor}")
+    # Check Python version - Requires Python 3.13+
+    # Now we treat this as a warning instead of an error
+    required_version = (3, 13)
+    current_version = sys.version_info[:2]
+    if current_version < required_version:
+        warnings.append(f"Python {required_version[0]}.{required_version[1]}+ recommended, but running {current_version[0]}.{current_version[1]} (may cause compatibility issues)")
     
-    return len(issues) == 0, issues
+    return len(errors) == 0, errors, warnings
 
 
 def print_environment_status(verbose: bool = False) -> None:
@@ -172,7 +176,7 @@ def print_environment_status(verbose: bool = False) -> None:
         verbose: If True, print detailed information
     """
     env_info = get_virtual_env_info()
-    is_valid, issues = validate_environment()
+    is_valid, errors, warnings = validate_environment()
     
     print("🔍 Ultimate MCP Server Environment Status")
     print("=" * 50)
@@ -183,7 +187,7 @@ def print_environment_status(verbose: bool = False) -> None:
         if verbose and env_info['virtual_env_path']:
             print(f"   Path: {env_info['virtual_env_path']}")
     else:
-        print("❌ Virtual Environment: Not Active")
+        print("❓ Virtual Environment: Not Active")
         
         # Try to find project venv
         project_venv = find_project_virtual_env()
@@ -196,7 +200,13 @@ def print_environment_status(verbose: bool = False) -> None:
                 print(f"   source {project_venv / 'bin' / 'activate'}")
     
     # Python version
-    print(f"🐍 Python Version: {sys.version.split()[0]}")
+    required_version = (3, 13)
+    current_version = sys.version_info[:2]
+    if current_version >= required_version:
+        print(f"✅ Python Version: {sys.version.split()[0]}")
+    else:
+        print(f"⚠️ Python Version: {sys.version.split()[0]} (Recommended: {required_version[0]}.{required_version[1]}+)")
+    
     if verbose:
         print(f"   Executable: {sys.executable}")
     
@@ -216,12 +226,20 @@ def print_environment_status(verbose: bool = False) -> None:
     
     # Overall status
     print("\n" + "=" * 50)
-    if is_valid:
+    if is_valid and not warnings:
         print("✅ Environment Status: Ready for Ultimate MCP Server")
+    elif is_valid:
+        print("⚠️ Environment Status: Ready with warnings")
+        for warning in warnings:
+            print(f"   • {warning}")
     else:
         print("❌ Environment Status: Issues detected")
-        for issue in issues:
-            print(f"   • {issue}")
+        for error in errors:
+            print(f"   • {error}")
+        if warnings:
+            print("\n   Warnings:")
+            for warning in warnings:
+                print(f"   • {warning}")
 
 
 def suggest_environment_setup() -> None:
@@ -243,18 +261,32 @@ def suggest_environment_setup() -> None:
         else:
             print("1. Create and activate a virtual environment:")
             print("   python -m venv .venv")
-            if os.name == 'nt':  # Windows
-                print("   .venv\\Scripts\\activate.bat")
-            else:  # Unix/Linux/Mac
-                print("   source .venv/bin/activate")
+            print(r"   .venv\Scripts\activate.bat   # Windows")
+            print("   source .venv/bin/activate   # Linux/Mac")
     
-    print("\n2. Install Ultimate MCP Server in development mode:")
+    # Check Python version
+    required_version = (3, 13)
+    current_version = sys.version_info[:2]
+    if current_version < required_version:
+        print("\n2. Python Version Recommendation:")
+        print(f"   Current Python: {current_version[0]}.{current_version[1]}")
+        print(f"   Recommended: {required_version[0]}.{required_version[1]}+")
+        print("   While the application may work with your current Python version,")
+        print("   for best results we recommend using Python 3.13+ in a virtual environment.")
+        print("   Download from: https://www.python.org/downloads/")
+        print("")
+        print("   After installing Python 3.13+, create a new virtual environment with it:")
+        print("   python3.13 -m venv .venv-py313")
+        print(r"   .venv-py313\Scripts\activate.bat   # Windows")
+        print("   source .venv-py313/bin/activate   # Linux/Mac")
+    
+    print("\n3. Install Ultimate MCP Server in development mode:")
     print("   pip install -e .")
     
-    print("\n3. Install additional development dependencies:")
+    print("\n4. Install additional development dependencies:")
     print("   pip install pytest pytest-asyncio")
     
-    print("\n4. Verify installation:")
+    print("\n5. Verify installation:")
     print("   python -c \"import ultimate_mcp_server; print('✅ Import successful')\"")
 
 

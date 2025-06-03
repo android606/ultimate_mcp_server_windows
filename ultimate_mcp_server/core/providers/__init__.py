@@ -70,7 +70,7 @@ _LAZY_PROVIDERS = {
     Provider.OPENROUTER.value: LazyProviderImporter("ultimate_mcp_server.core.providers.openrouter", "OpenRouterProvider"),
     Provider.GROK.value: LazyProviderImporter("ultimate_mcp_server.core.providers.grok", "GrokProvider"),
     Provider.OLLAMA.value: LazyProviderImporter("ultimate_mcp_server.core.providers.ollama", "OllamaProvider"),
-    Provider.TOGETHER.value: LazyProviderImporter("ultimate_mcp_server.core.providers.together", "TogetherProvider"),
+    Provider.TOGETHERAI.value: LazyProviderImporter("ultimate_mcp_server.core.providers.togetherai", "TogetherProvider"),
 }
 
 class LazyProviderRegistry:

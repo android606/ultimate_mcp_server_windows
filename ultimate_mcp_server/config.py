@@ -247,7 +247,7 @@ class ProvidersConfig(BaseModel):
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig, description="OpenRouter provider configuration")
     grok: ProviderConfig = Field(default_factory=ProviderConfig, description="Grok (xAI) provider configuration")
     ollama: ProviderConfig = Field(default_factory=lambda: ProviderConfig(enabled=False), description="Ollama provider configuration (disabled by default since it requires local installation)")
-    together: ProviderConfig = Field(default_factory=ProviderConfig, description="Together AI provider configuration")
+    togetherai: ProviderConfig = Field(default_factory=ProviderConfig, description="Together.AI provider configuration")
 
 class FilesystemProtectionConfig(BaseModel):
     """Configuration for filesystem protection heuristics."""
@@ -623,7 +623,7 @@ def load_config(
         "gemini": "GEMINI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
         "grok": "GROK_API_KEY",
-        "together": "TOGETHERAI_API_KEY",
+        "togetherai": "TOGETHERAI_API_KEY",
     }
     for provider_name, env_var in provider_key_map.items():
         provider_conf = getattr(loaded_config.providers, provider_name, None)
@@ -680,28 +680,28 @@ def load_config(
     except Exception as e:
         config_logger.warning(f"Could not load optional Ollama settings from env: {e}")
 
-    # --- Load Together AI Provider Settings ---
-    together_conf = loaded_config.providers.together
+    # --- Load Together.AI Provider Settings ---
+    togetherai_conf = loaded_config.providers.togetherai
     try:
         api_endpoint_env = decouple_config.get('TOGETHERAI_API_ENDPOINT', default=None)
         if api_endpoint_env:
-            together_conf.base_url = api_endpoint_env
-            config_logger.debug(f"Setting Together AI base_url from env/'.env': {together_conf.base_url}")
+            togetherai_conf.base_url = api_endpoint_env
+            config_logger.debug(f"Setting Together.AI base_url from env/'.env': {togetherai_conf.base_url}")
         
         default_model_env = decouple_config.get('TOGETHERAI_DEFAULT_MODEL', default=None)
         if default_model_env:
-            together_conf.default_model = default_model_env
-            config_logger.debug(f"Setting Together AI default_model from env/'.env': {together_conf.default_model}")
+            togetherai_conf.default_model = default_model_env
+            config_logger.debug(f"Setting Together.AI default_model from env/'.env': {togetherai_conf.default_model}")
         
         max_tokens_env = decouple_config.get('TOGETHERAI_MAX_TOKENS', default=None)
         if max_tokens_env is not None:
-            together_conf.max_tokens = int(max_tokens_env)
-            config_logger.debug(f"Setting Together AI max_tokens from env/'.env': {together_conf.max_tokens}")
+            togetherai_conf.max_tokens = int(max_tokens_env)
+            config_logger.debug(f"Setting Together.AI max_tokens from env/'.env': {togetherai_conf.max_tokens}")
     except Exception as e:
-        config_logger.warning(f"Could not load optional Together AI settings from env: {e}")
+        config_logger.warning(f"Could not load optional Together.AI settings from env: {e}")
 
     # Example for generic provider settings like base_url, default_model, organization
-    for provider_name in ["openai", "anthropic", "deepseek", "gemini", "openrouter", "grok", "ollama", "together"]:
+    for provider_name in ["openai", "anthropic", "deepseek", "gemini", "openrouter", "grok", "ollama", "togetherai"]:
         provider_conf = getattr(loaded_config.providers, provider_name, None)
         if provider_conf:
             p_name_upper = provider_name.upper()

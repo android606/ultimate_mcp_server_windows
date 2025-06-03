@@ -29,7 +29,7 @@ git remote add original https://github.com/Dicklesworthstone/ultimate_mcp_server
 # Create development environment
 python -m venv .venv
 
-# Activate environment
+# Activate the virtual environment
 # Windows:
 .venv\Scripts\activate.bat
 # Linux/Mac:

@@ -79,7 +79,7 @@ class Provider(str, Enum):
     MISTRAL = "mistral"
     AWS = "aws"
     AZURE = "azure"
-    TOGETHER = "together"
+    TOGETHERAI = "togetherai"
 
 
 class TaskType(str, Enum):
@@ -216,7 +216,7 @@ DEFAULT_MODELS = {
     Provider.OPENROUTER: "mistralai/mistral-nemo",
     Provider.GROK: "grok-3-latest",
     Provider.OLLAMA: "mix_77/gemma3-qat-tools:27b",
-    Provider.TOGETHER: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
+    Provider.TOGETHERAI: "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"
 }
 
 
@@ -277,7 +277,7 @@ EMOJI_MAP = {
     Provider.OPENROUTER: "🌐",
     Provider.OLLAMA: "🦙",
     Provider.GROK: "⚡",
-    Provider.TOGETHER: "🤝"
+    Provider.TOGETHERAI: "🤝"
 }
 
 

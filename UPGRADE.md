@@ -410,7 +410,7 @@ Set up a routine for keeping your installation current:
 echo "#!/bin/bash" > weekly_maintenance.sh
 echo "cd ultimate_mcp_server_windows" >> weekly_maintenance.sh
 echo "git pull origin main" >> weekly_maintenance.sh
-echo "source .venv/bin/activate || .venv\\Scripts\\activate.bat" >> weekly_maintenance.sh
+echo ".venv\Scripts\activate.bat || source .venv/bin/activate" >> weekly_maintenance.sh
 echo "pip install -e . --upgrade" >> weekly_maintenance.sh
 echo "python -m ultimate_mcp_server.cli env --check-only" >> weekly_maintenance.sh
 chmod +x weekly_maintenance.sh

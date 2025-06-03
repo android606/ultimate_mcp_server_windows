@@ -20,8 +20,11 @@ This directory contains manual test scripts for the Ultimate MCP Server (Windows
 ```bash
 # Ensure you're in the project root with activated virtual environment
 cd ultimate_mcp_server_windows
-.venv\Scripts\activate.bat  # Windows
-# source .venv/bin/activate  # Linux/Mac
+# Activate the virtual environment
+# Windows:
+.venv\Scripts\activate.bat
+# Linux/Mac:
+source .venv/bin/activate
 
 # Install test dependencies
 pip install -e ".[test]"

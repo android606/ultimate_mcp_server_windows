@@ -7,7 +7,7 @@ name = "ultimate_mcp_server"
 version = "0.1.0"
 description = "The Ultimate Model Context Protocol (MCP) Server, providing unified access to a wide variety of useful and powerful tools."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 license = {file = "LICENSE"}
 authors = [
     {name = "Jeffrey Emanuel", email = "jeffrey.emanuel@gmail.com"},
@@ -170,7 +170,7 @@ docs = [
 ]
 
 # All extras
-all = ["ultimate_mcp_server[advanced,dev,test,windows,docs]"]
+all = ["advanced", "dev", "test", "windows", "docs"]
 
 [[tool.uv.index]]
 name = "pypi"
