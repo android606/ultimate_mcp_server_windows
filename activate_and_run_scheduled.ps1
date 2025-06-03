@@ -2,7 +2,7 @@
 # This script is designed to run from Windows Task Scheduler without user interaction
 
 param(
-    [string[]]$Args = @("run", "--load-all-tools", "--host", "0.0.0.0", "--port", "8013")
+    [string[]]$ServerArgs = @("run", "--load-all-tools", "--host", "0.0.0.0", "--port", "8013")
 )
 
 # Set up logging
@@ -90,8 +90,8 @@ try {
 
     # Prepare command arguments properly
     $ArgumentList = @("-m", "ultimate_mcp_server")
-    if ($Args -and $Args.Count -gt 0) {
-        $ArgumentList += $Args
+    if ($ServerArgs -and $ServerArgs.Count -gt 0) {
+        $ArgumentList += $ServerArgs
     }
     
     $CmdString = "python " + ($ArgumentList -join " ")
