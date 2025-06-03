@@ -53,40 +53,15 @@ LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False, # Let Uvicorn's loggers pass through if needed
     "formatters": {
-        "default": {
-            "()": "uvicorn.logging.DefaultFormatter",
-            "fmt": "%(levelprefix)s %(message)s",
-            "use_colors": None,
-        },
-        "access": {
-            "()": "uvicorn.logging.AccessFormatter",
-            "fmt": '%(levelprefix)s %(client_addr)s - "%(request_line)s" %(status_code)s',
-        },
         "file": { # Formatter for file output
             "format": "%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
-        "rich_custom": { # Custom Rich formatter with our timestamp format
-            "()": "ultimate_mcp_server.utils.logging.formatter.SimpleLogFormatter",
-            "show_time": True,
-            "show_level": True,
-            "show_path": True,
-        },
     },
     "handlers": {
-        "default": { # Console handler - redirect to stderr
-            "formatter": "rich_custom",  # Use our custom formatter
-            "class": "logging.StreamHandler",
-            "stream": "ext://sys.stderr",  # Changed from stdout to stderr
-        },
-        "access": { # Access log handler - redirect to stderr
-            "formatter": "rich_custom",  # Use our custom formatter for access logs too
-            "class": "logging.StreamHandler",
-            "stream": "ext://sys.stderr",  # Changed from stdout to stderr
-        },
-        "rich_console": { # Rich console handler
+        "rich_console": { # Rich console handler for all console output
             "()": "ultimate_mcp_server.utils.logging.formatter.create_rich_console_handler",
-            "stderr": True,  # Add this parameter to use stderr
+            "stderr": True,
         },
         "file": { # File handler
             "formatter": "file",
@@ -102,17 +77,11 @@ LOGGING_CONFIG = {
             "filename": "logs/direct_tools.log",
             "encoding": "utf-8",
         },
-        "completions_file": { # Completions log file handler
-            "formatter": "file",
-            "class": "logging.FileHandler",
-            "filename": "logs/direct_completions.log",
-            "encoding": "utf-8",
-        },
     },
     "loggers": {
-        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
-        "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False}, 
-        "uvicorn.access": {"handlers": ["access", "file"], "level": "INFO", "propagate": False},
+        "uvicorn": {"handlers": ["rich_console"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"handlers": ["rich_console"], "level": "INFO", "propagate": False}, 
+        "uvicorn.access": {"handlers": ["rich_console", "file"], "level": "INFO", "propagate": False},
         "httpx": {"handlers": ["rich_console"], "level": "INFO", "propagate": False}, # Capture httpx logs with our formatter
         "openai": {"handlers": ["rich_console"], "level": "INFO", "propagate": False}, # Capture openai client logs
         "anthropic": {"handlers": ["rich_console"], "level": "INFO", "propagate": False}, # Capture anthropic client logs
@@ -123,11 +92,6 @@ LOGGING_CONFIG = {
         },
         "ultimate_mcp_server.tools": { # Tools-specific logger
             "handlers": ["tools_file"],
-            "level": "DEBUG",
-            "propagate": True, # Propagate to parent for console display
-        },
-        "ultimate_mcp_server.completions": { # Completions-specific logger
-            "handlers": ["completions_file"],
             "level": "DEBUG",
             "propagate": True, # Propagate to parent for console display
         },
@@ -146,7 +110,6 @@ _gateway_instance = None
 
 # Get loggers
 tools_logger = get_logger("ultimate_mcp_server.tools")
-completions_logger = get_logger("ultimate_mcp_server.completions")
 
 @dataclass
 class ProviderStatus:
@@ -523,7 +486,7 @@ class Gateway:
         # Get all available provider names from the configuration
         all_provider_names = [
             'openai', 'anthropic', 'deepseek', 'gemini', 'openrouter', 'ollama', 
-            'grok', 'mistral', 'aws', 'azure', 'together'
+            'grok', 'mistral', 'aws', 'azure', 'togetherai'
         ]
         
         # Determine which providers to initialize
@@ -971,9 +934,9 @@ first and be prepared to adapt to available providers.
         @self.mcp.resource("info://server")
         def get_server_info() -> Dict[str, Any]:
             """
-            Get information about the Ultimate MCP Server server.
+            Get information about the Ultimate MCP Server.
             
-            This resource provides basic metadata about the Ultimate MCP Server server instance,
+            This resource provides basic metadata about the Ultimate MCP Server instance,
             including its name, version, and supported providers. Use this resource to
             discover server capabilities and version information.
             
@@ -981,8 +944,8 @@ first and be prepared to adapt to available providers.
             
             Returns:
                 Dictionary containing server information:
-                - name: Name of the Ultimate MCP Server server
-                - version: Version of the Ultimate MCP Server server
+                - name: Name of the Ultimate MCP Server
+                - version: Version of the Ultimate MCP Server
                 - description: Brief description of server functionality
                 - providers: List of supported LLM provider names
                 
@@ -2083,7 +2046,7 @@ def create_server(quiet: bool = False) -> FastAPI:
     # This ensures initialization occurs in the proper async context before MCP requests are processed
     
     # Log startup info to stderr instead of using logging directly
-    print("Starting Ultimate MCP Server server", file=sys.stderr)
+    print("Starting Ultimate MCP Server", file=sys.stderr)
     print(f"Host: {cfg.server.host}", file=sys.stderr)
     print(f"Port: {cfg.server.port}", file=sys.stderr)
     print(f"Workers: {cfg.server.workers}", file=sys.stderr)
@@ -2176,6 +2139,7 @@ def create_server(quiet: bool = False) -> FastAPI:
         # In non-quiet mode, we run the server in the current process
         print(f"🌐 Starting Ultimate MCP Server HTTP endpoint...", file=sys.stderr)
         print(f"🌐 Server will be available at http://{cfg.server.host}:{cfg.server.port}", file=sys.stderr)
+        
         uvicorn.run(
             app,
             host=cfg.server.host,
@@ -2368,31 +2332,9 @@ def create_server(quiet: bool = False) -> FastAPI:
     import logging.config
     logging.config.dictConfig(LOGGING_CONFIG)
     
-    # Modify uvicorn loggers to use our custom formatter
-    def configure_uvicorn_logging():
-        """Configure uvicorn loggers to use our custom timestamp format"""
-        import logging
-        from ultimate_mcp_server.utils.logging.formatter import SimpleLogFormatter
-        
-        # Create our custom handler for console output
-        console_handler = logging.StreamHandler(sys.stderr)
-        formatter = SimpleLogFormatter(show_time=True, show_level=True, show_path=True)
-        console_handler.setFormatter(formatter)
-        
-        # Configure uvicorn loggers
-        uvicorn_logger = logging.getLogger("uvicorn")
-        uvicorn_access_logger = logging.getLogger("uvicorn.access") 
-        uvicorn_error_logger = logging.getLogger("uvicorn.error")
-        
-        # Clear existing handlers and set ours
-        for logger in [uvicorn_logger, uvicorn_access_logger, uvicorn_error_logger]:
-            logger.handlers.clear()
-            logger.addHandler(console_handler)
-            logger.propagate = False
-            logger.setLevel(logging.INFO)
-    
-    # Apply custom logging configuration
-    configure_uvicorn_logging()
+    # Force a log message to test our formatter
+    test_logger = logging.getLogger("ultimate_mcp_server")
+    test_logger.info("Logging configuration applied - testing formatter")
     
     config = uvicorn.Config(
         app,

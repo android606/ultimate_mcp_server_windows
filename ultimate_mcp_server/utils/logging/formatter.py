@@ -198,7 +198,7 @@ class SimpleLogFormatter(GatewayLogFormatter):
         
         # Add emoji
         content_line.append(f"{gateway_record.emoji} ", style=gateway_record.style)
-        
+ 
         # Add level if requested
         if self.show_level:
             level_text = f"{gateway_record.level.upper()} "
