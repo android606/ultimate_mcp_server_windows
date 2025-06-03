@@ -47,13 +47,13 @@ if exist ".venv\Scripts\activate.bat" (
 REM Check environment using our validation tool
 echo.
 echo Checking environment status...
-python -m ultimate_mcp_server.cli env --check-only
+python -m ultimate_mcp_server env --check-only
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] Environment validation failed!
     echo.
     echo Run this command for detailed diagnostics:
-    echo   python -m ultimate_mcp_server.cli env --verbose --suggest
+    echo   python -m ultimate_mcp_server env --verbose --suggest
     echo.
     pause
     exit /b 1
@@ -61,24 +61,17 @@ if %errorlevel% neq 0 (
 
 echo [OK] Environment validation passed
 
-REM Parse command line arguments - default to run if no arguments
-set "COMMAND=run"
+REM Parse command line arguments - default to production server settings if no arguments
 set "ARGS="
 
 if "%1"=="" (
-    set "ARGS=--debug"
+    set "ARGS=run --load-all-tools --host 0.0.0.0 --port 8013"
     echo.
-    echo No arguments provided, starting server with default settings...
+    echo No arguments provided, starting server with production settings...
+    echo (load-all-tools, host 0.0.0.0, port 8013)
 ) else (
-    REM Check if first argument is a known command
-    if "%1"=="run" (set "COMMAND=%1" & shift)
-    if "%1"=="env" (set "COMMAND=%1" & shift)
-    if "%1"=="providers" (set "COMMAND=%1" & shift)
-    if "%1"=="test" (set "COMMAND=%1" & shift)
-    if "%1"=="tools" (set "COMMAND=%1" & shift)
-    if "%1"=="examples" (set "COMMAND=%1" & shift)
-    
-    REM Collect remaining arguments
+    REM Collect all arguments, starting with 'run' command
+    set "ARGS=run"
     :parse_args
     if "%1"=="" goto done_parsing
     set "ARGS=%ARGS% %1"
@@ -89,12 +82,12 @@ if "%1"=="" (
 
 REM Show what we're about to run
 echo.
-echo Starting Ultimate MCP Server with command: %COMMAND% %ARGS%
+echo Starting Ultimate MCP Server with arguments: %ARGS%
 echo.
 echo ===================================================================
 
-REM Run the Ultimate MCP Server
-python -m ultimate_mcp_server.cli %COMMAND% %ARGS%
+REM Run the Ultimate MCP Server directly (not through CLI)
+python -m ultimate_mcp_server %ARGS%
 
 REM Check exit code
 if %errorlevel% neq 0 (

@@ -257,7 +257,66 @@ diff .env .env.example || true
 # Update your .env file with any new required variables
 ```
 
-#### 4. Tool Compatibility Issues
+#### 4. Windows Virtual Environment pip Issues
+
+**Problem**: After activating the virtual environment, `pip install .` shows a system-wide Python executable error and fails with requirements not met.
+
+**Symptoms**:
+```
+ERROR: Could not find a version that satisfies the requirement python>=3.11
+ERROR: This is package requires Python >=3.11 but you have Python 3.9.x
+```
+Even though the virtual environment shows the correct Python version.
+
+**Solution**:
+
+1. **Install pip in the virtual environment**:
+   ```batch
+   .venv\Scripts\python -m ensurepip
+   ```
+
+2. **Use the virtual environment's pip directly**:
+   ```batch
+   .venv\Scripts\pip install -e .
+   ```
+
+**Why this happens**: Sometimes the virtual environment's pip isn't properly configured or the system's pip is being used instead of the virtual environment's pip.
+
+**Verification commands**:
+```batch
+# Check which Python is being used
+where python
+# Should show: C:\path\to\your\project\.venv\Scripts\python.exe
+
+# Check which pip is being used
+where pip
+# Should show: C:\path\to\your\project\.venv\Scripts\pip.exe
+
+# Check Python version
+python --version
+# Should show your expected Python version (3.11+)
+
+# Check pip version and ensure it's using the right Python
+pip --version
+# Should reference the virtual environment's Python
+```
+
+**Alternative approach** if the above doesn't work:
+```batch
+# Recreate the virtual environment
+rmdir /s .venv
+python -m venv .venv
+.venv\Scripts\activate.bat
+
+# Install pip and setuptools explicitly
+.venv\Scripts\python -m ensurepip --upgrade
+.venv\Scripts\python -m pip install --upgrade pip setuptools
+
+# Now install the package
+.venv\Scripts\pip install -e .
+```
+
+#### 5. Tool Compatibility Issues
 
 ```bash
 # Check tool status after upgrade

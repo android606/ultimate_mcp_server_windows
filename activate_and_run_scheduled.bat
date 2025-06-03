@@ -6,8 +6,10 @@ setlocal enabledelayedexpansion
 
 REM Set up logging
 set "LOG_DIR=%~dp0logs"
-set "LOG_FILE=%LOG_DIR%\server_startup_%date:~-4,4%%date:~-10,2%%date:~-7,2%_%time:~0,2%%time:~3,2%%time:~6,2%.log"
-set "LOG_FILE=%LOG_FILE: =0%"
+set "TIMESTAMP=%date:~-4,4%%date:~-10,2%%date:~-7,2%_%time:~0,2%%time:~3,2%%time:~6,2%"
+set "TIMESTAMP=%TIMESTAMP: =0%"
+set "LOG_FILE=%LOG_DIR%\server_startup_%TIMESTAMP%.log"
+set "LATEST_LOG=%LOG_DIR%\latest.log"
 
 REM Create logs directory if it doesn't exist
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
@@ -58,27 +60,24 @@ if exist ".venv\Scripts\activate.bat" (
 REM Check environment using our validation tool
 echo.
 echo Checking environment status...
-python -m ultimate_mcp_server.cli env --check-only
+python -m ultimate_mcp_server env --check-only
 if !errorlevel! neq 0 (
     echo.
     echo [ERROR] Environment validation failed!
     echo Run this command for detailed diagnostics:
-    echo   python -m ultimate_mcp_server.cli env --verbose --suggest
+    echo   python -m ultimate_mcp_server env --verbose --suggest
     echo.
     exit /b 1
 )
 
 echo [OK] Environment validation passed
 
-REM Parse command line arguments or use defaults
-set "COMMAND=run"
-set "ARGS=--debug"
+REM Parse command line arguments or use production defaults
+set "ARGS=run --load-all-tools --host 0.0.0.0 --port 8013"
 
 REM Override if arguments provided
 if not "%1"=="" (
-    set "COMMAND=%1"
-    shift
-    set "ARGS="
+    set "ARGS=run"
     :parse_args
     if not "%1"=="" (
         set "ARGS=!ARGS! %1"
@@ -89,13 +88,13 @@ if not "%1"=="" (
 
 REM Show what we're about to run
 echo.
-echo Starting Ultimate MCP Server with command: %COMMAND% %ARGS%
+echo Starting Ultimate MCP Server with arguments: %ARGS%
 echo.
 echo ===================================================================
 
-REM Run the Ultimate MCP Server
+REM Run the Ultimate MCP Server directly (not through CLI)
 echo Server starting at: %date% %time%
-python -m ultimate_mcp_server.cli %COMMAND% %ARGS%
+python -m ultimate_mcp_server %ARGS%
 
 REM Check exit code
 set "EXIT_CODE=!errorlevel!"
@@ -118,4 +117,4 @@ exit /b !EXIT_CODE!
 ) >> "%LOG_FILE%" 2>&1
 
 REM Also log to a latest.log for easy access
-copy "%LOG_FILE%" "%LOG_DIR%\latest.log" >nul 2>&1 
+copy "%LOG_FILE%" "%LATEST_LOG%" >nul 2>&1 

@@ -2,8 +2,7 @@
 # This script is designed to run from Windows Task Scheduler without user interaction
 
 param(
-    [string]$Command = "run",
-    [string[]]$Args = @("--debug")
+    [string[]]$Args = @("run", "--load-all-tools", "--host", "0.0.0.0", "--port", "8013")
 )
 
 # Set up logging
@@ -76,13 +75,13 @@ try {
     Write-Log ""
     Write-Log "Checking environment status..."
     
-    $EnvCheckResult = & python -m ultimate_mcp_server.cli env --check-only 2>&1
+    $EnvCheckResult = & python -m ultimate_mcp_server env --check-only 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Log ""
         Write-Log "[ERROR] Environment validation failed!"
         Write-Log "Output: $EnvCheckResult"
         Write-Log "Run this command for detailed diagnostics:"
-        Write-Log "  python -m ultimate_mcp_server.cli env --verbose --suggest"
+        Write-Log "  python -m ultimate_mcp_server env --verbose --suggest"
         Write-Log ""
         exit 1
     }
@@ -90,7 +89,7 @@ try {
     Write-Log "[OK] Environment validation passed"
 
     # Prepare command arguments properly
-    $ArgumentList = @("-m", "ultimate_mcp_server.cli", $Command)
+    $ArgumentList = @("-m", "ultimate_mcp_server")
     if ($Args -and $Args.Count -gt 0) {
         $ArgumentList += $Args
     }
@@ -104,7 +103,7 @@ try {
     Write-Log ""
     Write-Log "====================================================================="
 
-    # Run the Ultimate MCP Server
+    # Run the Ultimate MCP Server directly (not through CLI)
     Write-Log "Server starting at: $(Get-Date)"
     
     $ServerProcess = Start-Process -FilePath "python" -ArgumentList $ArgumentList -NoNewWindow -PassThru -Wait
