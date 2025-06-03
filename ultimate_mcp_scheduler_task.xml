@@ -1,31 +1,20 @@
 <?xml version="1.0" encoding="UTF-16"?>
-<!-- 
-  Windows Task Scheduler XML Template for Ultimate MCP Server
-  
-  INSTRUCTIONS:
-  1. Replace all placeholders (marked with {{PLACEHOLDER}}) with your actual values
-  2. Save this file with .xml extension
-  3. Import into Task Scheduler using: Task Scheduler > Action > Import Task
--->
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Date>2024-03-25T12:00:00</Date>
-    <!-- Replace with your username or organization name -->
-    <Author>{{YOUR_USERNAME}}</Author>
-    <Description>Starts the Ultimate MCP Server in SSE mode</Description>
+    <Date>2025-01-06T13:20:00</Date>
+    <Author>android</Author>
+    <Description>Starts the Ultimate MCP Server using the Task Scheduler-optimized PowerShell script when logging in</Description>
     <URI>\Ultimate MCP Server</URI>
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
       <Enabled>true</Enabled>
-      <!-- Replace with your Windows username -->
-      <UserId>{{YOUR_WINDOWS_USERNAME}}</UserId>
+      <UserId>android</UserId>
     </LogonTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <!-- Replace with your Windows username -->
-      <UserId>{{YOUR_WINDOWS_USERNAME}}</UserId>
+      <UserId>android</UserId>
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
@@ -48,32 +37,14 @@
     <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
     <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
     <WakeToRun>false</WakeToRun>
-    <!-- PT0S means no time limit -->
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions>
     <Exec>
-      <!-- Replace with the full path to your startup batch file -->
-      <Command>{{PATH_TO_YOUR_START_SCRIPT}}</Command>
-      <!-- Replace with the full path to your Ultimate MCP Server directory -->
-      <WorkingDirectory>{{PATH_TO_UMCP_SERVER_DIRECTORY}}</WorkingDirectory>
+      <Command>powershell.exe</Command>
+      <Arguments>-ExecutionPolicy Bypass -File "C:\Users\android\ultimate_mcp_server\activate_and_run_scheduled.ps1"</Arguments>
+      <WorkingDirectory>C:\Users\android\ultimate_mcp_server</WorkingDirectory>
     </Exec>
   </Actions>
 </Task> 
-<!-- 
-  EXAMPLE:
-  
-  <Command>C:\path\to\ultimate_mcp_server\start_mcp_server.bat</Command>
-  <WorkingDirectory>C:\path\to\ultimate_mcp_server</WorkingDirectory>
-  
-  You'll need to create a batch file (start_mcp_server.bat) with commands to:
-  1. Activate your virtual environment
-  2. Start the Ultimate MCP Server
-  
-  Example start_mcp_server.bat content:
-  @echo off
-  cd /d %~dp0
-  call .venv\Scripts\activate.bat
-  python -m ultimate_mcp_server run --port 8013 --host 127.0.0.1
---> 
