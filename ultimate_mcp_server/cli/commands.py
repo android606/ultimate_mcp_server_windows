@@ -89,31 +89,6 @@ def run_server(
     # Determine effective log level
     effective_log_level = log_level or getattr(cfg, 'log_level', 'info')
     
-    # Print server info
-    console.print("[bold blue]Starting Ultimate MCP Server server[/bold blue]")
-    console.print(f"Host: [cyan]{cfg.server.host}[/cyan]")
-    console.print(f"Port: [cyan]{cfg.server.port}[/cyan]")
-    console.print(f"Workers: [cyan]{cfg.server.workers}[/cyan]")
-    console.print(f"Log level: [cyan]{effective_log_level.upper()}[/cyan]")
-    console.print(f"Transport mode: [cyan]{transport_mode}[/cyan]")
-    
-    # Tool Loading Status
-    if load_all_tools:
-        console.print("Tool Loading: [yellow]All Available Tools[/yellow]")
-    else:
-        console.print("Tool Loading: [yellow]Base Toolset Only[/yellow] (Use --load-all-tools to load all)")
-        # Format the categories for display
-        console.print("  [bold]Includes:[/bold]")
-        for category, tools in BASE_TOOLSET_CATEGORIES.items():
-            console.print(f"    [cyan]{category}[/cyan]: {', '.join(tools)}")
-    
-    # Print tool filtering info if enabled
-    if cfg.tool_registration.filter_enabled:
-        if cfg.tool_registration.included_tools:
-            console.print(f"Including tools: [cyan]{', '.join(cfg.tool_registration.included_tools)}[/cyan]")
-        if cfg.tool_registration.excluded_tools:
-            console.print(f"Excluding tools: [red]{', '.join(cfg.tool_registration.excluded_tools)}[/red]")
-    
     console.print()
     
     # Set environment variables for the tool context estimator to use

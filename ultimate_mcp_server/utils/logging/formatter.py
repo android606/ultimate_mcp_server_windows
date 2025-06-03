@@ -175,51 +175,58 @@ class GatewayLogFormatter(logging.Formatter):
 class SimpleLogFormatter(GatewayLogFormatter):
     """Simple single-line log formatter for Rich console output."""
     
-    def format_rich(self, record: logging.LogRecord) -> Text:
-        """Format a record as a single line of rich text.
+    def format_rich(self, record: logging.LogRecord) -> ConsoleRenderable:
+        """Format a record with timestamp on its own line to save horizontal space.
         
         Args:
             record: The log record to format
             
         Returns:
-            Formatted Text object
+            Formatted Group with timestamp on top line and log content on bottom line
         """
-        gateway_record = GatewayLogRecord(record) # Wrap for easier access
-        result = Text()
+        from rich.console import Group
         
-        # Add timestamp if requested
+        gateway_record = GatewayLogRecord(record) # Wrap for easier access
+        
+        # Create timestamp line if requested
+        timestamp_line = None
         if self.show_time:
-            result.append(f"[{gateway_record.format_time}] ", style="timestamp")
-            
+            timestamp_line = Text(gateway_record.format_time, style="dim cyan")
+        
+        # Create main log content line
+        content_line = Text()
+        
         # Add emoji
-        result.append(f"{gateway_record.emoji} ", style=gateway_record.style)
+        content_line.append(f"{gateway_record.emoji} ", style=gateway_record.style)
         
         # Add level if requested
         if self.show_level:
-            level_text = f"[{gateway_record.level.upper()}] "
-            result.append(level_text, style=gateway_record.style)
+            level_text = f"{gateway_record.level.upper()} "
+            content_line.append(level_text, style=gateway_record.style)
             
         # Add component if available and requested
         if self.show_component and gateway_record.component:
-            component_text = f"[{gateway_record.component}] "
-            result.append(component_text, style=gateway_record.component_style)
+            component_text = f"{gateway_record.component} "
+            content_line.append(component_text, style=gateway_record.component_style)
             
         # Add operation if available
         if gateway_record.operation:
             operation_text = f"{gateway_record.operation}: "
-            result.append(operation_text, style="operation")
+            content_line.append(operation_text, style="operation")
             
         # Add message
-        result.append(gateway_record.message)
+        content_line.append(gateway_record.message)
 
         # Add path/line number if requested
         if self.show_path:
              path_text = f" ({record.pathname}:{record.lineno})"
-             result.append(path_text, style="dim")
+             content_line.append(path_text, style="dim")
 
-        # Add Exception/Traceback if present (handled by RichHandler.render)
-        
-        return result
+        # Return either just the content line or both lines
+        if timestamp_line:
+            return Group(timestamp_line, content_line)
+        else:
+            return content_line
 
 class DetailedLogFormatter(GatewayLogFormatter):
     """Multi-line formatter that can include context data (Placeholder)."""

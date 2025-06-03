@@ -66,15 +66,21 @@ LOGGING_CONFIG = {
             "format": "%(asctime)s - %(name)s:%(lineno)d - %(levelname)s - %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
+        "rich_custom": { # Custom Rich formatter with our timestamp format
+            "()": "ultimate_mcp_server.utils.logging.formatter.SimpleLogFormatter",
+            "show_time": True,
+            "show_level": True,
+            "show_path": True,
+        },
     },
     "handlers": {
         "default": { # Console handler - redirect to stderr
-            "formatter": "default",
+            "formatter": "rich_custom",  # Use our custom formatter
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stderr",  # Changed from stdout to stderr
         },
         "access": { # Access log handler - redirect to stderr
-            "formatter": "access",
+            "formatter": "rich_custom",  # Use our custom formatter for access logs too
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stderr",  # Changed from stdout to stderr
         },
@@ -104,9 +110,12 @@ LOGGING_CONFIG = {
         },
     },
     "loggers": {
-        "uvicorn": {"handlers": ["rich_console"], "level": "INFO", "propagate": False},
-        "uvicorn.error": {"level": "INFO", "propagate": True}, # Propagate errors to root
+        "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False}, 
         "uvicorn.access": {"handlers": ["access", "file"], "level": "INFO", "propagate": False},
+        "httpx": {"handlers": ["rich_console"], "level": "INFO", "propagate": False}, # Capture httpx logs with our formatter
+        "openai": {"handlers": ["rich_console"], "level": "INFO", "propagate": False}, # Capture openai client logs
+        "anthropic": {"handlers": ["rich_console"], "level": "INFO", "propagate": False}, # Capture anthropic client logs
         "ultimate_mcp_server": { # Our application's logger namespace
             "handlers": ["rich_console", "file"],
             "level": "DEBUG",
@@ -2352,23 +2361,50 @@ def create_server(quiet: bool = False) -> FastAPI:
     print("🌐 Starting Ultimate MCP Server HTTP endpoint...", file=sys.stderr)
     print(f"🌐 Server will be available at http://{cfg.server.host}:{cfg.server.port}", file=sys.stderr)
     
-    # Create uvicorn config
+    # Create uvicorn config with our custom logging
     import uvicorn
+    
+    # Configure logging BEFORE uvicorn starts
+    import logging.config
+    logging.config.dictConfig(LOGGING_CONFIG)
+    
+    # Modify uvicorn loggers to use our custom formatter
+    def configure_uvicorn_logging():
+        """Configure uvicorn loggers to use our custom timestamp format"""
+        import logging
+        from ultimate_mcp_server.utils.logging.formatter import SimpleLogFormatter
+        
+        # Create our custom handler for console output
+        console_handler = logging.StreamHandler(sys.stderr)
+        formatter = SimpleLogFormatter(show_time=True, show_level=True, show_path=True)
+        console_handler.setFormatter(formatter)
+        
+        # Configure uvicorn loggers
+        uvicorn_logger = logging.getLogger("uvicorn")
+        uvicorn_access_logger = logging.getLogger("uvicorn.access") 
+        uvicorn_error_logger = logging.getLogger("uvicorn.error")
+        
+        # Clear existing handlers and set ours
+        for logger in [uvicorn_logger, uvicorn_access_logger, uvicorn_error_logger]:
+            logger.handlers.clear()
+            logger.addHandler(console_handler)
+            logger.propagate = False
+            logger.setLevel(logging.INFO)
+    
+    # Apply custom logging configuration
+    configure_uvicorn_logging()
+    
     config = uvicorn.Config(
         app,
         host=cfg.server.host,
         port=cfg.server.port,
-        workers=cfg.server.workers if cfg.server.workers > 1 else 1,
-        log_config=LOGGING_CONFIG,
-        access_log=True,
-        reload=cfg.server.debug  # Use debug flag for reload functionality
-        # Note: FastMCP handles its own lifespan internally through the SSE app
-        # The lifespan context is managed by the FastMCP server instance
+        log_level=cfg.server.log_level.lower(),
+        access_log=False,
+        # Remove log_config parameter to prevent conflicts
     )
     
-    # Create and run the quiet server
-    quiet_server = create_quiet_server(config)
-    quiet_server.run()
+    server = uvicorn.Server(config)
+    server.run()
 
 
 def start_server(

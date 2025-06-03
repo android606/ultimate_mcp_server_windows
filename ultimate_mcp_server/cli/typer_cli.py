@@ -493,13 +493,64 @@ def run(
         server_info_str += "\nTool Loading: [yellow]All Available Tools[/yellow]"
     else:
         server_info_str += "\nTool Loading: [yellow]Base Toolset Only[/yellow] (Use --load-all-tools to load all)"
-        # Format the categories for display
+        
+        # Get all available tools from the complete categories list used in list_tools command
+        all_available_tools = {
+            "completion": ["generate_completion", "stream_completion", "chat_completion", "multi_completion"],
+            "provider": ["get_provider_status", "list_models"],
+            "tournament": ["create_tournament", "get_tournament_status", "list_tournaments", "get_tournament_results", "cancel_tournament"],
+            "document": ["chunk_document", "summarize_document", "extract_entities", "generate_qa_pairs", "process_document_batch"],
+            "extraction": ["extract_json", "extract_table", "extract_key_value_pairs", "extract_semantic_schema", "extract_entity_graph", "extract_code_from_response"],
+            "filesystem": ["read_file", "read_multiple_files", "write_file", "edit_file", "create_directory", "list_directory", "directory_tree", "move_file", "search_files", "get_file_info", "list_allowed_directories"],
+            "rag": ["create_knowledge_base", "list_knowledge_bases", "delete_knowledge_base", "add_documents", "retrieve_context", "generate_with_rag"],
+            "meta": ["get_tool_info", "get_llm_instructions", "get_tool_recommendations", "register_api_meta_tools"],
+            "search": ["marqo_fused_search"],
+            "ocr": ["extract_text_from_pdf", "process_image_ocr", "enhance_ocr_text", "analyze_pdf_structure", "batch_process_documents"],
+            "optimization": ["estimate_cost", "compare_models", "recommend_model", "execute_optimized_workflow"],
+            "database": ["connect_to_database", "disconnect_from_database", "discover_database_schema", "execute_query", "generate_database_documentation", "get_table_details", "find_related_tables", "analyze_column_statistics", "execute_parameterized_query", "create_database_view", "create_database_index", "test_connection", "execute_transaction", "execute_query_with_pagination", "get_database_status"],
+            "audio": ["transcribe_audio", "extract_audio_transcript_key_points", "chat_with_transcript"],
+            "browser": ["browser_init", "browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_close", "browser_select", "browser_checkbox", "browser_get_text", "browser_get_attributes", "browser_execute_javascript", "browser_wait", "execute_web_workflow", "extract_structured_data_from_pages", "find_and_download_pdfs", "multi_engine_search_summary"],
+            "classification": ["text_classification"],
+            "excel": ["excel_execute", "excel_status", "excel_close_workbook", "excel_cleanup"],
+            "sql": ["sql_execute", "sql_connect", "sql_disconnect", "sql_schema"],
+            "python": ["execute_python", "repl_python"],
+            "text_processing": ["run_ripgrep", "run_awk", "run_sed", "run_jq"],
+            "sentiment": ["analyze_business_sentiment", "analyze_business_text_batch"],
+            "memory": ["initialize_memory_system", "create_workflow", "update_workflow_status", "record_action_start", "record_action_completion", "get_action_details", "summarize_context_block", "add_action_dependency", "get_action_dependencies", "record_artifact", "record_thought", "store_memory", "get_memory_by_id", "search_semantic_memories", "hybrid_search_memories", "create_memory_link", "query_memories", "list_workflows", "get_workflow_details", "get_recent_actions", "get_artifacts", "get_artifact_by_id", "create_thought_chain", "get_thought_chain", "get_working_memory", "focus_memory", "optimize_working_memory", "save_cognitive_state", "load_cognitive_state", "get_workflow_context", "auto_update_focus", "promote_memory_level", "update_memory", "get_linked_memories", "consolidate_memories", "generate_reflection", "summarize_text", "delete_expired_memories", "compute_memory_statistics"],
+            "redline": ["compare_documents_redline", "create_html_redline"]
+        }
+        
+        # Get base toolset tools in a flat list
+        base_tools = set()
+        for tools in BASE_TOOLSET_CATEGORIES.values():
+            base_tools.update(tools)
+        
+        # Get all available tools in a flat list
+        all_tools = set()
+        for tools in all_available_tools.values():
+            all_tools.update(tools)
+        
+        # Calculate excluded tools by category
+        excluded_by_category = {}
+        for category, tools in all_available_tools.items():
+            excluded_tools = [tool for tool in tools if tool not in base_tools]
+            if excluded_tools:
+                excluded_by_category[category] = excluded_tools
+        
+        # Format the included categories for display
         category_lines = []
         for category, tools in BASE_TOOLSET_CATEGORIES.items():
             category_lines.append(f"    [cyan]{category}[/cyan]: {', '.join(tools)}")
         
         server_info_str += "\n  [bold]Includes:[/bold]\n" + "\n".join(category_lines)
-
+        
+        # Format the excluded categories for display
+        if excluded_by_category:
+            excluded_lines = []
+            for category, tools in excluded_by_category.items():
+                excluded_lines.append(f"    [red]{category}[/red]: {', '.join(tools)}")
+            
+            server_info_str += "\n\n  [bold]Excludes (use --load-all-tools to enable):[/bold]\n" + "\n".join(excluded_lines)
 
     # Print tool filtering info if enabled
     if include_tools or exclude_tools:
